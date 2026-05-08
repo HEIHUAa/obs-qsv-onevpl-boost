@@ -55,14 +55,8 @@ static bool IsFeatureSupported(const char *PropertyName) {
 static mfxPlatform CachedQSVPlatform{};
 static bool CachedQSVPlatformValid = false;
 
-static mfxU16 QueryPlatformCodeName() {
-    if (CachedQSVPlatformValid) {
-        return CachedQSVPlatform.CodeName;
-    }
-    mfxLoader Loader = MFXLoad();
-    if (Loader == nullptr) {
-        return 0;
-    }
+static bool TryQueryPlatformCodeName(mfxLoader Loader,
+                                     const char *ImplName) {
     mfxConfig Config = MFXCreateConfig(Loader);
     mfxVariant Variant{};
     Variant.Type = MFX_VARIANT_TYPE_U32;
@@ -80,13 +74,15 @@ static mfxU16 QueryPlatformCodeName() {
         reinterpret_cast<const mfxU8 *>("mfxImplDescription.VendorID"),
         Variant);
 
-    Config = MFXCreateConfig(Loader);
-    Variant.Type = MFX_VARIANT_TYPE_PTR;
-    Variant.Data.Ptr = mfxHDL("mfx-gen");
-    MFXSetConfigFilterProperty(
-        Config,
-        reinterpret_cast<const mfxU8 *>("mfxImplDescription.ImplName"),
-        Variant);
+    if (ImplName != nullptr) {
+        Config = MFXCreateConfig(Loader);
+        Variant.Type = MFX_VARIANT_TYPE_PTR;
+        Variant.Data.Ptr = mfxHDL(ImplName);
+        MFXSetConfigFilterProperty(
+            Config,
+            reinterpret_cast<const mfxU8 *>("mfxImplDescription.ImplName"),
+            Variant);
+    }
 
     mfxSession Session{};
     mfxStatus Status = MFXCreateSession(Loader, 0, &Session);
@@ -94,9 +90,30 @@ static mfxU16 QueryPlatformCodeName() {
         MFXVideoCORE_QueryPlatform(Session, &CachedQSVPlatform);
         MFXClose(Session);
         CachedQSVPlatformValid = true;
+        return true;
     }
-    MFXUnload(Loader);
-    return CachedQSVPlatform.CodeName;
+    return false;
+}
+
+static mfxU16 QueryPlatformCodeName() {
+    if (CachedQSVPlatformValid) {
+        return CachedQSVPlatform.CodeName;
+    }
+
+    const char *ImplNames[] = {"mfx-gen", "mfx-msdk", nullptr};
+    for (const char *ImplName : ImplNames) {
+        mfxLoader Loader = MFXLoad();
+        if (Loader == nullptr) {
+            continue;
+        }
+        if (TryQueryPlatformCodeName(Loader, ImplName)) {
+            MFXUnload(Loader);
+            return CachedQSVPlatform.CodeName;
+        }
+        MFXUnload(Loader);
+    }
+
+    return 0;
 }
 
 static void SetDefaultEncoderParams(obs_data_t *Settings,
