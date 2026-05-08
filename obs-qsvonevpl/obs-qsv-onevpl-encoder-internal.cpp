@@ -43,12 +43,16 @@ mfxStatus QSVEncoder::CreateSession([[maybe_unused]] enum codec_enum Codec,
                                     [[maybe_unused]] void **Data, int GPUNum) {
   mfxStatus Status = MFX_ERR_NONE;
   try {
-    const char *ImplNames[] = {"mfx-gen", "mfx-msdk", nullptr};
+    struct {
+      const char *ImplName;
+    } ImplOptions[] = {{nullptr}, {"mfx-msdk"}};
     bool SessionCreated = false;
 
-    for (int implIdx = 0;
-         ImplNames[implIdx] != nullptr && !SessionCreated; implIdx++) {
-      const char *ImplName = ImplNames[implIdx];
+    for (size_t implIdx = 0;
+         implIdx < sizeof(ImplOptions) / sizeof(ImplOptions[0]) &&
+         !SessionCreated;
+         implIdx++) {
+      const char *ImplName = ImplOptions[implIdx].ImplName;
 
       if (QSVLoader != nullptr) {
         MFXUnload(QSVLoader);
