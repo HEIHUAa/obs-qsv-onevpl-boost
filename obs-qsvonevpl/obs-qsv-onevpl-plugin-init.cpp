@@ -46,8 +46,8 @@ static bool IsFeatureSupported(const char *PropertyName) {
             return platformCode >= info->min_platform;
         }
         info++;
-    }
-    return true;
+  }
+  return true;
 }
 
 static mfxPlatform CachedQSVPlatform{};
@@ -377,6 +377,21 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   //Prop = obs_properties_get(Properties, "num_ref_active_bl1");
   //obs_property_set_visible(Prop, bVisible_extbrc && bVisible_enctools);
 
+  mfxU16 platformCode = QueryPlatformCodeName();
+  const char *profileData = obs_data_get_string(Settings, "profile");
+  bool profileIs10bit = (std::strcmp(profileData, "main10") == 0) ||
+                        (std::strcmp(profileData, "rext") == 0);
+  bool hasHighTier = platformCode == 0 ||
+                     platformCode >= MFX_PLATFORM_TIGERLAKE;
+  bool showTierList = profileIs10bit && hasHighTier;
+  Prop = obs_properties_get(Properties, "hevc_tier");
+  if (Prop) {
+    obs_property_set_visible(Prop, showTierList);
+    if (!showTierList) {
+      obs_data_set_string(Settings, "hevc_tier", "main");
+    }
+  }
+
   return true;
 }
 
@@ -447,6 +462,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
       }
       profileEntryHEVC++;
     }
+    obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
   }
 
   if (Codec == QSV_CODEC_HEVC) {
@@ -455,15 +471,12 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 
     mfxU16 platformCode = QueryPlatformCodeName();
+    bool hasHighTier = platformCode == 0 ||
+                       platformCode >= MFX_PLATFORM_TIGERLAKE;
     const char *const *tierEntry = qsv_profile_tiers_hevc;
     while (*tierEntry) {
       bool isHigh = std::strcmp(*tierEntry, "high") == 0;
-      bool showTier = true;
-      if (isHigh && platformCode != 0 &&
-          platformCode < MFX_PLATFORM_TIGERLAKE) {
-        showTier = false;
-      }
-      if (showTier) {
+      if (!isHigh || hasHighTier) {
         obs_property_list_add_string(Prop, *tierEntry, *tierEntry);
       }
       tierEntry++;
