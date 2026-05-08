@@ -98,6 +98,7 @@ jobs:
         run: |
           $ModuleName = "obs-qsvonevpl"
           $SourceDir = "${{ github.workspace }}/obs-studio/plugins/${{ env.PLUGIN_NAME }}/$ModuleName/data"
+          $VPLReleaseDir = "${{ github.workspace }}/obs-studio/build_x64/libvpl"
 
           # Release
           $ReleaseDir = "${{ github.workspace }}/obs-studio/build_x64/plugins/${{ env.PLUGIN_NAME }}/$ModuleName/Release"
@@ -106,6 +107,8 @@ jobs:
           New-Item -ItemType Directory -Path "$ReleasePackage/data/obs-plugins/$ModuleName/locale" -Force
           Copy-Item "$ReleaseDir/$ModuleName.dll" "$ReleasePackage/obs-plugins/64bit/"
           Copy-Item "$ReleaseDir/$ModuleName.pdb" "$ReleasePackage/obs-plugins/64bit/"
+          Copy-Item "$VPLReleaseDir/libvpl.dll" "$ReleasePackage/obs-plugins/64bit/"
+          Copy-Item "$VPLReleaseDir/libvpl.pdb" "$ReleasePackage/obs-plugins/64bit/"
           Copy-Item "$SourceDir/locale/*.ini" "$ReleasePackage/data/obs-plugins/$ModuleName/locale/"
 
           # Debug
@@ -115,6 +118,8 @@ jobs:
           New-Item -ItemType Directory -Path "$DebugPackage/data/obs-plugins/$ModuleName/locale" -Force
           Copy-Item "$DebugDir/$ModuleName.dll" "$DebugPackage/obs-plugins/64bit/"
           Copy-Item "$DebugDir/$ModuleName.pdb" "$DebugPackage/obs-plugins/64bit/"
+          Copy-Item "$VPLReleaseDir/libvpl.dll" "$DebugPackage/obs-plugins/64bit/"
+          Copy-Item "$VPLReleaseDir/libvpl.pdb" "$DebugPackage/obs-plugins/64bit/"
           Copy-Item "$SourceDir/locale/*.ini" "$DebugPackage/data/obs-plugins/$ModuleName/locale/"
 
       - name: Upload Release Artifacts

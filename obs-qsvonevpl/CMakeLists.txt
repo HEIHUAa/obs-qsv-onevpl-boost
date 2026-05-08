@@ -66,6 +66,10 @@ install(
   LIBRARY DESTINATION "obs-plugins"
 )
 
+if(WIN32 AND TARGET VPL)
+  install(FILES $<TARGET_FILE:VPL> DESTINATION "obs-plugins/64bit")
+endif()
+
 install(
   FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/data/locale/en-US.ini
