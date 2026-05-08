@@ -1,0 +1,130 @@
+name: Build obs-qsv-onevpl
+
+on:
+  push:
+    branches: [main, master, NEW]
+    tags: ['v*']
+  pull_request:
+    branches: [main, master, NEW]
+  workflow_dispatch:
+
+env:
+  PLUGIN_NAME: obs-qsv-onevpl
+  OBS_VERSION: 32.1.2
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  windows:
+    name: Windows (x64)
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Cache OBS Studio Source
+        id: cache-obs
+        uses: actions/cache@v5
+        with:
+          path: obs-studio
+          key: obs-studio-${{ env.OBS_VERSION }}-${{ runner.os }}
+
+      - name: Checkout OBS Studio
+        if: steps.cache-obs.outputs.cache-hit != 'true'
+        uses: actions/checkout@v5
+        with:
+          repository: obsproject/obs-studio
+          ref: ${{ env.OBS_VERSION }}
+          path: obs-studio
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Checkout Plugin
+        uses: actions/checkout@v5
+        with:
+          path: obs-studio/plugins/${{ env.PLUGIN_NAME }}
+
+      - name: Cache oneVPL
+        id: cache-onevpl
+        uses: actions/cache@v5
+        with:
+          path: obs-studio/plugins/${{ env.PLUGIN_NAME }}/libvpl
+          key: onevpl-${{ runner.os }}
+
+      - name: Setup oneVPL
+        if: steps.cache-onevpl.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 https://github.com/oneapi-src/oneVPL.git libvpl
+        working-directory: ${{ github.workspace }}/obs-studio/plugins/${{ env.PLUGIN_NAME }}
+
+      - name: Cache Intel Media SDK Headers
+        id: cache-mediasdk
+        uses: actions/cache@v5
+        with:
+          path: obs-studio/plugins/${{ env.PLUGIN_NAME }}/MediaSDK
+          key: mediasdk-${{ runner.os }}
+
+      - name: Setup Intel Media SDK Headers
+        if: steps.cache-mediasdk.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/Intel-Media-SDK/MediaSDK.git
+          cd MediaSDK
+          git sparse-checkout set api/include
+        working-directory: ${{ github.workspace }}/obs-studio/plugins/${{ env.PLUGIN_NAME }}
+
+      - name: Add Plugin to OBS CMake
+        run: |
+          $cmakeFile = "plugins/CMakeLists.txt"
+          $line = "add_subdirectory(${{ env.PLUGIN_NAME }})"
+          if (-not (Select-String -Path $cmakeFile -Pattern $line -SimpleMatch -Quiet)) {
+            $line | Out-File -FilePath $cmakeFile -Encoding utf8 -Append
+          }
+        working-directory: ${{ github.workspace }}/obs-studio
+
+      - name: Configure CMake
+        run: |
+          Get-ChildItem -Path "." -Filter "CMakeCache.txt" -Recurse -Depth 2 | Remove-Item -Force
+          cmake --preset windows-x64 -DMEDIASDK_INCLUDE_DIR="${{ github.workspace }}/obs-studio/plugins/${{ env.PLUGIN_NAME }}/MediaSDK/api/include"
+        working-directory: ${{ github.workspace }}/obs-studio
+
+      - name: Build Release
+        run: cmake --build --preset windows-x64 --config Release --target obs-qsvonevpl
+        working-directory: ${{ github.workspace }}/obs-studio
+
+      - name: Build Debug
+        run: cmake --build --preset windows-x64 --config Debug --target obs-qsvonevpl
+        working-directory: ${{ github.workspace }}/obs-studio
+
+      - name: Package Plugin
+        run: |
+          $ModuleName = "obs-qsvonevpl"
+          $SourceDir = "${{ github.workspace }}/obs-studio/plugins/${{ env.PLUGIN_NAME }}/$ModuleName/data"
+
+          # Release
+          $ReleaseDir = "${{ github.workspace }}/obs-studio/build_x64/plugins/${{ env.PLUGIN_NAME }}/$ModuleName/Release"
+          $ReleasePackage = "${{ github.workspace }}/package/release"
+          New-Item -ItemType Directory -Path "$ReleasePackage/obs-plugins/64bit" -Force
+          New-Item -ItemType Directory -Path "$ReleasePackage/data/obs-plugins/$ModuleName/locale" -Force
+          Copy-Item "$ReleaseDir/$ModuleName.dll" "$ReleasePackage/obs-plugins/64bit/"
+          Copy-Item "$ReleaseDir/$ModuleName.pdb" "$ReleasePackage/obs-plugins/64bit/"
+          Copy-Item "$SourceDir/locale/*.ini" "$ReleasePackage/data/obs-plugins/$ModuleName/locale/"
+
+          # Debug
+          $DebugDir = "${{ github.workspace }}/obs-studio/build_x64/plugins/${{ env.PLUGIN_NAME }}/$ModuleName/Debug"
+          $DebugPackage = "${{ github.workspace }}/package/debug"
+          New-Item -ItemType Directory -Path "$DebugPackage/obs-plugins/64bit" -Force
+          New-Item -ItemType Directory -Path "$DebugPackage/data/obs-plugins/$ModuleName/locale" -Force
+          Copy-Item "$DebugDir/$ModuleName.dll" "$DebugPackage/obs-plugins/64bit/"
+          Copy-Item "$DebugDir/$ModuleName.pdb" "$DebugPackage/obs-plugins/64bit/"
+          Copy-Item "$SourceDir/locale/*.ini" "$DebugPackage/data/obs-plugins/$ModuleName/locale/"
+
+      - name: Upload Release Artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ env.PLUGIN_NAME }}-${{ github.sha }}-windows-x64-Release
+          path: ${{ github.workspace }}/package/release/**/*
+
+      - name: Upload Debug Artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ env.PLUGIN_NAME }}-${{ github.sha }}-windows-x64-Debug
+          path: ${{ github.workspace }}/package/debug/**/*
