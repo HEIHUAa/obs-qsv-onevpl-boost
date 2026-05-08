@@ -67,6 +67,11 @@ install(
 )
 
 if(WIN32 AND TARGET VPL)
+  add_custom_command(TARGET obs-qsvonevpl POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      $<TARGET_FILE:VPL>
+      $<TARGET_FILE_DIR:obs-qsvonevpl>
+  )
   install(FILES $<TARGET_FILE:VPL> DESTINATION "obs-plugins/64bit")
 endif()
 
