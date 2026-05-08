@@ -100,17 +100,28 @@ static mfxU16 QueryPlatformCodeName() {
         return CachedQSVPlatform.CodeName;
     }
 
-    const char *ImplNames[] = {"mfx-msdk", nullptr};
-    for (const char *ImplName : ImplNames) {
+    // Try mfx-gen first (newer hardware)
+    {
         mfxLoader Loader = MFXLoad();
-        if (Loader == nullptr) {
-            continue;
-        }
-        if (TryQueryPlatformCodeName(Loader, ImplName)) {
+        if (Loader != nullptr) {
+            if (TryQueryPlatformCodeName(Loader, "mfx-gen")) {
+                MFXUnload(Loader);
+                return CachedQSVPlatform.CodeName;
+            }
             MFXUnload(Loader);
-            return CachedQSVPlatform.CodeName;
         }
-        MFXUnload(Loader);
+    }
+
+    // Fallback: try mfx-msdk for legacy hardware
+    {
+        mfxLoader Loader = MFXLoad();
+        if (Loader != nullptr) {
+            if (TryQueryPlatformCodeName(Loader, "mfx-msdk")) {
+                MFXUnload(Loader);
+                return CachedQSVPlatform.CodeName;
+            }
+            MFXUnload(Loader);
+        }
     }
 
     return 0;
