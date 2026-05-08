@@ -45,7 +45,7 @@ mfxStatus QSVEncoder::CreateSession([[maybe_unused]] enum codec_enum Codec,
   try {
     struct {
       const char *ImplName;
-    } ImplOptions[] = {{nullptr}, {"mfx-msdk"}};
+    } ImplOptions[] = {{"mfx-msdk"}, {nullptr}};
     bool SessionCreated = false;
 
     for (size_t implIdx = 0;

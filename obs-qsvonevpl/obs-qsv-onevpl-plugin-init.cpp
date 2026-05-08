@@ -100,7 +100,7 @@ static mfxU16 QueryPlatformCodeName() {
         return CachedQSVPlatform.CodeName;
     }
 
-    const char *ImplNames[] = {nullptr, "mfx-msdk"};
+    const char *ImplNames[] = {"mfx-msdk", nullptr};
     for (const char *ImplName : ImplNames) {
         mfxLoader Loader = MFXLoad();
         if (Loader == nullptr) {
