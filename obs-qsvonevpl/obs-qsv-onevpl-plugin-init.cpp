@@ -6,8 +6,6 @@
 #include "obs-qsv-onevpl-encoder.hpp"
 #endif
 
-enum { QSV_PLATFORM_TIGERLAKE = 8 };
-
 struct qsv_rate_control_info {
     const char *name;
     mfxU16 min_platform;
@@ -31,8 +29,8 @@ struct qsv_feature_info {
 
 static const struct qsv_feature_info qsv_feature_info_list[] = {
     {"enc_tools", MFX_PLATFORM_DG2},
-    {"tune_quality", QSV_PLATFORM_TIGERLAKE},
-    {"transform_skip", QSV_PLATFORM_TIGERLAKE},
+    {"tune_quality", MFX_PLATFORM_TIGERLAKE},
+    {"transform_skip", MFX_PLATFORM_TIGERLAKE},
     {nullptr, 0}};
 
 static mfxU16 QueryPlatformCodeName();
@@ -413,11 +411,42 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 
   if (Codec == QSV_CODEC_AVC) {
-    AddStrings(Prop, qsv_profile_names_h264);
+    mfxU16 platformCode = QueryPlatformCodeName();
+    const char *const *profileEntryH264 = qsv_profile_names_h264;
+    while (*profileEntryH264) {
+      bool showProfileH264 = true;
+      if (platformCode != 0) {
+        bool isHigh10 = std::strcmp(*profileEntryH264, "high10") == 0;
+        bool isHigh422 = std::strcmp(*profileEntryH264, "high422") == 0;
+        if (isHigh10 || isHigh422) {
+          showProfileH264 = false;
+        }
+      }
+      if (showProfileH264) {
+        obs_property_list_add_string(Prop, *profileEntryH264,
+                                     *profileEntryH264);
+      }
+      profileEntryH264++;
+    }
   } else if (Codec == QSV_CODEC_AV1) {
     AddStrings(Prop, qsv_profile_names_av1);
   } else if (Codec == QSV_CODEC_HEVC) {
-    AddStrings(Prop, qsv_profile_names_hevc);
+    mfxU16 platformCode = QueryPlatformCodeName();
+    const char *const *profileEntryHEVC = qsv_profile_names_hevc;
+    while (*profileEntryHEVC) {
+      bool showProfileHEVC = true;
+      if (platformCode != 0) {
+        bool isRext = std::strcmp(*profileEntryHEVC, "rext") == 0;
+        if (isRext && platformCode < MFX_PLATFORM_ICELAKE) {
+          showProfileHEVC = false;
+        }
+      }
+      if (showProfileHEVC) {
+        obs_property_list_add_string(Prop, *profileEntryHEVC,
+                                     *profileEntryHEVC);
+      }
+      profileEntryHEVC++;
+    }
   }
 
   if (Codec == QSV_CODEC_HEVC) {
@@ -431,7 +460,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
       bool isHigh = std::strcmp(*tierEntry, "high") == 0;
       bool showTier = true;
       if (isHigh && platformCode != 0 &&
-          platformCode < QSV_PLATFORM_TIGERLAKE) {
+          platformCode < MFX_PLATFORM_TIGERLAKE) {
         showTier = false;
       }
       if (showTier) {
@@ -955,7 +984,7 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     } else {
       mfxU16 platformCode = QueryPlatformCodeName();
       bool highTierUnsupported = platformCode != 0 &&
-                                 platformCode < QSV_PLATFORM_TIGERLAKE;
+                                 platformCode < MFX_PLATFORM_TIGERLAKE;
       if (highTierUnsupported) {
         info("\tHEVC High Tier not supported on this GPU, "
              "falling back to Main Tier");
