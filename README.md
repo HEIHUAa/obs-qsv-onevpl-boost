@@ -53,10 +53,8 @@ It was created primarily for **personal use**, with modifications focused on UHD
 
 ### Key Changes
 
-- Fixed locale loading issue and improved Chinese translations
-- Fixed encoding parameter visibility logic (sub-options no longer show when parent is hidden)
-- Added missing encoding parameters (e.g., Lookahead Depth slider)
-- Added Chinese translations for dropdown option values
+- Fixed locale loading issue and added Chinese translations
+- Added more visible encoding parameters
 - CI workflow now builds both Release and Debug configurations
 - Other bug fixes and optimizations
 
@@ -74,4 +72,4 @@ Get the latest builds from the Actions page: https://github.com/HEIHUAa/obs-qsv-
 
 ### Installation
 
-Place `obs-qsvonevpl.dll` into the `obs-plugins/64bit` folder inside your OBS Studio installation directory.
+Extract the `data` and `obs-plugins` folders from the downloaded zip file into the OBS Studio main directory, where you can see the `bin`, `data`, and `obs-plugins` folders.
