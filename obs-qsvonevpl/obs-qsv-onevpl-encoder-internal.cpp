@@ -148,31 +148,6 @@ mfxStatus QSVEncoder::CreateSession([[maybe_unused]] enum codec_enum Codec,
 
     MFXQueryIMPL(QSVSession, &QSVImpl);
 
-    if (QSVIsTextureEncoder) {
-#if defined(_WIN32) || defined(_WIN64)
-      // HWManager = std::make_unique<class HWManager>();
-      //  Create DirectX device context
-      if (HWManager->HWDeviceHandle == nullptr) {
-        HWManager->CreateDevice(QSVImpl);
-      }
-
-      if (HWManager->HWDeviceHandle == nullptr) {
-        error("Error code: %d", Status);
-        throw std::runtime_error("CreateSession(): Handled device is nullptr");
-      }
-
-      /*Provide device manager to VPL*/
-      Status = MFXVideoCORE_SetHandle(QSVSession, MFX_HANDLE_D3D11_DEVICE,
-                                      HWManager->HWDeviceHandle);
-      if (Status < MFX_ERR_NONE) {
-        error("Error code: %d", Status);
-        throw std::runtime_error("CreateSession(): SetHandle error");
-      }
-#else
-
-#endif
-    }
-
     MFXVideoCORE_QueryPlatform(QSVSession, &QSVPlatform);
     info("\tAdapter type: %s",
          QSVPlatform.MediaAdapterType == MFX_MEDIA_DISCRETE ? "Discrete"
@@ -201,6 +176,38 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     }
 
     Status = CreateSession(Codec, nullptr, InputParams->GPUNum);
+
+    if (QSVIsTextureEncoder) {
+      mfxMemoryInterface *TestMI = nullptr;
+      mfxStatus MIStatus = MFXGetMemoryInterface(QSVSession, &TestMI);
+      if (MIStatus < MFX_ERR_NONE) {
+        warn("MFXGetMemoryInterface not supported (%d), using system memory "
+             "mode",
+             MIStatus);
+        QSVIsTextureEncoder = false;
+        info("\tEncoder type: Frame import (fallback from texture)");
+      }
+    }
+
+    if (QSVIsTextureEncoder) {
+#if defined(_WIN32) || defined(_WIN64)
+      if (HWManager->HWDeviceHandle == nullptr) {
+        HWManager->CreateDevice(QSVImpl);
+      }
+
+      if (HWManager->HWDeviceHandle == nullptr) {
+        error("Error code: %d", Status);
+        throw std::runtime_error("Init(): Handled device is nullptr");
+      }
+
+      Status = MFXVideoCORE_SetHandle(QSVSession, MFX_HANDLE_D3D11_DEVICE,
+                                      HWManager->HWDeviceHandle);
+      if (Status < MFX_ERR_NONE) {
+        error("Error code: %d", Status);
+        throw std::runtime_error("Init(): SetHandle error");
+      }
+#endif
+    }
 
     QSVEncode = std::make_unique<MFXVideoENCODE>(QSVSession);
 
@@ -1404,7 +1411,9 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
          InputParams->TemporalLayersNum);
   }
 
-  QSVEncodeParams.IOPattern = MFX_IOPATTERN_IN_VIDEO_MEMORY;
+  QSVEncodeParams.IOPattern = QSVIsTextureEncoder
+                                 ? MFX_IOPATTERN_IN_VIDEO_MEMORY
+                                 : MFX_IOPATTERN_IN_SYSTEM_MEMORY;
 
   info("\tFeature extended buffer size: %d", QSVEncodeParams.NumExtParam);
 
@@ -1503,29 +1512,15 @@ mfxStatus QSVEncoder::InitTexturePool() {
     Status = HWManager->AllocateTexturePool(QSVEncodeParams);
     if (Status < MFX_ERR_NONE) {
       error("Error code: %d", Status);
-      throw std::runtime_error("AllocateTexturePool(): AllocateTexturePool error");
+      throw std::runtime_error(
+          "InitTexturePool(): AllocateTexturePool error");
     }
 
     Status = MFXGetMemoryInterface(QSVSession, &QSVMemoryInterface);
     if (Status < MFX_ERR_NONE) {
-      warn("MFXGetMemoryInterface not supported (%d), falling back to system "
-           "memory mode",
-           Status);
-
-      QSVEncode->Close();
-      HWManager->ReleaseTexturePool();
-
-      QSVIsTextureEncoder = false;
-      QSVEncodeParams.IOPattern = MFX_IOPATTERN_IN_SYSTEM_MEMORY;
-
-      Status = QSVEncode->Init(&QSVEncodeParams);
-      if (Status < MFX_ERR_NONE) {
-        error("Error code: %d", Status);
-        throw std::runtime_error(
-            "AllocateTexturePool(): ReInit for system memory error");
-      }
-
-      info("\tEncoder type: Frame import (fallback)");
+      error("Error code: %d", Status);
+      throw std::runtime_error(
+          "InitTexturePool(): MFXGetMemoryInterface error");
     }
   }
 
