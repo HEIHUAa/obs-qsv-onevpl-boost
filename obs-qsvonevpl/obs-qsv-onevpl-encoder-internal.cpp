@@ -51,21 +51,10 @@ void QSVEncoder::InitSystemMemorySurfacePool() {
   } else {
     info("\tVideoSignalInfo not found");
   }
-  info("\tFrameInfo default VideoFullRange=%d, ColourDescriptionPresent=%d",
-       FI.VideoFullRange, FI.ColourDescriptionPresent);
 
   for (mfxU16 i = 0; i < QSVSystemMemPoolSize; i++) {
     SystemMemSurface S = {};
     S.Surface.Info = FI;
-
-    if (VideoSignalInfo) {
-      S.Surface.Info.VideoFullRange = VideoSignalInfo->VideoFullRange;
-      S.Surface.Info.ColourDescriptionPresent = 1;
-      S.Surface.Info.ColourPrimaries = VideoSignalInfo->ColourPrimaries;
-      S.Surface.Info.TransferCharacteristics =
-          VideoSignalInfo->TransferCharacteristics;
-      S.Surface.Info.MatrixCoefficients = VideoSignalInfo->MatrixCoefficients;
-    }
 
     mfxU32 Align = FI.Width;
     mfxU32 Pitch = Align + ((Align % 16) ? (16 - Align % 16) : 0);
