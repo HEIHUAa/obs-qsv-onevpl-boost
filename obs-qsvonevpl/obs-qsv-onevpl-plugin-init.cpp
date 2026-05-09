@@ -200,14 +200,6 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(Settings, "fade_detection", "ON");
   obs_data_set_default_string(Settings, "bitrate_limit", "ON");
 
-  obs_data_set_default_bool(Settings, "min_max_qp", false);
-  obs_data_set_default_int(Settings, "min_qp_i", 0);
-  obs_data_set_default_int(Settings, "min_qp_p", 0);
-  obs_data_set_default_int(Settings, "min_qp_b", 0);
-  obs_data_set_default_int(Settings, "max_qp_i", 51);
-  obs_data_set_default_int(Settings, "max_qp_p", 51);
-  obs_data_set_default_int(Settings, "max_qp_b", 51);
-
   obs_data_set_default_string(Settings, "screen_content_tools", "AUTO");
 
   obs_data_set_default_int(Settings, "temporal_layers", 0);
@@ -406,16 +398,6 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
     obs_property_set_visible(Prop, showTierList);
     if (!showTierList) {
       obs_data_set_string(Settings, "hevc_tier", "main");
-    }
-  }
-
-  bool minMaxQPEnabled = obs_data_get_bool(Settings, "min_max_qp");
-  const char *qpFields[] = {"min_qp_i", "min_qp_p", "min_qp_b",
-                            "max_qp_i", "max_qp_p", "max_qp_b", nullptr};
-  for (int i = 0; qpFields[i]; i++) {
-    Prop = obs_properties_get(Properties, qpFields[i]);
-    if (Prop) {
-      obs_property_set_visible(Prop, minMaxQPEnabled);
     }
   }
 
@@ -694,22 +676,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(
       Prop, TEXT_TRELLIS_DESC);
 
-  Prop = obs_properties_add_bool(Props, "min_max_qp", TEXT_MIN_QP_ENABLE);
-  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
-
-  Prop = obs_properties_add_int_slider(Props, "min_qp_i", TEXT_MIN_QPI, 0,
-                                       (Codec == QSV_CODEC_AV1) ? 63 : 51, 1);
-  Prop = obs_properties_add_int_slider(Props, "min_qp_p", TEXT_MIN_QPP, 0,
-                                       (Codec == QSV_CODEC_AV1) ? 63 : 51, 1);
-  Prop = obs_properties_add_int_slider(Props, "min_qp_b", TEXT_MIN_QPB, 0,
-                                       (Codec == QSV_CODEC_AV1) ? 63 : 51, 1);
-  Prop = obs_properties_add_int_slider(Props, "max_qp_i", TEXT_MAX_QPI, 0,
-                                       (Codec == QSV_CODEC_AV1) ? 63 : 51, 1);
-  Prop = obs_properties_add_int_slider(Props, "max_qp_p", TEXT_MAX_QPP, 0,
-                                       (Codec == QSV_CODEC_AV1) ? 63 : 51, 1);
-  Prop = obs_properties_add_int_slider(Props, "max_qp_b", TEXT_MAX_QPB, 0,
-                                       (Codec == QSV_CODEC_AV1) ? 63 : 51, 1);
-
   Prop = obs_properties_add_list(Props, "lookahead", TEXT_LA,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_lookahead_mode);
@@ -961,14 +927,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       static_cast<int>(obs_data_get_int(Settings, "intra_ref_cycle_size"));
   int IntraRefQPDeltaData =
       static_cast<int>(obs_data_get_int(Settings, "intra_ref_qp_delta"));
-
-  bool MinMaxQPData = obs_data_get_bool(Settings, "min_max_qp");
-  int MinQPIData = static_cast<int>(obs_data_get_int(Settings, "min_qp_i"));
-  int MinQPPData = static_cast<int>(obs_data_get_int(Settings, "min_qp_p"));
-  int MinQPBData = static_cast<int>(obs_data_get_int(Settings, "min_qp_b"));
-  int MaxQPIData = static_cast<int>(obs_data_get_int(Settings, "max_qp_i"));
-  int MaxQPPData = static_cast<int>(obs_data_get_int(Settings, "max_qp_p"));
-  int MaxQPBData = static_cast<int>(obs_data_get_int(Settings, "max_qp_b"));
 
   const char *ScreenContentToolsData =
       obs_data_get_string(Settings, "screen_content_tools");
@@ -1516,14 +1474,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       static_cast<mfxU16>(IntraRefCycleSizeData);
   Context->EncoderParams.IntraRefQPDelta =
       static_cast<mfxU16>(IntraRefQPDeltaData);
-
-  Context->EncoderParams.MinQPEnabled = MinMaxQPData;
-  Context->EncoderParams.MinQPI = static_cast<mfxU16>(MinQPIData);
-  Context->EncoderParams.MinQPP = static_cast<mfxU16>(MinQPPData);
-  Context->EncoderParams.MinQPB = static_cast<mfxU16>(MinQPBData);
-  Context->EncoderParams.MaxQPI = static_cast<mfxU16>(MaxQPIData);
-  Context->EncoderParams.MaxQPP = static_cast<mfxU16>(MaxQPPData);
-  Context->EncoderParams.MaxQPB = static_cast<mfxU16>(MaxQPBData);
 
   if (std::strcmp(ScreenContentToolsData, "AUTO") == 0) {
     Context->EncoderParams.ScreenContentTools = 0;

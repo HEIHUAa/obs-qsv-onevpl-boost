@@ -1242,19 +1242,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
         GetCodingOpt(InputParams->DirectBiasAdjustment);
     info("\tDirectBiasAdjustment set: %s",
          GetCodingOptStatus(CO3Params->DirectBiasAdjustment).c_str());
-
-    if (InputParams->MinQPEnabled) {
-      CO3Params->MinQPI = InputParams->MinQPI;
-      CO3Params->MinQPP = InputParams->MinQPP;
-      CO3Params->MinQPB = InputParams->MinQPB;
-      CO3Params->MaxQPI = InputParams->MaxQPI;
-      CO3Params->MaxQPP = InputParams->MaxQPP;
-      CO3Params->MaxQPB = InputParams->MaxQPB;
-      info("\tMinQP: I=%d P=%d B=%d", InputParams->MinQPI,
-           InputParams->MinQPP, InputParams->MinQPB);
-      info("\tMaxQP: I=%d P=%d B=%d", InputParams->MaxQPI,
-           InputParams->MaxQPP, InputParams->MaxQPB);
-    }
   }
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -1402,6 +1389,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
           AV1ScreenContentTools->Header.BufferSz =
               sizeof(mfxExtAV1ScreenContentTools);
           AV1ScreenContentTools->Palette = MFX_CODINGOPTION_ON;
+          AV1ScreenContentTools->IntraBlockCopy = MFX_CODINGOPTION_ON;
           info("\tAV1ScreenContentTools: AUTO (ON)");
         }
       }
@@ -1413,6 +1401,9 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       AV1ScreenContentTools->Header.BufferSz =
           sizeof(mfxExtAV1ScreenContentTools);
       AV1ScreenContentTools->Palette =
+          (InputParams->ScreenContentTools == 2) ? MFX_CODINGOPTION_ON
+                                                  : MFX_CODINGOPTION_OFF;
+      AV1ScreenContentTools->IntraBlockCopy =
           (InputParams->ScreenContentTools == 2) ? MFX_CODINGOPTION_ON
                                                   : MFX_CODINGOPTION_OFF;
       info("\tAV1ScreenContentTools: %s",
@@ -1540,13 +1531,19 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     TemporalLayersParams->Header.BufferId =
         MFX_EXTBUFF_UNIVERSAL_TEMPORAL_LAYERS;
     TemporalLayersParams->Header.BufferSz = sizeof(mfxExtTemporalLayers);
+    TemporalLayersParams->NumLayers =
+        static_cast<mfxU16>(InputParams->TemporalLayersNum);
     TemporalLayersParams->BaseLayerPID = 0;
+    mfxTemporalLayer *LayerArray =
+        new mfxTemporalLayer[InputParams->TemporalLayersNum]();
     for (int i = 0; i < InputParams->TemporalLayersNum; i++) {
-      TemporalLayersParams->Layer[i].Scale =
+      LayerArray[i].FrameRateScale =
           1 << (InputParams->TemporalLayersNum - 1 - i);
-      TemporalLayersParams->Layer[i].PQPDelta = i * 2;
-      TemporalLayersParams->Layer[i].TargetKbps = 0;
+      LayerArray[i].QPI = i * 2;
+      LayerArray[i].QPP = i * 2;
+      LayerArray[i].QPB = i * 2;
     }
+    TemporalLayersParams->Layers = LayerArray;
     info("\tTemporalLayers: %d layers enabled",
          InputParams->TemporalLayersNum);
   }

@@ -95,16 +95,6 @@ struct plugin_context {
 
 #define TEXT_GPU_NUMBER obs_module_text("Select_GPU")
 
-#define TEXT_MIN_QP_ENABLE obs_module_text("MinQPEnable")
-#define TEXT_MIN_QP obs_module_text("MinQP")
-#define TEXT_MAX_QP obs_module_text("MaxQP")
-#define TEXT_MIN_QPI obs_module_text("MinQPI")
-#define TEXT_MIN_QPP obs_module_text("MinQPP")
-#define TEXT_MIN_QPB obs_module_text("MinQPB")
-#define TEXT_MAX_QPI obs_module_text("MaxQPI")
-#define TEXT_MAX_QPP obs_module_text("MaxQPP")
-#define TEXT_MAX_QPB obs_module_text("MaxQPB")
-
 #define TEXT_SCREEN_CONTENT_TOOLS obs_module_text("ScreenContentTools")
 
 #define TEXT_TEMPORAL_LAYERS obs_module_text("TemporalLayers")
