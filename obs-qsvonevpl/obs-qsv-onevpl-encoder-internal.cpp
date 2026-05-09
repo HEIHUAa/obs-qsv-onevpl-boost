@@ -393,8 +393,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
              Status);
         if (Status < MFX_ERR_NONE) {
           QSVEncodeParams.NumExtParam = savedNumExtParam;
-        } else {
-          QSVEncodeParams.ClearAllBuffers();
         }
       }
       if (Status != MFX_ERR_NONE &&
