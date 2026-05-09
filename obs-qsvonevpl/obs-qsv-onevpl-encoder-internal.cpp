@@ -56,14 +56,6 @@ void QSVEncoder::InitSystemMemorySurfacePool() {
     SystemMemSurface S = {};
     S.Surface.Info = FI;
 
-#if defined(_MSC_VER)
-    __if_exists (mfxFrameInfo::VideoFullRange) {
-      if (VideoSignalInfo) {
-        S.Surface.Info.VideoFullRange = VideoSignalInfo->VideoFullRange;
-      }
-    }
-#endif
-
     mfxU32 Align = FI.Width;
     mfxU32 Pitch = Align + ((Align % 16) ? (16 - Align % 16) : 0);
     mfxU32 YSize = Pitch * FI.Height;
@@ -1531,13 +1523,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       static_cast<mfxU16>(InputParams->MatrixCoefficients);
 #endif
 
-#if defined(_MSC_VER)
-  __if_exists (mfxFrameInfo::VideoFullRange) {
-    QSVEncodeParams.mfx.FrameInfo.VideoFullRange =
-        static_cast<mfxU16>(InputParams->VideoFullRange);
-  }
-#endif
-
   if (InputParams->MaxContentLightLevel > 0) {
     auto ColourVolumeParams =
         QSVEncodeParams.AddExtBuffer<mfxExtMasteringDisplayColourVolume>();
@@ -1609,43 +1594,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
   info("\tFeature extended buffer size: %d", QSVEncodeParams.NumExtParam);
 
-  // We dont check what was valid or invalid here, just try changing lower
-  // power. Ensure set values are not overwritten so in case it wasnt lower
-  // power we fail during the parameter check.
-  mfxVideoParam ValidParams = {};
-  memcpy(&ValidParams, &QSVEncodeParams, sizeof(mfxVideoParam));
-  mfxStatus Status = QSVEncode->Query(&QSVEncodeParams, &ValidParams);
-  if (Status == MFX_ERR_UNSUPPORTED || Status == MFX_ERR_UNDEFINED_BEHAVIOR) {
-    auto CO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-    if (CO3Params->AdaptiveLTR == MFX_CODINGOPTION_ON) {
-      CO3Params->AdaptiveLTR = MFX_CODINGOPTION_OFF;
-    }
-    if (CO3Params->FadeDetection == MFX_CODINGOPTION_ON) {
-      CO3Params->FadeDetection = MFX_CODINGOPTION_OFF;
-    }
-    auto COParams = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
-    if (COParams->RateDistortionOpt == MFX_CODINGOPTION_ON) {
-      COParams->RateDistortionOpt = MFX_CODINGOPTION_OFF;
-    }
-    auto CO2Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
-    if (CO2Params->ExtBRC == MFX_CODINGOPTION_ON) {
-      CO2Params->ExtBRC = MFX_CODINGOPTION_OFF;
-    }
-    if (CO2Params->BitrateLimit == MFX_CODINGOPTION_ON) {
-      CO2Params->BitrateLimit = MFX_CODINGOPTION_OFF;
-    }
-    // Re-query with adjusted params to verify
-    mfxVideoParam ReValidParams = {};
-    memcpy(&ReValidParams, &QSVEncodeParams, sizeof(mfxVideoParam));
-    mfxStatus ReStatus = QSVEncode->Query(&QSVEncodeParams, &ReValidParams);
-    if (ReStatus == MFX_ERR_NONE) {
-      Status = MFX_ERR_NONE;
-    }
-  } else if (Status < MFX_ERR_NONE) {
-    throw std::runtime_error("SetEncoderParams(): Query params error");
-  }
-
-  return Status;
+  return MFX_ERR_NONE;
 }
 
 bool QSVEncoder::UpdateParams(struct encoder_params *InputParams) {
