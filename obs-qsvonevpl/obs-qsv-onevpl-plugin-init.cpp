@@ -817,20 +817,20 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 
   Prop = obs_properties_add_list(Props, "transform_skip", TEXT_TRANSFORM_SKIP,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition);
+  AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_long_description(
       Prop, TEXT_TRANSFORM_SKIP_DESC);
   obs_property_set_visible(Prop, IsFeatureSupported("transform_skip"));
 
   Prop = obs_properties_add_list(Props, "fade_detection", TEXT_FADE_DETECTION,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition);
+  AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_long_description(
       Prop, TEXT_FADE_DETECTION_DESC);
 
   Prop = obs_properties_add_list(Props, "bitrate_limit", TEXT_BITRATE_LIMIT,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition);
+  AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_long_description(
       Prop, TEXT_BITRATE_LIMIT_DESC);
 
@@ -1119,28 +1119,36 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
         static_cast<mfxU16>(HRDNominalPeakLevel);
   }
 
-  if (std::strcmp(LowDelayHRDData, "ON") == 0) {
+  if (std::strcmp(LowDelayHRDData, "AUTO") == 0) {
+    Context->EncoderParams.LowDelayHRD = std::nullopt;
+  } else if (std::strcmp(LowDelayHRDData, "ON") == 0) {
     Context->EncoderParams.LowDelayHRD = true;
   } else if (std::strcmp(LowDelayHRDData, "OFF") == 0) {
     Context->EncoderParams.LowDelayHRD = false;
   }
 
-  if (std::strcmp(MVOverPicBoundariesData, "ON") == 0) {
+  if (std::strcmp(MVOverPicBoundariesData, "AUTO") == 0) {
+    Context->EncoderParams.MotionVectorsOverPicBoundaries = std::nullopt;
+  } else if (std::strcmp(MVOverPicBoundariesData, "ON") == 0) {
     Context->EncoderParams.MotionVectorsOverPicBoundaries = true;
   } else if (std::strcmp(MVOverPicBoundariesData, "OFF") == 0) {
     Context->EncoderParams.MotionVectorsOverPicBoundaries = false;
   }
 
-  if (std::strcmp(HRDConformanceData, "ON") == 0) {
-    Context->EncoderParams.HRDConformance = 1;
+  if (std::strcmp(HRDConformanceData, "AUTO") == 0) {
+    Context->EncoderParams.HRDConformance = std::nullopt;
+  } else if (std::strcmp(HRDConformanceData, "ON") == 0) {
+    Context->EncoderParams.HRDConformance = true;
   } else if (std::strcmp(HRDConformanceData, "OFF") == 0) {
-    Context->EncoderParams.HRDConformance = 0;
+    Context->EncoderParams.HRDConformance = false;
   }
 
-  if (std::strcmp(MBBRCData, "ON") == 0) {
-    Context->EncoderParams.MBBRC = 1;
+  if (std::strcmp(MBBRCData, "AUTO") == 0) {
+    Context->EncoderParams.MBBRC = std::nullopt;
+  } else if (std::strcmp(MBBRCData, "ON") == 0) {
+    Context->EncoderParams.MBBRC = true;
   } else if (std::strcmp(MBBRCData, "OFF") == 0) {
-    Context->EncoderParams.MBBRC = 0;
+    Context->EncoderParams.MBBRC = false;
   }
 
   if (std::strcmp(ExtBRCData, "ON") == 0) {
@@ -1153,10 +1161,12 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.EncTools = false;
   }
 
-  if (std::strcmp(DirectBiasAdjustmentData, "ON") == 0) {
-    Context->EncoderParams.DirectBiasAdjustment = 1;
+  if (std::strcmp(DirectBiasAdjustmentData, "AUTO") == 0) {
+    Context->EncoderParams.DirectBiasAdjustment = std::nullopt;
+  } else if (std::strcmp(DirectBiasAdjustmentData, "ON") == 0) {
+    Context->EncoderParams.DirectBiasAdjustment = true;
   } else if (std::strcmp(DirectBiasAdjustmentData, "OFF") == 0) {
-    Context->EncoderParams.DirectBiasAdjustment = 0;
+    Context->EncoderParams.DirectBiasAdjustment = false;
   }
 
   if (std::strcmp(MVCostScalingFactorData, "OFF") == 0) {
@@ -1169,10 +1179,12 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.MVCostScalingFactor = 3;
   }
 
-  if (std::strcmp(UseRawRefData, "ON") == 0) {
-    Context->EncoderParams.RawRef = 1;
+  if (std::strcmp(UseRawRefData, "AUTO") == 0) {
+    Context->EncoderParams.RawRef = std::nullopt;
+  } else if (std::strcmp(UseRawRefData, "ON") == 0) {
+    Context->EncoderParams.RawRef = true;
   } else if (std::strcmp(UseRawRefData, "OFF") == 0) {
-    Context->EncoderParams.RawRef = 0;
+    Context->EncoderParams.RawRef = false;
   }
 
   if (std::strcmp(PPyramidData, "PYRAMID") == 0) {
@@ -1181,10 +1193,12 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.PPyramid = 0;
   }
 
-  if (std::strcmp(GlobalMotionBiasAdjustmentData, "ON") == 0) {
-    Context->EncoderParams.GlobalMotionBiasAdjustment = 1;
+  if (std::strcmp(GlobalMotionBiasAdjustmentData, "AUTO") == 0) {
+    Context->EncoderParams.GlobalMotionBiasAdjustment = std::nullopt;
+  } else if (std::strcmp(GlobalMotionBiasAdjustmentData, "ON") == 0) {
+    Context->EncoderParams.GlobalMotionBiasAdjustment = true;
   } else if (std::strcmp(GlobalMotionBiasAdjustmentData, "OFF") == 0) {
-    Context->EncoderParams.GlobalMotionBiasAdjustment = 0;
+    Context->EncoderParams.GlobalMotionBiasAdjustment = false;
   }
 
   if (std::strcmp(LookaheadData, "HQ") == 0) {
@@ -1228,34 +1242,44 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.IntraRefEncoding = 0;
   }
 
-  if (std::strcmp(AdaptiveCQMData, "ON") == 0) {
-    Context->EncoderParams.AdaptiveCQM = 1;
+  if (std::strcmp(AdaptiveCQMData, "AUTO") == 0) {
+    Context->EncoderParams.AdaptiveCQM = std::nullopt;
+  } else if (std::strcmp(AdaptiveCQMData, "ON") == 0) {
+    Context->EncoderParams.AdaptiveCQM = true;
   } else if (std::strcmp(AdaptiveCQMData, "OFF") == 0) {
-    Context->EncoderParams.AdaptiveCQM = 0;
+    Context->EncoderParams.AdaptiveCQM = false;
   }
 
-  if (std::strcmp(AdaptiveLTRData, "ON") == 0) {
-    Context->EncoderParams.AdaptiveLTR = 1;
+  if (std::strcmp(AdaptiveLTRData, "AUTO") == 0) {
+    Context->EncoderParams.AdaptiveLTR = std::nullopt;
+  } else if (std::strcmp(AdaptiveLTRData, "ON") == 0) {
+    Context->EncoderParams.AdaptiveLTR = true;
   } else if (std::strcmp(AdaptiveLTRData, "OFF") == 0) {
-    Context->EncoderParams.AdaptiveLTR = 0;
+    Context->EncoderParams.AdaptiveLTR = false;
   }
 
-  if (std::strcmp(AdaptiveIData, "ON") == 0) {
-    Context->EncoderParams.AdaptiveI = 1;
+  if (std::strcmp(AdaptiveIData, "AUTO") == 0) {
+    Context->EncoderParams.AdaptiveI = std::nullopt;
+  } else if (std::strcmp(AdaptiveIData, "ON") == 0) {
+    Context->EncoderParams.AdaptiveI = true;
   } else if (std::strcmp(AdaptiveIData, "OFF") == 0) {
-    Context->EncoderParams.AdaptiveI = 0;
+    Context->EncoderParams.AdaptiveI = false;
   }
 
-  if (std::strcmp(AdaptiveBData, "ON") == 0) {
-    Context->EncoderParams.AdaptiveB = 1;
+  if (std::strcmp(AdaptiveBData, "AUTO") == 0) {
+    Context->EncoderParams.AdaptiveB = std::nullopt;
+  } else if (std::strcmp(AdaptiveBData, "ON") == 0) {
+    Context->EncoderParams.AdaptiveB = true;
   } else if (std::strcmp(AdaptiveBData, "OFF") == 0) {
-    Context->EncoderParams.AdaptiveB = 0;
+    Context->EncoderParams.AdaptiveB = false;
   }
 
-  if (std::strcmp(AdaptiveRefData, "ON") == 0) {
-    Context->EncoderParams.AdaptiveRef = 1;
+  if (std::strcmp(AdaptiveRefData, "AUTO") == 0) {
+    Context->EncoderParams.AdaptiveRef = std::nullopt;
+  } else if (std::strcmp(AdaptiveRefData, "ON") == 0) {
+    Context->EncoderParams.AdaptiveRef = true;
   } else if (std::strcmp(AdaptiveRefData, "OFF") == 0) {
-    Context->EncoderParams.AdaptiveRef = 0;
+    Context->EncoderParams.AdaptiveRef = false;
   }
 
   if (std::strcmp(LowPowerData, "ON") == 0) {
@@ -1264,10 +1288,12 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.Lowpower = false;
   }
 
-  if (std::strcmp(RDOData, "ON") == 0) {
-    Context->EncoderParams.RDO = 1;
+  if (std::strcmp(RDOData, "AUTO") == 0) {
+    Context->EncoderParams.RDO = std::nullopt;
+  } else if (std::strcmp(RDOData, "ON") == 0) {
+    Context->EncoderParams.RDO = true;
   } else if (std::strcmp(RDOData, "OFF") == 0) {
-    Context->EncoderParams.RDO = 0;
+    Context->EncoderParams.RDO = false;
   }
 
   if (std::strcmp(TrellisData, "I") == 0) {
@@ -1296,10 +1322,12 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.SAO = 3;
   }
 
-  if (std::strcmp(GPBData, "ON") == 0) {
-    Context->EncoderParams.GPB = 1;
+  if (std::strcmp(GPBData, "AUTO") == 0) {
+    Context->EncoderParams.GPB = std::nullopt;
+  } else if (std::strcmp(GPBData, "ON") == 0) {
+    Context->EncoderParams.GPB = true;
   } else if (std::strcmp(GPBData, "OFF") == 0) {
-    Context->EncoderParams.GPB = 0;
+    Context->EncoderParams.GPB = false;
   }
 
   if (std::strcmp(ScenarioInfoData, "OFF") == 0) {
@@ -1340,22 +1368,28 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.ContentInfo = 5;
   }
 
-  if (std::strcmp(TransformSkipData, "ON") == 0) {
-    Context->EncoderParams.TransformSkip = 1;
+  if (std::strcmp(TransformSkipData, "AUTO") == 0) {
+    Context->EncoderParams.TransformSkip = std::nullopt;
+  } else if (std::strcmp(TransformSkipData, "ON") == 0) {
+    Context->EncoderParams.TransformSkip = true;
   } else if (std::strcmp(TransformSkipData, "OFF") == 0) {
-    Context->EncoderParams.TransformSkip = 0;
+    Context->EncoderParams.TransformSkip = false;
   }
 
-  if (std::strcmp(FadeDetectionData, "ON") == 0) {
-    Context->EncoderParams.FadeDetection = 1;
+  if (std::strcmp(FadeDetectionData, "AUTO") == 0) {
+    Context->EncoderParams.FadeDetection = std::nullopt;
+  } else if (std::strcmp(FadeDetectionData, "ON") == 0) {
+    Context->EncoderParams.FadeDetection = true;
   } else if (std::strcmp(FadeDetectionData, "OFF") == 0) {
-    Context->EncoderParams.FadeDetection = 0;
+    Context->EncoderParams.FadeDetection = false;
   }
 
-  if (std::strcmp(BitrateLimitData, "ON") == 0) {
-    Context->EncoderParams.BitrateLimit = 1;
+  if (std::strcmp(BitrateLimitData, "AUTO") == 0) {
+    Context->EncoderParams.BitrateLimit = std::nullopt;
+  } else if (std::strcmp(BitrateLimitData, "ON") == 0) {
+    Context->EncoderParams.BitrateLimit = true;
   } else if (std::strcmp(BitrateLimitData, "OFF") == 0) {
-    Context->EncoderParams.BitrateLimit = 0;
+    Context->EncoderParams.BitrateLimit = false;
   }
 
   if (std::strcmp(RateControlData, "CBR") == 0) {
