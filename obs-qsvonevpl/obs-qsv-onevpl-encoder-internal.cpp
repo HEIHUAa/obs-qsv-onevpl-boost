@@ -226,6 +226,9 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     info("\tMFXVideoENCODE_Init status: %d", Status);
 
     if (Status != MFX_ERR_NONE) {
+      mfxU16 origNumRefFrame = QSVEncodeParams.mfx.NumRefFrame;
+      mfxU16 origGopRefDist = QSVEncodeParams.mfx.GopRefDist;
+
       auto CO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
       if (CO3Params && CO3Params->ScenarioInfo != 0) {
         warn("MFXVideoENCODE_Init failed with ScenarioInfo=%d, retrying without ScenarioInfo",
@@ -235,17 +238,18 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
         Status = QSVEncode->Init(&QSVEncodeParams);
         info("\tMFXVideoENCODE_Init retry (ScenarioInfo) status: %d", Status);
       }
-      auto CO2Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
-      if (Status != MFX_ERR_NONE && CO2Params &&
-          CO2Params->ExtBRC == MFX_CODINGOPTION_ON) {
-        warn("MFXVideoENCODE_Init failed, retrying with ExtBRC=OFF");
+
+      auto CODDIParams =
+          QSVEncodeParams.GetExtBuffer<mfxExtCodingOptionDDI>();
+      if (Status != MFX_ERR_NONE && CODDIParams) {
+        warn("MFXVideoENCODE_Init failed, retrying without CODDI buffer");
         QSVEncode->Close();
-        CO2Params->ExtBRC = MFX_CODINGOPTION_OFF;
+        QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOptionDDI>();
         Status = QSVEncode->Init(&QSVEncodeParams);
-        info("\tMFXVideoENCODE_Init retry (ExtBRC OFF) status: %d", Status);
+        info("\tMFXVideoENCODE_Init retry (CODDI removed) status: %d",
+             Status);
       }
-      if (Status != MFX_ERR_NONE &&
-          QSVEncodeParams.mfx.NumRefFrame > 4) {
+      if (Status != MFX_ERR_NONE && origNumRefFrame > 4) {
         warn("MFXVideoENCODE_Init failed, retrying with NumRefFrame=4");
         QSVEncode->Close();
         QSVEncodeParams.mfx.NumRefFrame = 4;
@@ -254,15 +258,36 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
           COParams->MaxDecFrameBuffering = 4;
         }
         Status = QSVEncode->Init(&QSVEncodeParams);
-        info("\tMFXVideoENCODE_Init retry (NumRefFrame=4) status: %d", Status);
+        info("\tMFXVideoENCODE_Init retry (NumRefFrame=4) status: %d",
+             Status);
       }
-      if (Status != MFX_ERR_NONE &&
-          QSVEncodeParams.mfx.GopRefDist > 4) {
+      if (Status != MFX_ERR_NONE && origGopRefDist > 4) {
         warn("MFXVideoENCODE_Init failed, retrying with GOPRefDist=4");
         QSVEncode->Close();
         QSVEncodeParams.mfx.GopRefDist = 4;
         Status = QSVEncode->Init(&QSVEncodeParams);
-        info("\tMFXVideoENCODE_Init retry (GOPRefDist=4) status: %d", Status);
+        info("\tMFXVideoENCODE_Init retry (GOPRefDist=4) status: %d",
+             Status);
+      }
+      if (Status != MFX_ERR_NONE && CO3Params) {
+        warn("MFXVideoENCODE_Init failed, retrying with CO3 features "
+             "disabled");
+        QSVEncode->Close();
+        CO3Params->TransformSkip = MFX_CODINGOPTION_OFF;
+        CO3Params->FadeDetection = MFX_CODINGOPTION_OFF;
+        CO3Params->LowDelayHrd = MFX_CODINGOPTION_OFF;
+        CO3Params->AdaptiveCQM = MFX_CODINGOPTION_OFF;
+        CO3Params->AdaptiveRef = MFX_CODINGOPTION_OFF;
+        CO3Params->AdaptiveLTR = MFX_CODINGOPTION_OFF;
+        CO3Params->MotionVectorsOverPicBoundaries = MFX_CODINGOPTION_OFF;
+        CO3Params->DirectBiasAdjustment = MFX_CODINGOPTION_OFF;
+        CO3Params->GlobalMotionBiasAdjustment = MFX_CODINGOPTION_OFF;
+        if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
+          CO3Params->GPB = MFX_CODINGOPTION_OFF;
+        }
+        Status = QSVEncode->Init(&QSVEncodeParams);
+        info("\tMFXVideoENCODE_Init retry (CO3 minimal) status: %d",
+             Status);
       }
       if (Status != MFX_ERR_NONE) {
         throw std::runtime_error(
