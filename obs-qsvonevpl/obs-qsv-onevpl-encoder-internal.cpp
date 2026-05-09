@@ -286,6 +286,123 @@ mfxStatus QSVEncoder::CreateSession([[maybe_unused]] enum codec_enum Codec,
     }
 
     if (Status < MFX_ERR_NONE) {
+      MFXUnload(QSVLoader);
+
+      QSVLoader = MFXLoad();
+      if (QSVLoader == nullptr) {
+        return MFX_ERR_UNDEFINED_BEHAVIOR;
+      }
+
+      QSVLoaderConfig[0] = MFXCreateConfig(QSVLoader);
+      QSVLoaderVariant[0].Type = MFX_VARIANT_TYPE_U32;
+      QSVLoaderVariant[0].Data.U32 = MFX_IMPL_TYPE_HARDWARE;
+      MFXSetConfigFilterProperty(
+          QSVLoaderConfig[0],
+          reinterpret_cast<const mfxU8 *>("mfxImplDescription.Impl.mfxImplType"),
+          QSVLoaderVariant[0]);
+
+      QSVLoaderConfig[1] = MFXCreateConfig(QSVLoader);
+      QSVLoaderVariant[1].Type = MFX_VARIANT_TYPE_U32;
+      QSVLoaderVariant[1].Data.U32 = static_cast<mfxU32>(0x8086);
+      MFXSetConfigFilterProperty(
+          QSVLoaderConfig[1],
+          reinterpret_cast<const mfxU8 *>("mfxImplDescription.VendorID"),
+          QSVLoaderVariant[1]);
+
+      QSVLoaderConfig[3] = MFXCreateConfig(QSVLoader);
+      QSVLoaderVariant[3].Type = MFX_VARIANT_TYPE_U32;
+      QSVLoaderVariant[3].Data.U32 = MFX_PRIORITY_HIGH;
+      MFXSetConfigFilterProperty(
+          QSVLoaderConfig[3],
+          reinterpret_cast<const mfxU8 *>(
+              "mfxInitializationParam.mfxExtThreadsParam.Priority"),
+          QSVLoaderVariant[3]);
+
+      if (QSVIsTextureEncoder) {
+#if defined(_WIN32) || defined(_WIN64)
+        QSVLoaderConfig[4] = MFXCreateConfig(QSVLoader);
+        QSVLoaderVariant[4].Type = MFX_VARIANT_TYPE_U32;
+        QSVLoaderVariant[4].Data.U32 = MFX_HANDLE_D3D11_DEVICE;
+        MFXSetConfigFilterProperty(
+            QSVLoaderConfig[4],
+            reinterpret_cast<const mfxU8 *>("mfxHandleType"),
+            QSVLoaderVariant[4]);
+
+        QSVLoaderConfig[5] = MFXCreateConfig(QSVLoader);
+        QSVLoaderVariant[5].Type = MFX_VARIANT_TYPE_U32;
+        QSVLoaderVariant[5].Data.U32 = MFX_ACCEL_MODE_VIA_D3D11;
+        MFXSetConfigFilterProperty(
+            QSVLoaderConfig[5],
+            reinterpret_cast<const mfxU8 *>(
+                "mfxImplDescription.AccelerationMode"),
+            QSVLoaderVariant[5]);
+
+        QSVLoaderConfig[6] = MFXCreateConfig(QSVLoader);
+        QSVLoaderVariant[6].Type = MFX_VARIANT_TYPE_U32;
+        QSVLoaderVariant[6].Data.U32 = MFX_SURFACE_TYPE_D3D11_TEX2D;
+        MFXSetConfigFilterProperty(
+            QSVLoaderConfig[6],
+            reinterpret_cast<const mfxU8 *>(
+                "mfxSurfaceTypesSupported.surftype.SurfaceType"),
+            QSVLoaderVariant[6]);
+#else
+        QSVLoaderConfig[4] = MFXCreateConfig(QSVLoader);
+        QSVLoaderVariant[4].Type = MFX_VARIANT_TYPE_U32;
+        QSVLoaderVariant[4].Data.U32 = MFX_HANDLE_VA_DISPLAY;
+        MFXSetConfigFilterProperty(
+            QSVLoaderConfig[4],
+            reinterpret_cast<const mfxU8 *>("mfxHandleType"),
+            QSVLoaderVariant[4]);
+
+        QSVIsTextureEncoder = false;
+        QSVLoaderConfig[5] = MFXCreateConfig(QSVLoader);
+        QSVLoaderVariant[5].Type = MFX_VARIANT_TYPE_U32;
+        QSVLoaderVariant[5].Data.U32 = MFX_ACCEL_MODE_VIA_VAAPI;
+        MFXSetConfigFilterProperty(
+            QSVLoaderConfig[5],
+            reinterpret_cast<const mfxU8 *>(
+                "mfxImplDescription.AccelerationMode"),
+            QSVLoaderVariant[5]);
+
+        QSVLoaderConfig[6] = MFXCreateConfig(QSVLoader);
+        QSVLoaderVariant[6].Type = MFX_VARIANT_TYPE_U32;
+        QSVLoaderVariant[6].Data.U32 = MFX_SURFACE_TYPE_VAAPI;
+        MFXSetConfigFilterProperty(
+            QSVLoaderConfig[6],
+            reinterpret_cast<const mfxU8 *>(
+                "mfxSurfaceTypesSupported.surftype.SurfaceType"),
+            QSVLoaderVariant[6]);
+#endif
+        QSVLoaderVariant[6].Data.U32 = MFX_SURFACE_COMPONENT_ENCODE;
+        MFXSetConfigFilterProperty(
+            QSVLoaderConfig[6],
+            reinterpret_cast<const mfxU8 *>(
+                "mfxSurfaceTypesSupported.surftype.surfcomp.SurfaceComponent"),
+            QSVLoaderVariant[6]);
+
+        QSVLoaderVariant[6].Data.U32 = MFX_SURFACE_FLAG_IMPORT_SHARED;
+        MFXSetConfigFilterProperty(
+            QSVLoaderConfig[6],
+            reinterpret_cast<const mfxU8 *>(
+                "mfxSurfaceTypesSupported.surftype.surfcomp.SurfaceFlags"),
+            QSVLoaderVariant[6]);
+      }
+
+      QSVLoaderVariant[7].Type = MFX_VARIANT_TYPE_U32;
+      QSVLoaderVariant[7].Data.U32 =
+          (Codec == QSV_CODEC_AV1)    ? MFX_CODEC_AV1
+          : (Codec == QSV_CODEC_HEVC) ? MFX_CODEC_HEVC
+                                      : MFX_CODEC_AVC;
+      MFXSetConfigFilterProperty(
+          QSVLoaderConfig[7],
+          reinterpret_cast<const mfxU8 *>(
+              "mfxImplDescription.mfxEncoderDescription.encoder.CodecID"),
+          QSVLoaderVariant[7]);
+
+      Status = MFXCreateSession(QSVLoader, GPUNum, &QSVSession);
+    }
+
+    if (Status < MFX_ERR_NONE) {
       error("Error code: %d", Status);
       throw std::runtime_error("CreateSession(): MFXCreateSession error");
     }
