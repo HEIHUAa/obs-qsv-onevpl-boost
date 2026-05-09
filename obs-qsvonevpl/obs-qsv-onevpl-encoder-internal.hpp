@@ -136,6 +136,8 @@ private:
   
   mfxFrameAllocRequest QSVAllocateRequest{};
 
+  bool QSVUseSystemMemoryPath{};
+
   struct SystemMemSurface {
     mfxFrameSurface1 Surface{};
   };

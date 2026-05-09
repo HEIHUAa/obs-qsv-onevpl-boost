@@ -223,6 +223,7 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
 
   QSVIsTextureEncoder = std::move(bIsTextureEncoder);
   QSVProcessingEnable = std::move(InputParams->ProcessingEnable);
+  QSVUseSystemMemoryPath = false;
 
   info("\tEncoder type: %s",
        QSVIsTextureEncoder ? "Texture import" : "Frame import");
@@ -279,16 +280,17 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
       Status = QSVProcessing->Init(&QSVProcessingParams);
     }
 
+    // === Step 1: Try original path (IOPattern=VIDEO_MEMORY, no ext buf removal) ===
     Status = SetEncoderParams(InputParams, Codec);
     info("\tSetEncoderParams status:  %d", Status);
 
-    Status = QSVEncode->Init(&QSVEncodeParams);
-    info("\tMFXVideoENCODE_Init status: %d", Status);
+    if (Status >= MFX_ERR_NONE) {
+      Status = QSVEncode->Init(&QSVEncodeParams);
+      info("\tMFXVideoENCODE_Init status: %d", Status);
+    }
 
+    // Original retry: only ScenarioInfo
     if (Status < MFX_ERR_NONE) {
-      mfxU16 origNumRefFrame = QSVEncodeParams.mfx.NumRefFrame;
-      mfxU16 origGopRefDist = QSVEncodeParams.mfx.GopRefDist;
-
       auto CO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
       if (CO3Params && CO3Params->ScenarioInfo != 0) {
         warn("MFXVideoENCODE_Init failed with ScenarioInfo=%d, retrying without ScenarioInfo",
@@ -298,119 +300,183 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
         Status = QSVEncode->Init(&QSVEncodeParams);
         info("\tMFXVideoENCODE_Init retry (ScenarioInfo) status: %d", Status);
       }
+    }
 
-      auto CODDIParams =
-          QSVEncodeParams.GetExtBuffer<mfxExtCodingOptionDDI>();
-      if (Status != MFX_ERR_NONE && CODDIParams) {
-        warn("MFXVideoENCODE_Init failed, retrying without CODDI buffer");
-        QSVEncode->Close();
-        QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOptionDDI>();
-        Status = QSVEncode->Init(&QSVEncodeParams);
-        info("\tMFXVideoENCODE_Init retry (CODDI removed) status: %d",
-             Status);
-      }
-      if (Status != MFX_ERR_NONE && origNumRefFrame > 4) {
-        warn("MFXVideoENCODE_Init failed, retrying with NumRefFrame=4");
-        QSVEncode->Close();
-        QSVEncodeParams.mfx.NumRefFrame = 4;
-        auto COParams = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
-        if (COParams) {
-          COParams->MaxDecFrameBuffering = 4;
+    // === Step 2: Test if GetSurface() works or fallback to system memory ===
+    if (!QSVIsTextureEncoder) {
+      bool NeedSystemMemoryFallback = false;
+
+      if (Status >= MFX_ERR_NONE) {
+        mfxFrameSurface1 *TestSurface = nullptr;
+        mfxStatus GetSts = QSVEncode->GetSurface(&TestSurface);
+        if (GetSts < MFX_ERR_NONE) {
+          info("\tGetSurface() not supported (%d), switch to system memory path",
+               GetSts);
+          NeedSystemMemoryFallback = true;
+        } else {
+          info("\tGetSurface() supported, using original VIDEO_MEMORY path");
+          TestSurface->FrameInterface->Release(TestSurface);
         }
-        Status = QSVEncode->Init(&QSVEncodeParams);
-        info("\tMFXVideoENCODE_Init retry (NumRefFrame=4) status: %d",
-             Status);
+      } else {
+        info("\tOriginal Init failed (%d), switch to system memory path", Status);
+        NeedSystemMemoryFallback = true;
       }
-      if (Status != MFX_ERR_NONE && origGopRefDist > 4) {
-        warn("MFXVideoENCODE_Init failed, retrying with GOPRefDist=4");
-        QSVEncode->Close();
-        QSVEncodeParams.mfx.GopRefDist = 4;
-        Status = QSVEncode->Init(&QSVEncodeParams);
-        info("\tMFXVideoENCODE_Init retry (GOPRefDist=4) status: %d",
-             Status);
-      }
-      if (Status != MFX_ERR_NONE && CO3Params) {
-        warn("MFXVideoENCODE_Init failed, retrying with CO3 features "
-             "disabled");
-        QSVEncode->Close();
-        CO3Params->TransformSkip = MFX_CODINGOPTION_OFF;
-        CO3Params->FadeDetection = MFX_CODINGOPTION_OFF;
-        CO3Params->LowDelayHrd = MFX_CODINGOPTION_OFF;
-        CO3Params->AdaptiveCQM = MFX_CODINGOPTION_OFF;
-        CO3Params->AdaptiveRef = MFX_CODINGOPTION_OFF;
-        CO3Params->AdaptiveLTR = MFX_CODINGOPTION_OFF;
-        CO3Params->MotionVectorsOverPicBoundaries = MFX_CODINGOPTION_OFF;
-        CO3Params->DirectBiasAdjustment = MFX_CODINGOPTION_OFF;
-        CO3Params->GlobalMotionBiasAdjustment = MFX_CODINGOPTION_OFF;
-        CO3Params->EnableMBForceIntra = MFX_CODINGOPTION_OFF;
-        CO3Params->MBDisableSkipMap = MFX_CODINGOPTION_OFF;
-        CO3Params->EnableQPOffset = MFX_CODINGOPTION_OFF;
-        CO3Params->RepartitionCheckEnable = MFX_CODINGOPTION_OFF;
-        if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
-          CO3Params->GPB = MFX_CODINGOPTION_OFF;
-        }
-        Status = QSVEncode->Init(&QSVEncodeParams);
-        info("\tMFXVideoENCODE_Init retry (CO3 minimal) status: %d",
-             Status);
-      }
-      auto CO2Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
-      if (Status != MFX_ERR_NONE && CO2Params) {
-        warn("MFXVideoENCODE_Init failed, retrying without CO2 buffer");
-        QSVEncode->Close();
-        QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOption2>();
-        Status = QSVEncode->Init(&QSVEncodeParams);
-        info("\tMFXVideoENCODE_Init retry (CO2 removed) status: %d",
-             Status);
-      }
-      if (Status != MFX_ERR_NONE && CO3Params) {
-        warn("MFXVideoENCODE_Init failed, retrying without CO3 buffer");
-        QSVEncode->Close();
-        QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOption3>();
-        Status = QSVEncode->Init(&QSVEncodeParams);
-        info("\tMFXVideoENCODE_Init retry (CO3 removed) status: %d",
-             Status);
-      }
-      if (Status != MFX_ERR_NONE) {
-        auto COParams = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
-        if (COParams) {
-          warn("MFXVideoENCODE_Init failed, retrying with CO features disabled");
+
+      if (NeedSystemMemoryFallback) {
+        QSVUseSystemMemoryPath = true;
+        if (QSVEncode) {
           QSVEncode->Close();
-          COParams->IntraPredBlockSize = MFX_BLOCKSIZE_UNKNOWN;
-          COParams->InterPredBlockSize = MFX_BLOCKSIZE_UNKNOWN;
-          COParams->MECostType = 0;
-          COParams->MESearchType = 0;
+        }
+
+        // Rebuild with system memory path
+        Status = SetEncoderParams(InputParams, Codec);
+        info("\tSetEncoderParams (sysmem) status: %d", Status);
+
+        if (Status >= MFX_ERR_NONE) {
           Status = QSVEncode->Init(&QSVEncodeParams);
-          info("\tMFXVideoENCODE_Init retry (CO basic) status: %d", Status);
+          info("\tMFXVideoENCODE_Init (sysmem) status: %d", Status);
         }
-      }
-      if (Status != MFX_ERR_NONE) {
-        warn("MFXVideoENCODE_Init failed, retrying with NO extended buffers");
-        QSVEncode->Close();
-        mfxU16 savedNumExtParam = QSVEncodeParams.NumExtParam;
-        QSVEncodeParams.NumExtParam = 0;
-        Status = QSVEncode->Init(&QSVEncodeParams);
-        info("\tMFXVideoENCODE_Init retry (no ext buffers) status: %d",
-             Status);
+
+        // Extended retry logic for system memory path
         if (Status < MFX_ERR_NONE) {
-          QSVEncodeParams.NumExtParam = savedNumExtParam;
+          mfxU16 origNumRefFrame = QSVEncodeParams.mfx.NumRefFrame;
+          mfxU16 origGopRefDist = QSVEncodeParams.mfx.GopRefDist;
+
+          auto CO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
+          if (Status != MFX_ERR_NONE && CO3Params &&
+              CO3Params->ScenarioInfo != 0) {
+            warn("MFXVideoENCODE_Init (sysmem) failed with ScenarioInfo=%d, retrying",
+                 CO3Params->ScenarioInfo);
+            QSVEncode->Close();
+            CO3Params->ScenarioInfo = 0;
+            Status = QSVEncode->Init(&QSVEncodeParams);
+            info("\tMFXVideoENCODE_Init (sysmem) retry (ScenarioInfo) status: %d",
+                 Status);
+          }
+
+          auto CODDIParams =
+              QSVEncodeParams.GetExtBuffer<mfxExtCodingOptionDDI>();
+          if (Status != MFX_ERR_NONE && CODDIParams) {
+            warn("MFXVideoENCODE_Init (sysmem) failed, retrying without CODDI");
+            QSVEncode->Close();
+            QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOptionDDI>();
+            Status = QSVEncode->Init(&QSVEncodeParams);
+            info("\tMFXVideoENCODE_Init (sysmem) retry (CODDI removed) status: %d",
+                 Status);
+          }
+          if (Status != MFX_ERR_NONE && origNumRefFrame > 4) {
+            warn("MFXVideoENCODE_Init (sysmem) failed, retrying with NumRefFrame=4");
+            QSVEncode->Close();
+            QSVEncodeParams.mfx.NumRefFrame = 4;
+            auto COParams =
+                QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
+            if (COParams) {
+              COParams->MaxDecFrameBuffering = 4;
+            }
+            Status = QSVEncode->Init(&QSVEncodeParams);
+            info("\tMFXVideoENCODE_Init (sysmem) retry (NumRefFrame=4) status: %d",
+                 Status);
+          }
+          if (Status != MFX_ERR_NONE && origGopRefDist > 4) {
+            warn("MFXVideoENCODE_Init (sysmem) failed, retrying with GOPRefDist=4");
+            QSVEncode->Close();
+            QSVEncodeParams.mfx.GopRefDist = 4;
+            Status = QSVEncode->Init(&QSVEncodeParams);
+            info("\tMFXVideoENCODE_Init (sysmem) retry (GOPRefDist=4) status: %d",
+                 Status);
+          }
+          if (Status != MFX_ERR_NONE && CO3Params) {
+            warn("MFXVideoENCODE_Init (sysmem) failed, retrying with CO3 minimal");
+            QSVEncode->Close();
+            CO3Params->TransformSkip = MFX_CODINGOPTION_OFF;
+            CO3Params->FadeDetection = MFX_CODINGOPTION_OFF;
+            CO3Params->LowDelayHrd = MFX_CODINGOPTION_OFF;
+            CO3Params->AdaptiveCQM = MFX_CODINGOPTION_OFF;
+            CO3Params->AdaptiveRef = MFX_CODINGOPTION_OFF;
+            CO3Params->AdaptiveLTR = MFX_CODINGOPTION_OFF;
+            CO3Params->MotionVectorsOverPicBoundaries = MFX_CODINGOPTION_OFF;
+            CO3Params->DirectBiasAdjustment = MFX_CODINGOPTION_OFF;
+            CO3Params->GlobalMotionBiasAdjustment = MFX_CODINGOPTION_OFF;
+            CO3Params->EnableMBForceIntra = MFX_CODINGOPTION_OFF;
+            CO3Params->MBDisableSkipMap = MFX_CODINGOPTION_OFF;
+            CO3Params->EnableQPOffset = MFX_CODINGOPTION_OFF;
+            CO3Params->RepartitionCheckEnable = MFX_CODINGOPTION_OFF;
+            if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
+              CO3Params->GPB = MFX_CODINGOPTION_OFF;
+            }
+            Status = QSVEncode->Init(&QSVEncodeParams);
+            info("\tMFXVideoENCODE_Init (sysmem) retry (CO3 minimal) status: %d",
+                 Status);
+          }
+          auto CO2Params =
+              QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
+          if (Status != MFX_ERR_NONE && CO2Params) {
+            warn("MFXVideoENCODE_Init (sysmem) failed, retrying without CO2");
+            QSVEncode->Close();
+            QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOption2>();
+            Status = QSVEncode->Init(&QSVEncodeParams);
+            info("\tMFXVideoENCODE_Init (sysmem) retry (CO2 removed) status: %d",
+                 Status);
+          }
+          if (Status != MFX_ERR_NONE && CO3Params) {
+            warn("MFXVideoENCODE_Init (sysmem) failed, retrying without CO3");
+            QSVEncode->Close();
+            QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOption3>();
+            Status = QSVEncode->Init(&QSVEncodeParams);
+            info("\tMFXVideoENCODE_Init (sysmem) retry (CO3 removed) status: %d",
+                 Status);
+          }
+          if (Status != MFX_ERR_NONE) {
+            auto COParams =
+                QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
+            if (COParams) {
+              warn("MFXVideoENCODE_Init (sysmem) failed, retrying with CO basic");
+              QSVEncode->Close();
+              COParams->IntraPredBlockSize = MFX_BLOCKSIZE_UNKNOWN;
+              COParams->InterPredBlockSize = MFX_BLOCKSIZE_UNKNOWN;
+              COParams->MECostType = 0;
+              COParams->MESearchType = 0;
+              Status = QSVEncode->Init(&QSVEncodeParams);
+              info("\tMFXVideoENCODE_Init (sysmem) retry (CO basic) status: %d",
+                   Status);
+            }
+          }
+          if (Status != MFX_ERR_NONE) {
+            warn("MFXVideoENCODE_Init (sysmem) failed, retrying with NO ext buffers");
+            QSVEncode->Close();
+            mfxU16 savedNumExtParam = QSVEncodeParams.NumExtParam;
+            QSVEncodeParams.NumExtParam = 0;
+            Status = QSVEncode->Init(&QSVEncodeParams);
+            info("\tMFXVideoENCODE_Init (sysmem) retry (no ext buffers) status: %d",
+                 Status);
+            if (Status < MFX_ERR_NONE) {
+              QSVEncodeParams.NumExtParam = savedNumExtParam;
+            }
+          }
+          if (Status != MFX_ERR_NONE &&
+              QSVEncodeParams.mfx.LowPower != MFX_CODINGOPTION_OFF) {
+            warn("MFXVideoENCODE_Init (sysmem) failed, retrying with LowPower=OFF");
+            QSVEncode->Close();
+            mfxU16 savedLowPower = QSVEncodeParams.mfx.LowPower;
+            QSVEncodeParams.mfx.LowPower = MFX_CODINGOPTION_OFF;
+            Status = QSVEncode->Init(&QSVEncodeParams);
+            info("\tMFXVideoENCODE_Init (sysmem) retry (LowPower=OFF) status: %d",
+                 Status);
+            if (Status < MFX_ERR_NONE) {
+              QSVEncodeParams.mfx.LowPower = savedLowPower;
+            }
+          }
+          if (Status < MFX_ERR_NONE) {
+            throw std::runtime_error(
+                "Init(): MFXVideoENCODE_Init error after parameter retries");
+          }
         }
       }
-      if (Status != MFX_ERR_NONE &&
-          QSVEncodeParams.mfx.LowPower != MFX_CODINGOPTION_OFF) {
-        warn("MFXVideoENCODE_Init failed, retrying with LowPower=OFF");
-        QSVEncode->Close();
-        mfxU16 savedLowPower = QSVEncodeParams.mfx.LowPower;
-        QSVEncodeParams.mfx.LowPower = MFX_CODINGOPTION_OFF;
-        Status = QSVEncode->Init(&QSVEncodeParams);
-        info("\tMFXVideoENCODE_Init retry (LowPower=OFF) status: %d", Status);
-        if (Status < MFX_ERR_NONE) {
-          QSVEncodeParams.mfx.LowPower = savedLowPower;
-        }
-      }
-      if (Status < MFX_ERR_NONE) {
-        throw std::runtime_error(
-            "Init(): MFXVideoENCODE_Init error after parameter retries");
-      }
+    }
+
+    if (Status < MFX_ERR_NONE) {
+      throw std::runtime_error(
+          "Init(): MFXVideoENCODE_Init error after parameter retries");
     }
 
     Status = InitTexturePool();
@@ -419,7 +485,9 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     Status = GetVideoParam(Codec);
     info("\tAfter GetVideoParam:     %d", Status);
 
-    InitSystemMemorySurfacePool();
+    if (QSVUseSystemMemoryPath) {
+      InitSystemMemorySurfacePool();
+    }
 
     Status = InitBitstreamBuffer(Codec);
 
@@ -1586,11 +1654,27 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
          InputParams->TemporalLayersNum);
   }
 
-  QSVEncodeParams.IOPattern = QSVIsTextureEncoder
-                                 ? MFX_IOPATTERN_IN_VIDEO_MEMORY
-                                 : MFX_IOPATTERN_IN_SYSTEM_MEMORY;
+  QSVEncodeParams.IOPattern = QSVUseSystemMemoryPath
+                                 ? MFX_IOPATTERN_IN_SYSTEM_MEMORY
+                                 : MFX_IOPATTERN_IN_VIDEO_MEMORY;
 
   info("\tFeature extended buffer size: %d", QSVEncodeParams.NumExtParam);
+
+  if (!QSVUseSystemMemoryPath && QSVEncode) {
+    mfxVideoParam ValidParams = {};
+    memcpy(&ValidParams, &QSVEncodeParams, sizeof(mfxVideoParam));
+    mfxStatus Sts = QSVEncode->Query(&QSVEncodeParams, &ValidParams);
+    if (Sts == MFX_ERR_UNSUPPORTED || Sts == MFX_ERR_UNDEFINED_BEHAVIOR) {
+      auto CO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
+      if (CO3Params && CO3Params->AdaptiveLTR == MFX_CODINGOPTION_ON) {
+        CO3Params->AdaptiveLTR = MFX_CODINGOPTION_OFF;
+      }
+    } else if (Sts < MFX_ERR_NONE) {
+      throw std::runtime_error(
+          "SetEncoderParams(): Query params error");
+    }
+    return Sts;
+  }
 
   return MFX_ERR_NONE;
 }
@@ -2179,7 +2263,7 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
 mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
                                   uint32_t *FrameLinesize,
                                   mfxBitstream **Bitstream) {
-  if (!QSVIsTextureEncoder) {
+  if (QSVUseSystemMemoryPath) {
     return EncodeFrameSystemMemory(TS, FrameData, FrameLinesize, Bitstream);
   }
 
