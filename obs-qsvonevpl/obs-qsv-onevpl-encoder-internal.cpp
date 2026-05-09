@@ -324,6 +324,18 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
         }
       }
       if (Status != MFX_ERR_NONE) {
+        warn("MFXVideoENCODE_Init failed, retrying with NO extended buffers");
+        QSVEncode->Close();
+        mfxU16 savedNumExtParam = QSVEncodeParams.NumExtParam;
+        QSVEncodeParams.NumExtParam = 0;
+        Status = QSVEncode->Init(&QSVEncodeParams);
+        info("\tMFXVideoENCODE_Init retry (no ext buffers) status: %d",
+             Status);
+        if (Status != MFX_ERR_NONE) {
+          QSVEncodeParams.NumExtParam = savedNumExtParam;
+        }
+      }
+      if (Status != MFX_ERR_NONE) {
         throw std::runtime_error(
             "Init(): MFXVideoENCODE_Init error after parameter retries");
       }
