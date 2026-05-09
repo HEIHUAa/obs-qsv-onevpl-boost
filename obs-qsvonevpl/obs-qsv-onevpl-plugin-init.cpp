@@ -1734,7 +1734,13 @@ static void *InitTextureEncoder(enum codec_enum Codec, obs_data_t *Settings,
   }
 
   info(">>> Texture encoder");
-  return InitPluginContext(Codec, Settings, EncoderData, true);
+  plugin_context *Context = InitPluginContext(Codec, Settings, EncoderData, true);
+  if (!Context) {
+    info(">>> texture encoder init failed, fall back to non-texture encoder");
+    return obs_encoder_create_rerouted(EncoderData,
+                                       static_cast<const char *>(FallbackID));
+  }
+  return Context;
 }
 
 static void *InitH264TextureEncoder(obs_data_t *Settings,

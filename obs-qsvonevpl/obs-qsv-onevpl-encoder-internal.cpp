@@ -179,11 +179,14 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
       mfxMemoryInterface *TestMI = nullptr;
       mfxStatus MIStatus = MFXGetMemoryInterface(QSVSession, &TestMI);
       if (MIStatus < MFX_ERR_NONE) {
-        warn("MFXGetMemoryInterface not supported (%d), using system memory "
-             "mode",
-             MIStatus);
-        QSVIsTextureEncoder = false;
-        info("\tEncoder type: Frame import (fallback from texture)");
+        error("MFXGetMemoryInterface not supported (%d)", MIStatus);
+        MFXClose(QSVSession);
+        MFXDispReleaseImplDescription(QSVLoader, nullptr);
+        MFXUnload(QSVLoader);
+        QSVSession = nullptr;
+        QSVLoader = nullptr;
+        throw std::runtime_error(
+            "Init(): MFXGetMemoryInterface not supported");
       }
     }
 
