@@ -220,7 +220,9 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     }
 
     Status = SetEncoderParams(InputParams, Codec);
+    info("\tSetEncoderParams status:  %d", Status);
     Status = QSVEncode->Init(&QSVEncodeParams);
+    info("\tMFXVideoENCODE_Init status: %d", Status);
 
     if (Status != MFX_ERR_NONE) {
       auto CO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
@@ -230,12 +232,15 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
         QSVEncode->Close();
         CO3Params->ScenarioInfo = 0;
         Status = QSVEncode->Init(&QSVEncodeParams);
+        info("\tMFXVideoENCODE_Init retry status: %d", Status);
       }
     }
 
     Status = InitTexturePool();
+    info("\tInitTexturePool status:   %d", Status);
 
     Status = GetVideoParam(Codec);
+    info("\tAfter GetVideoParam:     %d", Status);
 
     Status = InitBitstreamBuffer(Codec);
 
@@ -1711,6 +1716,8 @@ mfxStatus QSVEncoder::ChangeBitstreamSize(mfxU32 NewSize) {
 }
 
 mfxStatus QSVEncoder::GetVideoParam([[maybe_unused]] enum codec_enum Codec) {
+  info("\tGetVideoParam: step1 - NumExtParam = %u", QSVEncodeParams.NumExtParam);
+
   auto SPSPPSParams = QSVEncodeParams.AddExtBuffer<mfxExtCodingOptionSPSPPS>();
   SPSPPSParams->Header.BufferId = MFX_EXTBUFF_CODING_OPTION_SPSPPS;
   SPSPPSParams->Header.BufferSz = sizeof(mfxExtCodingOptionSPSPPS);
@@ -1718,6 +1725,8 @@ mfxStatus QSVEncoder::GetVideoParam([[maybe_unused]] enum codec_enum Codec) {
   SPSPPSParams->PPSBuffer = QSVPPSBuffer;
   SPSPPSParams->SPSBufSize = 1024;
   SPSPPSParams->PPSBufSize = 1024;
+  info("\tGetVideoParam: step2 - after SPSPPS, NumExtParam = %u",
+       QSVEncodeParams.NumExtParam);
 
   if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
     auto VPSParams = QSVEncodeParams.AddExtBuffer<mfxExtCodingOptionVPS>();
@@ -1725,19 +1734,28 @@ mfxStatus QSVEncoder::GetVideoParam([[maybe_unused]] enum codec_enum Codec) {
     VPSParams->Header.BufferSz = sizeof(mfxExtCodingOptionVPS);
     VPSParams->VPSBuffer = QSVVPSBuffer;
     VPSParams->VPSBufSize = 1024;
+    info("\tGetVideoParam: step3 - after VPS, NumExtParam = %u",
+         QSVEncodeParams.NumExtParam);
   }
 
   mfxStatus Status = QSVEncode->GetVideoParam(&QSVEncodeParams);
+  info("\tGetVideoParam: step4 - first call result = %d", Status);
+
   if (Status == MFX_ERR_UNSUPPORTED) {
-    warn("GetVideoParam: SPSPPS/VPS ext buffers not supported, retrying without");
+    warn("GetVideoParam: step5 - SPSPPS/VPS not supported, removing and retrying");
     QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOptionSPSPPS>();
+    info("\tGetVideoParam: step6 - after RemoveExtBuffer SPSPPS, NumExtParam = %u",
+         QSVEncodeParams.NumExtParam);
     if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
       QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOptionVPS>();
+      info("\tGetVideoParam: step7 - after RemoveExtBuffer VPS, NumExtParam = %u",
+           QSVEncodeParams.NumExtParam);
     }
     Status = QSVEncode->GetVideoParam(&QSVEncodeParams);
+    info("\tGetVideoParam: step8 - retry result = %d", Status);
   }
 
-  info("\tGetVideoParam status:     %d", Status);
+  info("\tGetVideoParam final status:     %d", Status);
   if (Status < MFX_ERR_NONE) {
     error("Error code: %d", Status);
     throw std::runtime_error("GetVideoParam(): Get video parameters error");
