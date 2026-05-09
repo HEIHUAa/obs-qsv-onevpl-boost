@@ -169,11 +169,9 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
   info("\tEncoder type: %s",
        QSVIsTextureEncoder ? "Texture import" : "Frame import");
   try {
-    if (QSVIsTextureEncoder) {
 #if defined(_WIN32) || defined(_WIN64)
-      HWManager = std::make_unique<class HWManager>();
+    HWManager = std::make_unique<class HWManager>();
 #endif
-    }
 
     Status = CreateSession(Codec, nullptr, InputParams->GPUNum);
 
@@ -189,17 +187,18 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
       }
     }
 
+#if defined(_WIN32) || defined(_WIN64)
+    if (HWManager->HWDeviceHandle == nullptr) {
+      HWManager->CreateDevice(QSVImpl);
+    }
+
+    if (HWManager->HWDeviceHandle == nullptr) {
+      throw std::runtime_error("Init(): Handled device is nullptr");
+    }
+#endif
+
     if (QSVIsTextureEncoder) {
 #if defined(_WIN32) || defined(_WIN64)
-      if (HWManager->HWDeviceHandle == nullptr) {
-        HWManager->CreateDevice(QSVImpl);
-      }
-
-      if (HWManager->HWDeviceHandle == nullptr) {
-        error("Error code: %d", Status);
-        throw std::runtime_error("Init(): Handled device is nullptr");
-      }
-
       Status = MFXVideoCORE_SetHandle(QSVSession, MFX_HANDLE_D3D11_DEVICE,
                                       HWManager->HWDeviceHandle);
       if (Status < MFX_ERR_NONE) {
