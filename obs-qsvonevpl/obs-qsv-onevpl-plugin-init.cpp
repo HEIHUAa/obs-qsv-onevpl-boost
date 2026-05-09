@@ -138,6 +138,7 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(Settings, "rate_control", "CBR");
 
   obs_data_set_default_int(Settings, "cqp", 23);
+  obs_data_set_default_bool(Settings, "cqp_separate_ipb", false);
   obs_data_set_default_int(Settings, "qpi", 23);
   obs_data_set_default_int(Settings, "qpp", 23);
   obs_data_set_default_int(Settings, "qpb", 23);
@@ -199,6 +200,18 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(Settings, "fade_detection", "ON");
   obs_data_set_default_string(Settings, "bitrate_limit", "ON");
 
+  obs_data_set_default_bool(Settings, "min_max_qp", false);
+  obs_data_set_default_int(Settings, "min_qp_i", 0);
+  obs_data_set_default_int(Settings, "min_qp_p", 0);
+  obs_data_set_default_int(Settings, "min_qp_b", 0);
+  obs_data_set_default_int(Settings, "max_qp_i", 51);
+  obs_data_set_default_int(Settings, "max_qp_p", 51);
+  obs_data_set_default_int(Settings, "max_qp_b", 51);
+
+  obs_data_set_default_string(Settings, "screen_content_tools", "AUTO");
+
+  obs_data_set_default_int(Settings, "temporal_layers", 0);
+
   obs_data_set_default_int(Settings, "gpu_number", 0);
 }
 
@@ -250,16 +263,20 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   obs_property_set_visible(Prop, !bVisible);
 
   bVisible = bIsCQP;
+  bool separateIPB = obs_data_get_bool(Settings, "cqp_separate_ipb");
   Prop = obs_properties_get(Properties, "qpi");
   if (Prop)
-    obs_property_set_visible(Prop, bVisible);
+    obs_property_set_visible(Prop, bVisible && separateIPB);
   Prop = obs_properties_get(Properties, "qpb");
   if (Prop)
-    obs_property_set_visible(Prop, bVisible);
+    obs_property_set_visible(Prop, bVisible && separateIPB);
   Prop = obs_properties_get(Properties, "qpp");
   if (Prop)
-    obs_property_set_visible(Prop, bVisible);
+    obs_property_set_visible(Prop, bVisible && separateIPB);
   Prop = obs_properties_get(Properties, "cqp");
+  if (Prop)
+    obs_property_set_visible(Prop, bVisible && !separateIPB);
+  Prop = obs_properties_get(Properties, "cqp_separate_ipb");
   if (Prop)
     obs_property_set_visible(Prop, bVisible);
 
@@ -389,6 +406,16 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
     obs_property_set_visible(Prop, showTierList);
     if (!showTierList) {
       obs_data_set_string(Settings, "hevc_tier", "main");
+    }
+  }
+
+  bool minMaxQPEnabled = obs_data_get_bool(Settings, "min_max_qp");
+  const char *qpFields[] = {"min_qp_i", "min_qp_p", "min_qp_b",
+                            "max_qp_i", "max_qp_p", "max_qp_b", nullptr};
+  for (int i = 0; qpFields[i]; i++) {
+    Prop = obs_properties_get(Properties, qpFields[i]);
+    if (Prop) {
+      obs_property_set_visible(Prop, minMaxQPEnabled);
     }
   }
 
@@ -527,6 +554,17 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_properties_add_int(Props, "cqp", "CQP", 1,
                          Codec == QSV_CODEC_AV1 ? 63 : 51, 1);
 
+  Prop = obs_properties_add_bool(Props, "cqp_separate_ipb",
+                                 "Separate I/P/B QP");
+  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
+
+  obs_properties_add_int(Props, "qpi", "QPI", 1,
+                         Codec == QSV_CODEC_AV1 ? 63 : 51, 1);
+  obs_properties_add_int(Props, "qpp", "QPP", 1,
+                         Codec == QSV_CODEC_AV1 ? 63 : 51, 1);
+  obs_properties_add_int(Props, "qpb", "QPB", 1,
+                         Codec == QSV_CODEC_AV1 ? 63 : 51, 1);
+
   obs_properties_add_int(Props, "icq_quality", TEXT_ICQ_QUALITY, 1, 51, 1);
 
   Prop = obs_properties_add_int(Props, "keyint_sec", TEXT_KEYINT_SEC, 0, 20, 1);
@@ -656,6 +694,22 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(
       Prop, TEXT_TRELLIS_DESC);
 
+  Prop = obs_properties_add_bool(Props, "min_max_qp", TEXT_MIN_QP_ENABLE);
+  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
+
+  Prop = obs_properties_add_int_slider(Props, "min_qp_i", TEXT_MIN_QPI, 0,
+                                       (Codec == QSV_CODEC_AV1) ? 63 : 51, 1);
+  Prop = obs_properties_add_int_slider(Props, "min_qp_p", TEXT_MIN_QPP, 0,
+                                       (Codec == QSV_CODEC_AV1) ? 63 : 51, 1);
+  Prop = obs_properties_add_int_slider(Props, "min_qp_b", TEXT_MIN_QPB, 0,
+                                       (Codec == QSV_CODEC_AV1) ? 63 : 51, 1);
+  Prop = obs_properties_add_int_slider(Props, "max_qp_i", TEXT_MAX_QPI, 0,
+                                       (Codec == QSV_CODEC_AV1) ? 63 : 51, 1);
+  Prop = obs_properties_add_int_slider(Props, "max_qp_p", TEXT_MAX_QPP, 0,
+                                       (Codec == QSV_CODEC_AV1) ? 63 : 51, 1);
+  Prop = obs_properties_add_int_slider(Props, "max_qp_b", TEXT_MAX_QPB, 0,
+                                       (Codec == QSV_CODEC_AV1) ? 63 : 51, 1);
+
   Prop = obs_properties_add_list(Props, "lookahead", TEXT_LA,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_lookahead_mode);
@@ -742,6 +796,13 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
         Prop, TEXT_INTRA_REF_QP_DELTA_DESC);
   }
 
+  if (Codec == QSV_CODEC_AV1) {
+    Prop = obs_properties_add_list(Props, "screen_content_tools",
+                                   TEXT_SCREEN_CONTENT_TOOLS,
+                                   OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+    AddStrings(Prop, qsv_params_condition_screen_content_tools);
+  }
+
   if (Codec == QSV_CODEC_HEVC) {
     Prop =
         obs_properties_add_list(Props, "hevc_sao", TEXT_HEVC_SAO,
@@ -806,6 +867,9 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   AddStrings(Prop, qsv_params_condition);
   obs_property_set_long_description(
       Prop, TEXT_BITRATE_LIMIT_DESC);
+
+  Prop = obs_properties_add_int_slider(Props, "temporal_layers",
+                                       TEXT_TEMPORAL_LAYERS, 0, 4, 1);
 
   Prop = obs_properties_add_int(Props, "gpu_number", TEXT_GPU_NUMBER, 0, 4, 1);
   obs_property_set_long_description(
@@ -897,6 +961,20 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       static_cast<int>(obs_data_get_int(Settings, "intra_ref_cycle_size"));
   int IntraRefQPDeltaData =
       static_cast<int>(obs_data_get_int(Settings, "intra_ref_qp_delta"));
+
+  bool MinMaxQPData = obs_data_get_bool(Settings, "min_max_qp");
+  int MinQPIData = static_cast<int>(obs_data_get_int(Settings, "min_qp_i"));
+  int MinQPPData = static_cast<int>(obs_data_get_int(Settings, "min_qp_p"));
+  int MinQPBData = static_cast<int>(obs_data_get_int(Settings, "min_qp_b"));
+  int MaxQPIData = static_cast<int>(obs_data_get_int(Settings, "max_qp_i"));
+  int MaxQPPData = static_cast<int>(obs_data_get_int(Settings, "max_qp_p"));
+  int MaxQPBData = static_cast<int>(obs_data_get_int(Settings, "max_qp_b"));
+
+  const char *ScreenContentToolsData =
+      obs_data_get_string(Settings, "screen_content_tools");
+
+  int TemporalLayersData =
+      static_cast<int>(obs_data_get_int(Settings, "temporal_layers"));
 
   int VideoWidth =
       static_cast<int>(obs_encoder_get_width(Context->EncoderData));
@@ -1391,12 +1469,27 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       static_cast<mfxU16>(obs_data_get_int(Settings, "async_depth"));
 
   auto ActualCQPData = CQPData;
-  if (Context->Codec == QSV_CODEC_AV1) {
-    ActualCQPData *= 4;
+  bool CQPSeparateIPB = obs_data_get_bool(Settings, "cqp_separate_ipb");
+  if (CQPSeparateIPB) {
+    int QPIData = static_cast<int>(obs_data_get_int(Settings, "qpi"));
+    int QPPData = static_cast<int>(obs_data_get_int(Settings, "qpp"));
+    int QPBData = static_cast<int>(obs_data_get_int(Settings, "qpb"));
+    if (Context->Codec == QSV_CODEC_AV1) {
+      QPIData *= 4;
+      QPPData *= 4;
+      QPBData *= 4;
+    }
+    Context->EncoderParams.QPI = static_cast<mfxU16>(QPIData);
+    Context->EncoderParams.QPP = static_cast<mfxU16>(QPPData);
+    Context->EncoderParams.QPB = static_cast<mfxU16>(QPBData);
+  } else {
+    if (Context->Codec == QSV_CODEC_AV1) {
+      ActualCQPData *= 4;
+    }
+    Context->EncoderParams.QPI = static_cast<mfxU16>(ActualCQPData);
+    Context->EncoderParams.QPP = static_cast<mfxU16>(ActualCQPData);
+    Context->EncoderParams.QPB = static_cast<mfxU16>(ActualCQPData);
   }
-  Context->EncoderParams.QPI = static_cast<mfxU16>(ActualCQPData);
-  Context->EncoderParams.QPP = static_cast<mfxU16>(ActualCQPData);
-  Context->EncoderParams.QPB = static_cast<mfxU16>(ActualCQPData);
 
   Context->EncoderParams.TargetBitRate =
       static_cast<mfxU16>(TargetBitrateData / 100);
@@ -1423,6 +1516,25 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       static_cast<mfxU16>(IntraRefCycleSizeData);
   Context->EncoderParams.IntraRefQPDelta =
       static_cast<mfxU16>(IntraRefQPDeltaData);
+
+  Context->EncoderParams.MinQPEnabled = MinMaxQPData;
+  Context->EncoderParams.MinQPI = static_cast<mfxU16>(MinQPIData);
+  Context->EncoderParams.MinQPP = static_cast<mfxU16>(MinQPPData);
+  Context->EncoderParams.MinQPB = static_cast<mfxU16>(MinQPBData);
+  Context->EncoderParams.MaxQPI = static_cast<mfxU16>(MaxQPIData);
+  Context->EncoderParams.MaxQPP = static_cast<mfxU16>(MaxQPPData);
+  Context->EncoderParams.MaxQPB = static_cast<mfxU16>(MaxQPBData);
+
+  if (std::strcmp(ScreenContentToolsData, "AUTO") == 0) {
+    Context->EncoderParams.ScreenContentTools = 0;
+  } else if (std::strcmp(ScreenContentToolsData, "OFF") == 0) {
+    Context->EncoderParams.ScreenContentTools = 1;
+  } else if (std::strcmp(ScreenContentToolsData, "ON") == 0) {
+    Context->EncoderParams.ScreenContentTools = 2;
+  }
+
+  Context->EncoderParams.TemporalLayersNum =
+      static_cast<mfxU16>(TemporalLayersData);
 
   Context->EncoderParams.ProcessingEnable = false;
   if ((Context->EncoderParams.VPPDenoiseMode.has_value() ||

@@ -105,5 +105,17 @@ struct encoder_params {
   mfxU16 ChromaFormat;
 
   int GPUNum;
+
+  bool MinQPEnabled;
+  mfxU16 MinQPI;
+  mfxU16 MinQPP;
+  mfxU16 MinQPB;
+  mfxU16 MaxQPI;
+  mfxU16 MaxQPP;
+  mfxU16 MaxQPB;
+
+  int ScreenContentTools;
+
+  int TemporalLayersNum;
 };
 

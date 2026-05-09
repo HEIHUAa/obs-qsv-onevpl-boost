@@ -1242,6 +1242,19 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
         GetCodingOpt(InputParams->DirectBiasAdjustment);
     info("\tDirectBiasAdjustment set: %s",
          GetCodingOptStatus(CO3Params->DirectBiasAdjustment).c_str());
+
+    if (InputParams->MinQPEnabled) {
+      CO3Params->MinQPI = InputParams->MinQPI;
+      CO3Params->MinQPP = InputParams->MinQPP;
+      CO3Params->MinQPB = InputParams->MinQPB;
+      CO3Params->MaxQPI = InputParams->MaxQPI;
+      CO3Params->MaxQPP = InputParams->MaxQPP;
+      CO3Params->MaxQPB = InputParams->MaxQPB;
+      info("\tMinQP: I=%d P=%d B=%d", InputParams->MinQPI,
+           InputParams->MinQPP, InputParams->MinQPB);
+      info("\tMaxQP: I=%d P=%d B=%d", InputParams->MaxQPI,
+           InputParams->MaxQPP, InputParams->MaxQPB);
+    }
   }
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -1376,21 +1389,34 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   }
 
   if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1) {
-    if (QSVVersion.Major >= 2 && QSVVersion.Minor >= 12 ||
-        QSVVersion.Major > 2) {
-      if (QSVPlatform.CodeName >= MFX_PLATFORM_LUNARLAKE &&
-          QSVPlatform.CodeName != MFX_PLATFORM_ALDERLAKE_N &&
-          QSVPlatform.CodeName != MFX_PLATFORM_ARROWLAKE) {
-        auto AV1ScreenContentTools =
-            QSVEncodeParams.AddExtBuffer<mfxExtAV1ScreenContentTools>();
-        AV1ScreenContentTools->Header.BufferId =
-            MFX_EXTBUFF_AV1_SCREEN_CONTENT_TOOLS;
-        AV1ScreenContentTools->Header.BufferSz =
-            sizeof(mfxExtAV1ScreenContentTools);
-        AV1ScreenContentTools->Palette = MFX_CODINGOPTION_ON;
-
-        info("\tAV1ScreenContentTools set: ON");
+    if (InputParams->ScreenContentTools == 0) {
+      if (QSVVersion.Major >= 2 && QSVVersion.Minor >= 12 ||
+          QSVVersion.Major > 2) {
+        if (QSVPlatform.CodeName >= MFX_PLATFORM_LUNARLAKE &&
+            QSVPlatform.CodeName != MFX_PLATFORM_ALDERLAKE_N &&
+            QSVPlatform.CodeName != MFX_PLATFORM_ARROWLAKE) {
+          auto AV1ScreenContentTools =
+              QSVEncodeParams.AddExtBuffer<mfxExtAV1ScreenContentTools>();
+          AV1ScreenContentTools->Header.BufferId =
+              MFX_EXTBUFF_AV1_SCREEN_CONTENT_TOOLS;
+          AV1ScreenContentTools->Header.BufferSz =
+              sizeof(mfxExtAV1ScreenContentTools);
+          AV1ScreenContentTools->Palette = MFX_CODINGOPTION_ON;
+          info("\tAV1ScreenContentTools: AUTO (ON)");
+        }
       }
+    } else {
+      auto AV1ScreenContentTools =
+          QSVEncodeParams.AddExtBuffer<mfxExtAV1ScreenContentTools>();
+      AV1ScreenContentTools->Header.BufferId =
+          MFX_EXTBUFF_AV1_SCREEN_CONTENT_TOOLS;
+      AV1ScreenContentTools->Header.BufferSz =
+          sizeof(mfxExtAV1ScreenContentTools);
+      AV1ScreenContentTools->Palette =
+          (InputParams->ScreenContentTools == 2) ? MFX_CODINGOPTION_ON
+                                                  : MFX_CODINGOPTION_OFF;
+      info("\tAV1ScreenContentTools: %s",
+           InputParams->ScreenContentTools == 2 ? "ON" : "OFF");
     }
 
     auto AV1BitstreamParams =
@@ -1506,6 +1532,23 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
         static_cast<mfxU16>(InputParams->MaxContentLightLevel);
     ContentLightLevelParams->MaxPicAverageLightLevel =
         static_cast<mfxU16>(InputParams->MaxPicAverageLightLevel);
+  }
+
+  if (InputParams->TemporalLayersNum > 1) {
+    auto TemporalLayersParams =
+        QSVEncodeParams.AddExtBuffer<mfxExtTemporalLayers>();
+    TemporalLayersParams->Header.BufferId =
+        MFX_EXTBUFF_UNIVERSAL_TEMPORAL_LAYERS;
+    TemporalLayersParams->Header.BufferSz = sizeof(mfxExtTemporalLayers);
+    TemporalLayersParams->BaseLayerPID = 0;
+    for (int i = 0; i < InputParams->TemporalLayersNum; i++) {
+      TemporalLayersParams->Layer[i].Scale =
+          1 << (InputParams->TemporalLayersNum - 1 - i);
+      TemporalLayersParams->Layer[i].PQPDelta = i * 2;
+      TemporalLayersParams->Layer[i].TargetKbps = 0;
+    }
+    info("\tTemporalLayers: %d layers enabled",
+         InputParams->TemporalLayersNum);
   }
 
   QSVEncodeParams.IOPattern = MFX_IOPATTERN_IN_VIDEO_MEMORY;
