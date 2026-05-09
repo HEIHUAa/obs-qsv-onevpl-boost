@@ -363,15 +363,15 @@ public:
     auto it = std::find_if(MFXExtBufferPool.begin(), MFXExtBufferPool.end(),
                            CmpExtBufByID(MFXExtBufferID<TB>::id));
     if (it != MFXExtBufferPool.end()) {
-      delete[] static_cast<mfxU8 *>((*it));
+      delete[] reinterpret_cast<mfxU8 *>((*it));
       it = MFXExtBufferPool.erase(it);
 
-      if (IsPairedMFXExtBuffer<TB>::Value) {
+      if (IsPairedMFXExtBuffer<TB>::value) {
         if (it == MFXExtBufferPool.end() ||
             (*it)->BufferId != MFXExtBufferID<TB>::id)
           throw "RemoveExtBuffer: ExtBuffer's parity has been broken";
 
-        delete[] static_cast<mfxU8 *>((*it));
+        delete[] reinterpret_cast<mfxU8 *>((*it));
         MFXExtBufferPool.erase(it);
       }
 
