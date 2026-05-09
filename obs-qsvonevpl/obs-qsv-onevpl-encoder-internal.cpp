@@ -62,7 +62,6 @@ void QSVEncoder::ReleaseSystemMemorySurfacePool() {
   }
   QSVSystemMemPool.clear();
   QSVSystemMemPoolSize = 0;
-  QSVSystemMemPoolIdx = 0;
 }
 
 mfxStatus QSVEncoder::GetVPLVersion(mfxVersion &Version) {
