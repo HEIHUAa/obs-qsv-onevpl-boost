@@ -1500,18 +1500,32 @@ mfxStatus QSVEncoder::InitTexturePool() {
   mfxStatus Status = MFX_ERR_NONE;
 
   if (QSVIsTextureEncoder) {
-    // Allocate textures
-    try {
-      Status = HWManager->AllocateTexturePool(QSVEncodeParams);
-    } catch (const std::exception &e) {
-      error("Error code: %d, %s", Status, e.what());
-      throw;
+    Status = HWManager->AllocateTexturePool(QSVEncodeParams);
+    if (Status < MFX_ERR_NONE) {
+      error("Error code: %d", Status);
+      throw std::runtime_error("AllocateTexturePool(): AllocateTexturePool error");
     }
 
     Status = MFXGetMemoryInterface(QSVSession, &QSVMemoryInterface);
     if (Status < MFX_ERR_NONE) {
-      throw std::runtime_error(
-          "AllocateTexturePool(): MFXGetMemoryInterface error");
+      warn("MFXGetMemoryInterface not supported (%d), falling back to system "
+           "memory mode",
+           Status);
+
+      QSVEncode->Close();
+      HWManager->ReleaseTexturePool();
+
+      QSVIsTextureEncoder = false;
+      QSVEncodeParams.IOPattern = MFX_IOPATTERN_IN_SYSTEM_MEMORY;
+
+      Status = QSVEncode->Init(&QSVEncodeParams);
+      if (Status < MFX_ERR_NONE) {
+        error("Error code: %d", Status);
+        throw std::runtime_error(
+            "AllocateTexturePool(): ReInit for system memory error");
+      }
+
+      info("\tEncoder type: Frame import (fallback)");
     }
   }
 
