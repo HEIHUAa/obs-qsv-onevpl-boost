@@ -1419,6 +1419,10 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     if (CO3Params->AdaptiveLTR == MFX_CODINGOPTION_ON) {
       CO3Params->AdaptiveLTR = MFX_CODINGOPTION_OFF;
     }
+    auto COParams = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
+    if (COParams->RateDistortionOpt == MFX_CODINGOPTION_ON) {
+      COParams->RateDistortionOpt = MFX_CODINGOPTION_OFF;
+    }
   } else if (Status < MFX_ERR_NONE) {
     throw std::runtime_error("SetEncoderParams(): Query params error");
   }
@@ -1724,6 +1728,14 @@ mfxStatus QSVEncoder::GetVideoParam([[maybe_unused]] enum codec_enum Codec) {
   }
 
   mfxStatus Status = QSVEncode->GetVideoParam(&QSVEncodeParams);
+  if (Status == MFX_ERR_UNSUPPORTED) {
+    warn("GetVideoParam: SPSPPS/VPS ext buffers not supported, retrying without");
+    QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOptionSPSPPS>();
+    if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
+      QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOptionVPS>();
+    }
+    Status = QSVEncode->GetVideoParam(&QSVEncodeParams);
+  }
 
   info("\tGetVideoParam status:     %d", Status);
   if (Status < MFX_ERR_NONE) {
