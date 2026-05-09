@@ -448,7 +448,7 @@ private:
   void ClearBuffers() {
     if (MFXExtBufferPool.size()) {
       for (auto it = MFXExtBufferPool.begin(); it != MFXExtBufferPool.end(); it++) {
-        delete[] static_cast<mfxU8 *>((*it));
+        delete[] reinterpret_cast<mfxU8 *>((*it));
       }
       MFXExtBufferPool.clear();
     }

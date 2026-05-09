@@ -1840,8 +1840,6 @@ mfxStatus QSVEncoder::ChangeBitstreamSize(mfxU32 NewSize) {
 }
 
 mfxStatus QSVEncoder::GetVideoParam([[maybe_unused]] enum codec_enum Codec) {
-  info("\tGetVideoParam: step1 - NumExtParam = %u", QSVEncodeParams.NumExtParam);
-
   auto SPSPPSParams = QSVEncodeParams.AddExtBuffer<mfxExtCodingOptionSPSPPS>();
   SPSPPSParams->Header.BufferId = MFX_EXTBUFF_CODING_OPTION_SPSPPS;
   SPSPPSParams->Header.BufferSz = sizeof(mfxExtCodingOptionSPSPPS);
@@ -1849,8 +1847,6 @@ mfxStatus QSVEncoder::GetVideoParam([[maybe_unused]] enum codec_enum Codec) {
   SPSPPSParams->PPSBuffer = QSVPPSBuffer;
   SPSPPSParams->SPSBufSize = 1024;
   SPSPPSParams->PPSBufSize = 1024;
-  info("\tGetVideoParam: step2 - after SPSPPS, NumExtParam = %u",
-       QSVEncodeParams.NumExtParam);
 
   if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
     auto VPSParams = QSVEncodeParams.AddExtBuffer<mfxExtCodingOptionVPS>();
@@ -1858,28 +1854,19 @@ mfxStatus QSVEncoder::GetVideoParam([[maybe_unused]] enum codec_enum Codec) {
     VPSParams->Header.BufferSz = sizeof(mfxExtCodingOptionVPS);
     VPSParams->VPSBuffer = QSVVPSBuffer;
     VPSParams->VPSBufSize = 1024;
-    info("\tGetVideoParam: step3 - after VPS, NumExtParam = %u",
-         QSVEncodeParams.NumExtParam);
   }
 
   mfxStatus Status = QSVEncode->GetVideoParam(&QSVEncodeParams);
-  info("\tGetVideoParam: step4 - first call result = %d", Status);
 
   if (Status == MFX_ERR_UNSUPPORTED) {
-    warn("GetVideoParam: step5 - SPSPPS/VPS not supported, removing and retrying");
+    warn("SPSPPS/VPS not supported for GetVideoParam, retrying without");
     QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOptionSPSPPS>();
-    info("\tGetVideoParam: step6 - after RemoveExtBuffer SPSPPS, NumExtParam = %u",
-         QSVEncodeParams.NumExtParam);
     if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
       QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOptionVPS>();
-      info("\tGetVideoParam: step7 - after RemoveExtBuffer VPS, NumExtParam = %u",
-           QSVEncodeParams.NumExtParam);
     }
     Status = QSVEncode->GetVideoParam(&QSVEncodeParams);
-    info("\tGetVideoParam: step8 - retry result = %d", Status);
   }
 
-  info("\tGetVideoParam final status:     %d", Status);
   if (Status < MFX_ERR_NONE) {
     error("Error code: %d", Status);
     throw std::runtime_error("GetVideoParam(): Get video parameters error");
