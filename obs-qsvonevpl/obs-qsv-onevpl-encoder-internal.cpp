@@ -282,12 +282,46 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
         CO3Params->MotionVectorsOverPicBoundaries = MFX_CODINGOPTION_OFF;
         CO3Params->DirectBiasAdjustment = MFX_CODINGOPTION_OFF;
         CO3Params->GlobalMotionBiasAdjustment = MFX_CODINGOPTION_OFF;
+        CO3Params->EnableMBForceIntra = MFX_CODINGOPTION_OFF;
+        CO3Params->MBDisableSkipMap = MFX_CODINGOPTION_OFF;
+        CO3Params->EnableQPOffset = MFX_CODINGOPTION_OFF;
+        CO3Params->RepartitionCheckEnable = MFX_CODINGOPTION_OFF;
         if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
           CO3Params->GPB = MFX_CODINGOPTION_OFF;
         }
         Status = QSVEncode->Init(&QSVEncodeParams);
         info("\tMFXVideoENCODE_Init retry (CO3 minimal) status: %d",
              Status);
+      }
+      auto CO2Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
+      if (Status != MFX_ERR_NONE && CO2Params) {
+        warn("MFXVideoENCODE_Init failed, retrying without CO2 buffer");
+        QSVEncode->Close();
+        QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOption2>();
+        Status = QSVEncode->Init(&QSVEncodeParams);
+        info("\tMFXVideoENCODE_Init retry (CO2 removed) status: %d",
+             Status);
+      }
+      if (Status != MFX_ERR_NONE && CO3Params) {
+        warn("MFXVideoENCODE_Init failed, retrying without CO3 buffer");
+        QSVEncode->Close();
+        QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOption3>();
+        Status = QSVEncode->Init(&QSVEncodeParams);
+        info("\tMFXVideoENCODE_Init retry (CO3 removed) status: %d",
+             Status);
+      }
+      if (Status != MFX_ERR_NONE) {
+        auto COParams = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
+        if (COParams) {
+          warn("MFXVideoENCODE_Init failed, retrying with CO features disabled");
+          QSVEncode->Close();
+          COParams->IntraPredBlockSize = MFX_BLOCKSIZE_UNKNOWN;
+          COParams->InterPredBlockSize = MFX_BLOCKSIZE_UNKNOWN;
+          COParams->MECostType = 0;
+          COParams->MESearchType = 0;
+          Status = QSVEncode->Init(&QSVEncodeParams);
+          info("\tMFXVideoENCODE_Init retry (CO basic) status: %d", Status);
+        }
       }
       if (Status != MFX_ERR_NONE) {
         throw std::runtime_error(
