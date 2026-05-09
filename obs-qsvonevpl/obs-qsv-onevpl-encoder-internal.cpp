@@ -39,9 +39,34 @@ void QSVEncoder::InitSystemMemorySurfacePool() {
   info("\tSystem memory surface pool size: %d", QSVSystemMemPoolSize);
 
   mfxFrameInfo &FI = QSVEncodeParams.mfx.FrameInfo;
+  auto VideoSignalInfo =
+      QSVEncodeParams.GetExtBuffer<mfxExtVideoSignalInfo>();
+  if (VideoSignalInfo) {
+    info("\tVideoSignalInfo found: VideoFullRange=%d, ColourPrimaries=%d, "
+         "TransferCharacteristics=%d, MatrixCoefficients=%d",
+         VideoSignalInfo->VideoFullRange,
+         VideoSignalInfo->ColourPrimaries,
+         VideoSignalInfo->TransferCharacteristics,
+         VideoSignalInfo->MatrixCoefficients);
+  } else {
+    info("\tVideoSignalInfo not found");
+  }
+  info("\tFrameInfo default VideoFullRange=%d, ColourDescriptionPresent=%d",
+       FI.VideoFullRange, FI.ColourDescriptionPresent);
+
   for (mfxU16 i = 0; i < QSVSystemMemPoolSize; i++) {
     SystemMemSurface S = {};
     S.Surface.Info = FI;
+
+    if (VideoSignalInfo) {
+      S.Surface.Info.VideoFullRange = VideoSignalInfo->VideoFullRange;
+      S.Surface.Info.ColourDescriptionPresent = 1;
+      S.Surface.Info.ColourPrimaries = VideoSignalInfo->ColourPrimaries;
+      S.Surface.Info.TransferCharacteristics =
+          VideoSignalInfo->TransferCharacteristics;
+      S.Surface.Info.MatrixCoefficients = VideoSignalInfo->MatrixCoefficients;
+    }
+
     mfxU32 Align = FI.Width;
     mfxU32 Pitch = Align + ((Align % 16) ? (16 - Align % 16) : 0);
     mfxU32 YSize = Pitch * FI.Height;
@@ -383,19 +408,31 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
           QSVEncodeParams.ClearAllBuffers();
         }
       }
+      if (Status != MFX_ERR_NONE &&
+          QSVEncodeParams.mfx.LowPower != MFX_CODINGOPTION_OFF) {
+        warn("MFXVideoENCODE_Init failed, retrying with LowPower=OFF");
+        QSVEncode->Close();
+        mfxU16 savedLowPower = QSVEncodeParams.mfx.LowPower;
+        QSVEncodeParams.mfx.LowPower = MFX_CODINGOPTION_OFF;
+        Status = QSVEncode->Init(&QSVEncodeParams);
+        info("\tMFXVideoENCODE_Init retry (LowPower=OFF) status: %d", Status);
+        if (Status < MFX_ERR_NONE) {
+          QSVEncodeParams.mfx.LowPower = savedLowPower;
+        }
+      }
       if (Status < MFX_ERR_NONE) {
         throw std::runtime_error(
             "Init(): MFXVideoENCODE_Init error after parameter retries");
       }
     }
 
-    InitSystemMemorySurfacePool();
-
     Status = InitTexturePool();
     info("\tInitTexturePool status:   %d", Status);
 
     Status = GetVideoParam(Codec);
     info("\tAfter GetVideoParam:     %d", Status);
+
+    InitSystemMemorySurfacePool();
 
     Status = InitBitstreamBuffer(Codec);
 
