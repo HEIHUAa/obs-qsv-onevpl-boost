@@ -1,16 +1,6 @@
 #pragma warning(disable : 4996)
 #include "obs-qsv-onevpl-encoder-internal.hpp"
 
-namespace {
-  template <typename T, typename = void>
-  struct _has_vfr : std::false_type {};
-  template <typename T>
-  struct _has_vfr<T, std::void_t<decltype(&T::VideoFullRange)>>
-      : std::true_type {};
-  static constexpr bool has_video_full_range =
-      _has_vfr<mfxFrameInfo>::value;
-}
-
 QSVEncoder::QSVEncoder()
     : QSVPlatform(), QSVVersion(), QSVLoader(), QSVLoaderConfig(),
       QSVLoaderVariant(), QSVSession(nullptr), QSVImpl(), QSVEncodeSurface(),
@@ -66,11 +56,13 @@ void QSVEncoder::InitSystemMemorySurfacePool() {
     SystemMemSurface S = {};
     S.Surface.Info = FI;
 
-    if constexpr (has_video_full_range) {
+#if defined(_MSC_VER)
+    __if_exists (mfxFrameInfo::VideoFullRange) {
       if (VideoSignalInfo) {
         S.Surface.Info.VideoFullRange = VideoSignalInfo->VideoFullRange;
       }
     }
+#endif
 
     mfxU32 Align = FI.Width;
     mfxU32 Pitch = Align + ((Align % 16) ? (16 - Align % 16) : 0);
@@ -1539,10 +1531,12 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       static_cast<mfxU16>(InputParams->MatrixCoefficients);
 #endif
 
-  if constexpr (has_video_full_range) {
+#if defined(_MSC_VER)
+  __if_exists (mfxFrameInfo::VideoFullRange) {
     QSVEncodeParams.mfx.FrameInfo.VideoFullRange =
         static_cast<mfxU16>(InputParams->VideoFullRange);
   }
+#endif
 
   if (InputParams->MaxContentLightLevel > 0) {
     auto ColourVolumeParams =
