@@ -391,6 +391,8 @@ public:
     return reinterpret_cast<TB *>(FindExtBuffer(MFXExtBufferID<TB>::id, 0));
   }
 
+  void ClearAllBuffers() { ClearBuffers(); }
+
 private:
   mfxExtBuffer *AddExtBuffer(mfxU32 ID, mfxU32 Size, bool IsPairedExtBuffer) {
     if (!Size || !ID)
