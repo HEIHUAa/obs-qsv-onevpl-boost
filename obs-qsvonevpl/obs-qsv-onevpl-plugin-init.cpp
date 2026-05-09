@@ -1302,7 +1302,11 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.GPB = 0;
   }
 
-  if (std::strcmp(ScenarioInfoData, "ARCHIVE") == 0) {
+  if (std::strcmp(ScenarioInfoData, "OFF") == 0) {
+    Context->EncoderParams.ScenarioInfo = std::nullopt;
+  } else if (std::strcmp(ScenarioInfoData, "AUTO") == 0) {
+    Context->EncoderParams.ScenarioInfo = 0;
+  } else if (std::strcmp(ScenarioInfoData, "ARCHIVE") == 0) {
     Context->EncoderParams.ScenarioInfo = 1;
   } else if (std::strcmp(ScenarioInfoData, "LIVE") == 0) {
     Context->EncoderParams.ScenarioInfo = 2;
@@ -1312,7 +1316,11 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.ScenarioInfo = 4;
   }
 
-  if (std::strcmp(ContentInfoData, "NOISY_VIDEO") == 0) {
+  if (std::strcmp(ContentInfoData, "OFF") == 0) {
+    Context->EncoderParams.ContentInfo = std::nullopt;
+  } else if (std::strcmp(ContentInfoData, "AUTO") == 0) {
+    Context->EncoderParams.ContentInfo = 0;
+  } else if (std::strcmp(ContentInfoData, "NOISY_VIDEO") == 0) {
     Context->EncoderParams.ContentInfo = 2;
   } else if (std::strcmp(ContentInfoData, "GAME") == 0) {
     Context->EncoderParams.ContentInfo = 4;

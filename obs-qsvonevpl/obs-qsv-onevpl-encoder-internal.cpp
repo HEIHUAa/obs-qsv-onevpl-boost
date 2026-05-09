@@ -969,17 +969,21 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       CO3Params->IntRefCycleDist = 0;
     }
 
-    if (InputParams->ContentInfo.has_value() &&
-        InputParams->ContentInfo.value() != 0) {
+    if (InputParams->ContentInfo.has_value()) {
       CO3Params->ContentInfo = static_cast<mfxU16>(InputParams->ContentInfo.value());
-      info("\tContentInfo set: %d", InputParams->ContentInfo.value());
-    } else {
-      CO3Params->ContentInfo = MFX_CONTENT_NOISY_VIDEO;
+      if (InputParams->ContentInfo.value() > 0) {
+        info("\tContentInfo set: %d", InputParams->ContentInfo.value());
+      } else {
+        info("\tContentInfo: AUTO");
+      }
     }
 
-    if (InputParams->ScenarioInfo.has_value() &&
-        InputParams->ScenarioInfo.value() != 0) {
+    if (InputParams->ScenarioInfo.has_value()) {
       switch (InputParams->ScenarioInfo.value()) {
+      case 0:
+        CO3Params->ScenarioInfo = 0;
+        info("\tScenario: AUTO");
+        break;
       case 1:
         CO3Params->ScenarioInfo = 1;
         info("\tScenario: ARCHIVE");
@@ -997,19 +1001,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
         info("\tScenario: GAME STREAMING");
         break;
       }
-    } else if (InputParams->Lookahead == true && InputParams->LADepth < 9) {
-      CO3Params->ScenarioInfo = 3;
-      info("\tScenario: REMOTE GAMING");
-    } else if ((QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC ||
-                QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1) &&
-               InputParams->Lookahead == true) {
-      CO3Params->ScenarioInfo = 4;
-      info("\tScenario: GAME STREAMING");
-    } else if (InputParams->Lookahead == false ||
-               (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC &&
-                InputParams->Lookahead == true)) {
-      CO3Params->ScenarioInfo = 3;
-      info("\tScenario: REMOTE GAMING");
     }
 
     if (QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_CQP) {
