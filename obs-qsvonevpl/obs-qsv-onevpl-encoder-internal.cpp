@@ -56,6 +56,12 @@ void QSVEncoder::InitSystemMemorySurfacePool() {
     SystemMemSurface S = {};
     S.Surface.Info = FI;
 
+    if constexpr (requires (mfxFrameInfo fi) { fi.VideoFullRange; }) {
+      if (VideoSignalInfo) {
+        S.Surface.Info.VideoFullRange = VideoSignalInfo->VideoFullRange;
+      }
+    }
+
     mfxU32 Align = FI.Width;
     mfxU32 Pitch = Align + ((Align % 16) ? (16 - Align % 16) : 0);
     mfxU32 YSize = Pitch * FI.Height;
@@ -1522,6 +1528,11 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   VideoSignalParams->MatrixCoefficients =
       static_cast<mfxU16>(InputParams->MatrixCoefficients);
 #endif
+
+  if constexpr (requires (mfxFrameInfo fi) { fi.VideoFullRange; }) {
+    QSVEncodeParams.mfx.FrameInfo.VideoFullRange =
+        static_cast<mfxU16>(InputParams->VideoFullRange);
+  }
 
   if (InputParams->MaxContentLightLevel > 0) {
     auto ColourVolumeParams =
