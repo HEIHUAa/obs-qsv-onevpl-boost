@@ -25,6 +25,9 @@ public:
   mfxStatus GetVPLVersion(mfxVersion &);
   mfxStatus Init(struct encoder_params *InputParams, enum codec_enum Codec,
                  bool IsTextureEncoder);
+  mfxStatus EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
+                                    uint32_t *FrameLinesize,
+                                    mfxBitstream **Bitstream);
   mfxStatus EncodeFrame(mfxU64 TS, uint8_t **FrameData, uint32_t *FrameLinesize,
                         mfxBitstream **Bitstream);
   mfxStatus EncodeTexture(mfxU64 TS, void *TextureHandle, uint64_t LockKey,
@@ -37,6 +40,7 @@ protected:
   typedef struct Task {
     mfxBitstream Bitstream;
     mfxSyncPoint SyncPoint;
+    mfxFrameSurface1 *Surface;
   } Task;
 
   mfxStatus CreateSession(enum codec_enum Codec, [[maybe_unused]] void **Data,
@@ -49,6 +53,8 @@ protected:
 
   mfxStatus GetVideoParam(enum codec_enum Codec);
   mfxStatus InitTexturePool();
+  void InitSystemMemorySurfacePool();
+  void ReleaseSystemMemorySurfacePool();
   mfxStatus InitBitstreamBuffer(enum codec_enum Codec);
   void ReleaseBitstream();
   mfxStatus InitTaskPool(enum codec_enum Codec);
@@ -128,7 +134,13 @@ private:
 
   mfxExtVppAuxData* QSVProcessingAuxData;
   
-  mfxFrameAllocRequest QSVAllocateRequest;
+  mfxFrameAllocRequest QSVAllocateRequest{};
+
+  struct SystemMemSurface {
+    mfxFrameSurface1 Surface{};
+  };
+  std::vector<SystemMemSurface> QSVSystemMemPool;
+  mfxU16 QSVSystemMemPoolSize{};
 
   bool QSVIsTextureEncoder;
   mfxMemoryInterface *QSVMemoryInterface{};

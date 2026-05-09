@@ -18,6 +18,51 @@ QSVEncoder::~QSVEncoder() {
   if (QSVEncode || QSVProcessing) {
     ClearData();
   }
+  ReleaseSystemMemorySurfacePool();
+}
+
+void QSVEncoder::InitSystemMemorySurfacePool() {
+  if (!QSVEncode || QSVIsTextureEncoder)
+    return;
+
+  mfxFrameAllocRequest Request[2] = {};
+  mfxStatus Sts = QSVEncode->QueryIOSurf(&QSVEncodeParams, Request);
+  if (Sts != MFX_ERR_NONE) {
+    warn("QueryIOSurf failed: %d, using default 4 surfaces", Sts);
+    QSVSystemMemPoolSize = 4;
+  } else {
+    QSVSystemMemPoolSize = Request[0].NumFrameSuggested;
+    if (QSVSystemMemPoolSize < 4)
+      QSVSystemMemPoolSize = 4;
+  }
+
+  info("\tSystem memory surface pool size: %d", QSVSystemMemPoolSize);
+
+  mfxFrameInfo &FI = QSVEncodeParams.mfx.FrameInfo;
+  for (mfxU16 i = 0; i < QSVSystemMemPoolSize; i++) {
+    SystemMemSurface S = {};
+    S.Surface.Info = FI;
+    mfxU32 Align = FI.Width;
+    mfxU32 Pitch = Align + ((Align % 16) ? (16 - Align % 16) : 0);
+    mfxU32 YSize = Pitch * FI.Height;
+    mfxU32 UVSize = Pitch * (FI.Height / 2);
+    mfxU8 *Buffer = new mfxU8[YSize + UVSize];
+    S.Surface.Data.Y = Buffer;
+    S.Surface.Data.UV = Buffer + YSize;
+    S.Surface.Data.Pitch = static_cast<mfxU16>(Pitch);
+    QSVSystemMemPool.push_back(std::move(S));
+  }
+}
+
+void QSVEncoder::ReleaseSystemMemorySurfacePool() {
+  for (auto &S : QSVSystemMemPool) {
+    delete[] S.Surface.Data.Y;
+    S.Surface.Data.Y = nullptr;
+    S.Surface.Data.UV = nullptr;
+  }
+  QSVSystemMemPool.clear();
+  QSVSystemMemPoolSize = 0;
+  QSVSystemMemPoolIdx = 0;
 }
 
 mfxStatus QSVEncoder::GetVPLVersion(mfxVersion &Version) {
@@ -344,6 +389,8 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
             "Init(): MFXVideoENCODE_Init error after parameter retries");
       }
     }
+
+    InitSystemMemorySurfacePool();
 
     Status = InitTexturePool();
     info("\tInitTexturePool status:   %d", Status);
@@ -1715,6 +1762,10 @@ mfxStatus QSVEncoder::InitTaskPool([[maybe_unused]] enum codec_enum Codec) {
            NewTask.Bitstream.MaxLength / 1000);
 
       QSVTaskPool.push_back(NewTask);
+
+      if (!QSVIsTextureEncoder && i < static_cast<int>(QSVSystemMemPool.size())) {
+        QSVTaskPool[i].Surface = &QSVSystemMemPool[i].Surface;
+      }
     }
 
     info("\tTaskPool count: %d", QSVTaskPool.size());
@@ -1935,6 +1986,76 @@ void QSVEncoder::LoadFrameData(mfxFrameSurface1 *&Surface, uint8_t **FrameData,
   }
 }
 
+mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
+                                              uint32_t *FrameLinesize,
+                                              mfxBitstream **Bitstream) {
+  mfxStatus Status = MFX_ERR_NONE, SyncStatus = MFX_ERR_NONE;
+  *Bitstream = nullptr;
+  int TaskID = 0;
+
+  while (GetFreeTaskIndex(&TaskID) == MFX_ERR_NOT_FOUND) {
+    do {
+      SyncStatus = MFXVideoCORE_SyncOperation(
+          QSVSession, QSVTaskPool[QSVSyncTaskID].SyncPoint, 100);
+      if (SyncStatus < MFX_ERR_NONE) {
+        warn("Encode.EncodeSync error: %d", SyncStatus);
+      }
+    } while (SyncStatus == MFX_WRN_IN_EXECUTION);
+
+    mfxU8 *DataTemp = std::move(QSVBitstream.Data);
+    QSVBitstream = std::move(QSVTaskPool[QSVSyncTaskID].Bitstream);
+
+    QSVTaskPool[QSVSyncTaskID].Bitstream.Data = std::move(DataTemp);
+    QSVTaskPool[QSVSyncTaskID].Bitstream.DataLength = 0;
+    QSVTaskPool[QSVSyncTaskID].Bitstream.DataOffset = 0;
+    QSVTaskPool[QSVSyncTaskID].SyncPoint = nullptr;
+    TaskID = std::move(QSVSyncTaskID);
+    *Bitstream = std::move(&QSVBitstream);
+  }
+
+  mfxFrameSurface1 *EncodeSurface = QSVTaskPool[TaskID].Surface;
+  if (!EncodeSurface) {
+    error("System memory surface is null for task %d", TaskID);
+    throw std::runtime_error("Encode(): System memory surface is null");
+  }
+
+  EncodeSurface->Data.TimeStamp = TS;
+  LoadFrameData(EncodeSurface, std::move(FrameData),
+                std::move(FrameLinesize));
+  QSVTaskPool[TaskID].Bitstream.TimeStamp = std::move(TS);
+
+  for (;;) {
+    Status = QSVEncode->EncodeFrameAsync(
+        nullptr, EncodeSurface, &QSVTaskPool[TaskID].Bitstream,
+        &QSVTaskPool[TaskID].SyncPoint);
+
+    if (MFX_ERR_NONE == Status) {
+      break;
+    } else if (MFX_ERR_NONE < Status && !QSVTaskPool[TaskID].SyncPoint) {
+      if (MFX_WRN_DEVICE_BUSY == Status)
+        Sleep(1);
+    } else if (MFX_ERR_NONE < Status && QSVTaskPool[TaskID].SyncPoint) {
+      Status = MFX_ERR_NONE;
+      break;
+    } else if (MFX_ERR_NOT_ENOUGH_BUFFER == Status ||
+               MFX_ERR_MORE_BITSTREAM == Status) {
+      ChangeBitstreamSize(
+          static_cast<mfxU32>(QSVBitstream.MaxLength * 2));
+      warn("The bitstream buffer size is too small. The size has been "
+           "increased by 2 "
+           "times. New value: %d KB",
+           (QSVBitstream.MaxLength * 2 / 8 / 1000));
+    } else if (MFX_ERR_MORE_DATA == Status) {
+      break;
+    } else {
+      error("Error code: %d", Status);
+      break;
+    }
+  }
+
+  return Status;
+}
+
 mfxStatus QSVEncoder::GetFreeTaskIndex(int *TaskID) {
   if (!QSVTaskPool.empty()) {
     for (int i = 0; i < QSVTaskPool.size(); i++) {
@@ -2071,6 +2192,10 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
 mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
                                   uint32_t *FrameLinesize,
                                   mfxBitstream **Bitstream) {
+  if (!QSVIsTextureEncoder) {
+    return EncodeFrameSystemMemory(TS, FrameData, FrameLinesize, Bitstream);
+  }
+
   mfxStatus Status = MFX_ERR_NONE, SyncStatus = MFX_ERR_NONE;
   *Bitstream = nullptr;
   int TaskID = 0;
