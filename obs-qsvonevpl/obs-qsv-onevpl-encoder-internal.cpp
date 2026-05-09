@@ -227,7 +227,7 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     Status = QSVEncode->Init(&QSVEncodeParams);
     info("\tMFXVideoENCODE_Init status: %d", Status);
 
-    if (Status != MFX_ERR_NONE) {
+    if (Status < MFX_ERR_NONE) {
       mfxU16 origNumRefFrame = QSVEncodeParams.mfx.NumRefFrame;
       mfxU16 origGopRefDist = QSVEncodeParams.mfx.GopRefDist;
 
