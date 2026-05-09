@@ -221,6 +221,7 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
 
     Status = SetEncoderParams(InputParams, Codec);
     info("\tSetEncoderParams status:  %d", Status);
+
     Status = QSVEncode->Init(&QSVEncodeParams);
     info("\tMFXVideoENCODE_Init status: %d", Status);
 
@@ -232,7 +233,40 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
         QSVEncode->Close();
         CO3Params->ScenarioInfo = 0;
         Status = QSVEncode->Init(&QSVEncodeParams);
-        info("\tMFXVideoENCODE_Init retry status: %d", Status);
+        info("\tMFXVideoENCODE_Init retry (ScenarioInfo) status: %d", Status);
+      }
+      auto CO2Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
+      if (Status != MFX_ERR_NONE && CO2Params &&
+          CO2Params->ExtBRC == MFX_CODINGOPTION_ON) {
+        warn("MFXVideoENCODE_Init failed, retrying with ExtBRC=OFF");
+        QSVEncode->Close();
+        CO2Params->ExtBRC = MFX_CODINGOPTION_OFF;
+        Status = QSVEncode->Init(&QSVEncodeParams);
+        info("\tMFXVideoENCODE_Init retry (ExtBRC OFF) status: %d", Status);
+      }
+      if (Status != MFX_ERR_NONE &&
+          QSVEncodeParams.mfx.NumRefFrame > 4) {
+        warn("MFXVideoENCODE_Init failed, retrying with NumRefFrame=4");
+        QSVEncode->Close();
+        QSVEncodeParams.mfx.NumRefFrame = 4;
+        auto COParams = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
+        if (COParams) {
+          COParams->MaxDecFrameBuffering = 4;
+        }
+        Status = QSVEncode->Init(&QSVEncodeParams);
+        info("\tMFXVideoENCODE_Init retry (NumRefFrame=4) status: %d", Status);
+      }
+      if (Status != MFX_ERR_NONE &&
+          QSVEncodeParams.mfx.GopRefDist > 4) {
+        warn("MFXVideoENCODE_Init failed, retrying with GOPRefDist=4");
+        QSVEncode->Close();
+        QSVEncodeParams.mfx.GopRefDist = 4;
+        Status = QSVEncode->Init(&QSVEncodeParams);
+        info("\tMFXVideoENCODE_Init retry (GOPRefDist=4) status: %d", Status);
+      }
+      if (Status != MFX_ERR_NONE) {
+        throw std::runtime_error(
+            "Init(): MFXVideoENCODE_Init error after parameter retries");
       }
     }
 
@@ -1424,9 +1458,26 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     if (CO3Params->AdaptiveLTR == MFX_CODINGOPTION_ON) {
       CO3Params->AdaptiveLTR = MFX_CODINGOPTION_OFF;
     }
+    if (CO3Params->FadeDetection == MFX_CODINGOPTION_ON) {
+      CO3Params->FadeDetection = MFX_CODINGOPTION_OFF;
+    }
     auto COParams = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
     if (COParams->RateDistortionOpt == MFX_CODINGOPTION_ON) {
       COParams->RateDistortionOpt = MFX_CODINGOPTION_OFF;
+    }
+    auto CO2Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
+    if (CO2Params->ExtBRC == MFX_CODINGOPTION_ON) {
+      CO2Params->ExtBRC = MFX_CODINGOPTION_OFF;
+    }
+    if (CO2Params->BitrateLimit == MFX_CODINGOPTION_ON) {
+      CO2Params->BitrateLimit = MFX_CODINGOPTION_OFF;
+    }
+    // Re-query with adjusted params to verify
+    mfxVideoParam ReValidParams = {};
+    memcpy(&ReValidParams, &QSVEncodeParams, sizeof(mfxVideoParam));
+    mfxStatus ReStatus = QSVEncode->Query(&QSVEncodeParams, &ReValidParams);
+    if (ReStatus == MFX_ERR_NONE) {
+      Status = MFX_ERR_NONE;
     }
   } else if (Status < MFX_ERR_NONE) {
     throw std::runtime_error("SetEncoderParams(): Query params error");
