@@ -107,9 +107,7 @@ mfxStatus QSVEncoder::CreateSession([[maybe_unused]] enum codec_enum Codec,
                                     [[maybe_unused]] void **Data, int GPUNum) {
   mfxStatus Status = MFX_ERR_NONE;
   try {
-    // First attempt: minimal filters (like OBS official approach)
-    // This works on ALL hardware (UHD 600/620 through Arc) as it only uses
-    // basic properties that every implementation understands
+    // First attempt: includes mfx-gen impl name for proper 10bit/HEVC support
     {
       QSVLoader = MFXLoad();
       if (QSVLoader == nullptr) {
@@ -132,15 +130,23 @@ mfxStatus QSVEncoder::CreateSession([[maybe_unused]] enum codec_enum Codec,
           reinterpret_cast<const mfxU8 *>("mfxImplDescription.VendorID"),
           QSVLoaderVariant[1]);
 
-#if defined(_WIN32) || defined(_WIN64)
       QSVLoaderConfig[2] = MFXCreateConfig(QSVLoader);
-      QSVLoaderVariant[2].Type = MFX_VARIANT_TYPE_U32;
-      QSVLoaderVariant[2].Data.U32 = MFX_ACCEL_MODE_VIA_D3D11;
+      QSVLoaderVariant[2].Type = MFX_VARIANT_TYPE_PTR;
+      QSVLoaderVariant[2].Data.Ptr = mfxHDL("mfx-gen");
       MFXSetConfigFilterProperty(
           QSVLoaderConfig[2],
+          reinterpret_cast<const mfxU8 *>("mfxImplDescription.ImplName"),
+          QSVLoaderVariant[2]);
+
+#if defined(_WIN32) || defined(_WIN64)
+      QSVLoaderConfig[3] = MFXCreateConfig(QSVLoader);
+      QSVLoaderVariant[3].Type = MFX_VARIANT_TYPE_U32;
+      QSVLoaderVariant[3].Data.U32 = MFX_ACCEL_MODE_VIA_D3D11;
+      MFXSetConfigFilterProperty(
+          QSVLoaderConfig[3],
           reinterpret_cast<const mfxU8 *>(
               "mfxImplDescription.AccelerationMode"),
-          QSVLoaderVariant[2]);
+          QSVLoaderVariant[3]);
 #endif
 
       Status = MFXCreateSession(QSVLoader, GPUNum, &QSVSession);
