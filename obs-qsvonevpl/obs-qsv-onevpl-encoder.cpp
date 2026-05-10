@@ -118,8 +118,7 @@ bool UpdateEncoderParams(void *Data, obs_data_t *Params) {
         static_cast<mfxU16>(obs_data_get_int(Params, "cqp"));
     Context->EncoderParams.QPB =
         static_cast<mfxU16>(obs_data_get_int(Params, "cqp"));
-  } else if (std::strcmp(bitrate_control, "ICQ") == 0 ||
-             std::strcmp(bitrate_control, "LA_ICQ") == 0) {
+  } else if (std::strcmp(bitrate_control, "ICQ") == 0) {
     Context->EncoderParams.ICQQuality =
         static_cast<mfxU16>(obs_data_get_int(Params, "icq_quality"));
   }

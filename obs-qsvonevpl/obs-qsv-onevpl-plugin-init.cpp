@@ -18,7 +18,6 @@ static const struct qsv_rate_control_info qsv_rate_control_info_list[] = {
     {"AVBR", MFX_PLATFORM_HASWELL},
     {"ICQ", MFX_PLATFORM_HASWELL},
     {"VCM", MFX_PLATFORM_SKYLAKE},
-    {"LA_ICQ", MFX_PLATFORM_HASWELL},
     {"QVBR", MFX_PLATFORM_DG2},
     {nullptr, 0}};
 
@@ -1398,12 +1397,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.RateControl = MFX_RATECONTROL_ICQ;
   } else if (std::strcmp(RateControlData, "VCM") == 0) {
     Context->EncoderParams.RateControl = MFX_RATECONTROL_VCM;
-  } else if (std::strcmp(RateControlData, "LA_ICQ") == 0) {
-    Context->EncoderParams.RateControl = MFX_RATECONTROL_ICQ;
-    Context->EncoderParams.Lookahead = true;
-    if (Context->EncoderParams.LADepth == 0) {
-      Context->EncoderParams.LADepth = 60;
-    }
   } else if (std::strcmp(RateControlData, "QVBR") == 0) {
     Context->EncoderParams.RateControl = MFX_RATECONTROL_QVBR;
   }
