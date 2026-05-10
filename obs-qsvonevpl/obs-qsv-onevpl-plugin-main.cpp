@@ -78,54 +78,6 @@ extern obs_encoder_info HEVCTextureEncoderInfo;
 
 
 bool obs_module_load([[maybe_unused]] void) {
-  blog(LOG_INFO, "[QSV encoder: 'libvpl'] === Locale Debug ===");
-  blog(LOG_INFO, "[QSV encoder: 'libvpl'] Working keys (should be translated):");
-  blog(LOG_INFO, "[QSV encoder: 'libvpl']   obs_module_text('TargetUsage')      = '%s'",
-       obs_module_text("TargetUsage"));
-  blog(LOG_INFO, "[QSV encoder: 'libvpl']   obs_module_text('Bitrate')           = '%s'",
-       obs_module_text("Bitrate"));
-  blog(LOG_INFO, "[QSV encoder: 'libvpl']   obs_module_text('RateControl')       = '%s'",
-       obs_module_text("RateControl"));
-  blog(LOG_INFO, "[QSV encoder: 'libvpl'] Problem keys (user reports NOT translated):");
-  blog(LOG_INFO, "[QSV encoder: 'libvpl']   obs_module_text('Lookahead')         = '%s'",
-       obs_module_text("Lookahead"));
-  blog(LOG_INFO, "[QSV encoder: 'libvpl']   obs_module_text('LookaheadDownSampling') = '%s'",
-       obs_module_text("LookaheadDownSampling"));
-  blog(LOG_INFO, "[QSV encoder: 'libvpl']   obs_module_text('Lookahead latency') = '%s'",
-       obs_module_text("Lookahead latency"));
-  blog(LOG_INFO, "[QSV encoder: 'libvpl']   obs_module_text('LookaheadDepth')    = '%s'",
-       obs_module_text("LookaheadDepth"));
-  blog(LOG_INFO, "[QSV encoder: 'libvpl']   obs_module_text('Detail')            = '%s'",
-       obs_module_text("Detail"));
-  blog(LOG_INFO, "[QSV encoder: 'libvpl']   obs_module_text('Denoise mode')      = '%s'",
-       obs_module_text("Denoise mode"));
-  blog(LOG_INFO, "[QSV encoder: 'libvpl']   obs_module_text('Video processing filters') = '%s'",
-       obs_module_text("Video processing filters"));
-  blog(LOG_INFO, "[QSV encoder: 'libvpl']   obs_module_text('Video processing mode') = '%s'",
-       obs_module_text("Video processing mode"));
-  blog(LOG_INFO, "[QSV encoder: 'libvpl']   obs_module_text('LowPower mode')     = '%s'",
-       obs_module_text("LowPower mode"));
-  blog(LOG_INFO, "[QSV encoder: 'libvpl']   obs_module_text('ScenarioInfo')      = '%s'",
-       obs_module_text("ScenarioInfo"));
-  blog(LOG_INFO, "[QSV encoder: 'libvpl']   obs_module_text('ContentInfo')       = '%s'",
-       obs_module_text("ContentInfo"));
-  blog(LOG_INFO, "[QSV encoder: 'libvpl'] Option values:");
-  blog(LOG_INFO, "[QSV encoder: 'libvpl']   obs_module_text('AUTO')              = '%s'",
-       obs_module_text("AUTO"));
-  blog(LOG_INFO, "[QSV encoder: 'libvpl']   obs_module_text('HQ')                = '%s'",
-       obs_module_text("HQ"));
-  blog(LOG_INFO, "[QSV encoder: 'libvpl']   obs_module_text('LP')                = '%s'",
-       obs_module_text("LP"));
-  blog(LOG_INFO, "[QSV encoder: 'libvpl']   obs_module_text('PRE ENC')           = '%s'",
-       obs_module_text("PRE ENC"));
-  blog(LOG_INFO, "[QSV encoder: 'libvpl']   obs_module_text('POST ENC')          = '%s'",
-       obs_module_text("POST ENC"));
-  blog(LOG_INFO, "[QSV encoder: 'libvpl']   obs_module_text('ON')                = '%s'",
-       obs_module_text("ON"));
-  blog(LOG_INFO, "[QSV encoder: 'libvpl']   obs_module_text('OFF')               = '%s'",
-       obs_module_text("OFF"));
-  blog(LOG_INFO, "[QSV encoder: 'libvpl'] === End Locale Debug ===");
-
   AdaptersCount = MAX_ADAPTERS;
   GetAdaptersInfo(AdaptersInfo, &AdaptersCount);
 
