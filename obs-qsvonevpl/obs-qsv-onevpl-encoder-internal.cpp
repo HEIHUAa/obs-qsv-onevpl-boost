@@ -130,16 +130,24 @@ mfxStatus QSVEncoder::CreateSession([[maybe_unused]] enum codec_enum Codec,
           reinterpret_cast<const mfxU8 *>("mfxImplDescription.VendorID"),
           QSVLoaderVariant[1]);
 
+      QSVLoaderConfig[2] = MFXCreateConfig(QSVLoader);
+      QSVLoaderVariant[2].Type = MFX_VARIANT_TYPE_PTR;
+      QSVLoaderVariant[2].Data.Ptr = mfxHDL("mfx-gen");
+      MFXSetConfigFilterProperty(
+          QSVLoaderConfig[2],
+          reinterpret_cast<const mfxU8 *>("mfxImplDescription.ImplName"),
+          QSVLoaderVariant[2]);
+
 #if defined(_WIN32) || defined(_WIN64)
       if (QSVIsTextureEncoder) {
-        QSVLoaderConfig[2] = MFXCreateConfig(QSVLoader);
-        QSVLoaderVariant[2].Type = MFX_VARIANT_TYPE_U32;
-        QSVLoaderVariant[2].Data.U32 = MFX_ACCEL_MODE_VIA_D3D11;
+        QSVLoaderConfig[3] = MFXCreateConfig(QSVLoader);
+        QSVLoaderVariant[3].Type = MFX_VARIANT_TYPE_U32;
+        QSVLoaderVariant[3].Data.U32 = MFX_ACCEL_MODE_VIA_D3D11;
         MFXSetConfigFilterProperty(
-            QSVLoaderConfig[2],
+            QSVLoaderConfig[3],
             reinterpret_cast<const mfxU8 *>(
                 "mfxImplDescription.AccelerationMode"),
-            QSVLoaderVariant[2]);
+            QSVLoaderVariant[3]);
       }
 #endif
 
