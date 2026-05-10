@@ -1891,9 +1891,11 @@ mfxStatus QSVEncoder::InitTaskPool([[maybe_unused]] enum codec_enum Codec) {
 
       QSVTaskPool.push_back(NewTask);
 
+#ifdef QSV_UHD600_SUPPORT
       if (!QSVIsTextureEncoder && i < static_cast<int>(QSVSystemMemPool.size())) {
         QSVTaskPool[i].Surface = &QSVSystemMemPool[i].Surface;
       }
+#endif
     }
 
     info("\tTaskPool count: %d", QSVTaskPool.size());
