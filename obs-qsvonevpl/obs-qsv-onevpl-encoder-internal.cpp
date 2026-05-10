@@ -139,14 +139,16 @@ mfxStatus QSVEncoder::CreateSession([[maybe_unused]] enum codec_enum Codec,
           QSVLoaderVariant[2]);
 
 #if defined(_WIN32) || defined(_WIN64)
-      QSVLoaderConfig[3] = MFXCreateConfig(QSVLoader);
-      QSVLoaderVariant[3].Type = MFX_VARIANT_TYPE_U32;
-      QSVLoaderVariant[3].Data.U32 = MFX_ACCEL_MODE_VIA_D3D11;
-      MFXSetConfigFilterProperty(
-          QSVLoaderConfig[3],
-          reinterpret_cast<const mfxU8 *>(
-              "mfxImplDescription.AccelerationMode"),
-          QSVLoaderVariant[3]);
+      if (QSVIsTextureEncoder) {
+        QSVLoaderConfig[3] = MFXCreateConfig(QSVLoader);
+        QSVLoaderVariant[3].Type = MFX_VARIANT_TYPE_U32;
+        QSVLoaderVariant[3].Data.U32 = MFX_ACCEL_MODE_VIA_D3D11;
+        MFXSetConfigFilterProperty(
+            QSVLoaderConfig[3],
+            reinterpret_cast<const mfxU8 *>(
+                "mfxImplDescription.AccelerationMode"),
+            QSVLoaderVariant[3]);
+      }
 #endif
 
       Status = MFXCreateSession(QSVLoader, GPUNum, &QSVSession);
@@ -186,14 +188,16 @@ mfxStatus QSVEncoder::CreateSession([[maybe_unused]] enum codec_enum Codec,
           QSVLoaderVariant[2]);
 
 #if defined(_WIN32) || defined(_WIN64)
-      QSVLoaderConfig[3] = MFXCreateConfig(QSVLoader);
-      QSVLoaderVariant[3].Type = MFX_VARIANT_TYPE_U32;
-      QSVLoaderVariant[3].Data.U32 = MFX_ACCEL_MODE_VIA_D3D11;
-      MFXSetConfigFilterProperty(
-          QSVLoaderConfig[3],
-          reinterpret_cast<const mfxU8 *>(
-              "mfxImplDescription.AccelerationMode"),
-          QSVLoaderVariant[3]);
+      if (QSVIsTextureEncoder) {
+        QSVLoaderConfig[3] = MFXCreateConfig(QSVLoader);
+        QSVLoaderVariant[3].Type = MFX_VARIANT_TYPE_U32;
+        QSVLoaderVariant[3].Data.U32 = MFX_ACCEL_MODE_VIA_D3D11;
+        MFXSetConfigFilterProperty(
+            QSVLoaderConfig[3],
+            reinterpret_cast<const mfxU8 *>(
+                "mfxImplDescription.AccelerationMode"),
+            QSVLoaderVariant[3]);
+      }
 #endif
 
       Status = MFXCreateSession(QSVLoader, GPUNum, &QSVSession);
