@@ -107,7 +107,7 @@ mfxStatus QSVEncoder::CreateSession([[maybe_unused]] enum codec_enum Codec,
                                     [[maybe_unused]] void **Data, int GPUNum) {
   mfxStatus Status = MFX_ERR_NONE;
   try {
-    // First attempt: full hardware filters matching ma3uk reference
+    // First attempt: basic hardware filters
     {
       QSVLoader = MFXLoad();
       if (QSVLoader == nullptr) {
@@ -119,7 +119,7 @@ mfxStatus QSVEncoder::CreateSession([[maybe_unused]] enum codec_enum Codec,
       QSVLoaderVariant[0].Data.U32 = MFX_IMPL_TYPE_HARDWARE;
       MFXSetConfigFilterProperty(
           QSVLoaderConfig[0],
-          reinterpret_cast<const mfxU8 *>("mfxImplDescription.Impl.mfxImplType"),
+          reinterpret_cast<const mfxU8 *>("mfxImplDescription.Impl"),
           QSVLoaderVariant[0]);
 
       QSVLoaderConfig[1] = MFXCreateConfig(QSVLoader);
@@ -138,38 +138,18 @@ mfxStatus QSVEncoder::CreateSession([[maybe_unused]] enum codec_enum Codec,
           reinterpret_cast<const mfxU8 *>("mfxImplDescription.ImplName"),
           QSVLoaderVariant[2]);
 
-      QSVLoaderConfig[3] = MFXCreateConfig(QSVLoader);
-      QSVLoaderVariant[3].Type = MFX_VARIANT_TYPE_U32;
-      QSVLoaderVariant[3].Data.U32 = MFX_PRIORITY_HIGH;
-      MFXSetConfigFilterProperty(
-          QSVLoaderConfig[3],
-          reinterpret_cast<const mfxU8 *>(
-              "mfxInitializationParam.mfxExtThreadsParam.Priority"),
-          QSVLoaderVariant[3]);
-
 #if defined(_WIN32) || defined(_WIN64)
       if (QSVIsTextureEncoder) {
-        QSVLoaderConfig[4] = MFXCreateConfig(QSVLoader);
-        QSVLoaderVariant[4].Type = MFX_VARIANT_TYPE_U32;
-        QSVLoaderVariant[4].Data.U32 = MFX_ACCEL_MODE_VIA_D3D11;
+        QSVLoaderConfig[3] = MFXCreateConfig(QSVLoader);
+        QSVLoaderVariant[3].Type = MFX_VARIANT_TYPE_U32;
+        QSVLoaderVariant[3].Data.U32 = MFX_ACCEL_MODE_VIA_D3D11;
         MFXSetConfigFilterProperty(
-            QSVLoaderConfig[4],
+            QSVLoaderConfig[3],
             reinterpret_cast<const mfxU8 *>(
                 "mfxImplDescription.AccelerationMode"),
-            QSVLoaderVariant[4]);
+            QSVLoaderVariant[3]);
       }
 #endif
-
-      QSVLoaderConfig[5] = MFXCreateConfig(QSVLoader);
-      QSVLoaderVariant[5].Type = MFX_VARIANT_TYPE_U32;
-      QSVLoaderVariant[5].Data.U32 = (Codec == QSV_CODEC_AV1)    ? MFX_CODEC_AV1
-                                     : (Codec == QSV_CODEC_HEVC) ? MFX_CODEC_HEVC
-                                                                 : MFX_CODEC_AVC;
-      MFXSetConfigFilterProperty(
-          QSVLoaderConfig[5],
-          reinterpret_cast<const mfxU8 *>(
-              "mfxImplDescription.mfxEncoderDescription.encoder.CodecID"),
-          QSVLoaderVariant[5]);
 
       Status = MFXCreateSession(QSVLoader, GPUNum, &QSVSession);
     }
@@ -790,6 +770,8 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     QSVEncodeParams.mfx.CodecProfile |=
         (InputParams->CodecProfileTier << 8);
   }
+  info("\tCodecProfile: %d (tier %s)", QSVEncodeParams.mfx.CodecProfile,
+       InputParams->CodecProfileTier == MFX_TIER_HEVC_HIGH ? "high" : "main");
 
   /*This is a multiplier to bypass the limitation of the 16 bit value of
                   variables*/
@@ -1155,7 +1137,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
          GetCodingOptStatus(CO2Params->BitrateLimit).c_str());
   }
 
-  if (CO3Enabled == 1) {
+  if (CO3Enabled == 1 && !InputParams->VideoFormat10bit) {
     auto CO3Params = QSVEncodeParams.AddExtBuffer<mfxExtCodingOption3>();
     CO3Params->Header.BufferId = MFX_EXTBUFF_CODING_OPTION3;
     CO3Params->Header.BufferSz = sizeof(mfxExtCodingOption3);
