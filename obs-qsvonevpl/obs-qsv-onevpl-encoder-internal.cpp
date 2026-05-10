@@ -1032,6 +1032,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     if (QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_CBR ||
         QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_VBR ||
         QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_AVBR ||
+        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_ICQ ||
         QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_QVBR) {
       if (InputParams->Lookahead == true) {
         CO2Params->LookAheadDepth = InputParams->LADepth;
@@ -1110,6 +1111,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     if (InputParams->RateControl == MFX_RATECONTROL_CBR ||
         InputParams->RateControl == MFX_RATECONTROL_VBR ||
         InputParams->RateControl == MFX_RATECONTROL_AVBR ||
+        InputParams->RateControl == MFX_RATECONTROL_ICQ ||
         InputParams->RateControl == MFX_RATECONTROL_QVBR) {
       CO2Params->LookAheadDS = MFX_LOOKAHEAD_DS_OFF;
       if (InputParams->LookAheadDS.has_value() == true) {

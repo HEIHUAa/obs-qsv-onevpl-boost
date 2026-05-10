@@ -283,7 +283,7 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
 
   const char *lookahead = obs_data_get_string(Settings, "lookahead");
 
-  bVisible = bIsCBR || bIsVBR || bIsAVBR || bIsQVBR;
+  bVisible = bIsCBR || bIsVBR || bIsAVBR || bIsQVBR || bIsICQ;
   Prop = obs_properties_get(Properties, "lookahead");
   obs_property_set_visible(Prop, bVisible);
 
