@@ -919,17 +919,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
   QSVEncodeParams.mfx.GopRefDist = static_cast<mfxU16>(InputParams->GOPRefDist);
 
-  if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1 &&
-      InputParams->Lookahead == false && InputParams->EncTools == true &&
-      std::find(
-          std::begin(ListAllowedGopRefDist), std::end(ListAllowedGopRefDist),
-          QSVEncodeParams.mfx.GopRefDist) == std::end(ListAllowedGopRefDist)) {
-    QSVEncodeParams.mfx.GopRefDist = 8;
-    blog(LOG_WARNING,
-         "\tThe AV1 Codec without Lookahead cannot be used with EncTools if "
-         "GopRefDist does not "
-         "match the values 1, 2, 4, 8, 16. GOPRefDist automaticaly set to 8.");
-  }
   info("\tGOPRefDist set to: %d frames (%d b-frames)",
        (int)QSVEncodeParams.mfx.GopRefDist,
        (int)(QSVEncodeParams.mfx.GopRefDist == 0

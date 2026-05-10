@@ -561,8 +561,8 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   }
 
   Prop =
-      obs_properties_add_int_slider(Props, "gop_ref_dist", TEXT_GOP_REF_DIST, 1,
-                                    (Codec == QSV_CODEC_AV1) ? 32 : 16, 1);
+      obs_properties_add_int_slider(Props, "gop_ref_dist", TEXT_GOP_REF_DIST, 0,
+                                    32, 1);
   obs_property_set_long_description(
       Prop, TEXT_GOP_REF_DIST_DESC);
   obs_property_long_description(Prop);
