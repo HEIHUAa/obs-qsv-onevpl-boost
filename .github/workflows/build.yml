@@ -80,10 +80,16 @@ jobs:
           }
         working-directory: ${{ github.workspace }}/obs-studio
 
+      - name: Cache CMake Build
+        id: cache-cmake
+        uses: actions/cache@v5
+        with:
+          path: obs-studio/build_x64
+          key: cmake-${{ runner.os }}-${{ env.OBS_VERSION }}-${{ hashFiles('obs-studio/plugins/obs-qsv-onevpl/obs-qsvonevpl/CMakeLists.txt') }}
+
       - name: Configure CMake
-        run: |
-          Get-ChildItem -Path "." -Filter "CMakeCache.txt" -Recurse -Depth 2 | Remove-Item -Force
-          cmake --preset windows-x64 -DQSV_UHD600_SUPPORT=ON -DMEDIASDK_INCLUDE_DIR="${{ github.workspace }}/obs-studio/plugins/${{ env.PLUGIN_NAME }}/MediaSDK/api/include"
+        if: steps.cache-cmake.outputs.cache-hit != 'true'
+        run: cmake --preset windows-x64 -DQSV_UHD600_SUPPORT=ON -DMEDIASDK_INCLUDE_DIR="${{ github.workspace }}/obs-studio/plugins/${{ env.PLUGIN_NAME }}/MediaSDK/api/include"
         working-directory: ${{ github.workspace }}/obs-studio
 
       - name: Build Release (UHD700+)
