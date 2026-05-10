@@ -135,15 +135,15 @@ struct plugin_context {
 #define TEXT_GPU_NUMBER_DESC obs_module_text("GPUNumberDesc")
 
 static const char *const qsv_ratecontrols_h264[] = {"CBR", "VBR", "CQP", "AVBR",
-                                                    "ICQ", "VCM", "LA_ICQ",
+                                                    "ICQ", "VCM",
                                                     "QVBR", 0};
 
 static const char *const qsv_ratecontrols_hevc[] = {"CBR", "VBR", "CQP", "AVBR",
-                                                    "ICQ", "VCM", "LA_ICQ",
+                                                    "ICQ", "VCM",
                                                     "QVBR", 0};
 
 static const char *const qsv_ratecontrols_av1[] = {"CBR", "VBR", "CQP", "AVBR",
-                                                   "ICQ", "LA_ICQ", "QVBR", 0};
+                                                   "ICQ", "QVBR", 0};
 
 static const char *const qsv_profile_names_h264[] = {
     "high", "main", "baseline", "extended", "high10", "high422", 0};

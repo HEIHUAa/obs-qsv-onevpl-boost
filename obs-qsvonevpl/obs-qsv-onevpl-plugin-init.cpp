@@ -243,14 +243,13 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   bool bIsCQP = std::strcmp(rate_control, "CQP") == 0;
   bool bIsICQ = std::strcmp(rate_control, "ICQ") == 0;
   bool bIsVCM = std::strcmp(rate_control, "VCM") == 0;
-  bool bIsLAICQ = std::strcmp(rate_control, "LA_ICQ") == 0;
   bool bIsQVBR = std::strcmp(rate_control, "QVBR") == 0;
 
   bool bVisible = bIsVBR || bIsVCM || bIsQVBR;
   Prop = obs_properties_get(Properties, "max_bitrate");
   obs_property_set_visible(Prop, bVisible);
 
-  bVisible = bIsCQP || bIsICQ || bIsLAICQ;
+  bVisible = bIsCQP || bIsICQ;
   Prop = obs_properties_get(Properties, "bitrate");
   obs_property_set_visible(Prop, !bVisible);
 
@@ -272,11 +271,11 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   if (Prop)
     obs_property_set_visible(Prop, bVisible);
 
-  bVisible = bIsICQ || bIsLAICQ;
+  bVisible = bIsICQ;
   Prop = obs_properties_get(Properties, "icq_quality");
   obs_property_set_visible(Prop, bVisible);
 
-  bVisible = (bIsCBR || bIsVBR || bIsAVBR || bIsVCM || bIsQVBR) && !bIsLAICQ;
+  bVisible = (bIsCBR || bIsVBR || bIsAVBR || bIsVCM || bIsQVBR);
   Prop = obs_properties_get(Properties, "enctools");
   if (bVisible) bVisible = IsFeatureSupported("enc_tools");
   obs_property_set_visible(Prop, bVisible);
@@ -285,15 +284,11 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
 
   const char *lookahead = obs_data_get_string(Settings, "lookahead");
 
-  bVisible = bIsCBR || bIsVBR || bIsAVBR || bIsQVBR || bIsLAICQ;
+  bVisible = bIsCBR || bIsVBR || bIsAVBR || bIsQVBR;
   Prop = obs_properties_get(Properties, "lookahead");
   obs_property_set_visible(Prop, bVisible);
 
-  if (bIsLAICQ) {
-    obs_data_set_string(Settings, "lookahead", "HQ");
-  }
-
-  bool bVisible_lookahead_hq = std::strcmp(lookahead, "HQ") == 0 || bIsLAICQ;
+  bool bVisible_lookahead_hq = std::strcmp(lookahead, "HQ") == 0;
   bool bVisible_lookahead_lp = std::strcmp(lookahead, "LP") == 0;
 
   Prop = obs_properties_get(Properties, "lookahead_ds");
@@ -310,8 +305,7 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
     obs_data_set_string(Settings, "enctools", "OFF");
   }
 
-  bVisible = bIsCBR || bIsVBR || bIsAVBR || bIsVCM || bIsQVBR || bIsICQ ||
-             bIsLAICQ;
+  bVisible = bIsCBR || bIsVBR || bIsAVBR || bIsVCM || bIsQVBR || bIsICQ;
   Prop = obs_properties_get(Properties, "mbbrc");
   obs_property_set_visible(Prop, bVisible);
   if (!bVisible) {
