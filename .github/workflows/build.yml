@@ -113,7 +113,6 @@ jobs:
           New-Item -ItemType Directory -Path "$ReleasePackage/obs-plugins/64bit" -Force
           New-Item -ItemType Directory -Path "$ReleasePackage/data/obs-plugins/$ModuleName/locale" -Force
           Copy-Item "$ReleaseDir/$ModuleName.dll" "$ReleasePackage/obs-plugins/64bit/"
-          Copy-Item "$ReleaseDir/$ModuleName.pdb" "$ReleasePackage/obs-plugins/64bit/"
           Copy-Item "$SourceDir/locale/*.ini" "$ReleasePackage/data/obs-plugins/$ModuleName/locale/"
 
           # Release (UHD600)
@@ -124,14 +123,8 @@ jobs:
           $UHD600Dll = Get-ChildItem -Path "${{ github.workspace }}/obs-studio/build_x64" -Recurse -Filter "obs-qsvonevpl-uhd600.dll" | Select-Object -First 1
           $UHD600Dir = if ($UHD600Dll) { $UHD600Dll.Directory.FullName } else { $UHD600RelDir }
           Copy-Item "$UHD600Dir/obs-qsvonevpl-uhd600.dll" "$UHD600ReleasePackage/obs-plugins/64bit/"
-          if (Test-Path "$UHD600Dir/obs-qsvonevpl-uhd600.pdb") {
-            Copy-Item "$UHD600Dir/obs-qsvonevpl-uhd600.pdb" "$UHD600ReleasePackage/obs-plugins/64bit/"
-          }
           if (Test-Path "$UHD600Dir/libvpl.dll") {
             Copy-Item "$UHD600Dir/libvpl.dll" "$UHD600ReleasePackage/obs-plugins/64bit/"
-          }
-          if (Test-Path "$UHD600Dir/libvpl.pdb") {
-            Copy-Item "$UHD600Dir/libvpl.pdb" "$UHD600ReleasePackage/obs-plugins/64bit/"
           }
           Copy-Item "$SourceDir/locale/*.ini" "$UHD600ReleasePackage/data/obs-plugins/$ModuleName/locale/"
 
