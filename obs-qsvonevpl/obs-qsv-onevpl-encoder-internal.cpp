@@ -1168,10 +1168,12 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CO3Params->MBDisableSkipMap = MFX_CODINGOPTION_ON;
     CO3Params->EnableQPOffset = MFX_CODINGOPTION_ON;
 
+    #ifdef QSV_UHD600_SUPPORT
     CO3Params->BitstreamRestriction = MFX_CODINGOPTION_ON;
     CO3Params->AspectRatioInfoPresent = MFX_CODINGOPTION_ON;
     CO3Params->TimingInfoPresent = MFX_CODINGOPTION_ON;
     CO3Params->OverscanInfoPresent = MFX_CODINGOPTION_ON;
+#endif
 
     CO3Params->LowDelayHrd = GetCodingOpt(InputParams->LowDelayHRD);
     info("\tLowDelayHRD set: %s",
