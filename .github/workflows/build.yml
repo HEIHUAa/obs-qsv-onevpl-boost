@@ -48,12 +48,12 @@ jobs:
         uses: actions/cache@v5
         with:
           path: obs-studio/plugins/${{ env.PLUGIN_NAME }}/libvpl
-          key: onevpl-v2.12.0-${{ runner.os }}
+          key: onevpl-v2.13.0-${{ runner.os }}
 
       - name: Setup oneVPL
         if: steps.cache-onevpl.outputs.cache-hit != 'true'
         run: |
-          git clone --depth 1 --branch v2.12.0 https://github.com/intel/libvpl.git libvpl
+          git clone --depth 1 --branch v2.13.0 https://github.com/intel/libvpl.git libvpl
           # Fix MSVC encoding issue: remove non-ASCII chars (® symbol) from dispatcher log header
           $file = "libvpl/libvpl/src/mfx_dispatcher_vpl_log.h"
           (Get-Content $file -Raw) -replace '[^\x20-\x7E\n\r\t]', '' | Set-Content $file
