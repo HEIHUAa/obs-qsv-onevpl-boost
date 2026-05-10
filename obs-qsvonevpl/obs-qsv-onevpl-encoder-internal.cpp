@@ -233,47 +233,13 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
   info("\tEncoder type: %s",
        QSVIsTextureEncoder ? "Texture import" : "Frame import");
   try {
+    if (QSVIsTextureEncoder) {
 #if defined(_WIN32) || defined(_WIN64)
-    HWManager = std::make_unique<class HWManager>();
+      HWManager = std::make_unique<class HWManager>();
 #endif
+    }
 
     Status = CreateSession(Codec, nullptr, InputParams->GPUNum);
-
-    if (QSVIsTextureEncoder) {
-      mfxMemoryInterface *TestMI = nullptr;
-      mfxStatus MIStatus = MFXGetMemoryInterface(QSVSession, &TestMI);
-      if (MIStatus < MFX_ERR_NONE) {
-        error("MFXGetMemoryInterface not supported (%d)", MIStatus);
-        MFXClose(QSVSession);
-        MFXDispReleaseImplDescription(QSVLoader, nullptr);
-        MFXUnload(QSVLoader);
-        QSVSession = nullptr;
-        QSVLoader = nullptr;
-        throw std::runtime_error(
-            "Init(): MFXGetMemoryInterface not supported");
-      }
-    }
-
-#if defined(_WIN32) || defined(_WIN64)
-    if (HWManager->HWDeviceHandle == nullptr) {
-      HWManager->CreateDevice(QSVImpl);
-    }
-
-    if (HWManager->HWDeviceHandle == nullptr) {
-      throw std::runtime_error("Init(): Handled device is nullptr");
-    }
-#endif
-
-    if (QSVIsTextureEncoder) {
-#if defined(_WIN32) || defined(_WIN64)
-      Status = MFXVideoCORE_SetHandle(QSVSession, MFX_HANDLE_D3D11_DEVICE,
-                                      HWManager->HWDeviceHandle);
-      if (Status < MFX_ERR_NONE) {
-        error("Error code: %d", Status);
-        throw std::runtime_error("Init(): SetHandle error");
-      }
-#endif
-    }
 
     QSVEncode = std::make_unique<MFXVideoENCODE>(QSVSession);
 
@@ -510,10 +476,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
         CO3Params->ScenarioInfo = 0;
         Status = QSVEncode->Init(&QSVEncodeParams);
         info("\tMFXVideoENCODE_Init retry (ScenarioInfo) status: %d", Status);
-      }
-      if (Status != MFX_ERR_NONE) {
-        throw std::runtime_error(
-            "Init(): MFXVideoENCODE_Init error");
       }
     }
 
@@ -2486,17 +2448,13 @@ mfxStatus QSVEncoder::ClearData() {
 
       // QSVEncodeParams.~ExtBufManager();
       Status = QSVEncode->Close();
-      if (Status >= MFX_ERR_NONE) {
-        QSVEncode = nullptr;
-      }
+      QSVEncode = nullptr;
     }
 
     if (QSVProcessing) {
       // QSVProcessingEnableParams.~ExtBufManager();
       Status = QSVProcessing->Close();
-      if (Status >= MFX_ERR_NONE) {
-        QSVProcessing = nullptr;
-      }
+      QSVProcessing = nullptr;
     }
 
     ReleaseTaskPool();
