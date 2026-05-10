@@ -276,6 +276,11 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
       }
     }
 
+    if (Status < MFX_ERR_NONE) {
+      error("MFXVideoENCODE_Init failed (Status=%d)", Status);
+      return Status;
+    }
+
     // === Step 2: Test if GetSurface() works or fallback to system memory ===
     if (!QSVIsTextureEncoder) {
       bool NeedSystemMemoryFallback = false;
@@ -477,6 +482,11 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
         Status = QSVEncode->Init(&QSVEncodeParams);
         info("\tMFXVideoENCODE_Init retry (ScenarioInfo) status: %d", Status);
       }
+    }
+
+    if (Status < MFX_ERR_NONE) {
+      error("MFXVideoENCODE_Init failed (Status=%d)", Status);
+      return Status;
     }
 
     Status = InitTexturePool();
