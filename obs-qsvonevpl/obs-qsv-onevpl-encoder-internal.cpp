@@ -382,8 +382,7 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
             CO3Params->MBDisableSkipMap = MFX_CODINGOPTION_OFF;
             CO3Params->EnableQPOffset = MFX_CODINGOPTION_OFF;
             CO3Params->RepartitionCheckEnable = MFX_CODINGOPTION_OFF;
-            if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC &&
-      !InputParams->VideoFormat10bit) {
+            if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
               CO3Params->GPB = MFX_CODINGOPTION_OFF;
             }
             Status = QSVEncode->Init(&QSVEncodeParams);
@@ -1136,7 +1135,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
          GetCodingOptStatus(CO2Params->BitrateLimit).c_str());
   }
 
-  if (CO3Enabled == 1 && !InputParams->VideoFormat10bit) {
+  if (CO3Enabled == 1) {
     auto CO3Params = QSVEncodeParams.AddExtBuffer<mfxExtCodingOption3>();
     CO3Params->Header.BufferId = MFX_EXTBUFF_CODING_OPTION3;
     CO3Params->Header.BufferSz = sizeof(mfxExtCodingOption3);
@@ -1362,8 +1361,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
   /*Don't touch it! Magic beyond the control of mere mortals takes place
    * here*/
-  if (CODDIEnabled == 1 && QSVEncodeParams.mfx.CodecId != MFX_CODEC_AV1 &&
-      !InputParams->VideoFormat10bit) {
+  if (CODDIEnabled == 1 && QSVEncodeParams.mfx.CodecId != MFX_CODEC_AV1) {
     auto CODDIParams = QSVEncodeParams.AddExtBuffer<mfxExtCodingOptionDDI>();
     CODDIParams->Header.BufferId = MFX_EXTBUFF_DDI;
     CODDIParams->Header.BufferSz = sizeof(mfxExtCodingOptionDDI);
@@ -1436,8 +1434,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   }
 #endif
 
-  if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC &&
-      !InputParams->VideoFormat10bit) {
+  if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
     auto ChromaLocParams = QSVEncodeParams.AddExtBuffer<mfxExtChromaLocInfo>();
     ChromaLocParams->Header.BufferId = MFX_EXTBUFF_CHROMA_LOC_INFO;
     ChromaLocParams->Header.BufferSz = sizeof(mfxExtChromaLocInfo);
@@ -1575,23 +1572,21 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   }
 
 #if defined(_WIN32) || defined(_WIN64)
-  if (!InputParams->VideoFormat10bit) {
-    auto VideoSignalParams =
-        QSVEncodeParams.AddExtBuffer<mfxExtVideoSignalInfo>();
-    VideoSignalParams->Header.BufferId = MFX_EXTBUFF_VIDEO_SIGNAL_INFO;
-    VideoSignalParams->Header.BufferSz = sizeof(mfxExtVideoSignalInfo);
-    VideoSignalParams->VideoFormat =
-        static_cast<mfxU16>(InputParams->VideoFormat);
-    VideoSignalParams->VideoFullRange =
-        static_cast<mfxU16>(InputParams->VideoFullRange);
-    VideoSignalParams->ColourDescriptionPresent = 1;
-    VideoSignalParams->ColourPrimaries =
-        static_cast<mfxU16>(InputParams->ColourPrimaries);
-    VideoSignalParams->TransferCharacteristics =
-        static_cast<mfxU16>(InputParams->TransferCharacteristics);
-    VideoSignalParams->MatrixCoefficients =
-        static_cast<mfxU16>(InputParams->MatrixCoefficients);
-  }
+  auto VideoSignalParams =
+      QSVEncodeParams.AddExtBuffer<mfxExtVideoSignalInfo>();
+  VideoSignalParams->Header.BufferId = MFX_EXTBUFF_VIDEO_SIGNAL_INFO;
+  VideoSignalParams->Header.BufferSz = sizeof(mfxExtVideoSignalInfo);
+  VideoSignalParams->VideoFormat =
+      static_cast<mfxU16>(InputParams->VideoFormat);
+  VideoSignalParams->VideoFullRange =
+      static_cast<mfxU16>(InputParams->VideoFullRange);
+  VideoSignalParams->ColourDescriptionPresent = 1;
+  VideoSignalParams->ColourPrimaries =
+      static_cast<mfxU16>(InputParams->ColourPrimaries);
+  VideoSignalParams->TransferCharacteristics =
+      static_cast<mfxU16>(InputParams->TransferCharacteristics);
+  VideoSignalParams->MatrixCoefficients =
+      static_cast<mfxU16>(InputParams->MatrixCoefficients);
 #endif
 
   if (InputParams->MaxContentLightLevel > 0) {
