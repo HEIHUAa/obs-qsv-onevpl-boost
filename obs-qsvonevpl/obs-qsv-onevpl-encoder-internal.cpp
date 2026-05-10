@@ -470,6 +470,14 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
 #else
     Status = SetEncoderParams(InputParams, Codec);
 
+    // CO3Params can cause VUI timing header corruption with 10bit HEVC
+    // on some platforms (UHD730). Bit depth info is already in the base
+    // mfxInfoMFX struct, so remove CO3Params to restore driver-default
+    // header generation behavior.
+    if (InputParams->VideoFormat10bit) {
+      QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOption3>();
+    }
+
     Status = QSVEncode->Init(&QSVEncodeParams);
     if (Status != MFX_ERR_NONE) {
       auto CO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
