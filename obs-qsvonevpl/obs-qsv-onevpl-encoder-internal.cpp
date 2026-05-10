@@ -741,6 +741,15 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     QSVEncodeParams.mfx.FrameInfo.Shift = 1;
   }
 
+  info("\tFrameInfo: FourCC=%c%c%c%c BitDepth(L/C)=%d/%d Shift=%d",
+       (QSVEncodeParams.mfx.FrameInfo.FourCC >> 24) & 0xFF,
+       (QSVEncodeParams.mfx.FrameInfo.FourCC >> 16) & 0xFF,
+       (QSVEncodeParams.mfx.FrameInfo.FourCC >> 8) & 0xFF,
+       QSVEncodeParams.mfx.FrameInfo.FourCC & 0xFF,
+       QSVEncodeParams.mfx.FrameInfo.BitDepthLuma,
+       QSVEncodeParams.mfx.FrameInfo.BitDepthChroma,
+       QSVEncodeParams.mfx.FrameInfo.Shift);
+
   QSVEncodeParams.mfx.LowPower = GetCodingOpt(InputParams->Lowpower);
   info("\tLowpower set: %s",
        GetCodingOptStatus(QSVEncodeParams.mfx.LowPower).c_str());
@@ -1139,6 +1148,8 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     auto CO3Params = QSVEncodeParams.AddExtBuffer<mfxExtCodingOption3>();
     CO3Params->Header.BufferId = MFX_EXTBUFF_CODING_OPTION3;
     CO3Params->Header.BufferSz = sizeof(mfxExtCodingOption3);
+    info("\tmfxExtCodingOption3 sizeof: %zu, BufferSz: %d",
+         sizeof(mfxExtCodingOption3), CO3Params->Header.BufferSz);
     CO3Params->TargetBitDepthLuma = InputParams->VideoFormat10bit ? 10 : 8;
     CO3Params->TargetBitDepthChroma = InputParams->VideoFormat10bit ? 10 : 8;
     CO3Params->TargetChromaFormatPlus1 =
@@ -1167,7 +1178,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     //                        5;
     // }
 
-    CO3Params->MBDisableSkipMap = MFX_CODINGOPTION_ON;
     CO3Params->EnableQPOffset = MFX_CODINGOPTION_ON;
 
     CO3Params->BitstreamRestriction = MFX_CODINGOPTION_ON;
