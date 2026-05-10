@@ -1,4 +1,5 @@
 option(ENABLE_HEVC "Enable HEVC support" ON)
+option(QSV_UHD600_SUPPORT "Build UHD600 variant alongside" OFF)
 
 add_library(obs-qsvonevpl MODULE)
 
@@ -66,15 +67,6 @@ install(
   LIBRARY DESTINATION "obs-plugins"
 )
 
-if(WIN32 AND TARGET VPL)
-  add_custom_command(TARGET obs-qsvonevpl POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-      $<TARGET_FILE:VPL>
-      $<TARGET_FILE_DIR:obs-qsvonevpl>
-  )
-  install(FILES $<TARGET_FILE:VPL> DESTINATION "obs-plugins/64bit")
-endif()
-
 install(
   FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/data/locale/en-US.ini
@@ -95,6 +87,80 @@ if(WIN32)
     helpers/common_utils_windows.cpp)
 
   target_link_libraries(obs-qsvonevpl PRIVATE d3d11 dxgi dxguid)
+
+  # UHD600 variant target (optional)
+  if(QSV_UHD600_SUPPORT)
+    add_library(obs-qsvonevpl-uhd600 MODULE)
+
+    target_sources(
+      obs-qsvonevpl-uhd600
+      PRIVATE
+      obs-qsv-onevpl-plugin-main.cpp
+      obs-qsv-onevpl-plugin-init.cpp
+      obs-qsv-onevpl-plugin-init.hpp
+      obs-qsv-onevpl-encoder.cpp
+      obs-qsv-onevpl-encoder.hpp
+      obs-qsv-onevpl-encoder-internal.cpp
+      obs-qsv-onevpl-encoder-internal.hpp
+      helpers/common_utils.cpp
+      helpers/common_utils.hpp
+      helpers/ext_buf_manager.hpp
+      helpers/qsv_params.hpp
+      bits/windows_defs.hpp
+      helpers/hw_d3d11.cpp
+      helpers/hw_d3d11.hpp
+      helpers/common_utils_windows.cpp
+    )
+
+    target_link_libraries(obs-qsvonevpl-uhd600 PRIVATE
+      VPL libvpl-private OBS::libobs d3d11 dxgi dxguid)
+
+    set_target_properties(obs-qsvonevpl-uhd600 PROPERTIES
+      FOLDER "plugins/obs-qsvonevpl"
+      PREFIX ""
+    )
+
+    target_compile_definitions(
+      obs-qsvonevpl-uhd600
+      PRIVATE
+      ONEVPL_EXPERIMENTAL
+      MFXVIDEO_CPP_ENABLE_MFXLOAD
+      DX11_D3D
+      QSV_UHD600_SUPPORT
+      $<$<BOOL:${ENABLE_HEVC}>:ENABLE_HEVC=1>
+    )
+
+    target_compile_features(obs-qsvonevpl-uhd600 PRIVATE cxx_std_23)
+
+    target_compile_options(obs-qsvonevpl-uhd600 PRIVATE
+      $<$<CONFIG:Release>:/O2>
+      $<$<CONFIG:Release>:/Gw>
+      $<$<CONFIG:Release>:/Zc:inline>
+      $<$<CONFIG:Debug>:/Od>
+      /Oi
+      /MP
+      $<$<CONFIG:Release>:/GL>
+      $<$<CONFIG:Release>:/Gy>
+    )
+    target_link_options(obs-qsvonevpl-uhd600 PRIVATE
+      $<$<CONFIG:Release>:/LTCG>
+      /INCREMENTAL:NO
+    )
+
+    if(TARGET VPL)
+      add_custom_command(TARGET obs-qsvonevpl-uhd600 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          $<TARGET_FILE:VPL>
+          $<TARGET_FILE_DIR:obs-qsvonevpl-uhd600>
+      )
+    endif()
+
+    install(
+      TARGETS obs-qsvonevpl-uhd600
+      RUNTIME DESTINATION "obs-plugins/64bit"
+      LIBRARY DESTINATION "obs-plugins"
+    )
+  endif()
 
   # source_group is to show the files in the IDE #
   # Main sources and headers

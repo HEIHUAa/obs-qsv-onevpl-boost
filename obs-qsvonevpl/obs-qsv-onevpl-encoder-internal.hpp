@@ -25,9 +25,11 @@ public:
   mfxStatus GetVPLVersion(mfxVersion &);
   mfxStatus Init(struct encoder_params *InputParams, enum codec_enum Codec,
                  bool IsTextureEncoder);
+#ifdef QSV_UHD600_SUPPORT
   mfxStatus EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
                                     uint32_t *FrameLinesize,
                                     mfxBitstream **Bitstream);
+#endif
   mfxStatus EncodeFrame(mfxU64 TS, uint8_t **FrameData, uint32_t *FrameLinesize,
                         mfxBitstream **Bitstream);
   mfxStatus EncodeTexture(mfxU64 TS, void *TextureHandle, uint64_t LockKey,
@@ -53,8 +55,10 @@ protected:
 
   mfxStatus GetVideoParam(enum codec_enum Codec);
   mfxStatus InitTexturePool();
+#ifdef QSV_UHD600_SUPPORT
   void InitSystemMemorySurfacePool();
   void ReleaseSystemMemorySurfacePool();
+#endif
   mfxStatus InitBitstreamBuffer(enum codec_enum Codec);
   void ReleaseBitstream();
   mfxStatus InitTaskPool(enum codec_enum Codec);
@@ -136,6 +140,7 @@ private:
   
   mfxFrameAllocRequest QSVAllocateRequest{};
 
+#ifdef QSV_UHD600_SUPPORT
   bool QSVUseSystemMemoryPath{};
 
   struct SystemMemSurface {
@@ -143,6 +148,7 @@ private:
   };
   std::vector<SystemMemSurface> QSVSystemMemPool;
   mfxU16 QSVSystemMemPoolSize{};
+#endif
 
   bool QSVIsTextureEncoder;
   mfxMemoryInterface *QSVMemoryInterface{};
