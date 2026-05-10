@@ -470,14 +470,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
 #else
     Status = SetEncoderParams(InputParams, Codec);
 
-    // CO3Params can cause VUI timing header corruption with 10bit HEVC
-    // on some platforms (UHD730). Bit depth info is already in the base
-    // mfxInfoMFX struct, so remove CO3Params to restore driver-default
-    // header generation behavior.
-    if (InputParams->VideoFormat10bit) {
-      QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOption3>();
-    }
-
     Status = QSVEncode->Init(&QSVEncodeParams);
     if (Status != MFX_ERR_NONE) {
       auto CO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
@@ -1176,12 +1168,10 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CO3Params->MBDisableSkipMap = MFX_CODINGOPTION_ON;
     CO3Params->EnableQPOffset = MFX_CODINGOPTION_ON;
 
-    #ifdef QSV_UHD600_SUPPORT
     CO3Params->BitstreamRestriction = MFX_CODINGOPTION_ON;
     CO3Params->AspectRatioInfoPresent = MFX_CODINGOPTION_ON;
     CO3Params->TimingInfoPresent = MFX_CODINGOPTION_ON;
     CO3Params->OverscanInfoPresent = MFX_CODINGOPTION_ON;
-#endif
 
     CO3Params->LowDelayHrd = GetCodingOpt(InputParams->LowDelayHRD);
     info("\tLowDelayHRD set: %s",
@@ -1236,14 +1226,13 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       } else {
         info("\tContentInfo: AUTO");
       }
+    } else {
+      CO3Params->ContentInfo = MFX_CONTENT_NOISY_VIDEO;
     }
 
-    if (InputParams->ScenarioInfo.has_value()) {
+    if (InputParams->ScenarioInfo.has_value() &&
+        InputParams->ScenarioInfo.value() != 0) {
       switch (InputParams->ScenarioInfo.value()) {
-      case 0:
-        CO3Params->ScenarioInfo = 0;
-        info("\tScenario: AUTO");
-        break;
       case 1:
         CO3Params->ScenarioInfo = 1;
         info("\tScenario: ARCHIVE");
@@ -1261,6 +1250,19 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
         info("\tScenario: GAME STREAMING");
         break;
       }
+    } else if (InputParams->Lookahead == true && InputParams->LADepth < 9) {
+      CO3Params->ScenarioInfo = 3;
+      info("\tScenario: REMOTE GAMING");
+    } else if ((QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC ||
+                QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1) &&
+               InputParams->Lookahead == true) {
+      CO3Params->ScenarioInfo = 4;
+      info("\tScenario: GAME STREAMING");
+    } else if (InputParams->Lookahead == false ||
+               (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC &&
+                InputParams->Lookahead == true)) {
+      CO3Params->ScenarioInfo = 3;
+      info("\tScenario: REMOTE GAMING");
     }
 
     if (QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_CQP) {
