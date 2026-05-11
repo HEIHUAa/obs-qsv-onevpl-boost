@@ -2491,6 +2491,8 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
       QSVEncodeSurface->FrameInterface->Map(QSVEncodeSurface, MFX_MAP_WRITE);
   if (Status < MFX_ERR_NONE) {
     warn("Surface.Map.Write error: %d", Status);
+    QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
+    QSVEncodeSurface = nullptr;
     return Status;
   }
 
@@ -2503,6 +2505,8 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
   Status = QSVEncodeSurface->FrameInterface->Unmap(QSVEncodeSurface);
   if (Status < MFX_ERR_NONE) {
     warn("Surface.Unmap.Write error: %d", Status);
+    QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
+    QSVEncodeSurface = nullptr;
     return Status;
   }
 
@@ -2521,6 +2525,8 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
 
       if (Status < MFX_ERR_NONE) {
         error("Error code: %d", Status);
+        QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
+        QSVEncodeSurface = nullptr;
         throw std::runtime_error("Encode(): Get processing surface error");
       }
 
@@ -2534,6 +2540,10 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
                                                &QSVProcessingSyncPoint);
       if (Status < MFX_ERR_NONE && Status != MFX_ERR_MORE_SURFACE) {
         error("Processing error: %d", Status);
+        QSVProcessingSurface->FrameInterface->Release(QSVProcessingSurface);
+        QSVProcessingSurface = nullptr;
+        QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
+        QSVEncodeSurface = nullptr;
         throw std::runtime_error("Encode(): Processing error");
       }
     } while (Status == MFX_ERR_MORE_SURFACE);
@@ -2544,6 +2554,10 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
     } while (SyncStatus == MFX_WRN_IN_EXECUTION);
     if (SyncStatus < MFX_ERR_NONE) {
       error("VPP sync error: %d", SyncStatus);
+      QSVProcessingSurface->FrameInterface->Release(QSVProcessingSurface);
+      QSVProcessingSurface = nullptr;
+      QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
+      QSVEncodeSurface = nullptr;
       throw std::runtime_error("Encode(): VPP sync failed");
     }
   }

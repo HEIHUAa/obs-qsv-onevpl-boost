@@ -250,11 +250,11 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   bool bIsVCM = std::strcmp(rate_control, "VCM") == 0;
   bool bIsQVBR = std::strcmp(rate_control, "QVBR") == 0;
 
-  bool bVisible = bIsVBR || bIsVCM || bIsQVBR;
+  bool bVisible = bIsVBR || bIsVCM;
   Prop = obs_properties_get(Properties, "max_bitrate");
   obs_property_set_visible(Prop, bVisible);
 
-  bVisible = bIsCQP || bIsICQ || bIsQVBR;
+  bVisible = bIsCQP || bIsICQ;
   Prop = obs_properties_get(Properties, "bitrate");
   obs_property_set_visible(Prop, !bVisible);
 
