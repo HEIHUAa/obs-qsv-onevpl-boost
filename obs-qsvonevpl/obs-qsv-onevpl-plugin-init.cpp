@@ -170,6 +170,9 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(Settings, "mv_overpic_boundaries", "AUTO");
   obs_data_set_default_int(Settings, "la_depth", 60);
 
+  obs_data_set_default_int(Settings, "win_brc_max_avg_size", 0);
+  obs_data_set_default_int(Settings, "win_brc_size", 0);
+
   obs_data_set_default_string(Settings, "lookahead", "OFF");
   obs_data_set_default_string(Settings, "lookahead_latency", "NORMAL");
   obs_data_set_default_string(Settings, "lookahead_ds", "MEDIUM");
@@ -279,6 +282,12 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   if (bVisible) bVisible = IsFeatureSupported("enc_tools");
   obs_property_set_visible(Prop, bVisible);
   Prop = obs_properties_get(Properties, "extbrc");
+  obs_property_set_visible(Prop, bVisible);
+
+  bVisible = bIsCBR || bIsAVBR;
+  Prop = obs_properties_get(Properties, "win_brc_max_avg_size");
+  obs_property_set_visible(Prop, bVisible);
+  Prop = obs_properties_get(Properties, "win_brc_size");
   obs_property_set_visible(Prop, bVisible);
 
   const char *lookahead = obs_data_get_string(Settings, "lookahead");
@@ -566,6 +575,18 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(
       Prop, TEXT_GOP_REF_DIST_DESC);
   obs_property_long_description(Prop);
+
+  Prop = obs_properties_add_int(Props, "win_brc_max_avg_size",
+                                TEXT_WINBRC_MAX_AVG_SIZE, 0, 65535, 1);
+  obs_property_int_set_suffix(Prop, " kbps");
+  obs_property_set_long_description(Prop,
+                                    obs_module_text("WinBRCMaxAvgSize.Tooltip"));
+
+  Prop = obs_properties_add_int(Props, "win_brc_size", TEXT_WINBRC_SIZE, 0, 1000,
+                                1);
+  obs_property_int_set_suffix(Prop, " frames");
+  obs_property_set_long_description(Prop,
+                                    obs_module_text("WinBRCSize.Tooltip"));
 
   obs_properties_add_int(Props, "async_depth", TEXT_ASYNC_DEPTH, 1, 1000, 1);
 
@@ -1507,6 +1528,11 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       static_cast<mfxU16>(IntraRefCycleSizeData);
   Context->EncoderParams.IntraRefQPDelta =
       static_cast<mfxU16>(IntraRefQPDeltaData);
+
+  Context->EncoderParams.WinBRCMaxAvgKbps =
+      static_cast<mfxU16>(obs_data_get_int(Settings, "win_brc_max_avg_size"));
+  Context->EncoderParams.WinBRCSize =
+      static_cast<mfxU16>(obs_data_get_int(Settings, "win_brc_size"));
 
   if (std::strcmp(ScreenContentToolsData, "AUTO") == 0) {
     Context->EncoderParams.ScreenContentTools = 0;

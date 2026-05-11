@@ -1326,23 +1326,34 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     if (QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_CBR ||
         QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_AVBR) {
 
-      if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC ||
-          QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
-        CO3Params->WinBRCMaxAvgKbps =
-            static_cast<mfxU16>(1.3 * QSVEncodeParams.mfx.TargetKbps *
-                                QSVEncodeParams.mfx.BRCParamMultiplier);
-      } else if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1) {
-        CO3Params->WinBRCMaxAvgKbps =
-            static_cast<mfxU16>(1.2 * QSVEncodeParams.mfx.TargetKbps *
-                                QSVEncodeParams.mfx.BRCParamMultiplier);
+      if (InputParams->WinBRCMaxAvgKbps > 0) {
+        CO3Params->WinBRCMaxAvgKbps = InputParams->WinBRCMaxAvgKbps;
+        info("\tWinBRCMaxSize set (manual): %d",
+             CO3Params->WinBRCMaxAvgKbps);
+      } else {
+        if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC ||
+            QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
+          CO3Params->WinBRCMaxAvgKbps =
+              static_cast<mfxU16>(1.3 * QSVEncodeParams.mfx.TargetKbps *
+                                  QSVEncodeParams.mfx.BRCParamMultiplier);
+        } else if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1) {
+          CO3Params->WinBRCMaxAvgKbps =
+              static_cast<mfxU16>(1.2 * QSVEncodeParams.mfx.TargetKbps *
+                                  QSVEncodeParams.mfx.BRCParamMultiplier);
+        }
+        info("\tWinBRCMaxSize set (auto): %d",
+             CO3Params->WinBRCMaxAvgKbps);
       }
 
-      info("\tWinBRCMaxSize set: %d", CO3Params->WinBRCMaxAvgKbps);
-
-      CO3Params->WinBRCSize =
-          static_cast<mfxU16>(QSVEncodeParams.mfx.FrameInfo.FrameRateExtN /
-                              QSVEncodeParams.mfx.FrameInfo.FrameRateExtD);
-      info("\tWinBRCSize set: %d", CO3Params->WinBRCSize);
+      if (InputParams->WinBRCSize > 0) {
+        CO3Params->WinBRCSize = InputParams->WinBRCSize;
+        info("\tWinBRCSize set (manual): %d", CO3Params->WinBRCSize);
+      } else {
+        CO3Params->WinBRCSize =
+            static_cast<mfxU16>(QSVEncodeParams.mfx.FrameInfo.FrameRateExtN /
+                                QSVEncodeParams.mfx.FrameInfo.FrameRateExtD);
+        info("\tWinBRCSize set (auto): %d", CO3Params->WinBRCSize);
+      }
     }
 
     CO3Params->MotionVectorsOverPicBoundaries =
