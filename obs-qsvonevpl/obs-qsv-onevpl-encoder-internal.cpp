@@ -2226,8 +2226,9 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
     } else if (MFX_ERR_MORE_DATA == Status) {
       break;
     } else {
-      error("Error code: %d", Status);
-      break;
+      error("Encode fatal error: %d", Status);
+      throw std::runtime_error(
+          "Encode(): EncodeFrameAsync fatal error");
     }
   }
 
@@ -2307,62 +2308,75 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
   QSVTaskPool[TaskID].Bitstream.TimeStamp = TS;
   QSVEncodeSurface->Data.TimeStamp = TS;
 
-  if (QSVProcessingEnable) {
-    mfxSyncPoint VPPSyncPoint = nullptr;
-    Status = QSVProcessing->GetSurfaceOut(&QSVProcessingSurface);
+  try {
+    if (QSVProcessingEnable) {
+      mfxSyncPoint VPPSyncPoint = nullptr;
+      Status = QSVProcessing->GetSurfaceOut(&QSVProcessingSurface);
+
+      for (;;) {
+        Status = QSVProcessing->RunFrameVPPAsync(
+            QSVEncodeSurface, QSVProcessingSurface, QSVProcessingAuxData,
+            &QSVProcessingSyncPoint);
+        if (MFX_ERR_NONE == Status) {
+          break;
+        } else if (Status < MFX_ERR_NONE) {
+          error("Error code: %d", Status);
+          throw std::runtime_error("Encode(): VPP processing error");
+        }
+      }
+
+      QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
+      QSVEncodeSurface = nullptr;
+    }
 
     for (;;) {
-      Status = QSVProcessing->RunFrameVPPAsync(
-          QSVEncodeSurface, QSVProcessingSurface, QSVProcessingAuxData,
-          &QSVProcessingSyncPoint);
+      Status = QSVEncode->EncodeFrameAsync(
+          (QSVProcessingEnable && QSVEncodeParams.mfx.CodecId != MFX_CODEC_AV1
+               ? &QSVEncodeCtrlParams
+               : nullptr),
+          (QSVProcessingEnable ? QSVProcessingSurface : QSVEncodeSurface),
+          &QSVTaskPool[TaskID].Bitstream, &QSVTaskPool[TaskID].SyncPoint);
+
       if (MFX_ERR_NONE == Status) {
         break;
-        //} else if (MFX_ERR_MORE_SURFACE == Status) {
-        //  QSVProcessingSurface->FrameInterface->AddRef(QSVProcessingSurface);
-      } else if (Status < MFX_ERR_NONE) {
-        error("Error code: %d", Status);
-        throw std::runtime_error("Encode(): VPP processing error");
+      } else if (MFX_ERR_NONE < Status && !QSVTaskPool[TaskID].SyncPoint) {
+        if (MFX_WRN_DEVICE_BUSY == Status)
+          Sleep(1);
+      } else if (MFX_ERR_NONE < Status && QSVTaskPool[TaskID].SyncPoint) {
+        Status = MFX_ERR_NONE;
+        break;
+      } else if (MFX_ERR_NOT_ENOUGH_BUFFER == Status ||
+                 MFX_ERR_MORE_BITSTREAM == Status) {
+        ChangeBitstreamSize(static_cast<mfxU32>(QSVBitstream.MaxLength * 2));
+        warn("The bitstream buffer size is too small. The size has been "
+             "increased by 2 "
+             "times. New value: %d KB",
+             (QSVBitstream.MaxLength * 2 / 8 / 1000));
+      } else if (MFX_ERR_MORE_DATA == Status) {
+        break;
+      } else {
+        error("Encode fatal error: %d", Status);
+        throw std::runtime_error(
+            "Encode(): EncodeFrameAsync fatal error");
       }
     }
 
-    QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
-  }
-
-  for (;;) {
-    Status = QSVEncode->EncodeFrameAsync(
-        (QSVProcessingEnable && QSVEncodeParams.mfx.CodecId != MFX_CODEC_AV1
-             ? &QSVEncodeCtrlParams
-             : nullptr),
-        (QSVProcessingEnable ? QSVProcessingSurface : QSVEncodeSurface),
-        &QSVTaskPool[TaskID].Bitstream, &QSVTaskPool[TaskID].SyncPoint);
-
-    if (MFX_ERR_NONE == Status) {
-      break;
-    } else if (MFX_ERR_NONE < Status && !QSVTaskPool[TaskID].SyncPoint) {
-      if (MFX_WRN_DEVICE_BUSY == Status)
-        Sleep(1);
-    } else if (MFX_ERR_NONE < Status && QSVTaskPool[TaskID].SyncPoint) {
-      Status = MFX_ERR_NONE;
-      break;
-    } else if (MFX_ERR_NOT_ENOUGH_BUFFER == Status ||
-               MFX_ERR_MORE_BITSTREAM == Status) {
-      ChangeBitstreamSize(static_cast<mfxU32>(QSVBitstream.MaxLength * 2));
-      warn("The bitstream buffer size is too small. The size has been "
-           "increased by 2 "
-           "times. New value: %d KB",
-           (QSVBitstream.MaxLength * 2 / 8 / 1000));
-    } else if (MFX_ERR_MORE_DATA == Status) {
-      break;
+    if (QSVProcessingEnable) {
+      QSVProcessingSurface->FrameInterface->Release(QSVProcessingSurface);
     } else {
-      error("Error code: %d", Status);
-      break;
+      QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
     }
-  }
 
-  if (QSVProcessingEnable) {
-    QSVProcessingSurface->FrameInterface->Release(QSVProcessingSurface);
-  } else {
-    QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
+  } catch (...) {
+    if (QSVProcessingEnable && QSVProcessingSurface) {
+      QSVProcessingSurface->FrameInterface->Release(QSVProcessingSurface);
+      QSVProcessingSurface = nullptr;
+    }
+    if (QSVEncodeSurface) {
+      QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
+    }
+    QSVEncodeSurface = nullptr;
+    throw;
   }
 
   return Status;
@@ -2392,7 +2406,14 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
       SyncStatus = MFXVideoCORE_SyncOperation(
           QSVSession, QSVTaskPool[QSVSyncTaskID].SyncPoint, 100);
       if (SyncStatus < MFX_ERR_NONE) {
-        warn("Encode.EncodeSync error: %d", SyncStatus);
+        error("Encode sync error: %d", SyncStatus);
+        QSVTaskPool[QSVSyncTaskID].SyncPoint = nullptr;
+        if (QSVEncodeSurface) {
+          QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
+          QSVEncodeSurface = nullptr;
+        }
+        throw std::runtime_error(
+            "Encode(): Sync operation failed - unrecoverable error");
       }
     } while (SyncStatus == MFX_WRN_IN_EXECUTION);
 
@@ -2485,8 +2506,17 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
     } else if (MFX_ERR_MORE_DATA == Status) {
       break;
     } else {
-      warn("Encode error: %d", Status);
-      break;
+      error("Encode fatal error: %d", Status);
+      if (QSVProcessingEnable && QSVProcessingSurface) {
+        QSVProcessingSurface->FrameInterface->Release(QSVProcessingSurface);
+        QSVProcessingSurface = nullptr;
+      }
+      if (QSVEncodeSurface) {
+        QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
+        QSVEncodeSurface = nullptr;
+      }
+      throw std::runtime_error(
+          "Encode(): EncodeFrameAsync fatal error");
     }
   }
 
@@ -2503,11 +2533,15 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
 mfxStatus QSVEncoder::Drain() {
   mfxStatus Status = MFX_ERR_NONE;
 
-  if (QSVTaskPool[QSVSyncTaskID].SyncPoint != nullptr) {
-    Status = MFXVideoCORE_SyncOperation(
-        QSVSession, QSVTaskPool[QSVSyncTaskID].SyncPoint, INFINITE);
-
-    QSVTaskPool[QSVSyncTaskID].SyncPoint = nullptr;
+  for (auto &Task : QSVTaskPool) {
+    if (Task.SyncPoint != nullptr) {
+      mfxStatus SyncSts = MFXVideoCORE_SyncOperation(
+          QSVSession, Task.SyncPoint, 5000);
+      if (SyncSts < MFX_ERR_NONE) {
+        warn("Drain sync warning: %d", SyncSts);
+      }
+      Task.SyncPoint = nullptr;
+    }
   }
 
   return Status;
@@ -2518,9 +2552,7 @@ mfxStatus QSVEncoder::ClearData() {
   try {
 
     if (QSVEncode) {
-      // Status = Drain();
-
-      // QSVEncodeParams.~ExtBufManager();
+      Drain();
       Status = QSVEncode->Close();
       QSVEncode = nullptr;
     }
