@@ -738,19 +738,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   QSVEncodeParams.mfx.FrameInfo.BitDepthLuma =
       InputParams->VideoFormat10bit ? 10 : 8;
 
-  if (InputParams->VideoFormat10bit) {
-    QSVEncodeParams.mfx.FrameInfo.Shift = 1;
-  }
-
-  info("\tFrameInfo: FourCC=%c%c%c%c BitDepth(L/C)=%d/%d Shift=%d",
-       (QSVEncodeParams.mfx.FrameInfo.FourCC >> 24) & 0xFF,
-       (QSVEncodeParams.mfx.FrameInfo.FourCC >> 16) & 0xFF,
-       (QSVEncodeParams.mfx.FrameInfo.FourCC >> 8) & 0xFF,
-       QSVEncodeParams.mfx.FrameInfo.FourCC & 0xFF,
-       QSVEncodeParams.mfx.FrameInfo.BitDepthLuma,
-       QSVEncodeParams.mfx.FrameInfo.BitDepthChroma,
-       QSVEncodeParams.mfx.FrameInfo.Shift);
-
   QSVEncodeParams.mfx.LowPower = GetCodingOpt(InputParams->Lowpower);
   info("\tLowpower set: %s",
        GetCodingOptStatus(QSVEncodeParams.mfx.LowPower).c_str());

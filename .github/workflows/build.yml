@@ -48,12 +48,19 @@ jobs:
         uses: actions/cache@v5
         with:
           path: obs-studio/plugins/${{ env.PLUGIN_NAME }}/libvpl
-          key: onevpl-${{ runner.os }}
+          key: onevpl-v2.12.0-${{ runner.os }}
 
       - name: Setup oneVPL
         if: steps.cache-onevpl.outputs.cache-hit != 'true'
         run: |
-          git clone --depth 1 https://github.com/oneapi-src/oneVPL.git libvpl
+          git clone --depth 1 --branch v2.12.0 https://github.com/oneapi-src/oneVPL.git libvpl
+          cmake -S libvpl -B libvpl/build `
+            -DBUILD_SHARED_LIBS=ON `
+            -DBUILD_EXAMPLES=OFF `
+            -DBUILD_TOOLS=OFF `
+            -DBUILD_TESTS=OFF
+          cmake --build libvpl/build --config Release
+          cmake --install libvpl/build --prefix libvpl/install --config Release
         working-directory: ${{ github.workspace }}/obs-studio/plugins/${{ env.PLUGIN_NAME }}
 
       - name: Cache Intel Media SDK Headers
@@ -89,7 +96,7 @@ jobs:
 
       - name: Configure CMake
         if: steps.cache-cmake.outputs.cache-hit != 'true'
-        run: cmake --preset windows-x64 -DQSV_UHD600_SUPPORT=ON -DMEDIASDK_INCLUDE_DIR="${{ github.workspace }}/obs-studio/plugins/${{ env.PLUGIN_NAME }}/MediaSDK/api/include"
+        run: cmake --preset windows-x64 -DQSV_UHD600_SUPPORT=ON -DMEDIASDK_INCLUDE_DIR="${{ github.workspace }}/obs-studio/plugins/${{ env.PLUGIN_NAME }}/MediaSDK/api/include" -DVPL_DIR="${{ github.workspace }}/obs-studio/plugins/${{ env.PLUGIN_NAME }}/libvpl/install/lib/cmake/VPL"
         working-directory: ${{ github.workspace }}/obs-studio
 
       - name: Build Release (UHD700+)
