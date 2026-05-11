@@ -2016,6 +2016,21 @@ mfxStatus QSVEncoder::ChangeBitstreamSize(mfxU32 NewSize) {
     QSVBitstream.MaxLength = std::move(static_cast<mfxU32>(NewSize));
 
     for (int i = 0; i < QSVTaskPool.size(); i++) {
+      if (QSVTaskPool[i].SyncPoint != nullptr) {
+        mfxStatus SyncSts;
+        do {
+          SyncSts = MFXVideoCORE_SyncOperation(
+              QSVSession, QSVTaskPool[i].SyncPoint, 100);
+        } while (SyncSts == MFX_WRN_IN_EXECUTION);
+        if (SyncSts < MFX_ERR_NONE) {
+          throw std::runtime_error(
+              "ChangeBitstreamSize(): Sync pending task error");
+        }
+        QSVTaskPool[i].SyncPoint = nullptr;
+      }
+    }
+
+    for (int i = 0; i < QSVTaskPool.size(); i++) {
 #if defined(_WIN32) || defined(_WIN64)
       mfxU8 *TaskData = static_cast<mfxU8 *>(_aligned_malloc(NewSize, 32));
 #elif defined(__linux__)
@@ -2173,10 +2188,19 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
 
   while (GetFreeTaskIndex(&TaskID) == MFX_ERR_NOT_FOUND) {
     do {
+      if (QSVTaskPool[QSVSyncTaskID].SyncPoint == nullptr) {
+        break;
+      }
       SyncStatus = MFXVideoCORE_SyncOperation(
           QSVSession, QSVTaskPool[QSVSyncTaskID].SyncPoint, 100);
       if (SyncStatus < MFX_ERR_NONE) {
-        warn("Encode.EncodeSync error: %d", SyncStatus);
+        error("Encode.EncodeSync error: %d", SyncStatus);
+        if (QSVEncodeSurface) {
+          QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
+          QSVEncodeSurface = nullptr;
+        }
+        throw std::runtime_error(
+            "Encode(): Sync operation failed - unrecoverable error");
       }
     } while (SyncStatus == MFX_WRN_IN_EXECUTION);
 
@@ -2202,7 +2226,16 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
                 std::move(FrameLinesize));
   QSVTaskPool[TaskID].Bitstream.TimeStamp = std::move(TS);
 
+  int EncodeRetryCount = 0;
+  const int MaxEncodeRetries = 200;
+
   for (;;) {
+    if (++EncodeRetryCount > MaxEncodeRetries) {
+      error("Encode retry count exceeded");
+      throw std::runtime_error(
+          "Encode(): retry count exceeded");
+    }
+
     Status = QSVEncode->EncodeFrameAsync(
         nullptr, EncodeSurface, &QSVTaskPool[TaskID].Bitstream,
         &QSVTaskPool[TaskID].SyncPoint);
@@ -2270,6 +2303,9 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
 
   while (GetFreeTaskIndex(&TaskID) == MFX_ERR_NOT_FOUND) {
     do {
+      if (QSVTaskPool[QSVSyncTaskID].SyncPoint == nullptr) {
+        break;
+      }
       SyncStatus = MFXVideoCORE_SyncOperation(
           QSVSession, QSVTaskPool[QSVSyncTaskID].SyncPoint, 100);
       if (SyncStatus < MFX_ERR_NONE) {
@@ -2325,11 +2361,32 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
         }
       }
 
+      {
+        mfxStatus SyncSts;
+        do {
+          SyncSts = MFXVideoCORE_SyncOperation(
+              QSVSession, QSVProcessingSyncPoint, 100);
+        } while (SyncSts == MFX_WRN_IN_EXECUTION);
+        if (SyncSts < MFX_ERR_NONE) {
+          error("VPP sync error: %d", SyncSts);
+          throw std::runtime_error("Encode(): VPP sync failed");
+        }
+      }
+
       QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
       QSVEncodeSurface = nullptr;
     }
 
+    int EncodeRetryCount = 0;
+    const int MaxEncodeRetries = 200;
+
     for (;;) {
+      if (++EncodeRetryCount > MaxEncodeRetries) {
+        error("Encode retry count exceeded");
+        throw std::runtime_error(
+            "Encode(): retry count exceeded");
+      }
+
       Status = QSVEncode->EncodeFrameAsync(
           (QSVProcessingEnable && QSVEncodeParams.mfx.CodecId != MFX_CODEC_AV1
                ? &QSVEncodeCtrlParams
@@ -2403,11 +2460,13 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
 
   while (GetFreeTaskIndex(&TaskID) == MFX_ERR_NOT_FOUND) {
     do {
+      if (QSVTaskPool[QSVSyncTaskID].SyncPoint == nullptr) {
+        break;
+      }
       SyncStatus = MFXVideoCORE_SyncOperation(
           QSVSession, QSVTaskPool[QSVSyncTaskID].SyncPoint, 100);
       if (SyncStatus < MFX_ERR_NONE) {
         error("Encode sync error: %d", SyncStatus);
-        QSVTaskPool[QSVSyncTaskID].SyncPoint = nullptr;
         if (QSVEncodeSurface) {
           QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
           QSVEncodeSurface = nullptr;
@@ -2478,10 +2537,35 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
         throw std::runtime_error("Encode(): Processing error");
       }
     } while (Status == MFX_ERR_MORE_SURFACE);
+
+    do {
+      SyncStatus = MFXVideoCORE_SyncOperation(
+          QSVSession, QSVProcessingSyncPoint, 100);
+    } while (SyncStatus == MFX_WRN_IN_EXECUTION);
+    if (SyncStatus < MFX_ERR_NONE) {
+      error("VPP sync error: %d", SyncStatus);
+      throw std::runtime_error("Encode(): VPP sync failed");
+    }
   }
 
   /*Encode a frame asynchronously (returns immediately)*/
+  int EncodeRetryCount = 0;
+  const int MaxEncodeRetries = 200;
+
   for (;;) {
+    if (++EncodeRetryCount > MaxEncodeRetries) {
+      error("Encode retry count exceeded");
+      if (QSVProcessingEnable && QSVProcessingSurface) {
+        QSVProcessingSurface->FrameInterface->Release(QSVProcessingSurface);
+        QSVProcessingSurface = nullptr;
+      }
+      if (QSVEncodeSurface) {
+        QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
+        QSVEncodeSurface = nullptr;
+      }
+      throw std::runtime_error(
+          "Encode(): retry count exceeded");
+    }
 
     Status = QSVEncode->EncodeFrameAsync(
         nullptr,
