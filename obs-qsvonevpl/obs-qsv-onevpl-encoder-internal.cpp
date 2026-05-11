@@ -921,6 +921,8 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     info("\tBufferSize set to: %d KB",
          QSVEncodeParams.mfx.BufferSizeInKB * 100);
     if (InputParams->QVBRQuality > 0 && InputParams->QVBRQuality <= 51) {
+      auto CO3Params =
+          QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
       if (CO3Params) {
         CO3Params->QVBRQuality = InputParams->QVBRQuality;
         info("\tQVBRQuality set: %d", InputParams->QVBRQuality);
