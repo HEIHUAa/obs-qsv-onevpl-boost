@@ -3,6 +3,7 @@
 #ifndef __QSV_VPL_ENCODER_H__
 #include "obs-qsv-onevpl-encoder.hpp"
 #endif
+#include <cstring>
 
 mfxVersion VPLVersion = {{0, 1}}; // for backward compatibility
 std::atomic<bool> IsActive{false};
@@ -203,6 +204,212 @@ int64_t ConvertTSMFXOBS(mfxI64 TS, mfxU32 FpsNum, mfxU32 FpsDen, int64_t Div) {
   }
 }
 
+static uint32_t hevc_read_bits(const uint8_t *data, size_t max_size,
+                                size_t &byte_pos, int &bit_pos, int n) {
+  uint32_t val = 0;
+  for (int i = 0; i < n && byte_pos < max_size; i++) {
+    val = (val << 1) | ((data[byte_pos] >> bit_pos) & 1);
+    bit_pos--;
+    if (bit_pos < 0) {
+      byte_pos++;
+      bit_pos = 7;
+    }
+  }
+  return val;
+}
+
+static uint32_t hevc_read_uev(const uint8_t *data, size_t max_size,
+                               size_t &byte_pos, int &bit_pos) {
+  int leading_zeros = 0;
+  while (byte_pos < max_size) {
+    if (hevc_read_bits(data, max_size, byte_pos, bit_pos, 1) != 0)
+      break;
+    leading_zeros++;
+  }
+  if (leading_zeros == 0)
+    return 0;
+  return (1u << leading_zeros) - 1 +
+         hevc_read_bits(data, max_size, byte_pos, bit_pos, leading_zeros);
+}
+
+static void hevc_skip_bits(size_t &byte_pos, int &bit_pos, int n) {
+  bit_pos -= n;
+  while (bit_pos < 0) {
+    byte_pos++;
+    bit_pos += 8;
+  }
+}
+
+static size_t hevc_current_bit(const size_t &byte_pos, const int &bit_pos) {
+  return byte_pos * 8 + (7 - bit_pos);
+}
+
+static void hevc_write_bits(uint8_t *data, size_t &byte_pos, int &bit_pos,
+                             uint32_t val, int n) {
+  for (int i = n - 1; i >= 0; i--) {
+    if (bit_pos < 0) {
+      byte_pos++;
+      bit_pos = 7;
+    }
+    data[byte_pos] = (data[byte_pos] & ~(1 << bit_pos)) |
+                     (((val >> i) & 1) << bit_pos);
+    bit_pos--;
+  }
+}
+
+static void hevc_flush_byte(uint8_t *data, size_t &byte_pos, int &bit_pos) {
+  if (bit_pos < 7) {
+    byte_pos++;
+    bit_pos = 7;
+  }
+}
+
+static size_t StripHEVCNALTemporalLayer(uint8_t *dst, const uint8_t *src,
+                                         size_t src_size) {
+  if (src_size < 3)
+    return 0;
+
+  uint8_t nal_type = (src[0] >> 1) & 0x3F;
+  bool is_vps = (nal_type == 32);
+  bool is_sps = (nal_type == 33);
+
+  if (!is_vps && !is_sps) {
+    memcpy(dst, src, src_size);
+    return src_size;
+  }
+
+  uint8_t old_max_sublayers;
+  size_t ptl_start_byte;
+
+  if (is_vps) {
+    if (src_size < 6)
+      return 0;
+    old_max_sublayers = (src[3] >> 1) & 0x7;
+    ptl_start_byte = 6;
+  } else {
+    if (src_size < 3)
+      return 0;
+    old_max_sublayers = (src[2] >> 1) & 0x7;
+    ptl_start_byte = 3;
+  }
+
+  if (old_max_sublayers == 0) {
+    memcpy(dst, src, src_size);
+    return src_size;
+  }
+
+  memcpy(dst, src, ptl_start_byte);
+  size_t out_byte = ptl_start_byte;
+  int out_bit = 7;
+
+  size_t sl_byte = ptl_start_byte;
+  int sl_bit = 7;
+
+  for (int i = 0; i < 96; i++) {
+    uint8_t bit = hevc_read_bits(src, src_size, sl_byte, sl_bit, 1);
+    hevc_write_bits(dst, out_byte, out_bit, bit, 1);
+  }
+  hevc_flush_byte(dst, out_byte, out_bit);
+
+  int flags[7] = {0};
+  for (int i = 0; i < old_max_sublayers; i++) {
+    flags[i * 2] = hevc_read_bits(src, src_size, sl_byte, sl_bit, 1);
+    flags[i * 2 + 1] = hevc_read_bits(src, src_size, sl_byte, sl_bit, 1);
+  }
+
+  for (int i = old_max_sublayers; i < 8; i++) {
+    hevc_read_bits(src, src_size, sl_byte, sl_bit, 2);
+  }
+
+  for (int i = 0; i < old_max_sublayers; i++) {
+    if (flags[i * 2]) {
+      for (int j = 0; j < 96; j++)
+        hevc_read_bits(src, src_size, sl_byte, sl_bit, 1);
+    }
+    if (flags[i * 2 + 1]) {
+      hevc_read_bits(src, src_size, sl_byte, sl_bit, 8);
+    }
+  }
+
+  size_t remaining_bits = (src_size - sl_byte) * 8 - (7 - sl_bit);
+  for (size_t i = 0; i < remaining_bits; i++) {
+    uint8_t bit = hevc_read_bits(src, src_size, sl_byte, sl_bit, 1);
+    hevc_write_bits(dst, out_byte, out_bit, bit, 1);
+  }
+  hevc_flush_byte(dst, out_byte, out_bit);
+
+  if (is_vps) {
+    dst[3] = (dst[3] & 0xF1) | 0x01;
+  } else {
+    dst[2] = (dst[2] & 0xF1) | 0x01;
+  }
+
+  return out_byte;
+}
+
+static void StripHEVCExtraDataTemporalLayer(uint8_t *data, size_t *size) {
+  if (!data || !size || *size < 8)
+    return;
+
+  // Use a temporary buffer for processing (same max size)
+  // Since we only remove bytes, the result fits in the same buffer
+  // Process NAL by NAL from start
+
+  uint8_t *tmp = new uint8_t[*size]();
+  size_t tmp_pos = 0;
+
+  size_t offset = 0;
+  while (offset < *size) {
+    // Find start code (4-byte or 3-byte)
+    size_t sc_len = 0;
+    if (offset + 4 <= *size && data[offset] == 0 && data[offset + 1] == 0 &&
+        data[offset + 2] == 0 && data[offset + 3] == 1) {
+      sc_len = 4;
+    } else if (offset + 3 <= *size && data[offset] == 0 &&
+               data[offset + 1] == 0 && data[offset + 2] == 1) {
+      sc_len = 3;
+    } else {
+      tmp[tmp_pos++] = data[offset++];
+      continue;
+    }
+
+    // Find NAL data end
+    size_t nal_start = offset + sc_len;
+    size_t nal_end = nal_start;
+    while (nal_end < *size) {
+      if (nal_end + 4 <= *size && data[nal_end] == 0 &&
+          data[nal_end + 1] == 0 && data[nal_end + 2] == 0 &&
+          data[nal_end + 3] == 1)
+        break;
+      if (nal_end + 3 <= *size && data[nal_end] == 0 &&
+          data[nal_end + 1] == 0 && data[nal_end + 2] == 1)
+        break;
+      nal_end++;
+    }
+
+    size_t nal_size = nal_end - nal_start;
+
+    // Copy start code
+    memcpy(tmp + tmp_pos, data + offset, sc_len);
+    tmp_pos += sc_len;
+
+    if (nal_size > 0) {
+      size_t processed = StripHEVCNALTemporalLayer(tmp + tmp_pos, data + nal_start, nal_size);
+      tmp_pos += processed;
+    }
+
+    offset = nal_end;
+  }
+
+  // Replace original with processed extradata
+  if (tmp_pos <= *size) {
+    memcpy(data, tmp, tmp_pos);
+    *size = tmp_pos;
+  }
+
+  delete[] tmp;
+}
+
 void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
                         mfxBitstream *Bitstream, bool *ReceivedPacketStatus) {
   if (Bitstream == nullptr || Bitstream->DataLength == 0) {
@@ -227,6 +434,13 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
                                &NewPacketSize, &Context->ExtraData.first,
                                &Context->ExtraData.second, &Context->SEI.first,
                                &Context->SEI.second);
+
+      // Strip temporal sub-layer info from extradata to prevent
+      // obs_parse_hevc_header from crashing during hvcC construction
+      if (Context->ExtraData.first && Context->ExtraData.second > 0) {
+        StripHEVCExtraDataTemporalLayer(Context->ExtraData.first,
+                                         &Context->ExtraData.second);
+      }
     } else if (Context->Codec == QSV_CODEC_AV1) {
       obs_extract_av1_headers(Bitstream->Data + Bitstream->DataOffset,
                               Bitstream->DataLength, &NewPacket,
