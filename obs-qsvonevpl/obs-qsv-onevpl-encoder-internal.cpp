@@ -2298,22 +2298,11 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
   mfxStatus Status = MFX_ERR_NONE, SyncStatus = MFX_ERR_NONE;
   *Bitstream = nullptr;
   int TaskID = 0;
-  mfxU32 QSVEncodeCurRefCount = 0, QSVProcessingCurRefCount = 0;
 
-  if (QSVEncodeSurface != nullptr) {
-    QSVEncodeSurface->FrameInterface->GetRefCounter(QSVEncodeSurface,
-                                                    &QSVEncodeCurRefCount);
-  }
-
-  if (QSVEncodeSurface == nullptr || QSVEncodeCurRefCount == 0) {
-    Status = QSVEncode->GetSurface(&QSVEncodeSurface);
-    if (Status < MFX_ERR_NONE) {
-      error("Error code: %d", Status);
-      throw std::runtime_error("Encode(): Get encode surface error");
-    }
-
-    QSVEncodeSurface->FrameInterface->GetRefCounter(QSVEncodeSurface,
-                                                    &QSVEncodeRefCount);
+  Status = QSVEncode->GetSurface(&QSVEncodeSurface);
+  if (Status < MFX_ERR_NONE) {
+    error("Error code: %d", Status);
+    throw std::runtime_error("Encode(): Get encode surface error");
   }
 
   while (GetFreeTaskIndex(&TaskID) == MFX_ERR_NOT_FOUND) {
@@ -2422,9 +2411,9 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
   if (QSVProcessingEnable) {
     QSVProcessingSurface->FrameInterface->Release(QSVProcessingSurface);
   }
-  //  else {
-  //    QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
-  //  }
+
+  QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
+  QSVEncodeSurface = nullptr;
 
   return MFX_ERR_NONE;
 }
