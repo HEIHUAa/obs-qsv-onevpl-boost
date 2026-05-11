@@ -1146,7 +1146,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
          GetCodingOptStatus(CO2Params->BitrateLimit).c_str());
   }
 
-  if (CO3Enabled == 1 && !InputParams->VideoFormat10bit) {
+  if (CO3Enabled == 1) {
     auto CO3Params = QSVEncodeParams.AddExtBuffer<mfxExtCodingOption3>();
     CO3Params->Header.BufferId = MFX_EXTBUFF_CODING_OPTION3;
     CO3Params->Header.BufferSz = sizeof(mfxExtCodingOption3);
