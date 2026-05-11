@@ -59,7 +59,8 @@ void QSVEncoder::InitSystemMemorySurfacePool() {
     SystemMemSurface S = {};
     S.Surface.Info = FI;
 
-    mfxU32 Align = FI.Width;
+    mfxU32 bpp = (FI.FourCC == MFX_FOURCC_P010) ? 2 : 1;
+    mfxU32 Align = FI.Width * bpp;
     mfxU32 Pitch = Align + ((Align % 16) ? (16 - Align % 16) : 0);
     mfxU32 YSize = Pitch * FI.Height;
     mfxU32 UVSize = Pitch * (FI.Height / 2);
