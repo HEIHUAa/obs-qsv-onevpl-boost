@@ -254,7 +254,7 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   Prop = obs_properties_get(Properties, "max_bitrate");
   obs_property_set_visible(Prop, bVisible);
 
-  bVisible = bIsCQP || bIsICQ;
+  bVisible = bIsCQP || bIsICQ || bIsQVBR;
   Prop = obs_properties_get(Properties, "bitrate");
   obs_property_set_visible(Prop, !bVisible);
 
@@ -559,6 +559,11 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 
   obs_properties_add_int(Props, "icq_quality", TEXT_ICQ_QUALITY, 1, 51, 1);
 
+  Prop = obs_properties_add_int(Props, "qvbr_quality", TEXT_QVBR_QUALITY, 0, 51,
+                                1);
+  obs_property_set_long_description(Prop,
+                                    obs_module_text("QVBRQuality.Tooltip"));
+
   Prop = obs_properties_add_int(Props, "keyint_sec", TEXT_KEYINT_SEC, 0, 20, 1);
   obs_property_int_set_suffix(Prop, " s");
 
@@ -595,11 +600,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_int_set_suffix(Prop, " frames");
   obs_property_set_long_description(Prop,
                                     obs_module_text("WinBRCSize.Tooltip"));
-
-  Prop = obs_properties_add_int(Props, "qvbr_quality", TEXT_QVBR_QUALITY, 0, 51,
-                                1);
-  obs_property_set_long_description(Prop,
-                                    obs_module_text("QVBRQuality.Tooltip"));
 
   obs_properties_add_int(Props, "async_depth", TEXT_ASYNC_DEPTH, 1, 1000, 1);
 
