@@ -38,7 +38,7 @@ public:
   mfxStatus ReconfigureEncoder();
   bool UpdateParams(struct encoder_params *InputParams);
 
-protected:
+  protected:
   typedef struct Task {
     mfxBitstream Bitstream;
     mfxSyncPoint SyncPoint;

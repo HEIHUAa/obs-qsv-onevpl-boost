@@ -417,8 +417,9 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
                    "retrying without temporal layers",
                    TemporalLayers->NumLayers);
               QSVEncode->Close();
-              TemporalLayers->NumLayers = 0;
-              TemporalLayers->Layers = nullptr;
+              delete[] QSVLayerArray;
+              QSVLayerArray = nullptr;
+              QSVEncodeParams.RemoveExtBuffer<mfxExtTemporalLayers>();
               Status = QSVEncode->Init(&QSVEncodeParams);
               info("\tMFXVideoENCODE_Init (sysmem) retry (TemporalLayers removed) "
                    "status: %d",
@@ -512,8 +513,9 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
              "retrying without temporal layers",
              TemporalLayers->NumLayers);
         QSVEncode->Close();
-        TemporalLayers->NumLayers = 0;
-        TemporalLayers->Layers = nullptr;
+        delete[] QSVLayerArray;
+        QSVLayerArray = nullptr;
+        QSVEncodeParams.RemoveExtBuffer<mfxExtTemporalLayers>();
         Status = QSVEncode->Init(&QSVEncodeParams);
         info("\tMFXVideoENCODE_Init retry (TemporalLayers removed) status: %d",
              Status);

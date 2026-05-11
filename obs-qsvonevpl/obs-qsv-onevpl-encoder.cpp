@@ -515,14 +515,24 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
                               &Context->ExtraData.second, &Context->SEI.first,
                               &Context->SEI.second);
     } else if (Context->Codec == QSV_CODEC_HEVC) {
-      obs_extract_hevc_headers(Bitstream->Data + Bitstream->DataOffset,
-                               Bitstream->DataLength, &NewPacket,
+      // Strip temporal sub-layer info from raw bitstream BEFORE calling
+      // obs_extract_hevc_headers to prevent crash in obs_parse_hevc_header
+      // when VPS contains vps_max_sub_layers_minus1 > 0 (temporal layers 2-4)
+      size_t bitstream_size = Bitstream->DataLength;
+      size_t tmp_alloc = bitstream_size + bitstream_size / 2 + 256;
+      uint8_t *tmp_bitstream = new uint8_t[tmp_alloc]();
+      memcpy(tmp_bitstream, Bitstream->Data + Bitstream->DataOffset,
+             bitstream_size);
+      StripHEVCExtraDataTemporalLayer(tmp_bitstream, &bitstream_size);
+
+      obs_extract_hevc_headers(tmp_bitstream, bitstream_size, &NewPacket,
                                &NewPacketSize, &Context->ExtraData.first,
                                &Context->ExtraData.second, &Context->SEI.first,
                                &Context->SEI.second);
 
-      // Strip temporal sub-layer info from extradata to prevent
-      // obs_parse_hevc_header from crashing during hvcC construction
+      delete[] tmp_bitstream;
+
+      // Also strip temporal sub-layer info from extradata as a safety net
       if (Context->ExtraData.first && Context->ExtraData.second > 0) {
         StripHEVCExtraDataTemporalLayer(Context->ExtraData.first,
                                          &Context->ExtraData.second);
