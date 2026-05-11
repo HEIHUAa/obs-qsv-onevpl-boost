@@ -48,12 +48,14 @@ jobs:
         uses: actions/cache@v5
         with:
           path: obs-studio/plugins/${{ env.PLUGIN_NAME }}/libvpl
-          key: onevpl-v2.12.0-${{ runner.os }}
+          key: onevpl-v2.12.0-${{ runner.os }}-${{ hashFiles('.github/workflows/build.yml') }}
 
       - name: Setup oneVPL
         if: steps.cache-onevpl.outputs.cache-hit != 'true'
         run: |
           git clone --depth 1 --branch v2.12.0 https://github.com/oneapi-src/oneVPL.git libvpl
+          $file = "libvpl/libvpl/src/mfx_dispatcher_vpl_log.h"
+          (Get-Content $file -Raw) -replace '[^\x20-\x7E\n\r\t]', '' | Set-Content $file
           cmake -S libvpl -B libvpl/build `
             -DBUILD_SHARED_LIBS=ON `
             -DBUILD_EXAMPLES=OFF `
@@ -92,7 +94,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: obs-studio/build_x64
-          key: cmake-${{ runner.os }}-${{ env.OBS_VERSION }}-${{ hashFiles('obs-studio/plugins/obs-qsv-onevpl/obs-qsvonevpl/CMakeLists.txt') }}
+          key: cmake-${{ runner.os }}-${{ env.OBS_VERSION }}-${{ hashFiles('obs-studio/plugins/obs-qsv-onevpl/obs-qsvonevpl/CMakeLists.txt', '.github/workflows/build.yml') }}
 
       - name: Configure CMake
         if: steps.cache-cmake.outputs.cache-hit != 'true'
