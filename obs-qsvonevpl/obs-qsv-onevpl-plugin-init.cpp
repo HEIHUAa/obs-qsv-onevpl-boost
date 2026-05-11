@@ -18,7 +18,7 @@ static const struct qsv_rate_control_info qsv_rate_control_info_list[] = {
     {"AVBR", MFX_PLATFORM_HASWELL},
     {"ICQ", MFX_PLATFORM_HASWELL},
     {"VCM", MFX_PLATFORM_SKYLAKE},
-    {"QVBR", MFX_PLATFORM_DG2},
+    {"QVBR", MFX_PLATFORM_HASWELL},
     {nullptr, 0}};
 
 struct qsv_feature_info {
@@ -30,6 +30,7 @@ static const struct qsv_feature_info qsv_feature_info_list[] = {
     {"enc_tools", MFX_PLATFORM_DG2},
     {"tune_quality", MFX_PLATFORM_TIGERLAKE},
     {"transform_skip", MFX_PLATFORM_TIGERLAKE},
+    {"win_brc", MFX_PLATFORM_TIGERLAKE},
     {nullptr, 0}};
 
 static mfxU16 QueryPlatformCodeName();
@@ -173,6 +174,8 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_int(Settings, "win_brc_max_avg_size", 0);
   obs_data_set_default_int(Settings, "win_brc_size", 0);
 
+  obs_data_set_default_int(Settings, "qvbr_quality", 0);
+
   obs_data_set_default_string(Settings, "lookahead", "OFF");
   obs_data_set_default_string(Settings, "lookahead_latency", "NORMAL");
   obs_data_set_default_string(Settings, "lookahead_ds", "MEDIUM");
@@ -284,10 +287,15 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   Prop = obs_properties_get(Properties, "extbrc");
   obs_property_set_visible(Prop, bVisible);
 
-  bVisible = bIsCBR || bIsAVBR;
+  bVisible = (bIsCBR || bIsVBR || bIsAVBR || bIsVCM || bIsQVBR) &&
+             IsFeatureSupported("win_brc");
   Prop = obs_properties_get(Properties, "win_brc_max_avg_size");
   obs_property_set_visible(Prop, bVisible);
   Prop = obs_properties_get(Properties, "win_brc_size");
+  obs_property_set_visible(Prop, bVisible);
+
+  bVisible = bIsQVBR;
+  Prop = obs_properties_get(Properties, "qvbr_quality");
   obs_property_set_visible(Prop, bVisible);
 
   const char *lookahead = obs_data_get_string(Settings, "lookahead");
@@ -587,6 +595,11 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_int_set_suffix(Prop, " frames");
   obs_property_set_long_description(Prop,
                                     obs_module_text("WinBRCSize.Tooltip"));
+
+  Prop = obs_properties_add_int(Props, "qvbr_quality", TEXT_QVBR_QUALITY, 0, 51,
+                                1);
+  obs_property_set_long_description(Prop,
+                                    obs_module_text("QVBRQuality.Tooltip"));
 
   obs_properties_add_int(Props, "async_depth", TEXT_ASYNC_DEPTH, 1, 1000, 1);
 
@@ -1533,6 +1546,9 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       static_cast<mfxU16>(obs_data_get_int(Settings, "win_brc_max_avg_size"));
   Context->EncoderParams.WinBRCSize =
       static_cast<mfxU16>(obs_data_get_int(Settings, "win_brc_size"));
+
+  Context->EncoderParams.QVBRQuality =
+      static_cast<mfxU16>(obs_data_get_int(Settings, "qvbr_quality"));
 
   if (std::strcmp(ScreenContentToolsData, "AUTO") == 0) {
     Context->EncoderParams.ScreenContentTools = 0;

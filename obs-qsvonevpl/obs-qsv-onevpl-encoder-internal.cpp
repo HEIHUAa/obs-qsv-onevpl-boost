@@ -920,6 +920,12 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
         static_cast<mfxU16>(QSVEncodeParams.mfx.BufferSizeInKB / 2);
     info("\tBufferSize set to: %d KB",
          QSVEncodeParams.mfx.BufferSizeInKB * 100);
+    if (InputParams->QVBRQuality > 0 && InputParams->QVBRQuality <= 51) {
+      if (CO3Params) {
+        CO3Params->QVBRQuality = InputParams->QVBRQuality;
+        info("\tQVBRQuality set: %d", InputParams->QVBRQuality);
+      }
+    }
     break;
   }
 
@@ -1324,7 +1330,10 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
          GetCodingOptStatus(CO3Params->AdaptiveLTR).c_str());
 
     if (QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_CBR ||
-        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_AVBR) {
+        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_VBR ||
+        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_AVBR ||
+        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_VCM ||
+        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_QVBR) {
 
       if (InputParams->WinBRCMaxAvgKbps > 0) {
         CO3Params->WinBRCMaxAvgKbps = InputParams->WinBRCMaxAvgKbps;

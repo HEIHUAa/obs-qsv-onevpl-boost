@@ -46,6 +46,7 @@ struct encoder_params {
   mfxU16 DenoiseStrength;
   mfxU16 WinBRCMaxAvgKbps;
   mfxU16 WinBRCSize;
+  mfxU16 QVBRQuality;
 
   mfxI16 IntraRefQPDelta;
 

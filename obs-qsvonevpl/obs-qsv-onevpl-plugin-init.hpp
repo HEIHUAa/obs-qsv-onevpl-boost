@@ -40,6 +40,7 @@ struct plugin_context {
 #define TEXT_HEVC_TIER obs_module_text("Tier")
 #define TEXT_RATE_CONTROL obs_module_text("RateControl")
 #define TEXT_ICQ_QUALITY obs_module_text("ICQQuality")
+#define TEXT_QVBR_QUALITY obs_module_text("QVBRQuality")
 #define TEXT_KEYINT_SEC obs_module_text("KeyframeIntervalSec")
 #define TEXT_GOP_REF_DIST obs_module_text("GOPRefDist")
 #define TEXT_MBBRC obs_module_text("MBBRC")
