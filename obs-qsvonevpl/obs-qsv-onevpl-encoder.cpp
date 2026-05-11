@@ -204,6 +204,42 @@ int64_t ConvertTSMFXOBS(mfxI64 TS, mfxU32 FpsNum, mfxU32 FpsDen, int64_t Div) {
   }
 }
 
+static size_t hevc_extract_rbsp(uint8_t *dst, const uint8_t *src,
+                                 size_t src_size) {
+  size_t dst_pos = 0;
+  size_t i = 0;
+  while (i < src_size) {
+    if (i + 2 < src_size && src[i] == 0 && src[i + 1] == 0 &&
+        src[i + 2] == 3) {
+      dst[dst_pos++] = 0;
+      dst[dst_pos++] = 0;
+      i += 3;
+    } else {
+      dst[dst_pos++] = src[i++];
+    }
+  }
+  return dst_pos;
+}
+
+static size_t hevc_add_emulation_prevention(uint8_t *dst, const uint8_t *src,
+                                             size_t src_size) {
+  size_t dst_pos = 0;
+  int zero_count = 0;
+  for (size_t i = 0; i < src_size; i++) {
+    if (zero_count >= 2 && src[i] <= 3) {
+      dst[dst_pos++] = 3;
+      zero_count = 0;
+    }
+    dst[dst_pos++] = src[i];
+    if (src[i] == 0) {
+      zero_count++;
+    } else {
+      zero_count = 0;
+    }
+  }
+  return dst_pos;
+}
+
 static uint32_t hevc_read_bits(const uint8_t *data, size_t max_size,
                                 size_t &byte_pos, int &bit_pos, int n) {
   uint32_t val = 0;
@@ -285,155 +321,127 @@ static size_t StripHEVCNALTemporalLayer(uint8_t *dst, const uint8_t *src,
     return 0;
 
   uint8_t nal_type = (src[0] >> 1) & 0x3F;
-  bool is_vps = (nal_type == 32);
-  bool is_sps = (nal_type == 33);
 
-  if (!is_vps && !is_sps) {
+  if (nal_type != 32) {
     memcpy(dst, src, src_size);
     return src_size;
   }
 
-  uint8_t old_max_sublayers;
-  size_t ptl_start_byte;
+  uint8_t *rbsp = (uint8_t *)alloca(src_size + 4);
+  size_t rbsp_size = hevc_extract_rbsp(rbsp, src, src_size);
 
-  if (is_vps) {
-    if (src_size < 6)
-      return 0;
-    old_max_sublayers = (src[3] >> 1) & 0x7;
-    ptl_start_byte = 6;
-  } else {
-    if (src_size < 3)
-      return 0;
-    old_max_sublayers = (src[2] >> 1) & 0x7;
-    ptl_start_byte = 3;
+  if (rbsp_size < 6) {
+    memcpy(dst, src, src_size);
+    return src_size;
   }
+
+  nal_type = (rbsp[0] >> 1) & 0x3F;
+  if (nal_type != 32) {
+    memcpy(dst, src, src_size);
+    return src_size;
+  }
+
+  // VPS header layout in RBSP (after 2-byte NAL header):
+  // byte 2: vps_video_parameter_set_id(4) | vps_reserved_three_2bits(2) | vps_max_layers_minus1(2 MSB)
+  // byte 3: vps_max_layers_minus1(1 LSB) | vps_max_sub_layers_minus1(3) | vps_temporal_id_nesting_flag(1) | vps_reserved_0xffff[2:0](3)
+  // byte 4-5: vps_reserved_0xffff[15:3](13 bits)
+  uint8_t old_max_sublayers = (rbsp[3] >> 4) & 0x7;
+
+  blog(LOG_INFO,
+       "[QSV VPS] old_max_sublayers=%d, byte3=0x%02x, src_size=%zu, "
+       "rbsp_size=%zu",
+       old_max_sublayers, rbsp[3], src_size, rbsp_size);
+  blog(LOG_INFO,
+       "[QSV VPS] rbsp[0-15]: %02x %02x %02x %02x %02x %02x %02x %02x "
+       "%02x %02x %02x %02x %02x %02x %02x %02x",
+       rbsp[0], rbsp[1], rbsp[2], rbsp[3], rbsp[4], rbsp[5], rbsp[6],
+       rbsp[7], rbsp[8], rbsp[9], rbsp[10], rbsp[11], rbsp[12], rbsp[13],
+       rbsp[14], rbsp[15]);
 
   if (old_max_sublayers == 0) {
-    memcpy(dst, src, src_size);
-    return src_size;
+    size_t out_size = hevc_add_emulation_prevention(dst, rbsp, rbsp_size);
+    return out_size;
   }
 
-  memcpy(dst, src, ptl_start_byte);
-  size_t out_byte = ptl_start_byte;
+  size_t rbsp_out_alloc = rbsp_size + rbsp_size / 2 + 64;
+  uint8_t *rbsp_out = (uint8_t *)alloca(rbsp_out_alloc);
+  memset(rbsp_out, 0, rbsp_out_alloc);
+
+  memcpy(rbsp_out, rbsp, 6);
+  size_t out_byte = 6;
   int out_bit = 7;
 
-  size_t sl_byte = ptl_start_byte;
+  size_t sl_byte = 6;
   int sl_bit = 7;
 
   for (int i = 0; i < 96; i++) {
-    uint8_t bit = hevc_read_bits(src, src_size, sl_byte, sl_bit, 1);
-    hevc_write_bits(dst, out_byte, out_bit, bit, 1);
+    uint8_t bit = hevc_read_bits(rbsp, rbsp_size, sl_byte, sl_bit, 1);
+    hevc_write_bits(rbsp_out, out_byte, out_bit, bit, 1);
   }
-  hevc_flush_byte(dst, out_byte, out_bit);
+  hevc_flush_byte(rbsp_out, out_byte, out_bit);
 
-  int flags[7] = {0};
-  for (int i = 0; i < old_max_sublayers; i++) {
-    flags[i * 2] = hevc_read_bits(src, src_size, sl_byte, sl_bit, 1);
-    flags[i * 2 + 1] = hevc_read_bits(src, src_size, sl_byte, sl_bit, 1);
+  int max_sublayers_to_process = old_max_sublayers;
+  if (max_sublayers_to_process > 7)
+    max_sublayers_to_process = 7;
+
+  uint8_t flags[14] = {0};
+  for (int i = 0; i < max_sublayers_to_process; i++) {
+    flags[i * 2] = hevc_read_bits(rbsp, rbsp_size, sl_byte, sl_bit, 1);
+    flags[i * 2 + 1] = hevc_read_bits(rbsp, rbsp_size, sl_byte, sl_bit, 1);
   }
 
-  for (int i = old_max_sublayers; i < 8; i++) {
-    hevc_read_bits(src, src_size, sl_byte, sl_bit, 2);
+  for (int i = max_sublayers_to_process; i < 8; i++) {
+    hevc_read_bits(rbsp, rbsp_size, sl_byte, sl_bit, 2);
   }
 
-  for (int i = 0; i < old_max_sublayers; i++) {
+  for (int i = 0; i < max_sublayers_to_process; i++) {
     if (flags[i * 2]) {
       for (int j = 0; j < 96; j++)
-        hevc_read_bits(src, src_size, sl_byte, sl_bit, 1);
+        hevc_read_bits(rbsp, rbsp_size, sl_byte, sl_bit, 1);
     }
     if (flags[i * 2 + 1]) {
-      hevc_read_bits(src, src_size, sl_byte, sl_bit, 8);
+      hevc_read_bits(rbsp, rbsp_size, sl_byte, sl_bit, 8);
     }
   }
 
-  if (is_sps && old_max_sublayers > 0) {
-    uint32_t uev;
+  // Set vps_max_sub_layers_minus1 = 0 in output header
+  // & 0x8F: preserve bit 7 (vps_max_layers_minus1 MSB) and bits 3-0
+  // | 0x09: set bit 3 (vps_temporal_id_nesting_flag=1) and bit 0 (vps_reserved_0xffff LSB=1)
+  // This sets bits 6-4 (vps_max_sub_layers_minus1) to 0
+  rbsp_out[3] = (rbsp_out[3] & 0x8F) | 0x09;
 
-    uev = hevc_read_uev(src, src_size, sl_byte, sl_bit);
-    hevc_write_uev(dst, out_byte, out_bit, uev);
+  blog(LOG_INFO,
+       "[QSV VPS] OUT old_max_sublayers=%d, byte3=0x%02x, "
+       "out_rbsp_size=%zu",
+       old_max_sublayers, rbsp_out[3], out_byte);
+  blog(LOG_INFO,
+       "[QSV VPS] OUT rbsp[0-15]: %02x %02x %02x %02x %02x %02x %02x %02x "
+       "%02x %02x %02x %02x %02x %02x %02x %02x",
+       rbsp_out[0], rbsp_out[1], rbsp_out[2], rbsp_out[3], rbsp_out[4],
+       rbsp_out[5], rbsp_out[6], rbsp_out[7], rbsp_out[8], rbsp_out[9],
+       rbsp_out[10], rbsp_out[11], rbsp_out[12], rbsp_out[13], rbsp_out[14],
+       rbsp_out[15]);
 
-    uev = hevc_read_uev(src, src_size, sl_byte, sl_bit);
-    hevc_write_uev(dst, out_byte, out_bit, uev);
+  size_t remaining_bits = (rbsp_size - sl_byte) * 8 - (7 - sl_bit);
 
-    if (uev == 3) {
-      uint8_t bit = hevc_read_bits(src, src_size, sl_byte, sl_bit, 1);
-      hevc_write_bits(dst, out_byte, out_bit, bit, 1);
-    }
-
-    uev = hevc_read_uev(src, src_size, sl_byte, sl_bit);
-    hevc_write_uev(dst, out_byte, out_bit, uev);
-
-    uev = hevc_read_uev(src, src_size, sl_byte, sl_bit);
-    hevc_write_uev(dst, out_byte, out_bit, uev);
-
-    uint8_t cwf = hevc_read_bits(src, src_size, sl_byte, sl_bit, 1);
-    hevc_write_bits(dst, out_byte, out_bit, cwf, 1);
-    if (cwf) {
-      for (int j = 0; j < 4; j++) {
-        uev = hevc_read_uev(src, src_size, sl_byte, sl_bit);
-        hevc_write_uev(dst, out_byte, out_bit, uev);
-      }
-    }
-
-    uev = hevc_read_uev(src, src_size, sl_byte, sl_bit);
-    hevc_write_uev(dst, out_byte, out_bit, uev);
-
-    uev = hevc_read_uev(src, src_size, sl_byte, sl_bit);
-    hevc_write_uev(dst, out_byte, out_bit, uev);
-
-    uev = hevc_read_uev(src, src_size, sl_byte, sl_bit);
-    hevc_write_uev(dst, out_byte, out_bit, uev);
-
-    uint8_t ordering_flag =
-        hevc_read_bits(src, src_size, sl_byte, sl_bit, 1);
-    hevc_write_bits(dst, out_byte, out_bit, 0, 1);
-
-    for (int j = 0; j < 3; j++) {
-      uev = hevc_read_uev(src, src_size, sl_byte, sl_bit);
-      hevc_write_uev(dst, out_byte, out_bit, uev);
-    }
-
-    if (ordering_flag) {
-      for (unsigned i = 0; i < old_max_sublayers; i++) {
-        hevc_read_uev(src, src_size, sl_byte, sl_bit);
-        hevc_read_uev(src, src_size, sl_byte, sl_bit);
-        hevc_read_uev(src, src_size, sl_byte, sl_bit);
-      }
-    }
-
-    size_t remaining_bits = (src_size - sl_byte) * 8 - (7 - sl_bit);
-    for (size_t i = 0; i < remaining_bits; i++) {
-      uint8_t bit = hevc_read_bits(src, src_size, sl_byte, sl_bit, 1);
-      hevc_write_bits(dst, out_byte, out_bit, bit, 1);
-    }
-    hevc_flush_byte(dst, out_byte, out_bit);
-  } else {
-    size_t remaining_bits = (src_size - sl_byte) * 8 - (7 - sl_bit);
-    for (size_t i = 0; i < remaining_bits; i++) {
-      uint8_t bit = hevc_read_bits(src, src_size, sl_byte, sl_bit, 1);
-      hevc_write_bits(dst, out_byte, out_bit, bit, 1);
-    }
-    hevc_flush_byte(dst, out_byte, out_bit);
+  for (size_t i = 0; i < remaining_bits; i++) {
+    uint8_t bit = hevc_read_bits(rbsp, rbsp_size, sl_byte, sl_bit, 1);
+    hevc_write_bits(rbsp_out, out_byte, out_bit, bit, 1);
   }
+  hevc_flush_byte(rbsp_out, out_byte, out_bit);
 
-  if (is_vps) {
-    dst[3] = (dst[3] & 0xF1) | 0x01;
-  } else {
-    dst[2] = (dst[2] & 0xF1) | 0x01;
-  }
+  size_t out_size =
+      hevc_add_emulation_prevention(dst, rbsp_out, out_byte);
 
-  return out_byte;
+  return out_size;
 }
 
 static void StripHEVCExtraDataTemporalLayer(uint8_t *data, size_t *size) {
   if (!data || !size || *size < 8)
     return;
 
-  // Use a temporary buffer for processing (same max size)
-  // Since we only remove bytes, the result fits in the same buffer
-  // Process NAL by NAL from start
-
-  uint8_t *tmp = new uint8_t[*size]();
+  size_t tmp_alloc = *size + *size / 2 + 256;
+  uint8_t *tmp = new uint8_t[tmp_alloc]();
   size_t tmp_pos = 0;
 
   size_t offset = 0;
