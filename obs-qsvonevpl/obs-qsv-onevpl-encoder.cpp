@@ -264,6 +264,21 @@ static void hevc_flush_byte(uint8_t *data, size_t &byte_pos, int &bit_pos) {
   }
 }
 
+static void hevc_write_uev(uint8_t *data, size_t &byte_pos, int &bit_pos,
+                            uint32_t val) {
+  if (val == 0) {
+    hevc_write_bits(data, byte_pos, bit_pos, 1, 1);
+    return;
+  }
+  int leading_zeros = 0;
+  uint32_t tmp = val + 1;
+  while (tmp >>= 1)
+    leading_zeros++;
+  for (int i = 0; i < leading_zeros; i++)
+    hevc_write_bits(data, byte_pos, bit_pos, 0, 1);
+  hevc_write_bits(data, byte_pos, bit_pos, val + 1, leading_zeros + 1);
+}
+
 static size_t StripHEVCNALTemporalLayer(uint8_t *dst, const uint8_t *src,
                                          size_t src_size) {
   if (src_size < 3)
@@ -331,12 +346,75 @@ static size_t StripHEVCNALTemporalLayer(uint8_t *dst, const uint8_t *src,
     }
   }
 
-  size_t remaining_bits = (src_size - sl_byte) * 8 - (7 - sl_bit);
-  for (size_t i = 0; i < remaining_bits; i++) {
-    uint8_t bit = hevc_read_bits(src, src_size, sl_byte, sl_bit, 1);
-    hevc_write_bits(dst, out_byte, out_bit, bit, 1);
+  if (is_sps && old_max_sublayers > 0) {
+    uint32_t uev;
+
+    uev = hevc_read_uev(src, src_size, sl_byte, sl_bit);
+    hevc_write_uev(dst, out_byte, out_bit, uev);
+
+    uev = hevc_read_uev(src, src_size, sl_byte, sl_bit);
+    hevc_write_uev(dst, out_byte, out_bit, uev);
+
+    if (uev == 3) {
+      uint8_t bit = hevc_read_bits(src, src_size, sl_byte, sl_bit, 1);
+      hevc_write_bits(dst, out_byte, out_bit, bit, 1);
+    }
+
+    uev = hevc_read_uev(src, src_size, sl_byte, sl_bit);
+    hevc_write_uev(dst, out_byte, out_bit, uev);
+
+    uev = hevc_read_uev(src, src_size, sl_byte, sl_bit);
+    hevc_write_uev(dst, out_byte, out_bit, uev);
+
+    uint8_t cwf = hevc_read_bits(src, src_size, sl_byte, sl_bit, 1);
+    hevc_write_bits(dst, out_byte, out_bit, cwf, 1);
+    if (cwf) {
+      for (int j = 0; j < 4; j++) {
+        uev = hevc_read_uev(src, src_size, sl_byte, sl_bit);
+        hevc_write_uev(dst, out_byte, out_bit, uev);
+      }
+    }
+
+    uev = hevc_read_uev(src, src_size, sl_byte, sl_bit);
+    hevc_write_uev(dst, out_byte, out_bit, uev);
+
+    uev = hevc_read_uev(src, src_size, sl_byte, sl_bit);
+    hevc_write_uev(dst, out_byte, out_bit, uev);
+
+    uev = hevc_read_uev(src, src_size, sl_byte, sl_bit);
+    hevc_write_uev(dst, out_byte, out_bit, uev);
+
+    uint8_t ordering_flag =
+        hevc_read_bits(src, src_size, sl_byte, sl_bit, 1);
+    hevc_write_bits(dst, out_byte, out_bit, 0, 1);
+
+    for (int j = 0; j < 3; j++) {
+      uev = hevc_read_uev(src, src_size, sl_byte, sl_bit);
+      hevc_write_uev(dst, out_byte, out_bit, uev);
+    }
+
+    if (ordering_flag) {
+      for (unsigned i = 0; i < old_max_sublayers; i++) {
+        hevc_read_uev(src, src_size, sl_byte, sl_bit);
+        hevc_read_uev(src, src_size, sl_byte, sl_bit);
+        hevc_read_uev(src, src_size, sl_byte, sl_bit);
+      }
+    }
+
+    size_t remaining_bits = (src_size - sl_byte) * 8 - (7 - sl_bit);
+    for (size_t i = 0; i < remaining_bits; i++) {
+      uint8_t bit = hevc_read_bits(src, src_size, sl_byte, sl_bit, 1);
+      hevc_write_bits(dst, out_byte, out_bit, bit, 1);
+    }
+    hevc_flush_byte(dst, out_byte, out_bit);
+  } else {
+    size_t remaining_bits = (src_size - sl_byte) * 8 - (7 - sl_bit);
+    for (size_t i = 0; i < remaining_bits; i++) {
+      uint8_t bit = hevc_read_bits(src, src_size, sl_byte, sl_bit, 1);
+      hevc_write_bits(dst, out_byte, out_bit, bit, 1);
+    }
+    hevc_flush_byte(dst, out_byte, out_bit);
   }
-  hevc_flush_byte(dst, out_byte, out_bit);
 
   if (is_vps) {
     dst[3] = (dst[3] & 0xF1) | 0x01;
