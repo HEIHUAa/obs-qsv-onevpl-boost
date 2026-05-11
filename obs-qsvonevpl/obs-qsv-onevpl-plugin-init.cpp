@@ -168,7 +168,7 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(Settings, "mv_cost_scaling_factor", "AUTO");
   obs_data_set_default_string(Settings, "direct_bias_adjustment", "AUTO");
   obs_data_set_default_string(Settings, "mv_overpic_boundaries", "AUTO");
-  obs_data_set_default_int(Settings, "la_depth", 0);
+  obs_data_set_default_int(Settings, "la_depth", 60);
 
   obs_data_set_default_string(Settings, "lookahead", "OFF");
   obs_data_set_default_string(Settings, "lookahead_latency", "NORMAL");
@@ -684,7 +684,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_lookahead_latency);
 
-  obs_properties_add_int_slider(Props, "la_depth", TEXT_LA_DEPTH, 10, 100, 1);
+  obs_properties_add_int_slider(Props, "la_depth", TEXT_LA_DEPTH, 1, 100, 1);
 
   Prop = obs_properties_add_list(Props, "vpp", TEXT_VPP, OBS_COMBO_TYPE_LIST,
                                  OBS_COMBO_FORMAT_STRING);
@@ -1201,15 +1201,15 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   if (std::strcmp(LookaheadData, "HQ") == 0) {
     Context->EncoderParams.Lookahead = true;
 
-    Context->EncoderParams.LADepth = 0;
-    if (std::strcmp(LookaheadLatencyData, "HIGH") == 0) {
-      Context->EncoderParams.LADepth = 100;
-    } else if (std::strcmp(LookaheadLatencyData, "NORMAL") == 0) {
-      Context->EncoderParams.LADepth = 60;
-    } else if (std::strcmp(LookaheadLatencyData, "LOW") == 0) {
-      Context->EncoderParams.LADepth = 40;
-    } else if (std::strcmp(LookaheadLatencyData, "VERYLOW") == 0) {
-      Context->EncoderParams.LADepth = 20;
+    {
+      int Depth =
+          static_cast<int>(obs_data_get_int(Settings, "la_depth"));
+      if (Depth < 1)
+        Depth = 60;
+      else if (Depth > 100)
+        Depth = 100;
+      Context->EncoderParams.LADepth = static_cast<mfxU16>(Depth);
+      info("\tLookaheadDepth set: %d", Context->EncoderParams.LADepth);
     }
 
     if (std::strcmp(LookaheadDSData, "SLOW") == 0) {
