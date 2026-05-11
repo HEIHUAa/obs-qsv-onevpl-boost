@@ -25,6 +25,10 @@ struct plugin_context {
   os_performance_token_t *PerformanceToken;
 
   uint32_t roi_increment;
+
+  mfxU32 CachedFpsNum;
+  mfxU32 CachedFpsDen;
+  int64_t CachedTSDiv;
 };
 
 #define TEXT_SPEED obs_module_text("TargetUsage")

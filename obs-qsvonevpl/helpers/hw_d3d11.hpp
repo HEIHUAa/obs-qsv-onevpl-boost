@@ -12,6 +12,8 @@
 #ifndef __QSV_VPL_EXT_BUF_MANAGER_H__
 #include "ext_buf_manager.hpp"
 #endif
+#include <unordered_map>
+
 extern "C" {
 #include <obs.h>
 }
@@ -35,7 +37,6 @@ public:
 private:
  
   struct handled_texture {
-    uint32_t Handle;
     ID3D11Texture2D *Texture;
     IDXGIKeyedMutex *KeyedMutex;
   };
@@ -47,7 +48,7 @@ private:
   int HWTextureCounter;
 
   std::vector<ID3D11Texture2D *> HWTexturePool;
-  std::vector<handled_texture> HWHandledTexturePool;
+  std::unordered_map<uint32_t, handled_texture> HWHandledTexturePool;
 
   static inline ID3D11Device *HWDevice;
   static inline ID3D11DeviceContext *HWContext;

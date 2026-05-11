@@ -949,6 +949,10 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
 
   Context->EncoderParams.GPUNum = GPUNumData;
 
+  Context->CachedFpsNum = static_cast<mfxU32>(VOI->fps_num);
+  Context->CachedFpsDen = static_cast<mfxU32>(VOI->fps_den);
+  Context->CachedTSDiv = 90000 * static_cast<int64_t>(VOI->fps_den);
+
   if (std::strcmp(TargetUsageData, "TU1 (Veryslow)") == 0) {
     Context->EncoderParams.TargetUsage = MFX_TARGETUSAGE_1;
     info("\tTarget usage set: TU1 (Veryslow)");

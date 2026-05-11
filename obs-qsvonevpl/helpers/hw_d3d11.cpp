@@ -193,21 +193,15 @@ mfxStatus HWManager::CopyTexture(mfxSurfaceD3D11Tex2D &OuterTexture,
   HRESULT HR = S_OK;
 
   struct encoder_texture *Texture =
-      std::move(static_cast<struct encoder_texture *>(TextureHandle));
+      static_cast<struct encoder_texture *>(TextureHandle);
 
-  if (!HWHandledTexturePool.empty()) {
-    for (size_t i = 0; i < HWHandledTexturePool.size(); i++) {
-      struct handled_texture *HandledTexture =
-          std::move(&HWHandledTexturePool[i]);
-      if (HandledTexture->Handle == Texture->handle) {
-        InputTexture = HandledTexture->Texture;
-        KeyedMutex = HandledTexture->KeyedMutex;
-        break;
-      }
-    }
+  auto HandledIter = HWHandledTexturePool.find(Texture->handle);
+  if (HandledIter != HWHandledTexturePool.end()) {
+    InputTexture = HandledIter->second.Texture;
+    KeyedMutex = HandledIter->second.KeyedMutex;
   }
 
-  if (HWHandledTexturePool.empty() || !InputTexture) {
+  if (!InputTexture) {
     HR = HWDevice->OpenSharedResource(
         reinterpret_cast<HANDLE>(static_cast<uintptr_t>(Texture->handle)),
         IID_ID3D11Texture2D, reinterpret_cast<void **>(&InputTexture));
@@ -224,18 +218,9 @@ mfxStatus HWManager::CopyTexture(mfxSurfaceD3D11Tex2D &OuterTexture,
 
     InputTexture->SetEvictionPriority(DXGI_RESOURCE_PRIORITY_MAXIMUM);
 
-    struct handled_texture NewHandledTexture = {std::move(Texture->handle),
-                                                InputTexture, KeyedMutex};
-
-    if (HWHandledTexturePool.empty()) {
-      HWHandledTexturePool.reserve(240);
-    }
-
-    HWHandledTexturePool.push_back(std::move(NewHandledTexture));
+    HWHandledTexturePool[Texture->handle] = {InputTexture, KeyedMutex};
   }
-  // warn("Handled size: %d, Tex size: %d", HWHandledTexturePool.size(),
-  //      HWTexturePool.size());
-  // info("-------------------");
+
   KeyedMutex->AcquireSync(LockKey, INFINITE);
 
   D3D11_TEXTURE2D_DESC Desc = {0};
@@ -265,26 +250,21 @@ mfxStatus HWManager::FreeTexturePool() {
 
     HWTexturePool.clear();
     HWTexturePool.shrink_to_fit();
-    HWTexturePool.~vector();
   }
   return MFX_ERR_NONE;
 }
 
 mfxStatus HWManager::FreeHandledTexturePool() {
   if (!HWHandledTexturePool.empty()) {
-    for (size_t i = 0; i < HWHandledTexturePool.size(); i++) {
-      struct handled_texture *HandledTexture =
-          std::move(&HWHandledTexturePool[i]);
-      if (HandledTexture->Texture) {
-        HandledTexture->KeyedMutex->Release();
-        HandledTexture->Texture->Release();
-        HandledTexture = nullptr;
+    for (auto &Entry : HWHandledTexturePool) {
+      auto &HT = Entry.second;
+      if (HT.Texture) {
+        HT.KeyedMutex->Release();
+        HT.Texture->Release();
       }
     }
 
     HWHandledTexturePool.clear();
-    HWHandledTexturePool.shrink_to_fit();
-    HWHandledTexturePool.~vector();
   }
   return MFX_ERR_NONE;
 }

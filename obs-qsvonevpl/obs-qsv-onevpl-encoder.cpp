@@ -190,25 +190,21 @@ void GetVideoInfo(void *Data, video_scale_info *Info) {
   Info->format = pref_format;
 }
 
-mfxU64 ConvertTSOBSMFX(int64_t TS, const video_output_info *VOI) {
-  return static_cast<mfxU64>(
-      static_cast<float>(TS * 90000 / VOI->fps_num));
+mfxU64 ConvertTSOBSMFX(int64_t TS, mfxU32 FpsNum) {
+  return static_cast<mfxU64>(TS * 90000 / FpsNum);
 }
 
-int64_t ConvertTSMFXOBS(mfxI64 TS, const video_output_info *VOI) {
-  int64_t div = 90000 * static_cast<int64_t>(VOI->fps_den);
-
+int64_t ConvertTSMFXOBS(mfxI64 TS, mfxU32 FpsNum, mfxU32 FpsDen, int64_t Div) {
   if (TS < 0) {
-    return (TS * VOI->fps_num - div / 2) / div * VOI->fps_den;
+    return (TS * FpsNum - Div / 2) / Div * FpsDen;
   }
   else {
-    return (TS * VOI->fps_num + div / 2) / div * VOI->fps_den;
+    return (TS * FpsNum + Div / 2) / Div * FpsDen;
   }
 }
 
 void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
-                        mfxBitstream *Bitstream, const video_output_info *VOI,
-                        bool *ReceivedPacketStatus) {
+                        mfxBitstream *Bitstream, bool *ReceivedPacketStatus) {
   if (Bitstream == nullptr || Bitstream->DataLength == 0) {
     *ReceivedPacketStatus = false;
     return;
@@ -220,20 +216,20 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
     uint8_t *NewPacket = 0;
     size_t NewPacketSize = 0;
     if (Context->Codec == QSV_CODEC_AVC) {
-      obs_extract_avc_headers(*(&Bitstream->Data + *(&Bitstream->DataOffset)),
-                              *(&Bitstream->DataLength), &NewPacket,
+      obs_extract_avc_headers(Bitstream->Data + Bitstream->DataOffset,
+                              Bitstream->DataLength, &NewPacket,
                               &NewPacketSize, &Context->ExtraData.first,
                               &Context->ExtraData.second, &Context->SEI.first,
                               &Context->SEI.second);
     } else if (Context->Codec == QSV_CODEC_HEVC) {
-      obs_extract_hevc_headers(*(&Bitstream->Data + *(&Bitstream->DataOffset)),
-                               *(&Bitstream->DataLength), &NewPacket,
+      obs_extract_hevc_headers(Bitstream->Data + Bitstream->DataOffset,
+                               Bitstream->DataLength, &NewPacket,
                                &NewPacketSize, &Context->ExtraData.first,
                                &Context->ExtraData.second, &Context->SEI.first,
                                &Context->SEI.second);
     } else if (Context->Codec == QSV_CODEC_AV1) {
-      obs_extract_av1_headers(*(&Bitstream->Data + *(&Bitstream->DataOffset)),
-                              *(&Bitstream->DataLength), &NewPacket,
+      obs_extract_av1_headers(Bitstream->Data + Bitstream->DataOffset,
+                              Bitstream->DataLength, &NewPacket,
                               &NewPacketSize, &Context->ExtraData.first,
                               &Context->ExtraData.second);
     }
@@ -242,21 +238,25 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
                                NewPacket + NewPacketSize);
   } else {
     Context->PacketData.insert(Context->PacketData.end(),
-                               *(&Bitstream->Data + *(&Bitstream->DataOffset)),
-                               *(&Bitstream->Data + *(&Bitstream->DataOffset)) +
-                                   *(&Bitstream->DataLength));
+                               Bitstream->Data + Bitstream->DataOffset,
+                               Bitstream->Data + Bitstream->DataOffset +
+                                   Bitstream->DataLength);
   }
 
   Packet->data = Context->PacketData.data();
   Packet->size = Context->PacketData.size();
 
   Packet->type = OBS_ENCODER_VIDEO;
-  Packet->pts = std::move(
-      ConvertTSMFXOBS(static_cast<mfxI64>(Bitstream->TimeStamp), VOI));
+  Packet->pts =
+      ConvertTSMFXOBS(static_cast<mfxI64>(Bitstream->TimeStamp),
+                      Context->CachedFpsNum, Context->CachedFpsDen,
+                      Context->CachedTSDiv);
   Packet->dts =
       (Context->Codec == QSV_CODEC_AV1)
-          ? std::move(Packet->pts)
-          : std::move(ConvertTSMFXOBS(Bitstream->DecodeTimeStamp, VOI));
+          ? Packet->pts
+          : ConvertTSMFXOBS(Bitstream->DecodeTimeStamp,
+                            Context->CachedFpsNum, Context->CachedFpsDen,
+                            Context->CachedTSDiv);
   Packet->keyframe = ((Bitstream->FrameType & MFX_FRAMETYPE_I) ||
                       (Bitstream->FrameType & MFX_FRAMETYPE_IDR) ||
                       (Bitstream->FrameType & MFX_FRAMETYPE_S) ||
@@ -313,18 +313,12 @@ bool EncodeTexture(void *Data, encoder_texture *Texture, int64_t PTS,
   {
     std::lock_guard<std::mutex> lock(Mutex);
 
-    auto *Video = std::move(obs_encoder_video(Context->EncoderData));
-    auto *VOI = std::move(video_output_get_info(std::move(Video)));
-
     auto *Bitstream = static_cast<mfxBitstream *>(nullptr);
-
-    // if (obs_encoder_has_roi(obsqsv->encoder))
-    //   obs_qsv_setup_rois(obsqsv);
 
     try {
       Context->EncoderPTR->EncodeTexture(
-          std::move(ConvertTSOBSMFX(PTS, VOI)),
-          std::move(static_cast<void *>(Texture)), LockKey, NextKey,
+          ConvertTSOBSMFX(PTS, Context->CachedFpsNum),
+          static_cast<void *>(Texture), LockKey, NextKey,
           &Bitstream);
     } catch (const std::exception &e) {
       error("%s", e.what());
@@ -333,7 +327,7 @@ bool EncodeTexture(void *Data, encoder_texture *Texture, int64_t PTS,
       return false;
     }
 
-    ParseEncodedPacket(Context, Packet, std::move(Bitstream), VOI,
+    ParseEncodedPacket(Context, Packet, Bitstream,
                        ReceivedPacketStatus);
   }
 
@@ -351,22 +345,17 @@ bool EncodeFrame(void *Data, encoder_frame *Frame, encoder_packet *Packet,
 
   {
     std::lock_guard<std::mutex> lock(Mutex);
-    auto *video = std::move(obs_encoder_video(Context->EncoderData));
-    auto *VOI = std::move(video_output_get_info(std::move(video)));
 
     auto *Bitstream = static_cast<mfxBitstream *>(nullptr);
-
-    // if (obs_encoder_has_roi(obsqsv->encoder))
-    //   obs_qsv_setup_rois(obsqsv);
 
     try {
       if (Frame->data[0]) {
         Context->EncoderPTR->EncodeFrame(
-            std::move(ConvertTSOBSMFX(Frame->pts, VOI)), std::move(Frame->data),
-            std::move(Frame->linesize), &Bitstream);
+            ConvertTSOBSMFX(Frame->pts, Context->CachedFpsNum), Frame->data,
+            Frame->linesize, &Bitstream);
       } else {
         Context->EncoderPTR->EncodeFrame(
-            std::move(ConvertTSOBSMFX(Frame->pts, VOI)), nullptr, 0,
+            ConvertTSOBSMFX(Frame->pts, Context->CachedFpsNum), nullptr, 0,
             &Bitstream);
       }
     } catch (const std::exception &e) {
@@ -376,7 +365,7 @@ bool EncodeFrame(void *Data, encoder_frame *Frame, encoder_packet *Packet,
       return false;
     }
 
-    ParseEncodedPacket(Context, Packet, std::move(Bitstream), VOI,
+    ParseEncodedPacket(Context, Packet, Bitstream,
                        ReceivedPacketStatus);
   }
 

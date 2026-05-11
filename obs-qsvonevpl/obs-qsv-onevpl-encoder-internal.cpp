@@ -2040,43 +2040,60 @@ void QSVEncoder::LoadFrameData(mfxFrameSurface1 *&Surface, uint8_t **FrameData,
   Pitch = SurfaceData->Pitch;
 
   if (Surface->Info.FourCC == MFX_FOURCC_NV12) {
-    PTR = static_cast<mfxU8 *>(SurfaceData->Y + SurfaceInfo->CropX +
-                               SurfaceInfo->CropY * Pitch);
+    if (Pitch == static_cast<mfxU16>(FrameLinesize[0])) {
+      memcpy(SurfaceData->Y, FrameData[0],
+             static_cast<size_t>(Height) * Pitch);
+      memcpy(SurfaceData->UV, FrameData[1],
+             static_cast<size_t>(Height / 2) * Pitch);
+    } else {
+      PTR = static_cast<mfxU8 *>(SurfaceData->Y + SurfaceInfo->CropX +
+                                 SurfaceInfo->CropY * Pitch);
 
-    // load Y plane
-    for (i = 0; i < Height; i++) {
-      memcpy(PTR + i * Pitch, FrameData[0] + i * FrameLinesize[0], Width);
-    }
+      for (i = 0; i < Height; i++) {
+        memcpy(PTR + i * Pitch, FrameData[0] + i * FrameLinesize[0], Width);
+      }
 
-    // load UV plane
-    Height /= 2;
-    PTR = static_cast<mfxU8 *>((SurfaceData->UV + SurfaceInfo->CropX +
-                                (SurfaceInfo->CropY / 2) * Pitch));
+      Height /= 2;
+      PTR = static_cast<mfxU8 *>((SurfaceData->UV + SurfaceInfo->CropX +
+                                  (SurfaceInfo->CropY / 2) * Pitch));
 
-    for (i = 0; i < Height; i++) {
-      memcpy(PTR + i * Pitch, FrameData[1] + i * FrameLinesize[1], Width);
+      for (i = 0; i < Height; i++) {
+        memcpy(PTR + i * Pitch, FrameData[1] + i * FrameLinesize[1], Width);
+      }
     }
   } else if (Surface->Info.FourCC == MFX_FOURCC_P010) {
-    PTR = static_cast<mfxU8 *>(SurfaceData->Y + SurfaceInfo->CropX +
-                               SurfaceInfo->CropY * Pitch);
     const size_t line_size = static_cast<size_t>(Width) * 2;
-    // load Y plane
-    for (i = 0; i < Height; i++) {
-      memcpy(PTR + i * Pitch, FrameData[0] + i * FrameLinesize[0], line_size);
-    }
-    // load UV plane
-    Height /= 2;
-    PTR = static_cast<mfxU8 *>((SurfaceData->UV + SurfaceInfo->CropX +
-                                (SurfaceInfo->CropY / 2) * Pitch));
-    for (i = 0; i < Height; i++) {
-      memcpy(PTR + i * Pitch, FrameData[1] + i * FrameLinesize[1], line_size);
+    if (Pitch == static_cast<mfxU16>(FrameLinesize[0])) {
+      memcpy(SurfaceData->Y, FrameData[0],
+             static_cast<size_t>(Height) * Pitch);
+      memcpy(SurfaceData->UV, FrameData[1],
+             static_cast<size_t>(Height / 2) * Pitch);
+    } else {
+      PTR = static_cast<mfxU8 *>(SurfaceData->Y + SurfaceInfo->CropX +
+                                 SurfaceInfo->CropY * Pitch);
+
+      for (i = 0; i < Height; i++) {
+        memcpy(PTR + i * Pitch, FrameData[0] + i * FrameLinesize[0], line_size);
+      }
+
+      Height /= 2;
+      PTR = static_cast<mfxU8 *>((SurfaceData->UV + SurfaceInfo->CropX +
+                                  (SurfaceInfo->CropY / 2) * Pitch));
+
+      for (i = 0; i < Height; i++) {
+        memcpy(PTR + i * Pitch, FrameData[1] + i * FrameLinesize[1], line_size);
+      }
     }
   } else if (Surface->Info.FourCC == MFX_FOURCC_RGB4) {
     const size_t line_size = static_cast<size_t>(Width) * 4;
-    // load B plane
-    for (i = 0; i < Height; i++) {
-      memcpy(SurfaceData->B + i * Pitch, FrameData[0] + i * FrameLinesize[0],
-             line_size);
+    if (Pitch == static_cast<mfxU16>(FrameLinesize[0])) {
+      memcpy(SurfaceData->B, FrameData[0],
+             static_cast<size_t>(Height) * Pitch);
+    } else {
+      for (i = 0; i < Height; i++) {
+        memcpy(SurfaceData->B + i * Pitch, FrameData[0] + i * FrameLinesize[0],
+               line_size);
+      }
     }
   }
 }
