@@ -1053,14 +1053,15 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       }
     }
 
-    if (QSVPlatform.CodeName < MFX_PLATFORM_DG2 &&
-        QSVPlatform.MediaAdapterType == MFX_MEDIA_INTEGRATED &&
-        InputParams->Lookahead == true && InputParams->Lowpower == false) {
-      InputParams->Lookahead = false;
-      InputParams->LADepth = 0;
-      info("\tIntegrated graphics with Lowpower turned OFF does not "
-           "\tsupport Lookahead");
-    }
+    // [TEST] Removed restriction: allow Lookahead on integrated + Lowpower=OFF
+    // if (QSVPlatform.CodeName < MFX_PLATFORM_DG2 &&
+    //     QSVPlatform.MediaAdapterType == MFX_MEDIA_INTEGRATED &&
+    //     InputParams->Lookahead == true && InputParams->Lowpower == false) {
+    //   InputParams->Lookahead = false;
+    //   InputParams->LADepth = 0;
+    //   info("\tIntegrated graphics with Lowpower turned OFF does not "
+    //        "\tsupport Lookahead");
+    // }
 
     if (QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_CBR ||
         QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_VBR ||
