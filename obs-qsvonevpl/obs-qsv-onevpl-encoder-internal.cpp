@@ -805,16 +805,20 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   info("\tCodecProfile: %d (tier %s)", QSVEncodeParams.mfx.CodecProfile,
        InputParams->CodecProfileTier == MFX_TIER_HEVC_HIGH ? "high" : "main");
 
-  /*Dynamic BRCParamMultiplier to bypass the limitation of the 16 bit value*/
+  /*Dynamic BRCParamMultiplier to bypass the limitation of the 16 bit value.
+    Baseline=100 to match driver expectations (TargetKbps=raw/100 internally).
+    Only scales up when raw values exceed the effective 65535*100 range.*/
   mfxU32 maxBitrateParam = InputParams->TargetBitRate;
   if (InputParams->MaxBitRate > maxBitrateParam)
     maxBitrateParam = InputParams->MaxBitRate;
   if (InputParams->BufferSize > maxBitrateParam)
     maxBitrateParam = InputParams->BufferSize;
 
-  mfxU16 brcMultiplier = 1;
-  if (maxBitrateParam > 65535) {
-    brcMultiplier = static_cast<mfxU16>((maxBitrateParam + 65534) / 65535);
+  const mfxU16 BRC_BASELINE = 100;
+  mfxU16 brcMultiplier = BRC_BASELINE;
+  if (maxBitrateParam > static_cast<mfxU32>(BRC_BASELINE) * 65535) {
+    brcMultiplier = static_cast<mfxU16>(
+        (maxBitrateParam + 65534) / 65535);
   }
   QSVEncodeParams.mfx.BRCParamMultiplier = brcMultiplier;
 
