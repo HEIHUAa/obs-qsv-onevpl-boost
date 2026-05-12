@@ -1331,11 +1331,12 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     info("\tAdaptiveLTR set: %s",
          GetCodingOptStatus(CO3Params->AdaptiveLTR).c_str());
 
-    if (QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_CBR ||
+    if (InputParams->WinBRC &&
+        (QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_CBR ||
         QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_VBR ||
         QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_AVBR ||
         QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_VCM ||
-        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_QVBR) {
+        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_QVBR)) {
 
       if (InputParams->WinBRCMaxAvgKbps > 0) {
         CO3Params->WinBRCMaxAvgKbps = InputParams->WinBRCMaxAvgKbps;

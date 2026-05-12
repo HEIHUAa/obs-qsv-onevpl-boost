@@ -68,6 +68,7 @@ struct plugin_context {
 #define TEXT_LOW_DELAY_BRC obs_module_text("LowDelayBRC")
 #define TEXT_LOW_DELAY_HRD obs_module_text("LowDelayHRD")
 #define TEXT_ASYNC_DEPTH obs_module_text("AsyncDepth")
+#define TEXT_WINBRC obs_module_text("WinBRC")
 #define TEXT_WINBRC_MAX_AVG_SIZE obs_module_text("WinBRCMaxAvgSize")
 #define TEXT_WINBRC_SIZE obs_module_text("WinBRCSize")
 #define TEXT_ADAPTIVE_LTR obs_module_text("AdaptiveLTR")

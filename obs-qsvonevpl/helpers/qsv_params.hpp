@@ -78,6 +78,7 @@ struct encoder_params {
   bool Lookahead;
   bool LookaheadLP;
   bool PPyramid;
+  bool WinBRC;
   bool ExtBRC;
   bool IntraRefEncoding;
   bool CustomBufferSize;
