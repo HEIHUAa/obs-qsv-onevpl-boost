@@ -512,25 +512,25 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   }
 
   // ── Quality settings ────────────────────────────────────────
-  Prop = obs_properties_add_int(Props, "qvbr_quality", TEXT_QVBR_QUALITY, 0, 51,
+  Prop = obs_properties_add_int_slider(Props, "qvbr_quality", TEXT_QVBR_QUALITY, 0, 51,
                                 1);
   obs_property_set_long_description(Prop,
                                     obs_module_text("QVBRQuality.Tooltip"));
 
-  obs_properties_add_int(Props, "icq_quality", TEXT_ICQ_QUALITY, 1, 51, 1);
+  obs_properties_add_int_slider(Props, "icq_quality", TEXT_ICQ_QUALITY, 1, 51, 1);
 
-  obs_properties_add_int(Props, "cqp", "CQP", 1,
+  obs_properties_add_int_slider(Props, "cqp", "CQP", 1,
                          Codec == QSV_CODEC_AV1 ? 63 : 51, 1);
 
   Prop = obs_properties_add_bool(Props, "cqp_separate_ipb",
                                  "Separate I/P/B QP");
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
-  obs_properties_add_int(Props, "qpi", "QPI", 1,
+  obs_properties_add_int_slider(Props, "qpi", "QPI", 1,
                          Codec == QSV_CODEC_AV1 ? 63 : 51, 1);
-  obs_properties_add_int(Props, "qpp", "QPP", 1,
+  obs_properties_add_int_slider(Props, "qpp", "QPP", 1,
                          Codec == QSV_CODEC_AV1 ? 63 : 51, 1);
-  obs_properties_add_int(Props, "qpb", "QPB", 1,
+  obs_properties_add_int_slider(Props, "qpb", "QPB", 1,
                          Codec == QSV_CODEC_AV1 ? 63 : 51, 1);
 
   // ── Bitrate ─────────────────────────────────────────────────
