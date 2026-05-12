@@ -155,6 +155,16 @@ static const char *const qsv_levels_hevc[] = {
     "auto", "1", "2", "2.1", "3", "3.1", "4", "4.1",
     "5", "5.1", "5.2", "6", "6.1", "6.2", 0};
 
+static const char *const qsv_levels_avc[] = {
+    "auto", "1", "1b", "1.1", "1.2", "1.3", "2", "2.1", "2.2",
+    "3", "3.1", "3.2", "4", "4.1", "4.2", "5", "5.1", "5.2",
+    "6", "6.1", "6.2", 0};
+
+static const char *const qsv_levels_av1[] = {
+    "auto", "2.0", "2.1", "2.2", "2.3", "3.0", "3.1", "3.2", "3.3",
+    "4.0", "4.1", "4.2", "4.3", "5.0", "5.1", "5.2", "5.3",
+    "6.0", "6.1", "6.2", "6.3", 0};
+
 static const char *const qsv_usage_names[] = {
     "TU1 (Veryslow)", "TU2 (Slower)", "TU3 (Slow)",     "TU4 (Balanced)",
     "TU5 (Fast)",     "TU6 (Faster)", "TU7 (Veryfast)", 0};

@@ -136,6 +136,8 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
                               Codec == QSV_CODEC_AVC ? "high" : "main");
   obs_data_set_default_string(Settings, "hevc_tier", "main");
   obs_data_set_default_string(Settings, "hevc_level", "auto");
+  obs_data_set_default_string(Settings, "avc_level", "auto");
+  obs_data_set_default_string(Settings, "av1_level", "auto");
   obs_data_set_default_string(Settings, "rate_control", "CBR");
 
   obs_data_set_default_int(Settings, "cqp", 23);
@@ -512,6 +514,28 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
         obs_properties_add_list(Props, "hevc_level", TEXT_HEVC_LEVEL,
                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
     const char *const *levelEntry = qsv_levels_hevc;
+    while (*levelEntry) {
+      obs_property_list_add_string(Prop, *levelEntry, *levelEntry);
+      levelEntry++;
+    }
+  }
+
+  if (Codec == QSV_CODEC_AVC) {
+    Prop =
+        obs_properties_add_list(Props, "avc_level", TEXT_HEVC_LEVEL,
+                                OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+    const char *const *levelEntry = qsv_levels_avc;
+    while (*levelEntry) {
+      obs_property_list_add_string(Prop, *levelEntry, *levelEntry);
+      levelEntry++;
+    }
+  }
+
+  if (Codec == QSV_CODEC_AV1) {
+    Prop =
+        obs_properties_add_list(Props, "av1_level", TEXT_HEVC_LEVEL,
+                                OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+    const char *const *levelEntry = qsv_levels_av1;
     while (*levelEntry) {
       obs_property_list_add_string(Prop, *levelEntry, *levelEntry);
       levelEntry++;
@@ -916,6 +940,8 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   const char *CodecProfileData = obs_data_get_string(Settings, "profile");
   const char *CodecProfileTierData = obs_data_get_string(Settings, "hevc_tier");
   const char *CodecLevelData = obs_data_get_string(Settings, "hevc_level");
+  const char *CodecLevelDataAVC = obs_data_get_string(Settings, "avc_level");
+  const char *CodecLevelDataAV1 = obs_data_get_string(Settings, "av1_level");
   const char *RateControlData = obs_data_get_string(Settings, "rate_control");
   int TargetBitrateData =
       static_cast<int>(obs_data_get_int(Settings, "bitrate"));
@@ -1069,6 +1095,10 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       Context->EncoderParams.CodecProfile = MFX_PROFILE_AVC_MAIN;
     } else if (std::strcmp(CodecProfileData, "high") == 0) {
       Context->EncoderParams.CodecProfile = MFX_PROFILE_AVC_HIGH;
+      if (obs_p010_tex_active()) {
+        blog(LOG_WARNING, "[qsv encoder] Forcing high10 for P010");
+        Context->EncoderParams.CodecProfile = MFX_PROFILE_AVC_HIGH10;
+      }
     } else if (std::strcmp(CodecProfileData, "extended") == 0) {
       Context->EncoderParams.CodecProfile = MFX_PROFILE_AVC_EXTENDED;
     } else if (std::strcmp(CodecProfileData, "high10") == 0) {
@@ -1077,6 +1107,50 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       Context->EncoderParams.CodecProfile = MFX_PROFILE_AVC_HIGH_422;
     } else if (std::strcmp(CodecProfileData, "progressive high") == 0) {
       Context->EncoderParams.CodecProfile = MFX_PROFILE_AVC_PROGRESSIVE_HIGH;
+    }
+
+    if (std::strcmp(CodecLevelDataAVC, "auto") == 0) {
+      Context->EncoderParams.CodecLevel = 0;
+    } else if (std::strcmp(CodecLevelDataAVC, "1") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_1;
+    } else if (std::strcmp(CodecLevelDataAVC, "1b") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_1b;
+    } else if (std::strcmp(CodecLevelDataAVC, "1.1") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_11;
+    } else if (std::strcmp(CodecLevelDataAVC, "1.2") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_12;
+    } else if (std::strcmp(CodecLevelDataAVC, "1.3") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_13;
+    } else if (std::strcmp(CodecLevelDataAVC, "2") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_2;
+    } else if (std::strcmp(CodecLevelDataAVC, "2.1") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_21;
+    } else if (std::strcmp(CodecLevelDataAVC, "2.2") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_22;
+    } else if (std::strcmp(CodecLevelDataAVC, "3") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_3;
+    } else if (std::strcmp(CodecLevelDataAVC, "3.1") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_31;
+    } else if (std::strcmp(CodecLevelDataAVC, "3.2") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_32;
+    } else if (std::strcmp(CodecLevelDataAVC, "4") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_4;
+    } else if (std::strcmp(CodecLevelDataAVC, "4.1") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_41;
+    } else if (std::strcmp(CodecLevelDataAVC, "4.2") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_42;
+    } else if (std::strcmp(CodecLevelDataAVC, "5") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_5;
+    } else if (std::strcmp(CodecLevelDataAVC, "5.1") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_51;
+    } else if (std::strcmp(CodecLevelDataAVC, "5.2") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_52;
+    } else if (std::strcmp(CodecLevelDataAVC, "6") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_6;
+    } else if (std::strcmp(CodecLevelDataAVC, "6.1") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_61;
+    } else if (std::strcmp(CodecLevelDataAVC, "6.2") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_62;
     }
     break;
   case QSV_CODEC_HEVC:
@@ -1146,6 +1220,50 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       Context->EncoderParams.CodecProfile = MFX_PROFILE_AV1_MAIN;
     } else if (std::strcmp(CodecProfileData, "high") == 0) {
       Context->EncoderParams.CodecProfile = MFX_PROFILE_AV1_HIGH;
+    }
+
+    if (std::strcmp(CodecLevelDataAV1, "auto") == 0) {
+      Context->EncoderParams.CodecLevel = 0;
+    } else if (std::strcmp(CodecLevelDataAV1, "2.0") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_2;
+    } else if (std::strcmp(CodecLevelDataAV1, "2.1") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_21;
+    } else if (std::strcmp(CodecLevelDataAV1, "2.2") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_22;
+    } else if (std::strcmp(CodecLevelDataAV1, "2.3") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_23;
+    } else if (std::strcmp(CodecLevelDataAV1, "3.0") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_3;
+    } else if (std::strcmp(CodecLevelDataAV1, "3.1") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_31;
+    } else if (std::strcmp(CodecLevelDataAV1, "3.2") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_32;
+    } else if (std::strcmp(CodecLevelDataAV1, "3.3") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_33;
+    } else if (std::strcmp(CodecLevelDataAV1, "4.0") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_4;
+    } else if (std::strcmp(CodecLevelDataAV1, "4.1") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_41;
+    } else if (std::strcmp(CodecLevelDataAV1, "4.2") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_42;
+    } else if (std::strcmp(CodecLevelDataAV1, "4.3") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_43;
+    } else if (std::strcmp(CodecLevelDataAV1, "5.0") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_5;
+    } else if (std::strcmp(CodecLevelDataAV1, "5.1") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_51;
+    } else if (std::strcmp(CodecLevelDataAV1, "5.2") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_52;
+    } else if (std::strcmp(CodecLevelDataAV1, "5.3") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_53;
+    } else if (std::strcmp(CodecLevelDataAV1, "6.0") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_6;
+    } else if (std::strcmp(CodecLevelDataAV1, "6.1") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_61;
+    } else if (std::strcmp(CodecLevelDataAV1, "6.2") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_62;
+    } else if (std::strcmp(CodecLevelDataAV1, "6.3") == 0) {
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_63;
     }
     break;
   }
@@ -1717,15 +1835,6 @@ plugin_context *InitPluginContext(enum codec_enum Codec, obs_data_t *Settings,
   switch (VOI->format) {
   case VIDEO_FORMAT_I010:
   case VIDEO_FORMAT_P010:
-    if (Codec == QSV_CODEC_AVC) {
-      auto ErrorText = obs_module_text("10bitUnsupportedAvc");
-      obs_encoder_set_last_error(Context->EncoderData, ErrorText);
-      blog(LOG_ERROR, "%s", ErrorText);
-
-      delete Context;
-
-      return nullptr;
-    }
     Context->EncoderParams.VideoFormat10bit = true;
     break;
   default:

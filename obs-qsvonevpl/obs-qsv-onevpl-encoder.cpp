@@ -174,19 +174,12 @@ void GetVideoInfo(void *Data, video_scale_info *Info) {
   plugin_context *Context = static_cast<plugin_context *>(Data);
   auto pref_format =
       obs_encoder_get_preferred_video_format(Context->EncoderData);
-  if (Context->Codec == QSV_CODEC_AVC) {
-    if (!(pref_format == VIDEO_FORMAT_NV12)) {
-      pref_format = (Info->format == VIDEO_FORMAT_NV12) ? Info->format
-                                                        : VIDEO_FORMAT_NV12;
-    }
-  } else {
-    if (!(pref_format == VIDEO_FORMAT_NV12 ||
-          pref_format == VIDEO_FORMAT_P010)) {
-      pref_format = (Info->format == VIDEO_FORMAT_NV12 ||
-                     Info->format == VIDEO_FORMAT_P010)
-                        ? Info->format
-                        : VIDEO_FORMAT_NV12;
-    }
+  if (!(pref_format == VIDEO_FORMAT_NV12 ||
+        pref_format == VIDEO_FORMAT_P010)) {
+    pref_format = (Info->format == VIDEO_FORMAT_NV12 ||
+                   Info->format == VIDEO_FORMAT_P010)
+                      ? Info->format
+                      : VIDEO_FORMAT_NV12;
   }
   Info->format = pref_format;
 }
