@@ -12,9 +12,9 @@ struct encoder_params {
   mfxU16 AsyncDepth;
   mfxU32 FpsNum;
   mfxU32 FpsDen;
-  mfxU16 TargetBitRate;
-  mfxU16 MaxBitRate;
-  mfxU16 BufferSize;
+  uint32_t TargetBitRate;
+  uint32_t MaxBitRate;
+  uint32_t BufferSize;
   mfxU16 CodecProfile;
   mfxU16 CodecProfileTier;
   mfxU16 RateControl;

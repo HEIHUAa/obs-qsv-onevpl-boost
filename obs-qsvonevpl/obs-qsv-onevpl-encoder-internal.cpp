@@ -805,14 +805,23 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   info("\tCodecProfile: %d (tier %s)", QSVEncodeParams.mfx.CodecProfile,
        InputParams->CodecProfileTier == MFX_TIER_HEVC_HIGH ? "high" : "main");
 
-  /*This is a multiplier to bypass the limitation of the 16 bit value of
-                  variables*/
-  QSVEncodeParams.mfx.BRCParamMultiplier = 100;
+  /*Dynamic BRCParamMultiplier to bypass the limitation of the 16 bit value*/
+  mfxU32 maxBitrateParam = InputParams->TargetBitRate;
+  if (InputParams->MaxBitRate > maxBitrateParam)
+    maxBitrateParam = InputParams->MaxBitRate;
+  if (InputParams->BufferSize > maxBitrateParam)
+    maxBitrateParam = InputParams->BufferSize;
+
+  mfxU16 brcMultiplier = 1;
+  if (maxBitrateParam > 65535) {
+    brcMultiplier = static_cast<mfxU16>((maxBitrateParam + 65534) / 65535);
+  }
+  QSVEncodeParams.mfx.BRCParamMultiplier = brcMultiplier;
 
   switch (InputParams->RateControl) {
   case MFX_RATECONTROL_CBR:
     QSVEncodeParams.mfx.TargetKbps =
-        static_cast<mfxU16>(InputParams->TargetBitRate);
+        static_cast<mfxU16>(InputParams->TargetBitRate / brcMultiplier);
 
     if ((QSVPlatform.CodeName >= MFX_PLATFORM_BATTLEMAGE &&
          QSVPlatform.CodeName != MFX_PLATFORM_ALDERLAKE_N) &&
@@ -831,18 +840,19 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
     if (InputParams->CustomBufferSize == true && InputParams->BufferSize > 0) {
       QSVEncodeParams.mfx.BufferSizeInKB =
-          static_cast<mfxU16>(InputParams->BufferSize);
+          static_cast<mfxU16>(InputParams->BufferSize / brcMultiplier);
       info("\tCustomBufferSize set: ON");
     }
     QSVEncodeParams.mfx.InitialDelayInKB =
         static_cast<mfxU16>(QSVEncodeParams.mfx.BufferSizeInKB / 2);
     info("\tBufferSize set to: %d KB",
-         QSVEncodeParams.mfx.BufferSizeInKB * 100);
+         QSVEncodeParams.mfx.BufferSizeInKB * brcMultiplier);
     break;
   case MFX_RATECONTROL_VBR:
     QSVEncodeParams.mfx.TargetKbps =
-        static_cast<mfxU16>(InputParams->TargetBitRate);
-    QSVEncodeParams.mfx.MaxKbps = static_cast<mfxU16>(InputParams->MaxBitRate);
+        static_cast<mfxU16>(InputParams->TargetBitRate / brcMultiplier);
+    QSVEncodeParams.mfx.MaxKbps =
+        static_cast<mfxU16>(InputParams->MaxBitRate / brcMultiplier);
     QSVEncodeParams.mfx.BufferSizeInKB =
         (InputParams->Lookahead == true)
             ? static_cast<mfxU16>(
@@ -857,13 +867,13 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
             : static_cast<mfxU16>((QSVEncodeParams.mfx.TargetKbps / 8) * 1);
     if (InputParams->CustomBufferSize == true && InputParams->BufferSize > 0) {
       QSVEncodeParams.mfx.BufferSizeInKB =
-          static_cast<mfxU16>(InputParams->BufferSize);
+          static_cast<mfxU16>(InputParams->BufferSize / brcMultiplier);
       info("\tCustomBufferSize set: ON");
     }
     QSVEncodeParams.mfx.InitialDelayInKB =
         static_cast<mfxU16>(QSVEncodeParams.mfx.BufferSizeInKB / 2);
     info("\tBufferSize set to: %d KB",
-         QSVEncodeParams.mfx.BufferSizeInKB * 100);
+         QSVEncodeParams.mfx.BufferSizeInKB * brcMultiplier);
     break;
   case MFX_RATECONTROL_CQP:
     QSVEncodeParams.mfx.QPI = static_cast<mfxU16>(InputParams->QPI);
@@ -876,50 +886,52 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     break;
   case MFX_RATECONTROL_AVBR:
     QSVEncodeParams.mfx.TargetKbps =
-        static_cast<mfxU16>(InputParams->TargetBitRate);
+        static_cast<mfxU16>(InputParams->TargetBitRate / brcMultiplier);
     QSVEncodeParams.mfx.BufferSizeInKB =
         static_cast<mfxU16>((QSVEncodeParams.mfx.TargetKbps / 8) * 1);
     if (InputParams->CustomBufferSize == true && InputParams->BufferSize > 0) {
       QSVEncodeParams.mfx.BufferSizeInKB =
-          static_cast<mfxU16>(InputParams->BufferSize);
+          static_cast<mfxU16>(InputParams->BufferSize / brcMultiplier);
       info("\tCustomBufferSize set: ON");
     }
     QSVEncodeParams.mfx.InitialDelayInKB =
         static_cast<mfxU16>(QSVEncodeParams.mfx.BufferSizeInKB / 2);
     info("\tBufferSize set to: %d KB",
-         QSVEncodeParams.mfx.BufferSizeInKB * 100);
+         QSVEncodeParams.mfx.BufferSizeInKB * brcMultiplier);
     break;
   case MFX_RATECONTROL_VCM:
     QSVEncodeParams.mfx.TargetKbps =
-        static_cast<mfxU16>(InputParams->TargetBitRate);
-    QSVEncodeParams.mfx.MaxKbps = static_cast<mfxU16>(InputParams->MaxBitRate);
+        static_cast<mfxU16>(InputParams->TargetBitRate / brcMultiplier);
+    QSVEncodeParams.mfx.MaxKbps =
+        static_cast<mfxU16>(InputParams->MaxBitRate / brcMultiplier);
     QSVEncodeParams.mfx.BufferSizeInKB =
         static_cast<mfxU16>((QSVEncodeParams.mfx.TargetKbps / 8) * 2);
     if (InputParams->CustomBufferSize == true && InputParams->BufferSize > 0) {
       QSVEncodeParams.mfx.BufferSizeInKB =
-          static_cast<mfxU16>(InputParams->BufferSize);
+          static_cast<mfxU16>(InputParams->BufferSize / brcMultiplier);
       info("\tCustomBufferSize set: ON");
     }
     QSVEncodeParams.mfx.InitialDelayInKB =
         static_cast<mfxU16>(QSVEncodeParams.mfx.BufferSizeInKB / 2);
     info("\tBufferSize set to: %d KB",
-         QSVEncodeParams.mfx.BufferSizeInKB * 100);
+         QSVEncodeParams.mfx.BufferSizeInKB * brcMultiplier);
     break;
   case MFX_RATECONTROL_QVBR:
     QSVEncodeParams.mfx.TargetKbps =
-        static_cast<mfxU16>(InputParams->TargetBitRate);
-    QSVEncodeParams.mfx.MaxKbps = static_cast<mfxU16>(InputParams->MaxBitRate);
+        static_cast<mfxU16>(InputParams->TargetBitRate / brcMultiplier);
+    QSVEncodeParams.mfx.MaxKbps =
+        static_cast<mfxU16>(InputParams->MaxBitRate / brcMultiplier);
     QSVEncodeParams.mfx.BufferSizeInKB =
         static_cast<mfxU16>((QSVEncodeParams.mfx.TargetKbps / 8) * 1);
     if (InputParams->CustomBufferSize == true && InputParams->BufferSize > 0) {
       QSVEncodeParams.mfx.BufferSizeInKB =
-          static_cast<mfxU16>(InputParams->BufferSize);
+          static_cast<mfxU16>(InputParams->BufferSize / brcMultiplier);
       info("\tCustomBufferSize set: ON");
     }
     QSVEncodeParams.mfx.InitialDelayInKB =
         static_cast<mfxU16>(QSVEncodeParams.mfx.BufferSizeInKB / 2);
     info("\tBufferSize set to: %d KB",
-         QSVEncodeParams.mfx.BufferSizeInKB * 100);
+         QSVEncodeParams.mfx.BufferSizeInKB * brcMultiplier);
     if (InputParams->QVBRQuality > 0 && InputParams->QVBRQuality <= 51) {
       auto CO3Params =
           QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
@@ -1334,16 +1346,15 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
         info("\tWinBRCMaxSize set (manual): %d",
              CO3Params->WinBRCMaxAvgKbps);
       } else {
-        if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC ||
-            QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
-          CO3Params->WinBRCMaxAvgKbps =
-              static_cast<mfxU16>(1.3 * QSVEncodeParams.mfx.TargetKbps *
-                                  QSVEncodeParams.mfx.BRCParamMultiplier);
-        } else if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1) {
-          CO3Params->WinBRCMaxAvgKbps =
-              static_cast<mfxU16>(1.2 * QSVEncodeParams.mfx.TargetKbps *
-                                  QSVEncodeParams.mfx.BRCParamMultiplier);
-        }
+        mfxF64 winBRCMultiplier = 1.3;
+        if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1)
+          winBRCMultiplier = 1.2;
+
+        mfxF64 winBRCMaxKbps =
+            winBRCMultiplier * InputParams->TargetBitRate;
+        if (winBRCMaxKbps > static_cast<mfxF64>(std::numeric_limits<mfxU16>::max()))
+          winBRCMaxKbps = static_cast<mfxF64>(std::numeric_limits<mfxU16>::max());
+        CO3Params->WinBRCMaxAvgKbps = static_cast<mfxU16>(winBRCMaxKbps);
         info("\tWinBRCMaxSize set (auto): %d",
              CO3Params->WinBRCMaxAvgKbps);
       }
@@ -1769,23 +1780,32 @@ bool QSVEncoder::UpdateParams(struct encoder_params *InputParams) {
   QSVResetParams.NumExtParam = 0;
   switch (InputParams->RateControl) {
   case MFX_RATECONTROL_CBR:
-  case MFX_RATECONTROL_AVBR:
-    if (QSVResetParams.mfx.TargetKbps != InputParams->TargetBitRate) {
-      QSVResetParams.mfx.TargetKbps =
-          static_cast<mfxU16>(InputParams->TargetBitRate);
+  case MFX_RATECONTROL_AVBR: {
+    mfxU16 brcM = QSVResetParams.mfx.BRCParamMultiplier;
+    if (brcM == 0) brcM = 1;
+    mfxU16 resetTargetKbps =
+        static_cast<mfxU16>(InputParams->TargetBitRate / brcM);
+    if (QSVResetParams.mfx.TargetKbps != resetTargetKbps) {
+      QSVResetParams.mfx.TargetKbps = resetTargetKbps;
       QSVResetParamsChanged = true;
     }
     break;
+  }
   case MFX_RATECONTROL_VBR:
   case MFX_RATECONTROL_VCM:
-  case MFX_RATECONTROL_QVBR:
-    if (QSVResetParams.mfx.TargetKbps != InputParams->TargetBitRate) {
-      QSVResetParams.mfx.TargetKbps =
-          static_cast<mfxU16>(InputParams->TargetBitRate);
+  case MFX_RATECONTROL_QVBR: {
+    mfxU16 brcM = QSVResetParams.mfx.BRCParamMultiplier;
+    if (brcM == 0) brcM = 1;
+    mfxU16 resetTargetKbps =
+        static_cast<mfxU16>(InputParams->TargetBitRate / brcM);
+    if (QSVResetParams.mfx.TargetKbps != resetTargetKbps) {
+      QSVResetParams.mfx.TargetKbps = resetTargetKbps;
       QSVResetParamsChanged = true;
     }
-    if (QSVResetParams.mfx.MaxKbps != InputParams->MaxBitRate) {
-      QSVResetParams.mfx.MaxKbps = static_cast<mfxU16>(InputParams->MaxBitRate);
+    mfxU16 resetMaxKbps =
+        static_cast<mfxU16>(InputParams->MaxBitRate / brcM);
+    if (QSVResetParams.mfx.MaxKbps != resetMaxKbps) {
+      QSVResetParams.mfx.MaxKbps = resetMaxKbps;
       QSVResetParamsChanged = true;
     }
     if (QSVResetParams.mfx.MaxKbps < QSVResetParams.mfx.TargetKbps) {
@@ -1793,6 +1813,7 @@ bool QSVEncoder::UpdateParams(struct encoder_params *InputParams) {
       QSVResetParamsChanged = true;
     }
     break;
+  }
   case MFX_RATECONTROL_CQP:
     if (QSVResetParams.mfx.QPI != InputParams->QPI) {
       QSVResetParams.mfx.QPI = static_cast<mfxU16>(InputParams->QPI);

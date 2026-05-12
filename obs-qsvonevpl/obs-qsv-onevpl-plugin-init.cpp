@@ -535,18 +535,18 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 
   // ── Bitrate ─────────────────────────────────────────────────
   Prop = obs_properties_add_int(Props, "bitrate", TEXT_TARGET_BITRATE, 50,
-                                10000000, 50);
+                                4294967295, 5000);
   obs_property_int_set_suffix(Prop, " Kbps");
 
   Prop = obs_properties_add_int(Props, "max_bitrate", TEXT_MAX_BITRATE, 50,
-                                10000000, 50);
+                                4294967295, 5000);
   obs_property_int_set_suffix(Prop, " Kbps");
 
   Prop = obs_properties_add_bool(Props, "custom_buffer_size",
                                  TEXT_CUSTOM_BUFFER_SIZE);
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
   Prop = obs_properties_add_int(Props, "buffer_size", TEXT_BUFFER_SIZE, 0,
-                                10000000, 10);
+                                4294967295, 5000);
   obs_property_int_set_suffix(Prop, " KB");
 
   // ── Frame structure ─────────────────────────────────────────
@@ -1544,12 +1544,11 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.QPB = static_cast<mfxU16>(ActualCQPData);
   }
 
-  Context->EncoderParams.TargetBitRate =
-      static_cast<mfxU16>(TargetBitrateData / 100);
+  Context->EncoderParams.TargetBitRate = TargetBitrateData;
   Context->EncoderParams.CustomBufferSize =
       static_cast<bool>(CustomBufferSizeData);
-  Context->EncoderParams.BufferSize = static_cast<mfxU16>(BufferSizeData / 100);
-  Context->EncoderParams.MaxBitRate = static_cast<mfxU16>(MaxBitrateData / 100);
+  Context->EncoderParams.BufferSize = BufferSizeData;
+  Context->EncoderParams.MaxBitRate = MaxBitrateData;
   Context->EncoderParams.Width = static_cast<mfxU16>(VideoWidth);
   Context->EncoderParams.Height = static_cast<mfxU16>(VideoHeight);
   Context->EncoderParams.FpsNum = static_cast<mfxU32>(VOI->fps_num);
@@ -1623,12 +1622,12 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
 
   if (Context->EncoderParams.RateControl != MFX_RATECONTROL_ICQ &&
       Context->EncoderParams.RateControl != MFX_RATECONTROL_CQP)
-    info("\tTarget bitrate: %d", Context->EncoderParams.TargetBitRate * 100);
+    info("\tTarget bitrate: %d", Context->EncoderParams.TargetBitRate);
 
   if (Context->EncoderParams.RateControl == MFX_RATECONTROL_VBR ||
       Context->EncoderParams.RateControl == MFX_RATECONTROL_VCM ||
       Context->EncoderParams.RateControl == MFX_RATECONTROL_QVBR)
-    info("\tMax bitrate: %d", Context->EncoderParams.MaxBitRate * 100);
+    info("\tMax bitrate: %d", Context->EncoderParams.MaxBitRate);
 
   if (Context->EncoderParams.RateControl == MFX_RATECONTROL_ICQ &&
       std::strcmp(RateControlData, "ICQ") == 0)
