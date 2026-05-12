@@ -405,12 +405,9 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   //obs_property_set_visible(Prop, bVisible_extbrc && bVisible_enctools);
 
   mfxU16 platformCode = QueryPlatformCodeName();
-  const char *profileData = obs_data_get_string(Settings, "profile");
-  bool profileIs10bit = (std::strcmp(profileData, "main10") == 0) ||
-                        (std::strcmp(profileData, "rext") == 0);
   bool hasHighTier = platformCode == 0 ||
                      platformCode >= MFX_PLATFORM_TIGERLAKE;
-  bool showTierList = profileIs10bit && hasHighTier;
+  bool showTierList = hasHighTier;
   Prop = obs_properties_get(Properties, "hevc_tier");
   if (Prop) {
     obs_property_set_visible(Prop, showTierList);
