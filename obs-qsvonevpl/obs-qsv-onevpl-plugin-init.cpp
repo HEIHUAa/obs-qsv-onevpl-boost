@@ -264,6 +264,9 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
 
   bVisible = bIsCQP;
   bool separateIPB = obs_data_get_bool(Settings, "cqp_separate_ipb");
+  Prop = obs_properties_get(Properties, "cqp_separate_ipb");
+  if (Prop)
+    obs_property_set_visible(Prop, bVisible);
   Prop = obs_properties_get(Properties, "qpi");
   if (Prop)
     obs_property_set_visible(Prop, bVisible && separateIPB);
@@ -276,9 +279,6 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   Prop = obs_properties_get(Properties, "cqp");
   if (Prop)
     obs_property_set_visible(Prop, bVisible && !separateIPB);
-  Prop = obs_properties_get(Properties, "cqp_separate_ipb");
-  if (Prop)
-    obs_property_set_visible(Prop, bVisible);
 
   bVisible = bIsICQ;
   Prop = obs_properties_get(Properties, "icq_quality");
