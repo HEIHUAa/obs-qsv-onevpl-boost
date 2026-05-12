@@ -38,6 +38,7 @@ struct plugin_context {
 #define TEXT_MAX_BITRATE obs_module_text("MaxBitrate")
 #define TEXT_PROFILE obs_module_text("Profile")
 #define TEXT_HEVC_TIER obs_module_text("Tier")
+#define TEXT_HEVC_LEVEL obs_module_text("Level")
 #define TEXT_RATE_CONTROL obs_module_text("RateControl")
 #define TEXT_ICQ_QUALITY obs_module_text("ICQQuality")
 #define TEXT_QVBR_QUALITY obs_module_text("QVBRQuality")
@@ -149,6 +150,10 @@ static const char *const qsv_profile_names_hevc[] = {"main", "main10", "rext",
                                                      0};
 
 static const char *const qsv_profile_tiers_hevc[] = {"main", "high", 0};
+
+static const char *const qsv_levels_hevc[] = {
+    "auto", "1", "2", "2.1", "3", "3.1", "4", "4.1",
+    "5", "5.1", "5.2", "6", "6.1", "6.2", 0};
 
 static const char *const qsv_usage_names[] = {
     "TU1 (Veryslow)", "TU2 (Slower)", "TU3 (Slow)",     "TU4 (Balanced)",

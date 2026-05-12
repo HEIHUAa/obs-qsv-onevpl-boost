@@ -805,6 +805,11 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   info("\tCodecProfile: %d (tier %s)", QSVEncodeParams.mfx.CodecProfile,
        InputParams->CodecProfileTier == MFX_TIER_HEVC_HIGH ? "high" : "main");
 
+  QSVEncodeParams.mfx.CodecLevel = InputParams->CodecLevel;
+  if (QSVEncodeParams.mfx.CodecLevel) {
+    info("\tCodecLevel: %d", QSVEncodeParams.mfx.CodecLevel);
+  }
+
   /*BRCParamMultiplier fixed at 100 for driver compatibility
     (UHD 730 rejects values !=100). Raw values clamped to 65535*100
     to prevent mfxU16 overflow after division.

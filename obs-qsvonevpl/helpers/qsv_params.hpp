@@ -17,6 +17,7 @@ struct encoder_params {
   uint32_t BufferSize;
   mfxU16 CodecProfile;
   mfxU16 CodecProfileTier;
+  mfxU16 CodecLevel;
   mfxU16 RateControl;
   mfxU16 QPI;
   mfxU16 QPP;
