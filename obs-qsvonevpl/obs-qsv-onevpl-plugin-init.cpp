@@ -449,6 +449,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_usage_names);
 
+  // ── Profile ─────────────────────────────────────────────────
   Prop = obs_properties_add_list(Props, "profile", TEXT_PROFILE,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 
@@ -510,6 +511,119 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
     }
   }
 
+  // ── Quality settings ────────────────────────────────────────
+  Prop = obs_properties_add_int(Props, "qvbr_quality", TEXT_QVBR_QUALITY, 0, 51,
+                                1);
+  obs_property_set_long_description(Prop,
+                                    obs_module_text("QVBRQuality.Tooltip"));
+
+  obs_properties_add_int(Props, "icq_quality", TEXT_ICQ_QUALITY, 1, 51, 1);
+
+  obs_properties_add_int(Props, "cqp", "CQP", 1,
+                         Codec == QSV_CODEC_AV1 ? 63 : 51, 1);
+
+  Prop = obs_properties_add_bool(Props, "cqp_separate_ipb",
+                                 "Separate I/P/B QP");
+  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
+
+  obs_properties_add_int(Props, "qpi", "QPI", 1,
+                         Codec == QSV_CODEC_AV1 ? 63 : 51, 1);
+  obs_properties_add_int(Props, "qpp", "QPP", 1,
+                         Codec == QSV_CODEC_AV1 ? 63 : 51, 1);
+  obs_properties_add_int(Props, "qpb", "QPB", 1,
+                         Codec == QSV_CODEC_AV1 ? 63 : 51, 1);
+
+  // ── Bitrate ─────────────────────────────────────────────────
+  Prop = obs_properties_add_int(Props, "bitrate", TEXT_TARGET_BITRATE, 50,
+                                10000000, 50);
+  obs_property_int_set_suffix(Prop, " Kbps");
+
+  Prop = obs_properties_add_int(Props, "max_bitrate", TEXT_MAX_BITRATE, 50,
+                                10000000, 50);
+  obs_property_int_set_suffix(Prop, " Kbps");
+
+  Prop = obs_properties_add_bool(Props, "custom_buffer_size",
+                                 TEXT_CUSTOM_BUFFER_SIZE);
+  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
+  Prop = obs_properties_add_int(Props, "buffer_size", TEXT_BUFFER_SIZE, 0,
+                                10000000, 10);
+  obs_property_int_set_suffix(Prop, " KB");
+
+  // ── Frame structure ─────────────────────────────────────────
+  Prop = obs_properties_add_int(Props, "keyint_sec", TEXT_KEYINT_SEC, 0, 20, 1);
+  obs_property_int_set_suffix(Prop, " s");
+
+  obs_properties_add_int_slider(Props, "num_ref_frame", TEXT_NUM_REF_FRAME, 0,
+                                ((Codec == QSV_CODEC_AV1)   ? 16
+                                 : (Codec == QSV_CODEC_AVC) ? 15
+                                                            : 16),
+                                1);
+
+  Prop =
+      obs_properties_add_int_slider(Props, "gop_ref_dist", TEXT_GOP_REF_DIST, 0,
+                                    32, 1);
+  obs_property_set_long_description(
+      Prop, TEXT_GOP_REF_DIST_DESC);
+  obs_property_long_description(Prop);
+
+  // ── Lookahead ───────────────────────────────────────────────
+  Prop = obs_properties_add_list(Props, "lookahead", TEXT_LA,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition_lookahead_mode);
+  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
+
+  Prop = obs_properties_add_list(Props, "lookahead_ds", TEXT_LA_DS,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition_lookahead_ds);
+  obs_property_set_long_description(
+      Prop, TEXT_LA_DS_DESC);
+
+  obs_properties_add_int_slider(Props, "la_depth", TEXT_LA_DEPTH, 1, 100, 1);
+
+  Prop = obs_properties_add_list(Props, "lookahead_latency", TEXT_LA_LATENCY,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition_lookahead_latency);
+
+  // ── WinBRC ──────────────────────────────────────────────────
+  Prop = obs_properties_add_list(Props, "win_brc", TEXT_WINBRC,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  obs_property_set_long_description(
+      Prop, obs_module_text("WinBRC.Tooltip"));
+  AddStrings(Prop, qsv_params_condition);
+  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
+
+  Prop = obs_properties_add_int(Props, "win_brc_max_avg_size",
+                                TEXT_WINBRC_MAX_AVG_SIZE, 0, 65535, 1);
+  obs_property_int_set_suffix(Prop, " kbps");
+  obs_property_set_long_description(Prop,
+                                    obs_module_text("WinBRCMaxAvgSize.Tooltip"));
+
+  Prop = obs_properties_add_int(Props, "win_brc_size", TEXT_WINBRC_SIZE, 0, 1000,
+                                1);
+  obs_property_int_set_suffix(Prop, " frames");
+  obs_property_set_long_description(Prop,
+                                    obs_module_text("WinBRCSize.Tooltip"));
+
+  // ── Rate control refinements ────────────────────────────────
+  Prop = obs_properties_add_list(Props, "hrd_conformance", TEXT_HRD_CONFORMANCE,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition_tristate);
+  obs_property_set_long_description(
+      Prop, TEXT_HRD_CONFORMANCE_DESC);
+  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
+
+  Prop = obs_properties_add_list(Props, "low_delay_hrd", TEXT_LOW_DELAY_HRD,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition_tristate);
+  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
+
+  Prop = obs_properties_add_list(Props, "mbbrc", TEXT_MBBRC,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition_tristate);
+  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
+  obs_property_set_long_description(
+      Prop, TEXT_MBBRC_DESC);
+
   Prop = obs_properties_add_list(Props, "extbrc", TEXT_EXT_BRC,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   obs_property_set_long_description(
@@ -536,113 +650,17 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
     obs_property_set_visible(Prop, IsFeatureSupported("tune_quality"));
   }
 
-  Prop = obs_properties_add_int(Props, "bitrate", TEXT_TARGET_BITRATE, 50,
-                                10000000, 50);
-  obs_property_int_set_suffix(Prop, " Kbps");
-
-  Prop = obs_properties_add_bool(Props, "custom_buffer_size",
-                                 TEXT_CUSTOM_BUFFER_SIZE);
-  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
-  Prop = obs_properties_add_int(Props, "buffer_size", TEXT_BUFFER_SIZE, 0,
-                                10000000, 10);
-  obs_property_int_set_suffix(Prop, " KB");
-
-  Prop = obs_properties_add_int(Props, "max_bitrate", TEXT_MAX_BITRATE, 50,
-                                10000000, 50);
-  obs_property_int_set_suffix(Prop, " Kbps");
-
-  obs_properties_add_int(Props, "cqp", "CQP", 1,
-                         Codec == QSV_CODEC_AV1 ? 63 : 51, 1);
-
-  Prop = obs_properties_add_bool(Props, "cqp_separate_ipb",
-                                 "Separate I/P/B QP");
-  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
-
-  obs_properties_add_int(Props, "qpi", "QPI", 1,
-                         Codec == QSV_CODEC_AV1 ? 63 : 51, 1);
-  obs_properties_add_int(Props, "qpp", "QPP", 1,
-                         Codec == QSV_CODEC_AV1 ? 63 : 51, 1);
-  obs_properties_add_int(Props, "qpb", "QPB", 1,
-                         Codec == QSV_CODEC_AV1 ? 63 : 51, 1);
-
-  obs_properties_add_int(Props, "icq_quality", TEXT_ICQ_QUALITY, 1, 51, 1);
-
-  Prop = obs_properties_add_int(Props, "qvbr_quality", TEXT_QVBR_QUALITY, 0, 51,
-                                1);
-  obs_property_set_long_description(Prop,
-                                    obs_module_text("QVBRQuality.Tooltip"));
-
-  Prop = obs_properties_add_int(Props, "keyint_sec", TEXT_KEYINT_SEC, 0, 20, 1);
-  obs_property_int_set_suffix(Prop, " s");
-
-  obs_properties_add_int_slider(Props, "num_ref_frame", TEXT_NUM_REF_FRAME, 0,
-                                ((Codec == QSV_CODEC_AV1)   ? 16
-                                 : (Codec == QSV_CODEC_AVC) ? 15
-                                                            : 16),
-                                1);
-
-  if (Codec == QSV_CODEC_HEVC) {
-    Prop =
-        obs_properties_add_list(Props, "hevc_gpb", TEXT_HEVC_GPB,
-                                OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-    AddStrings(Prop, qsv_params_condition_tristate);
-    obs_property_set_long_description(
-        Prop, TEXT_HEVC_GPB_DESC);
-  }
-
-  Prop =
-      obs_properties_add_int_slider(Props, "gop_ref_dist", TEXT_GOP_REF_DIST, 0,
-                                    32, 1);
-  obs_property_set_long_description(
-      Prop, TEXT_GOP_REF_DIST_DESC);
-  obs_property_long_description(Prop);
-
-  Prop = obs_properties_add_list(Props, "win_brc", TEXT_WINBRC,
+  // ── Encoder hardware ────────────────────────────────────────
+  Prop = obs_properties_add_list(Props, "low_power", TEXT_LOW_POWER,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  obs_property_set_long_description(
-      Prop, obs_module_text("WinBRC.Tooltip"));
-  AddStrings(Prop, qsv_params_condition);
+  AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
-
-  Prop = obs_properties_add_int(Props, "win_brc_max_avg_size",
-                                TEXT_WINBRC_MAX_AVG_SIZE, 0, 65535, 1);
-  obs_property_int_set_suffix(Prop, " kbps");
-  obs_property_set_long_description(Prop,
-                                    obs_module_text("WinBRCMaxAvgSize.Tooltip"));
-
-  Prop = obs_properties_add_int(Props, "win_brc_size", TEXT_WINBRC_SIZE, 0, 1000,
-                                1);
-  obs_property_int_set_suffix(Prop, " frames");
-  obs_property_set_long_description(Prop,
-                                    obs_module_text("WinBRCSize.Tooltip"));
+  obs_property_set_long_description(
+      Prop, TEXT_LOW_POWER_DESC);
 
   obs_properties_add_int(Props, "async_depth", TEXT_ASYNC_DEPTH, 1, 1000, 1);
 
-  Prop = obs_properties_add_list(Props, "hrd_conformance", TEXT_HRD_CONFORMANCE,
-                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition_tristate);
-  obs_property_set_long_description(
-      Prop, TEXT_HRD_CONFORMANCE_DESC);
-  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
-
-  Prop = obs_properties_add_list(Props, "low_delay_hrd", TEXT_LOW_DELAY_HRD,
-                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition_tristate);
-  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
-
-  Prop = obs_properties_add_list(Props, "mbbrc", TEXT_MBBRC,
-                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition_tristate);
-  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
-  obs_property_set_long_description(
-      Prop, TEXT_MBBRC_DESC);
-
-  Prop = obs_properties_add_list(Props, "rdo", TEXT_RDO, OBS_COMBO_TYPE_LIST,
-                                 OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition_tristate);
-  obs_property_set_long_description(
-      Prop, TEXT_RDO_DESC);
-
+  // ── Advanced features ───────────────────────────────────────
   Prop = obs_properties_add_list(Props, "adaptive_i", TEXT_ADAPTIVE_I,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_tristate);
@@ -661,17 +679,17 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(
       Prop, TEXT_ADAPTIVE_REF_DESC);
 
-  Prop = obs_properties_add_list(Props, "adaptive_ltr", TEXT_ADAPTIVE_LTR,
-                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition_tristate);
-  obs_property_set_long_description(
-      Prop, TEXT_ADAPTIVE_LTR_DESC);
-
   Prop = obs_properties_add_list(Props, "adaptive_cqm", TEXT_ADAPTIVE_CQM,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_long_description(
       Prop, TEXT_ADAPTIVE_CQM_DESC);
+
+  Prop = obs_properties_add_list(Props, "adaptive_ltr", TEXT_ADAPTIVE_LTR,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition_tristate);
+  obs_property_set_long_description(
+      Prop, TEXT_ADAPTIVE_LTR_DESC);
 
   Prop = obs_properties_add_list(Props, "p_pyramid", TEXT_P_PYRAMID,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -693,11 +711,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(
       Prop, TEXT_GLOBAL_MOTION_BIAS_DESC);
 
-  Prop = obs_properties_add_list(Props, "mv_cost_scaling_factor",
-                                 TEXT_MV_COST_SCALING_FACTOR,
-                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition_mv_cost_scaling);
-
   Prop = obs_properties_add_list(Props, "direct_bias_adjustment",
                                  TEXT_DIRECT_BIAS_ADJUSTMENT,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -712,29 +725,113 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(
       Prop, TEXT_MV_OVER_PIC_BOUNDARIES_DESC);
 
+  Prop = obs_properties_add_list(Props, "mv_cost_scaling_factor",
+                                 TEXT_MV_COST_SCALING_FACTOR,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition_mv_cost_scaling);
+
   Prop = obs_properties_add_list(Props, "trellis", TEXT_TRELLIS,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_trellis);
   obs_property_set_long_description(
       Prop, TEXT_TRELLIS_DESC);
 
-  Prop = obs_properties_add_list(Props, "lookahead", TEXT_LA,
-                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition_lookahead_mode);
-  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
-
-  Prop = obs_properties_add_list(Props, "lookahead_ds", TEXT_LA_DS,
-                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition_lookahead_ds);
+  Prop = obs_properties_add_list(Props, "rdo", TEXT_RDO, OBS_COMBO_TYPE_LIST,
+                                 OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_long_description(
-      Prop, TEXT_LA_DS_DESC);
+      Prop, TEXT_RDO_DESC);
 
-  Prop = obs_properties_add_list(Props, "lookahead_latency", TEXT_LA_LATENCY,
+  Prop = obs_properties_add_list(Props, "fade_detection", TEXT_FADE_DETECTION,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition_lookahead_latency);
+  AddStrings(Prop, qsv_params_condition_tristate);
+  obs_property_set_long_description(
+      Prop, TEXT_FADE_DETECTION_DESC);
 
-  obs_properties_add_int_slider(Props, "la_depth", TEXT_LA_DEPTH, 1, 100, 1);
+  Prop = obs_properties_add_list(Props, "bitrate_limit", TEXT_BITRATE_LIMIT,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition_tristate);
+  obs_property_set_long_description(
+      Prop, TEXT_BITRATE_LIMIT_DESC);
 
+  Prop = obs_properties_add_list(Props, "transform_skip", TEXT_TRANSFORM_SKIP,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition_tristate);
+  obs_property_set_long_description(
+      Prop, TEXT_TRANSFORM_SKIP_DESC);
+  obs_property_set_visible(Prop, IsFeatureSupported("transform_skip"));
+
+  // ── Reference controls ──────────────────────────────────────
+  Prop = obs_properties_add_int_slider(Props, "num_ref_active_p",
+                                       TEXT_NUM_REF_ACTIVE_P, 0,
+                                       ((Codec == QSV_CODEC_AV1)   ? 16
+                                        : (Codec == QSV_CODEC_AVC) ? 15
+                                                                   : 16),
+                                       1);
+  obs_property_set_long_description(
+      Prop, TEXT_NUM_REF_ACTIVE_P_DESC);
+
+  Prop = obs_properties_add_int_slider(Props, "num_ref_active_bl0",
+                                       TEXT_NUM_REF_ACTIVE_BL0, 0,
+                                       ((Codec == QSV_CODEC_AV1)   ? 16
+                                        : (Codec == QSV_CODEC_AVC) ? 15
+                                                                   : 16),
+                                       1);
+  obs_property_set_long_description(
+      Prop, TEXT_NUM_REF_ACTIVE_BL0_DESC);
+
+  Prop = obs_properties_add_int_slider(Props, "num_ref_active_bl1",
+                                       TEXT_NUM_REF_ACTIVE_BL1, 0,
+                                       ((Codec == QSV_CODEC_AV1)   ? 16
+                                        : (Codec == QSV_CODEC_AVC) ? 15
+                                                                   : 16),
+                                       1);
+  obs_property_set_long_description(
+      Prop, TEXT_NUM_REF_ACTIVE_BL1_DESC);
+
+  // ── Codec-specific ──────────────────────────────────────────
+  if (Codec == QSV_CODEC_HEVC) {
+    Prop =
+        obs_properties_add_list(Props, "hevc_gpb", TEXT_HEVC_GPB,
+                                OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+    AddStrings(Prop, qsv_params_condition_tristate);
+    obs_property_set_long_description(
+        Prop, TEXT_HEVC_GPB_DESC);
+  }
+
+  if (Codec == QSV_CODEC_HEVC) {
+    Prop =
+        obs_properties_add_list(Props, "hevc_sao", TEXT_HEVC_SAO,
+                                OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+    AddStrings(Prop, qsv_params_condition_hevc_sao);
+  }
+
+  if (Codec == QSV_CODEC_AV1) {
+    Prop = obs_properties_add_list(Props, "screen_content_tools",
+                                   TEXT_SCREEN_CONTENT_TOOLS,
+                                   OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+    AddStrings(Prop, qsv_params_condition_screen_content_tools);
+  }
+
+  if (Codec != QSV_CODEC_AV1) {
+    Prop = obs_properties_add_list(Props, "intra_ref_encoding",
+                                   TEXT_INTRA_REF_ENCODING, OBS_COMBO_TYPE_LIST,
+                                   OBS_COMBO_FORMAT_STRING);
+    AddStrings(Prop, qsv_params_condition);
+    obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
+
+    Prop = obs_properties_add_int(Props, "intra_ref_cycle_size",
+                                  TEXT_INTRA_REF_CYCLE_SIZE, 2, 1000, 1);
+    obs_property_set_long_description(
+        Prop, TEXT_INTRA_REF_CYCLE_SIZE_DESC);
+
+    Prop = obs_properties_add_int(Props, "intra_ref_qp_delta",
+                                  TEXT_INTRA_REF_QP_DELTA, -51, 51, 1);
+    obs_property_set_long_description(
+        Prop, TEXT_INTRA_REF_QP_DELTA_DESC);
+  }
+
+  // ── VPP / Post-processing ───────────────────────────────────
   Prop = obs_properties_add_list(Props, "vpp", TEXT_VPP, OBS_COMBO_TYPE_LIST,
                                  OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition);
@@ -779,72 +876,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   AddStrings(Prop, qsv_params_condition);
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
-  Prop = obs_properties_add_list(Props, "low_power", TEXT_LOW_POWER,
-                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition_tristate);
-  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
-  obs_property_set_long_description(
-      Prop, TEXT_LOW_POWER_DESC);
-
-  if (Codec != QSV_CODEC_AV1) {
-    Prop = obs_properties_add_list(Props, "intra_ref_encoding",
-                                   TEXT_INTRA_REF_ENCODING, OBS_COMBO_TYPE_LIST,
-                                   OBS_COMBO_FORMAT_STRING);
-    AddStrings(Prop, qsv_params_condition);
-    obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
-
-    Prop = obs_properties_add_int(Props, "intra_ref_cycle_size",
-                                  TEXT_INTRA_REF_CYCLE_SIZE, 2, 1000, 1);
-    obs_property_set_long_description(
-        Prop, TEXT_INTRA_REF_CYCLE_SIZE_DESC);
-
-    Prop = obs_properties_add_int(Props, "intra_ref_qp_delta",
-                                  TEXT_INTRA_REF_QP_DELTA, -51, 51, 1);
-    obs_property_set_long_description(
-        Prop, TEXT_INTRA_REF_QP_DELTA_DESC);
-  }
-
-  if (Codec == QSV_CODEC_AV1) {
-    Prop = obs_properties_add_list(Props, "screen_content_tools",
-                                   TEXT_SCREEN_CONTENT_TOOLS,
-                                   OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-    AddStrings(Prop, qsv_params_condition_screen_content_tools);
-  }
-
-  if (Codec == QSV_CODEC_HEVC) {
-    Prop =
-        obs_properties_add_list(Props, "hevc_sao", TEXT_HEVC_SAO,
-                                OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-    AddStrings(Prop, qsv_params_condition_hevc_sao);
-  }
-
-  Prop = obs_properties_add_int_slider(Props, "num_ref_active_p",
-                                       TEXT_NUM_REF_ACTIVE_P, 0,
-                                       ((Codec == QSV_CODEC_AV1)   ? 16
-                                        : (Codec == QSV_CODEC_AVC) ? 15
-                                                                   : 16),
-                                       1);
-  obs_property_set_long_description(
-      Prop, TEXT_NUM_REF_ACTIVE_P_DESC);
-
-  Prop = obs_properties_add_int_slider(Props, "num_ref_active_bl0",
-                                       TEXT_NUM_REF_ACTIVE_BL0, 0,
-                                       ((Codec == QSV_CODEC_AV1)   ? 16
-                                        : (Codec == QSV_CODEC_AVC) ? 15
-                                                                   : 16),
-                                       1);
-  obs_property_set_long_description(
-      Prop, TEXT_NUM_REF_ACTIVE_BL0_DESC);
-
-  Prop = obs_properties_add_int_slider(Props, "num_ref_active_bl1",
-                                       TEXT_NUM_REF_ACTIVE_BL1, 0,
-                                       ((Codec == QSV_CODEC_AV1)   ? 16
-                                        : (Codec == QSV_CODEC_AVC) ? 15
-                                                                   : 16),
-                                       1);
-  obs_property_set_long_description(
-      Prop, TEXT_NUM_REF_ACTIVE_BL1_DESC);
-
+  // ── Miscellaneous ───────────────────────────────────────────
   Prop = obs_properties_add_list(Props, "scenario_info", TEXT_SCENARIO_INFO,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_scenario_info);
@@ -856,25 +888,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   AddStrings(Prop, qsv_params_condition_content_info);
   obs_property_set_long_description(
       Prop, TEXT_CONTENT_INFO_DESC);
-
-  Prop = obs_properties_add_list(Props, "transform_skip", TEXT_TRANSFORM_SKIP,
-                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition_tristate);
-  obs_property_set_long_description(
-      Prop, TEXT_TRANSFORM_SKIP_DESC);
-  obs_property_set_visible(Prop, IsFeatureSupported("transform_skip"));
-
-  Prop = obs_properties_add_list(Props, "fade_detection", TEXT_FADE_DETECTION,
-                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition_tristate);
-  obs_property_set_long_description(
-      Prop, TEXT_FADE_DETECTION_DESC);
-
-  Prop = obs_properties_add_list(Props, "bitrate_limit", TEXT_BITRATE_LIMIT,
-                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition_tristate);
-  obs_property_set_long_description(
-      Prop, TEXT_BITRATE_LIMIT_DESC);
 
   Prop = obs_properties_add_int_slider(Props, "temporal_layers",
                                        TEXT_TEMPORAL_LAYERS, 0, 4, 1);
