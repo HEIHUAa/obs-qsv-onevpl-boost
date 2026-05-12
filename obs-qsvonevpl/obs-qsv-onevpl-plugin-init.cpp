@@ -535,18 +535,18 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 
   // ── Bitrate ─────────────────────────────────────────────────
   Prop = obs_properties_add_int(Props, "bitrate", TEXT_TARGET_BITRATE, 50,
-                                4294967295, 5000);
+                                2147483647, 5000);
   obs_property_int_set_suffix(Prop, " Kbps");
 
   Prop = obs_properties_add_int(Props, "max_bitrate", TEXT_MAX_BITRATE, 50,
-                                4294967295, 5000);
+                                2147483647, 5000);
   obs_property_int_set_suffix(Prop, " Kbps");
 
   Prop = obs_properties_add_bool(Props, "custom_buffer_size",
                                  TEXT_CUSTOM_BUFFER_SIZE);
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
   Prop = obs_properties_add_int(Props, "buffer_size", TEXT_BUFFER_SIZE, 0,
-                                4294967295, 5000);
+                                2147483647, 5000);
   obs_property_int_set_suffix(Prop, " KB");
 
   // ── Frame structure ─────────────────────────────────────────
