@@ -1113,31 +1113,31 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     if (std::strcmp(CodecLevelData, "auto") == 0) {
       Context->EncoderParams.CodecLevel = 0;
     } else if (std::strcmp(CodecLevelData, "1") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_1;
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_HEVC_1;
     } else if (std::strcmp(CodecLevelData, "2") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_2;
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_HEVC_2;
     } else if (std::strcmp(CodecLevelData, "2.1") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_21;
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_HEVC_21;
     } else if (std::strcmp(CodecLevelData, "3") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_3;
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_HEVC_3;
     } else if (std::strcmp(CodecLevelData, "3.1") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_31;
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_HEVC_31;
     } else if (std::strcmp(CodecLevelData, "4") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_4;
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_HEVC_4;
     } else if (std::strcmp(CodecLevelData, "4.1") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_41;
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_HEVC_41;
     } else if (std::strcmp(CodecLevelData, "5") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_5;
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_HEVC_5;
     } else if (std::strcmp(CodecLevelData, "5.1") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_51;
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_HEVC_51;
     } else if (std::strcmp(CodecLevelData, "5.2") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_52;
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_HEVC_52;
     } else if (std::strcmp(CodecLevelData, "6") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_6;
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_HEVC_6;
     } else if (std::strcmp(CodecLevelData, "6.1") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_61;
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_HEVC_61;
     } else if (std::strcmp(CodecLevelData, "6.2") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_62;
+      Context->EncoderParams.CodecLevel = MFX_LEVEL_HEVC_62;
     }
     break;
   case QSV_CODEC_AV1:
