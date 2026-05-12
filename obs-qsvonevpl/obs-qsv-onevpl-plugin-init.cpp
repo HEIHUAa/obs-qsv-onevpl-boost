@@ -480,7 +480,8 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
       bool showProfileHEVC = true;
       if (platformCode != 0) {
         bool isRext = std::strcmp(*profileEntryHEVC, "rext") == 0;
-        if (isRext && platformCode < MFX_PLATFORM_ICELAKE) {
+        bool isSCC = std::strcmp(*profileEntryHEVC, "scc") == 0;
+        if ((isRext || isSCC) && platformCode < MFX_PLATFORM_ICELAKE) {
           showProfileHEVC = false;
         }
       }
@@ -1117,10 +1118,16 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       Context->EncoderParams.CodecProfile = MFX_PROFILE_AVC_HIGH10;
     } else if (std::strcmp(CodecProfileData, "high422") == 0) {
       Context->EncoderParams.CodecProfile = MFX_PROFILE_AVC_HIGH_422;
-    } else if (std::strcmp(CodecProfileData, "progressive high") == 0) {
-      Context->EncoderParams.CodecProfile = MFX_PROFILE_AVC_PROGRESSIVE_HIGH;
+    } else if (std::strcmp(CodecProfileData, "constrained_baseline") == 0) {
+      Context->EncoderParams.CodecProfile = MFX_PROFILE_AVC_CONSTRAINED_BASELINE;
       if (obs_p010_tex_active()) {
-        blog(LOG_WARNING, "[qsv encoder] progressive high->high10 for P010");
+        blog(LOG_WARNING, "[qsv encoder] constrained_baseline->high10 for P010");
+        Context->EncoderParams.CodecProfile = MFX_PROFILE_AVC_HIGH10;
+      }
+    } else if (std::strcmp(CodecProfileData, "constrained_high") == 0) {
+      Context->EncoderParams.CodecProfile = MFX_PROFILE_AVC_CONSTRAINED_HIGH;
+      if (obs_p010_tex_active()) {
+        blog(LOG_WARNING, "[qsv encoder] constrained_high->high10 for P010");
         Context->EncoderParams.CodecProfile = MFX_PROFILE_AVC_HIGH10;
       }
     }
@@ -1183,6 +1190,10 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       Context->EncoderParams.CodecProfile = MFX_PROFILE_HEVC_MAIN10;
     } else if (std::strcmp(CodecProfileData, "rext") == 0) {
       Context->EncoderParams.CodecProfile = MFX_PROFILE_HEVC_REXT;
+    } else if (std::strcmp(CodecProfileData, "mainsp") == 0) {
+      Context->EncoderParams.CodecProfile = MFX_PROFILE_HEVC_MAINSP;
+    } else if (std::strcmp(CodecProfileData, "scc") == 0) {
+      Context->EncoderParams.CodecProfile = MFX_PROFILE_HEVC_SCC;
     }
 
     if (std::strcmp(CodecProfileTierData, "main") == 0) {
@@ -1234,12 +1245,10 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Codec = "AV1";
     if (std::strcmp(CodecProfileData, "main") == 0) {
       Context->EncoderParams.CodecProfile = MFX_PROFILE_AV1_MAIN;
-      if (obs_p010_tex_active()) {
-        blog(LOG_WARNING, "[qsv encoder] AV1 main->high for P010");
-        Context->EncoderParams.CodecProfile = MFX_PROFILE_AV1_HIGH;
-      }
     } else if (std::strcmp(CodecProfileData, "high") == 0) {
       Context->EncoderParams.CodecProfile = MFX_PROFILE_AV1_HIGH;
+    } else if (std::strcmp(CodecProfileData, "pro") == 0) {
+      Context->EncoderParams.CodecProfile = MFX_PROFILE_AV1_PRO;
     }
 
     if (std::strcmp(CodecLevelDataAV1, "auto") == 0) {

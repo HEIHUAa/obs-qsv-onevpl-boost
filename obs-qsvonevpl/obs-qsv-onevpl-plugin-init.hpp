@@ -141,12 +141,13 @@ struct plugin_context {
 #define TEXT_EXT_BRC_DESC obs_module_text("ExtBRCDesc")
 #define TEXT_GPU_NUMBER_DESC obs_module_text("GPUNumberDesc")
 
-static const char *const qsv_profile_names_av1[] = {"main", 0};
+static const char *const qsv_profile_names_av1[] = {"main", "high", "pro", 0};
 
 static const char *const qsv_profile_names_h264[] = {
-    "high", "main", "baseline", "extended", "high422", 0};
+    "high", "main", "baseline", "extended", "high422",
+    "constrained_baseline", "constrained_high", 0};
 
-static const char *const qsv_profile_names_hevc[] = {"main", "rext", 0};
+static const char *const qsv_profile_names_hevc[] = {"main", "mainsp", "rext", "scc", 0};
 
 static const char *const qsv_profile_tiers_hevc[] = {"main", "high", 0};
 
