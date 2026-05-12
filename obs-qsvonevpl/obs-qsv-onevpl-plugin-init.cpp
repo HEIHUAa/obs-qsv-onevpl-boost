@@ -742,6 +742,11 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(
       Prop, TEXT_GLOBAL_MOTION_BIAS_DESC);
 
+  Prop = obs_properties_add_list(Props, "mv_cost_scaling_factor",
+                                 TEXT_MV_COST_SCALING_FACTOR,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition_mv_cost_scaling);
+
   Prop = obs_properties_add_list(Props, "direct_bias_adjustment",
                                  TEXT_DIRECT_BIAS_ADJUSTMENT,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -755,11 +760,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_long_description(
       Prop, TEXT_MV_OVER_PIC_BOUNDARIES_DESC);
-
-  Prop = obs_properties_add_list(Props, "mv_cost_scaling_factor",
-                                 TEXT_MV_COST_SCALING_FACTOR,
-                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition_mv_cost_scaling);
 
   Prop = obs_properties_add_list(Props, "trellis", TEXT_TRELLIS,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
