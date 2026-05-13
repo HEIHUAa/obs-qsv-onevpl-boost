@@ -1823,8 +1823,16 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       std::strcmp(RateControlData, "ICQ") == 0)
     info("\tICQ Quality: %d", Context->EncoderParams.ICQQuality);
 
-  if (Context->EncoderParams.RateControl == MFX_RATECONTROL_CQP)
-    info("\tCQP: %d", ActualCQPData);
+  if (Context->EncoderParams.RateControl == MFX_RATECONTROL_CQP) {
+    bool CQPSeparateIPB = obs_data_get_bool(Settings, "cqp_separate_ipb");
+    if (CQPSeparateIPB)
+      info("\tQPI: %d, QPP: %d, QPB: %d",
+           Context->EncoderParams.QPI,
+           Context->EncoderParams.QPP,
+           Context->EncoderParams.QPB);
+    else
+      info("\tCQP: %d", ActualCQPData);
+  }
 
   info("\tFPS numerator: %d", VOI->fps_num);
   info("\tFPS denominator: %d", VOI->fps_den);

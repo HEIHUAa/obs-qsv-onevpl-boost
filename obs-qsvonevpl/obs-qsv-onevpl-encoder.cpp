@@ -117,12 +117,28 @@ bool UpdateEncoderParams(void *Data, obs_data_t *Params) {
     Context->EncoderParams.MaxBitRate =
         static_cast<mfxU16>(obs_data_get_int(Params, "max_bitrate"));
   } else if (std::strcmp(bitrate_control, "CQP") == 0) {
-    Context->EncoderParams.QPI =
-        static_cast<mfxU16>(obs_data_get_int(Params, "cqp"));
-    Context->EncoderParams.QPP =
-        static_cast<mfxU16>(obs_data_get_int(Params, "cqp"));
-    Context->EncoderParams.QPB =
-        static_cast<mfxU16>(obs_data_get_int(Params, "cqp"));
+    bool separateIPB = obs_data_get_bool(Params, "cqp_separate_ipb");
+    if (separateIPB) {
+      int qpi = static_cast<int>(obs_data_get_int(Params, "qpi"));
+      int qpp = static_cast<int>(obs_data_get_int(Params, "qpp"));
+      int qpb = static_cast<int>(obs_data_get_int(Params, "qpb"));
+      if (Context->Codec == QSV_CODEC_AV1) {
+        qpi *= 4;
+        qpp *= 4;
+        qpb *= 4;
+      }
+      Context->EncoderParams.QPI = static_cast<mfxU16>(qpi);
+      Context->EncoderParams.QPP = static_cast<mfxU16>(qpp);
+      Context->EncoderParams.QPB = static_cast<mfxU16>(qpb);
+    } else {
+      int cqp = static_cast<int>(obs_data_get_int(Params, "cqp"));
+      if (Context->Codec == QSV_CODEC_AV1) {
+        cqp *= 4;
+      }
+      Context->EncoderParams.QPI = static_cast<mfxU16>(cqp);
+      Context->EncoderParams.QPP = static_cast<mfxU16>(cqp);
+      Context->EncoderParams.QPB = static_cast<mfxU16>(cqp);
+    }
   } else if (std::strcmp(bitrate_control, "ICQ") == 0) {
     Context->EncoderParams.ICQQuality =
         static_cast<mfxU16>(obs_data_get_int(Params, "icq_quality"));
