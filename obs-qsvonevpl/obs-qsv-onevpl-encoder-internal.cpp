@@ -281,15 +281,15 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     }
 
     if (Status < MFX_ERR_NONE) {
-      warn("MFXVideoENCODE_Init failed (Status=%d). Dumping all encoder params:", Status);
-      warn("\tCodecId: 0x%04X, Profile: %d, Level: %d",
+      info("MFXVideoENCODE_Init failed (Status=%d). Dumping all encoder params:", Status);
+      info("\tCodecId: 0x%04X, Profile: %d, Level: %d",
            QSVEncodeParams.mfx.CodecId, QSVEncodeParams.mfx.CodecProfile,
            QSVEncodeParams.mfx.CodecLevel);
-      warn("\tTargetUsage: %d, RateControl: %d, LowPower: %d",
+      info("\tTargetUsage: %d, RateControl: %d, LowPower: %d",
            QSVEncodeParams.mfx.TargetUsage,
            QSVEncodeParams.mfx.RateControlMethod,
            QSVEncodeParams.mfx.LowPower);
-      warn("\tFrameInfo: %dx%d, Aligned: %dx%d, FourCC: 0x%04X, ChromaFormat: %d, PicStruct: %d",
+      info("\tFrameInfo: %dx%d, Aligned: %dx%d, FourCC: 0x%04X, ChromaFormat: %d, PicStruct: %d",
            QSVEncodeParams.mfx.FrameInfo.CropW,
            QSVEncodeParams.mfx.FrameInfo.CropH,
            QSVEncodeParams.mfx.FrameInfo.Width,
@@ -297,25 +297,25 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
            QSVEncodeParams.mfx.FrameInfo.FourCC,
            QSVEncodeParams.mfx.FrameInfo.ChromaFormat,
            QSVEncodeParams.mfx.FrameInfo.PicStruct);
-      warn("\tFrameRate: %d/%d, NumRefFrame: %d, GopPicSize: %d, GopRefDist: %d, GopOptFlag: 0x%04X",
+      info("\tFrameRate: %d/%d, NumRefFrame: %d, GopPicSize: %d, GopRefDist: %d, GopOptFlag: 0x%04X",
            QSVEncodeParams.mfx.FrameInfo.FrameRateExtN,
            QSVEncodeParams.mfx.FrameInfo.FrameRateExtD,
            QSVEncodeParams.mfx.NumRefFrame,
            QSVEncodeParams.mfx.GopPicSize,
            QSVEncodeParams.mfx.GopRefDist,
            QSVEncodeParams.mfx.GopOptFlag);
-      warn("\tAsyncDepth: %d, IOPattern: 0x%04X, NumExtParam: %d, BRCParamMultiplier: %d",
+      info("\tAsyncDepth: %d, IOPattern: 0x%04X, NumExtParam: %d, BRCParamMultiplier: %d",
            QSVEncodeParams.AsyncDepth, QSVEncodeParams.IOPattern,
            QSVEncodeParams.NumExtParam,
            QSVEncodeParams.mfx.BRCParamMultiplier);
       if (QSVEncodeParams.mfx.RateControlMethod == 1) {
-        warn("\tCQP: QPI=%d, QPP=%d, QPB=%d",
+        info("\tCQP: QPI=%d, QPP=%d, QPB=%d",
              QSVEncodeParams.mfx.QPI, QSVEncodeParams.mfx.QPP,
              QSVEncodeParams.mfx.QPB);
       } else if (QSVEncodeParams.mfx.RateControlMethod == 8) {
-        warn("\tICQ: Quality=%d", QSVEncodeParams.mfx.ICQQuality);
+        info("\tICQ: Quality=%d", QSVEncodeParams.mfx.ICQQuality);
       } else {
-        warn("\tTargetKbps: %d, MaxKbps: %d",
+        info("\tTargetKbps: %d, MaxKbps: %d",
              QSVEncodeParams.mfx.TargetKbps,
              QSVEncodeParams.mfx.MaxKbps);
       }
@@ -336,11 +336,11 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
           case 0x2140: bufName = "VPP_PROCAMP"; break;
           default: break;
           }
-          warn("\tExtBuf[%d]: %s (Id=0x%04X, Size=%d)", i, bufName,
+          info("\tExtBuf[%d]: %s (Id=0x%04X, Size=%d)", i, bufName,
                QSVEncodeParams.ExtParam[i]->BufferId,
                QSVEncodeParams.ExtParam[i]->BufferSz);
         } else {
-          warn("\tExtBuf[%d]: NULL", i);
+          info("\tExtBuf[%d]: NULL", i);
         }
       }
       error("MFXVideoENCODE_Init failed (Status=%d)", Status);
