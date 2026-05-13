@@ -571,6 +571,7 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
                 "Init(): MFXVideoENCODE_Init error after parameter retries");
           }
         }
+      }
     }
 
     if (Status < MFX_ERR_NONE) {
