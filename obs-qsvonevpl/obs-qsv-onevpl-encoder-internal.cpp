@@ -263,6 +263,14 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     info("\tSetEncoderParams status:  %d", Status);
 
     if (Status >= MFX_ERR_NONE) {
+      Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
+      info("\tMFXVideoENCODE_Query status: %d", Status);
+      if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
+        Status = MFX_ERR_NONE;
+      }
+    }
+
+    if (Status >= MFX_ERR_NONE) {
       Status = QSVEncode->Init(&QSVEncodeParams);
       info("\tMFXVideoENCODE_Init status: %d", Status);
     }
@@ -402,6 +410,14 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
         // Rebuild with system memory path
         Status = SetEncoderParams(InputParams, Codec);
         info("\tSetEncoderParams (sysmem) status: %d", Status);
+
+        if (Status >= MFX_ERR_NONE) {
+          Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
+          info("\tMFXVideoENCODE_Query (sysmem) status: %d", Status);
+          if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
+            Status = MFX_ERR_NONE;
+          }
+        }
 
         if (Status >= MFX_ERR_NONE) {
           Status = QSVEncode->Init(&QSVEncodeParams);
@@ -600,67 +616,10 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     }
 
     if (Status < MFX_ERR_NONE) {
-      warn("MFXVideoENCODE_Init failed after all retries (Status=%d), "
-           "retrying with fresh session", Status);
-
-      QSVEncode->Close();
-      QSVEncode = nullptr;
-
-      if (QSVProcessing) {
-        QSVProcessing->Close();
-        QSVProcessing = nullptr;
-      }
-
-      ReleaseTaskPool();
-      ReleaseBitstream();
-
-      if (QSVUseSystemMemoryPath) {
-        ReleaseSystemMemorySurfacePool();
-      }
-
-      if (QSVSession) {
-        MFXClose(QSVSession);
-        MFXDispReleaseImplDescription(QSVLoader, nullptr);
-        MFXUnload(QSVLoader);
-        QSVSession = nullptr;
-        QSVLoader = nullptr;
-      }
-
-      QSVEncodeParams = MFXVideoParam{};
-
-      try {
-        Status = CreateSession(Codec, nullptr, InputParams->GPUNum);
-        if (Status >= MFX_ERR_NONE) {
-          QSVEncode = std::make_unique<MFXVideoENCODE>(QSVSession);
-
-          if (QSVProcessingEnable) {
-            QSVProcessing = std::make_unique<MFXVideoVPP>(QSVSession);
-            Status = SetProcessingParams(InputParams, Codec);
-            if (Status >= MFX_ERR_NONE) {
-              Status = QSVProcessing->Init(&QSVProcessingParams);
-            }
-          }
-
-          if (Status >= MFX_ERR_NONE) {
-            Status = SetEncoderParams(InputParams, Codec);
-          }
-
-          if (Status >= MFX_ERR_NONE) {
-            QSVUseSystemMemoryPath = false;
-            Status = QSVEncode->Init(&QSVEncodeParams);
-            info("\tMFXVideoENCODE_Init (fresh session) status: %d", Status);
-          }
-        }
-      } catch (const std::exception &e) {
-        error("Fresh session retry error: %s", e.what());
-        Status = MFX_ERR_UNKNOWN;
-      }
-
-      if (Status < MFX_ERR_NONE) {
-        error("MFXVideoENCODE_Init failed after all retries (Status=%d)", Status);
-        throw std::runtime_error(
-            "Init(): MFXVideoENCODE_Init error after parameter retries");
-      }
+      error("MFXVideoENCODE_Init failed after all retries (Status=%d)",
+            Status);
+      throw std::runtime_error(
+          "Init(): MFXVideoENCODE_Init error after parameter retries");
     }
 
     Status = InitTexturePool();
@@ -674,6 +633,14 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     }
 #else
     Status = SetEncoderParams(InputParams, Codec);
+
+    if (Status >= MFX_ERR_NONE) {
+      Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
+      info("\tMFXVideoENCODE_Query status: %d", Status);
+      if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
+        Status = MFX_ERR_NONE;
+      }
+    }
 
     Status = QSVEncode->Init(&QSVEncodeParams);
     if (Status != MFX_ERR_NONE) {
@@ -901,61 +868,8 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     }
 
     if (Status < MFX_ERR_NONE) {
-      warn("MFXVideoENCODE_Init failed after parameter retries (Status=%d), "
-           "retrying with fresh session", Status);
-
-      QSVEncode->Close();
-      QSVEncode = nullptr;
-
-      if (QSVProcessing) {
-        QSVProcessing->Close();
-        QSVProcessing = nullptr;
-      }
-
-      ReleaseTaskPool();
-      ReleaseBitstream();
-
-      if (QSVSession) {
-        MFXClose(QSVSession);
-        MFXDispReleaseImplDescription(QSVLoader, nullptr);
-        MFXUnload(QSVLoader);
-        QSVSession = nullptr;
-        QSVLoader = nullptr;
-      }
-
-      QSVEncodeParams = MFXVideoParam{};
-
-      try {
-        Status = CreateSession(Codec, nullptr, InputParams->GPUNum);
-        if (Status >= MFX_ERR_NONE) {
-          QSVEncode = std::make_unique<MFXVideoENCODE>(QSVSession);
-
-          if (QSVProcessingEnable) {
-            QSVProcessing = std::make_unique<MFXVideoVPP>(QSVSession);
-            Status = SetProcessingParams(InputParams, Codec);
-            if (Status >= MFX_ERR_NONE) {
-              Status = QSVProcessing->Init(&QSVProcessingParams);
-            }
-          }
-
-          if (Status >= MFX_ERR_NONE) {
-            Status = SetEncoderParams(InputParams, Codec);
-          }
-
-          if (Status >= MFX_ERR_NONE) {
-            Status = QSVEncode->Init(&QSVEncodeParams);
-            info("\tMFXVideoENCODE_Init (fresh session) status: %d", Status);
-          }
-        }
-      } catch (const std::exception &e) {
-        error("Fresh session retry error: %s", e.what());
-        Status = MFX_ERR_UNKNOWN;
-      }
-
-      if (Status < MFX_ERR_NONE) {
-        error("MFXVideoENCODE_Init failed (Status=%d)", Status);
-        return Status;
-      }
+      error("MFXVideoENCODE_Init failed (Status=%d)", Status);
+      return Status;
     }
 
     Status = InitTexturePool();
@@ -1199,10 +1113,13 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       static_cast<mfxU32>(InputParams->FourCC);
 
   QSVEncodeParams.mfx.FrameInfo.BitDepthChroma =
-      InputParams->VideoFormat10bit ? 10 : 8;
+      InputParams->VideoFormat10bit ? 10 : 0;
 
   QSVEncodeParams.mfx.FrameInfo.BitDepthLuma =
-      InputParams->VideoFormat10bit ? 10 : 8;
+      InputParams->VideoFormat10bit ? 10 : 0;
+
+  QSVEncodeParams.mfx.FrameInfo.Shift =
+      InputParams->VideoFormat10bit ? 1 : 0;
 
   QSVEncodeParams.mfx.LowPower = GetCodingOpt(InputParams->Lowpower);
   info("\tLowpower set: %s",
@@ -1631,8 +1548,8 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CO3Params->Header.BufferSz = sizeof(mfxExtCodingOption3);
     info("\tmfxExtCodingOption3 sizeof: %zu, BufferSz: %d",
          sizeof(mfxExtCodingOption3), CO3Params->Header.BufferSz);
-    CO3Params->TargetBitDepthLuma = InputParams->VideoFormat10bit ? 10 : 8;
-    CO3Params->TargetBitDepthChroma = InputParams->VideoFormat10bit ? 10 : 8;
+    CO3Params->TargetBitDepthLuma = InputParams->VideoFormat10bit ? 10 : 0;
+    CO3Params->TargetBitDepthChroma = InputParams->VideoFormat10bit ? 10 : 0;
     CO3Params->TargetChromaFormatPlus1 =
         static_cast<mfxU16>(QSVEncodeParams.mfx.FrameInfo.ChromaFormat + 1);
     CO3Params->TransformSkip = GetCodingOpt(InputParams->TransformSkip);
