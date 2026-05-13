@@ -311,12 +311,10 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
          QSVEncodeParams.mfx.GopOptFlag,
          QSVEncodeParams.mfx.IdrInterval,
          QSVEncodeParams.mfx.NumSlice);
-    info("\tAsyncDepth: %d, IOPattern: 0x%04X, NumExtParam: %d, BRCParamMultiplier: %d, MaxSliceSize: %d, NumThread: %d",
+    info("\tAsyncDepth: %d, IOPattern: 0x%04X, NumExtParam: %d, BRCParamMultiplier: %d",
          QSVEncodeParams.AsyncDepth, QSVEncodeParams.IOPattern,
          QSVEncodeParams.NumExtParam,
-         QSVEncodeParams.mfx.BRCParamMultiplier,
-         QSVEncodeParams.mfx.MaxSliceSize,
-         QSVEncodeParams.mfx.NumThread);
+         QSVEncodeParams.mfx.BRCParamMultiplier);
     info("\tRC params: QPI=%d, QPP=%d, QPB=%d, ICQQuality=%d, TargetKbps=%d, MaxKbps=%d, BufferSizeInKB=%d, InitialDelayInKB=%d",
          QSVEncodeParams.mfx.QPI,
          QSVEncodeParams.mfx.QPP,
@@ -326,15 +324,7 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
          QSVEncodeParams.mfx.MaxKbps,
          QSVEncodeParams.mfx.BufferSizeInKB,
          QSVEncodeParams.mfx.InitialDelayInKB);
-    info("\tQP bounds: MinQpI=%d, MaxQpI=%d, MinQpP=%d, MaxQpP=%d, MinQpB=%d, MaxQpB=%d",
-         QSVEncodeParams.mfx.MinQpI,
-         QSVEncodeParams.mfx.MaxQpI,
-         QSVEncodeParams.mfx.MinQpP,
-         QSVEncodeParams.mfx.MaxQpP,
-         QSVEncodeParams.mfx.MinQpB,
-         QSVEncodeParams.mfx.MaxQpB);
-    info("\tBitrateLimit: %d, EncodedOrder: %d, DecodedOrder: %d",
-         QSVEncodeParams.mfx.BitrateLimit,
+    info("\tEncodedOrder: %d, DecodedOrder: %d",
          QSVEncodeParams.mfx.EncodedOrder,
          QSVEncodeParams.mfx.DecodedOrder);
     for (mfxU16 i = 0; i < QSVEncodeParams.NumExtParam; i++) {
@@ -724,12 +714,10 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
          QSVEncodeParams.mfx.GopOptFlag,
          QSVEncodeParams.mfx.IdrInterval,
          QSVEncodeParams.mfx.NumSlice);
-    info("\tAsyncDepth: %d, IOPattern: 0x%04X, NumExtParam: %d, BRCParamMultiplier: %d, MaxSliceSize: %d, NumThread: %d",
+    info("\tAsyncDepth: %d, IOPattern: 0x%04X, NumExtParam: %d, BRCParamMultiplier: %d",
          QSVEncodeParams.AsyncDepth, QSVEncodeParams.IOPattern,
          QSVEncodeParams.NumExtParam,
-         QSVEncodeParams.mfx.BRCParamMultiplier,
-         QSVEncodeParams.mfx.MaxSliceSize,
-         QSVEncodeParams.mfx.NumThread);
+         QSVEncodeParams.mfx.BRCParamMultiplier);
     info("\tRC params: QPI=%d, QPP=%d, QPB=%d, ICQQuality=%d, TargetKbps=%d, MaxKbps=%d, BufferSizeInKB=%d, InitialDelayInKB=%d",
          QSVEncodeParams.mfx.QPI,
          QSVEncodeParams.mfx.QPP,
@@ -739,15 +727,7 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
          QSVEncodeParams.mfx.MaxKbps,
          QSVEncodeParams.mfx.BufferSizeInKB,
          QSVEncodeParams.mfx.InitialDelayInKB);
-    info("\tQP bounds: MinQpI=%d, MaxQpI=%d, MinQpP=%d, MaxQpP=%d, MinQpB=%d, MaxQpB=%d",
-         QSVEncodeParams.mfx.MinQpI,
-         QSVEncodeParams.mfx.MaxQpI,
-         QSVEncodeParams.mfx.MinQpP,
-         QSVEncodeParams.mfx.MaxQpP,
-         QSVEncodeParams.mfx.MinQpB,
-         QSVEncodeParams.mfx.MaxQpB);
-    info("\tBitrateLimit: %d, EncodedOrder: %d, DecodedOrder: %d",
-         QSVEncodeParams.mfx.BitrateLimit,
+    info("\tEncodedOrder: %d, DecodedOrder: %d",
          QSVEncodeParams.mfx.EncodedOrder,
          QSVEncodeParams.mfx.DecodedOrder);
     for (mfxU16 i = 0; i < QSVEncodeParams.NumExtParam; i++) {
