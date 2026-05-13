@@ -412,18 +412,51 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
           if (Status < MFX_ERR_NONE) {
             auto TemporalLayers =
                 QSVEncodeParams.GetExtBuffer<mfxExtTemporalLayers>();
-            if (TemporalLayers && TemporalLayers->NumLayers > 0) {
-              warn("MFXVideoENCODE_Init (sysmem) failed with temporal layers=%d, "
-                   "retrying without temporal layers",
-                   TemporalLayers->NumLayers);
-              QSVEncode->Close();
-              delete[] QSVLayerArray;
-              QSVLayerArray = nullptr;
-              QSVEncodeParams.RemoveExtBuffer<mfxExtTemporalLayers>();
-              Status = QSVEncode->Init(&QSVEncodeParams);
-              info("\tMFXVideoENCODE_Init (sysmem) retry (TemporalLayers removed) "
-                   "status: %d",
-                   Status);
+            if (TemporalLayers && TemporalLayers->NumLayers > 1) {
+              mfxU16 origLayers = TemporalLayers->NumLayers;
+              for (mfxU16 tryLayers = origLayers - 1; tryLayers >= 1;
+                   tryLayers--) {
+                warn("MFXVideoENCODE_Init (sysmem) failed with temporal "
+                     "layers=%d, retrying with %d layers",
+                     origLayers, tryLayers);
+                QSVEncode->Close();
+                delete[] QSVLayerArray;
+                QSVLayerArray = new mfxTemporalLayer[tryLayers]();
+                for (mfxU16 i = 0; i < tryLayers; i++) {
+                  QSVLayerArray[i].FrameRateScale =
+                      1 << (tryLayers - 1 - i);
+                  QSVLayerArray[i].QPI = i * 2;
+                  QSVLayerArray[i].QPP = i * 2;
+                  QSVLayerArray[i].QPB = i * 2;
+                }
+                TemporalLayers->NumLayers = tryLayers;
+                TemporalLayers->Layers = QSVLayerArray;
+                Status = QSVEncode->Init(&QSVEncodeParams);
+                info("\tMFXVideoENCODE_Init (sysmem) retry "
+                     "(TemporalLayers=%d) status: %d",
+                     tryLayers, Status);
+                if (Status >= MFX_ERR_NONE) {
+                  InputParams->TemporalLayersNum = tryLayers;
+                  info("\tTemporalLayers downgraded to: %d", tryLayers);
+                  break;
+                }
+              }
+            }
+            if (Status < MFX_ERR_NONE) {
+              auto TemporalLayers =
+                  QSVEncodeParams.GetExtBuffer<mfxExtTemporalLayers>();
+              if (TemporalLayers && TemporalLayers->NumLayers > 0) {
+                warn("MFXVideoENCODE_Init (sysmem) failed with temporal "
+                     "layers, retrying without temporal layers");
+                QSVEncode->Close();
+                delete[] QSVLayerArray;
+                QSVLayerArray = nullptr;
+                QSVEncodeParams.RemoveExtBuffer<mfxExtTemporalLayers>();
+                Status = QSVEncode->Init(&QSVEncodeParams);
+                info("\tMFXVideoENCODE_Init (sysmem) retry (TemporalLayers "
+                     "removed) status: %d",
+                     Status);
+              }
             }
           }
           if (Status != MFX_ERR_NONE) {
@@ -508,17 +541,49 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     if (Status < MFX_ERR_NONE) {
       auto TemporalLayers =
           QSVEncodeParams.GetExtBuffer<mfxExtTemporalLayers>();
-      if (TemporalLayers && TemporalLayers->NumLayers > 0) {
-        warn("MFXVideoENCODE_Init failed with temporal layers=%d, "
-             "retrying without temporal layers",
-             TemporalLayers->NumLayers);
-        QSVEncode->Close();
-        delete[] QSVLayerArray;
-        QSVLayerArray = nullptr;
-        QSVEncodeParams.RemoveExtBuffer<mfxExtTemporalLayers>();
-        Status = QSVEncode->Init(&QSVEncodeParams);
-        info("\tMFXVideoENCODE_Init retry (TemporalLayers removed) status: %d",
-             Status);
+      if (TemporalLayers && TemporalLayers->NumLayers > 1) {
+        mfxU16 origLayers = TemporalLayers->NumLayers;
+        for (mfxU16 tryLayers = origLayers - 1; tryLayers >= 1;
+             tryLayers--) {
+          warn("MFXVideoENCODE_Init failed with temporal layers=%d, "
+               "retrying with %d layers",
+               origLayers, tryLayers);
+          QSVEncode->Close();
+          delete[] QSVLayerArray;
+          QSVLayerArray = new mfxTemporalLayer[tryLayers]();
+          for (mfxU16 i = 0; i < tryLayers; i++) {
+            QSVLayerArray[i].FrameRateScale =
+                1 << (tryLayers - 1 - i);
+            QSVLayerArray[i].QPI = i * 2;
+            QSVLayerArray[i].QPP = i * 2;
+            QSVLayerArray[i].QPB = i * 2;
+          }
+          TemporalLayers->NumLayers = tryLayers;
+          TemporalLayers->Layers = QSVLayerArray;
+          Status = QSVEncode->Init(&QSVEncodeParams);
+          info("\tMFXVideoENCODE_Init retry (TemporalLayers=%d) status: %d",
+               tryLayers, Status);
+          if (Status >= MFX_ERR_NONE) {
+            InputParams->TemporalLayersNum = tryLayers;
+            info("\tTemporalLayers downgraded to: %d", tryLayers);
+            break;
+          }
+        }
+      }
+      if (Status < MFX_ERR_NONE) {
+        auto TemporalLayers =
+            QSVEncodeParams.GetExtBuffer<mfxExtTemporalLayers>();
+        if (TemporalLayers && TemporalLayers->NumLayers > 0) {
+          warn("MFXVideoENCODE_Init failed with temporal layers, "
+               "retrying without temporal layers");
+          QSVEncode->Close();
+          delete[] QSVLayerArray;
+          QSVLayerArray = nullptr;
+          QSVEncodeParams.RemoveExtBuffer<mfxExtTemporalLayers>();
+          Status = QSVEncode->Init(&QSVEncodeParams);
+          info("\tMFXVideoENCODE_Init retry (TemporalLayers removed) status: %d",
+               Status);
+        }
       }
     }
 

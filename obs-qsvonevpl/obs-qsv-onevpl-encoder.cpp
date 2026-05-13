@@ -435,7 +435,44 @@ static size_t StripHEVCNALTemporalLayer(uint8_t *dst, const uint8_t *src,
        rbsp_out[10], rbsp_out[11], rbsp_out[12], rbsp_out[13], rbsp_out[14],
        rbsp_out[15]);
 
-  size_t remaining_bits = (rbsp_size - sl_byte) * 8 - (7 - sl_bit);
+  // After profile_tier_level, the remaining RBSP data starts with
+  // vps_sub_layer_ordering_info_present_flag, followed by
+  // (vps_max_sub_layers_minus1+1) groups of 3 ue(v) values.
+  // Since we set output max_sub_layers=0, the output must contain
+  // exactly 1 group. If source has flag=1 with multiple groups,
+  // we need to reduce to 1 group, otherwise the decoder misparses
+  // extra ue(v) values as vps_max_layer_id etc.
+  uint8_t ordering_flag =
+      hevc_read_bits(rbsp, rbsp_size, sl_byte, sl_bit, 1);
+  uint32_t num_src_entries =
+      ordering_flag ? (old_max_sublayers + 1) : 1;
+
+  // Read first ordering info entry (for sublayer 0) — always keep this one
+  uint32_t dpb0 =
+      hevc_read_uev(rbsp, rbsp_size, sl_byte, sl_bit);
+  uint32_t reorder0 =
+      hevc_read_uev(rbsp, rbsp_size, sl_byte, sl_bit);
+  uint32_t latency0 =
+      hevc_read_uev(rbsp, rbsp_size, sl_byte, sl_bit);
+
+  // Skip remaining entries (when flag=1, source has old_max_sublayers
+  // additional groups for sublayers 1..old_max_sublayers)
+  for (uint32_t e = 1; e < num_src_entries; e++) {
+    hevc_read_uev(rbsp, rbsp_size, sl_byte, sl_bit);
+    hevc_read_uev(rbsp, rbsp_size, sl_byte, sl_bit);
+    hevc_read_uev(rbsp, rbsp_size, sl_byte, sl_bit);
+  }
+
+  // Write vps_sub_layer_ordering_info_present_flag = 0 (only 1 entry,
+  // since max_sub_layers=0 it doesn't matter which sublayer it belongs to)
+  hevc_write_bits(rbsp_out, out_byte, out_bit, 0, 1);
+  hevc_write_uev(rbsp_out, out_byte, out_bit, dpb0);
+  hevc_write_uev(rbsp_out, out_byte, out_bit, reorder0);
+  hevc_write_uev(rbsp_out, out_byte, out_bit, latency0);
+
+  // Copy remaining bits (vps_max_layer_id, layer sets, extension, trailing)
+  size_t remaining_bits =
+      (rbsp_size - sl_byte) * 8 - (7 - sl_bit);
 
   for (size_t i = 0; i < remaining_bits; i++) {
     uint8_t bit = hevc_read_bits(rbsp, rbsp_size, sl_byte, sl_bit, 1);
