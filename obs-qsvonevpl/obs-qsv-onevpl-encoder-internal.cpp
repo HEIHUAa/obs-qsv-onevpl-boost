@@ -600,9 +600,67 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     }
 
     if (Status < MFX_ERR_NONE) {
-      error("MFXVideoENCODE_Init failed after all retries (Status=%d)", Status);
-      throw std::runtime_error(
-          "Init(): MFXVideoENCODE_Init error after parameter retries");
+      warn("MFXVideoENCODE_Init failed after all retries (Status=%d), "
+           "retrying with fresh session", Status);
+
+      QSVEncode->Close();
+      QSVEncode = nullptr;
+
+      if (QSVProcessing) {
+        QSVProcessing->Close();
+        QSVProcessing = nullptr;
+      }
+
+      ReleaseTaskPool();
+      ReleaseBitstream();
+
+      if (QSVUseSystemMemoryPath) {
+        ReleaseSystemMemorySurfacePool();
+      }
+
+      if (QSVSession) {
+        MFXClose(QSVSession);
+        MFXDispReleaseImplDescription(QSVLoader, nullptr);
+        MFXUnload(QSVLoader);
+        QSVSession = nullptr;
+        QSVLoader = nullptr;
+      }
+
+      QSVEncodeParams = MFXVideoParam{};
+
+      try {
+        Status = CreateSession(Codec, nullptr, InputParams->GPUNum);
+        if (Status >= MFX_ERR_NONE) {
+          QSVEncode = std::make_unique<MFXVideoENCODE>(QSVSession);
+
+          if (QSVProcessingEnable) {
+            QSVProcessing = std::make_unique<MFXVideoVPP>(QSVSession);
+            Status = SetProcessingParams(InputParams, Codec);
+            if (Status >= MFX_ERR_NONE) {
+              Status = QSVProcessing->Init(&QSVProcessingParams);
+            }
+          }
+
+          if (Status >= MFX_ERR_NONE) {
+            Status = SetEncoderParams(InputParams, Codec);
+          }
+
+          if (Status >= MFX_ERR_NONE) {
+            QSVUseSystemMemoryPath = false;
+            Status = QSVEncode->Init(&QSVEncodeParams);
+            info("\tMFXVideoENCODE_Init (fresh session) status: %d", Status);
+          }
+        }
+      } catch (const std::exception &e) {
+        error("Fresh session retry error: %s", e.what());
+        Status = MFX_ERR_UNKNOWN;
+      }
+
+      if (Status < MFX_ERR_NONE) {
+        error("MFXVideoENCODE_Init failed after all retries (Status=%d)", Status);
+        throw std::runtime_error(
+            "Init(): MFXVideoENCODE_Init error after parameter retries");
+      }
     }
 
     Status = InitTexturePool();
@@ -843,8 +901,61 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     }
 
     if (Status < MFX_ERR_NONE) {
-      error("MFXVideoENCODE_Init failed (Status=%d)", Status);
-      return Status;
+      warn("MFXVideoENCODE_Init failed after parameter retries (Status=%d), "
+           "retrying with fresh session", Status);
+
+      QSVEncode->Close();
+      QSVEncode = nullptr;
+
+      if (QSVProcessing) {
+        QSVProcessing->Close();
+        QSVProcessing = nullptr;
+      }
+
+      ReleaseTaskPool();
+      ReleaseBitstream();
+
+      if (QSVSession) {
+        MFXClose(QSVSession);
+        MFXDispReleaseImplDescription(QSVLoader, nullptr);
+        MFXUnload(QSVLoader);
+        QSVSession = nullptr;
+        QSVLoader = nullptr;
+      }
+
+      QSVEncodeParams = MFXVideoParam{};
+
+      try {
+        Status = CreateSession(Codec, nullptr, InputParams->GPUNum);
+        if (Status >= MFX_ERR_NONE) {
+          QSVEncode = std::make_unique<MFXVideoENCODE>(QSVSession);
+
+          if (QSVProcessingEnable) {
+            QSVProcessing = std::make_unique<MFXVideoVPP>(QSVSession);
+            Status = SetProcessingParams(InputParams, Codec);
+            if (Status >= MFX_ERR_NONE) {
+              Status = QSVProcessing->Init(&QSVProcessingParams);
+            }
+          }
+
+          if (Status >= MFX_ERR_NONE) {
+            Status = SetEncoderParams(InputParams, Codec);
+          }
+
+          if (Status >= MFX_ERR_NONE) {
+            Status = QSVEncode->Init(&QSVEncodeParams);
+            info("\tMFXVideoENCODE_Init (fresh session) status: %d", Status);
+          }
+        }
+      } catch (const std::exception &e) {
+        error("Fresh session retry error: %s", e.what());
+        Status = MFX_ERR_UNKNOWN;
+      }
+
+      if (Status < MFX_ERR_NONE) {
+        error("MFXVideoENCODE_Init failed (Status=%d)", Status);
+        return Status;
+      }
     }
 
     Status = InitTexturePool();
