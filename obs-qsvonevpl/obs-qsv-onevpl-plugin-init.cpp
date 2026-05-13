@@ -1407,6 +1407,10 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   if (std::strcmp(ExtBRCData, "ON") == 0) {
     Context->EncoderParams.ExtBRC = 1;
   }
+  if (std::strcmp(RateControlData, "CQP") == 0 ||
+      std::strcmp(RateControlData, "ICQ") == 0) {
+    Context->EncoderParams.ExtBRC = 0;
+  }
 
   if (std::strcmp(EncToolsData, "ON") == 0) {
     Context->EncoderParams.EncTools = true;
