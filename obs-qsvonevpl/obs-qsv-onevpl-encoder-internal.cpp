@@ -341,6 +341,7 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
       } else {
         info("\tExtBuf[%d]: NULL", i);
       }
+    }
 
     if (Status < MFX_ERR_NONE) {
       error("MFXVideoENCODE_Init failed (Status=%d)", Status);
