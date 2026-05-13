@@ -106,6 +106,12 @@ struct plugin_context {
 
 #define TEXT_TEMPORAL_LAYERS obs_module_text("TemporalLayers")
 
+#define TEXT_SEPARATE_IPB_QP obs_module_text("SeparateIPBQP")
+#define TEXT_CQP obs_module_text("CQP")
+#define TEXT_QPI obs_module_text("QPI")
+#define TEXT_QPP obs_module_text("QPP")
+#define TEXT_QPB obs_module_text("QPB")
+
 #define TEXT_ENC_TOOLS_DESC obs_module_text("EncTools.Tooltip")
 #define TEXT_TUNE_QUALITY_DESC obs_module_text("TuneQuality.Tooltip")
 #define TEXT_HEVC_GPB_DESC obs_module_text("HEVCGPB.Tooltip")

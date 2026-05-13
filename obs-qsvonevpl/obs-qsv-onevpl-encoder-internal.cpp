@@ -799,8 +799,15 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   QSVEncodeParams.mfx.CodecProfile =
       static_cast<mfxU16>(InputParams->CodecProfile);
   if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
-    QSVEncodeParams.mfx.CodecProfile |=
-        (InputParams->CodecProfileTier << 8);
+    mfxU16 combinedProfile = QSVEncodeParams.mfx.CodecProfile |
+                             (InputParams->CodecProfileTier << 8);
+    info("\tHEVC combined profile: base=0x%04X, tier=%d (shifted=0x%04X), "
+         "result=0x%04X",
+         QSVEncodeParams.mfx.CodecProfile,
+         InputParams->CodecProfileTier,
+         InputParams->CodecProfileTier << 8,
+         combinedProfile);
+    QSVEncodeParams.mfx.CodecProfile = combinedProfile;
   }
   info("\tCodecProfile: %d (tier %s)", QSVEncodeParams.mfx.CodecProfile,
        InputParams->CodecProfileTier == MFX_TIER_HEVC_HIGH ? "high" : "main");

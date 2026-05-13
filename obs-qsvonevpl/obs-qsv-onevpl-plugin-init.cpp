@@ -552,18 +552,18 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 
   obs_properties_add_int_slider(Props, "icq_quality", TEXT_ICQ_QUALITY, 1, 51, 1);
 
-  obs_properties_add_int_slider(Props, "cqp", "CQP", 1,
-                         Codec == QSV_CODEC_AV1 ? 63 : 51, 1);
-
   Prop = obs_properties_add_bool(Props, "cqp_separate_ipb",
-                                 "Separate I/P/B QP");
+                                 TEXT_SEPARATE_IPB_QP);
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
-  obs_properties_add_int_slider(Props, "qpi", "QPI", 1,
+  obs_properties_add_int_slider(Props, "qpi", TEXT_QPI, 1,
                          Codec == QSV_CODEC_AV1 ? 63 : 51, 1);
-  obs_properties_add_int_slider(Props, "qpp", "QPP", 1,
+  obs_properties_add_int_slider(Props, "qpp", TEXT_QPP, 1,
                          Codec == QSV_CODEC_AV1 ? 63 : 51, 1);
-  obs_properties_add_int_slider(Props, "qpb", "QPB", 1,
+  obs_properties_add_int_slider(Props, "qpb", TEXT_QPB, 1,
+                         Codec == QSV_CODEC_AV1 ? 63 : 51, 1);
+
+  obs_properties_add_int_slider(Props, "cqp", TEXT_CQP, 1,
                          Codec == QSV_CODEC_AV1 ? 63 : 51, 1);
 
   // ── Bitrate ─────────────────────────────────────────────────
@@ -1198,16 +1198,20 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     }
 
     if (std::strcmp(CodecProfileTierData, "main") == 0) {
+      info("\tHEVC tier: user selected 'main', setting MFX_TIER_HEVC_MAIN");
       Context->EncoderParams.CodecProfileTier = MFX_TIER_HEVC_MAIN;
     } else {
       mfxU16 platformCode = QueryPlatformCodeName();
+      info("\tHEVC tier: user selected '%s', platformCode=0x%04X",
+           CodecProfileTierData, platformCode);
       bool highTierUnsupported = platformCode != 0 &&
                                  platformCode < MFX_PLATFORM_TIGERLAKE;
       if (highTierUnsupported) {
-        info("\tHEVC High Tier not supported on this GPU, "
-             "falling back to Main Tier");
+        info("\tHEVC High Tier not supported on this GPU "
+             "(platform < TigerLake), falling back to Main Tier");
         Context->EncoderParams.CodecProfileTier = MFX_TIER_HEVC_MAIN;
       } else {
+        info("\tHEVC High Tier supported, setting MFX_TIER_HEVC_HIGH");
         Context->EncoderParams.CodecProfileTier = MFX_TIER_HEVC_HIGH;
       }
     }
