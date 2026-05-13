@@ -744,7 +744,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
           info("\tExtBuf[%d]: NULL", i);
         }
       }
-    }
 
     if (Status < MFX_ERR_NONE) {
       auto COParams =
