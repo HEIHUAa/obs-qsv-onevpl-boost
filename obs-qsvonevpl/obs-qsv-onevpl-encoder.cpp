@@ -57,7 +57,11 @@ bool OpenEncoder(std::unique_ptr<QSVEncoder> &EncoderPTR,
     }
 
     EncoderPTR->GetVPLVersion(VPLVersion);
-    EncoderPTR->Init(EncoderParams, Codec, IsTextureEncoder);
+    if (EncoderPTR->Init(EncoderParams, Codec, IsTextureEncoder) < MFX_ERR_NONE) {
+      error("QSV encoder init failed");
+      IsActive.store(false);
+      return false;
+    }
 
     IsActive.store(true);
 

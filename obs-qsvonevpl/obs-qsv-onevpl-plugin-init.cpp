@@ -263,10 +263,11 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   obs_property_set_visible(Prop, !bVisible);
 
   bVisible = bIsCQP;
-  bool separateIPB = obs_data_get_bool(Settings, "cqp_separate_ipb");
   Prop = obs_properties_get(Properties, "cqp_separate_ipb");
   if (Prop)
     obs_property_set_visible(Prop, bVisible);
+
+  bool separateIPB = obs_data_get_bool(Settings, "cqp_separate_ipb");
   Prop = obs_properties_get(Properties, "qpi");
   if (Prop)
     obs_property_set_visible(Prop, bVisible && separateIPB);
@@ -1884,8 +1885,14 @@ plugin_context *InitPluginContext(enum codec_enum Codec, obs_data_t *Settings,
   try {
 
     std::lock_guard<std::mutex> lock(Mutex);
-    OpenEncoder(Context->EncoderPTR, &Context->EncoderParams, Context->Codec,
-                IsTextureEncoder);
+    if (!OpenEncoder(Context->EncoderPTR, &Context->EncoderParams,
+                     Context->Codec, IsTextureEncoder)) {
+      blog(LOG_WARNING, "QSV failed to init encoder.");
+
+      delete Context;
+
+      return nullptr;
+    }
 
     GetEncoderVersion(&VPLVersionMajor, &VPLVersionMinor);
 
