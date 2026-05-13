@@ -285,12 +285,16 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   Prop = obs_properties_get(Properties, "icq_quality");
   obs_property_set_visible(Prop, bVisible);
 
-  bVisible = (bIsCBR || bIsVBR || bIsAVBR || bIsVCM || bIsQVBR);
+  bool bExtBRCVisible = (bIsCBR || bIsVBR || bIsAVBR || bIsVCM || bIsQVBR);
   Prop = obs_properties_get(Properties, "enctools");
+  bVisible = bExtBRCVisible;
   if (bVisible) bVisible = IsFeatureSupported("enc_tools");
   obs_property_set_visible(Prop, bVisible);
   Prop = obs_properties_get(Properties, "extbrc");
-  obs_property_set_visible(Prop, bVisible);
+  obs_property_set_visible(Prop, bExtBRCVisible);
+  if (!bExtBRCVisible) {
+    obs_data_set_string(Settings, "extbrc", "OFF");
+  }
 
   bVisible = (bIsCBR || bIsVBR || bIsAVBR || bIsVCM || bIsQVBR) &&
              IsFeatureSupported("win_brc");
