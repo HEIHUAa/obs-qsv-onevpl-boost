@@ -1825,13 +1825,14 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
 
   if (Context->EncoderParams.RateControl == MFX_RATECONTROL_CQP) {
     bool CQPSeparateIPB = obs_data_get_bool(Settings, "cqp_separate_ipb");
-    if (CQPSeparateIPB)
+    if (CQPSeparateIPB) {
       info("\tQPI: %d, QPP: %d, QPB: %d",
            Context->EncoderParams.QPI,
            Context->EncoderParams.QPP,
            Context->EncoderParams.QPB);
-    else
+    } else {
       info("\tCQP: %d", ActualCQPData);
+    }
   }
 
   info("\tFPS numerator: %d", VOI->fps_num);
