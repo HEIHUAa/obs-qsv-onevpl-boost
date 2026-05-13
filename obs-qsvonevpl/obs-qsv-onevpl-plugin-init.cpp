@@ -923,7 +923,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
       Prop, TEXT_CONTENT_INFO_DESC);
 
   Prop = obs_properties_add_int_slider(Props, "temporal_layers",
-                                       TEXT_TEMPORAL_LAYERS, 0, 4, 1);
+                                       TEXT_TEMPORAL_LAYERS, 0, 8, 1);
 
   Prop = obs_properties_add_int(Props, "gpu_number", TEXT_GPU_NUMBER, 0, 4, 1);
   obs_property_set_long_description(

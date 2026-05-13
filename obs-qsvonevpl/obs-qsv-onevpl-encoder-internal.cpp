@@ -414,11 +414,14 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
                 QSVEncodeParams.GetExtBuffer<mfxExtTemporalLayers>();
             if (TemporalLayers && TemporalLayers->NumLayers > 1) {
               mfxU16 origLayers = TemporalLayers->NumLayers;
+              info("\tCurrent GopRefDist=%d, temporal layers=%d requires GopRefDist>=%d",
+                   QSVEncodeParams.mfx.GopRefDist, origLayers,
+                   1 << (origLayers - 1));
               for (mfxU16 tryLayers = origLayers - 1; tryLayers >= 1;
                    tryLayers--) {
                 warn("MFXVideoENCODE_Init (sysmem) failed with temporal "
-                     "layers=%d, retrying with %d layers",
-                     origLayers, tryLayers);
+                     "layers=%d, retrying with %d layers (requires GopRefDist>=%d)",
+                     origLayers, tryLayers, 1 << (tryLayers - 1));
                 QSVEncode->Close();
                 delete[] QSVLayerArray;
                 QSVLayerArray = new mfxTemporalLayer[tryLayers]();
@@ -543,11 +546,14 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
           QSVEncodeParams.GetExtBuffer<mfxExtTemporalLayers>();
       if (TemporalLayers && TemporalLayers->NumLayers > 1) {
         mfxU16 origLayers = TemporalLayers->NumLayers;
+        info("\tCurrent GopRefDist=%d, temporal layers=%d requires GopRefDist>=%d",
+             QSVEncodeParams.mfx.GopRefDist, origLayers,
+             1 << (origLayers - 1));
         for (mfxU16 tryLayers = origLayers - 1; tryLayers >= 1;
              tryLayers--) {
           warn("MFXVideoENCODE_Init failed with temporal layers=%d, "
-               "retrying with %d layers",
-               origLayers, tryLayers);
+               "retrying with %d layers (requires GopRefDist>=%d)",
+               origLayers, tryLayers, 1 << (tryLayers - 1));
           QSVEncode->Close();
           delete[] QSVLayerArray;
           QSVLayerArray = new mfxTemporalLayer[tryLayers]();
@@ -1773,9 +1779,14 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   if (InputParams->TemporalLayersNum > 1) {
     mfxU16 MinGopRefDist = 1 << (InputParams->TemporalLayersNum - 1);
     if (QSVEncodeParams.mfx.GopRefDist < MinGopRefDist) {
-      info("\tGopRefDist adjusted from %d to %d for temporal layers",
-           QSVEncodeParams.mfx.GopRefDist, MinGopRefDist);
+      info("\tGopRefDist adjusted from %d to %d for temporal layers (%d layers req GopRefDist>=%d)",
+           QSVEncodeParams.mfx.GopRefDist, MinGopRefDist,
+           InputParams->TemporalLayersNum, MinGopRefDist);
       QSVEncodeParams.mfx.GopRefDist = MinGopRefDist;
+    } else {
+      info("\tGopRefDist=%d is sufficient for temporal layers=%d (requires GopRefDist>=%d)",
+           QSVEncodeParams.mfx.GopRefDist,
+           InputParams->TemporalLayersNum, MinGopRefDist);
     }
 
     auto TemporalLayersParams =
