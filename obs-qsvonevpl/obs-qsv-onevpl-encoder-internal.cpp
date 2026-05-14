@@ -296,7 +296,7 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
          QSVEncodeParams.mfx.TargetUsage,
          QSVEncodeParams.mfx.RateControlMethod,
          QSVEncodeParams.mfx.LowPower);
-    info("\tFrameInfo: crop %d,%d %dx%d, Aligned: %dx%d, FourCC: 0x%04X, ChromaFormat: %d, PicStruct: %d, Aspect: %dx%d, BitDepth: %d/%d",
+    info("\tFrameInfo: crop %d,%d %dx%d, Aligned: %dx%d, FourCC: 0x%04X, ChromaFormat: %d, PicStruct: %d, Aspect: %dx%d, BitDepth: %d",
          QSVEncodeParams.mfx.FrameInfo.CropX,
          QSVEncodeParams.mfx.FrameInfo.CropY,
          QSVEncodeParams.mfx.FrameInfo.CropW,
@@ -716,7 +716,7 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
          QSVEncodeParams.mfx.TargetUsage,
          QSVEncodeParams.mfx.RateControlMethod,
          QSVEncodeParams.mfx.LowPower);
-    info("\tFrameInfo: crop %d,%d %dx%d, Aligned: %dx%d, FourCC: 0x%04X, ChromaFormat: %d, PicStruct: %d, Aspect: %dx%d, BitDepth: %d/%d",
+    info("\tFrameInfo: crop %d,%d %dx%d, Aligned: %dx%d, FourCC: 0x%04X, ChromaFormat: %d, PicStruct: %d, Aspect: %dx%d, BitDepth: %d",
          QSVEncodeParams.mfx.FrameInfo.CropX,
          QSVEncodeParams.mfx.FrameInfo.CropY,
          QSVEncodeParams.mfx.FrameInfo.CropW,
@@ -871,6 +871,8 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
       error("MFXVideoENCODE_Init failed (Status=%d)", Status);
       return Status;
     }
+
+    QSVEncodeParams.mfx.FrameInfo.BitDepthChroma = 8;
 
     Status = InitTexturePool();
     info("\tInitTexturePool status:   %d", Status);
