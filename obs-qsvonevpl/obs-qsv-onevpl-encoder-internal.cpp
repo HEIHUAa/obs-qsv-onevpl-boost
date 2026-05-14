@@ -2131,10 +2131,11 @@ void QSVEncoder::LogActualParams() {
          QSVEncodeParams.mfx.BRCParamMultiplier);
   }
 
-  if (QSVEncodeParams.mfx.GopOptFlag & MFX_GOP_STRICT)
+  if (QSVEncodeParams.mfx.GopOptFlag & MFX_GOP_STRICT) {
     info("\tGopOptFlag set: STRICT");
-  else if (QSVEncodeParams.mfx.GopOptFlag & MFX_GOP_CLOSED)
+  } else if (QSVEncodeParams.mfx.GopOptFlag & MFX_GOP_CLOSED) {
     info("\tGopOptFlag set: CLOSED");
+  }
 
   auto *CO2 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
   if (CO2) {
