@@ -1857,6 +1857,7 @@ plugin_context *InitPluginContext(enum codec_enum Codec, obs_data_t *Settings,
   case VIDEO_FORMAT_I010:
   case VIDEO_FORMAT_P010:
     Context->EncoderParams.VideoFormat10bit = true;
+    info("\tVideoFormat10bit: true");
     break;
   default:
     if (VOI->colorspace == VIDEO_CS_2100_PQ ||
