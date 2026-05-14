@@ -221,7 +221,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
       info("\tMFXVideoENCODE_Init status: %d", Status);
     }
 
-    // Original retry: only ScenarioInfo
     if (Status < MFX_ERR_NONE) {
       auto CO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
       if (CO3Params && CO3Params->ScenarioInfo != 0) {
@@ -282,14 +281,9 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
           info("\tMFXVideoENCODE_Init (sysmem) status: %d", Status);
         }
 
-        // Extended retry logic for system memory path
         if (Status < MFX_ERR_NONE) {
-          mfxU16 origNumRefFrame = QSVEncodeParams.mfx.NumRefFrame;
-          mfxU16 origGopRefDist = QSVEncodeParams.mfx.GopRefDist;
-
           auto CO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-          if (Status != MFX_ERR_NONE && CO3Params &&
-              CO3Params->ScenarioInfo != 0) {
+          if (CO3Params && CO3Params->ScenarioInfo != 0) {
             warn("MFXVideoENCODE_Init (sysmem) failed with ScenarioInfo=%d, retrying",
                  CO3Params->ScenarioInfo);
             QSVEncode->Close();
@@ -299,161 +293,12 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
             info("\tMFXVideoENCODE_Init (sysmem) retry (ScenarioInfo) status: %d",
                  Status);
           }
+        }
 
-          auto CODDIParams =
-              QSVEncodeParams.GetExtBuffer<mfxExtCodingOptionDDI>();
-          if (Status != MFX_ERR_NONE && CODDIParams) {
-            warn("MFXVideoENCODE_Init (sysmem) failed, retrying without CODDI");
-            QSVEncode->Close();
-            QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOptionDDI>();
-
-            Status = QSVEncode->Init(&QSVEncodeParams);
-            info("\tMFXVideoENCODE_Init (sysmem) retry (CODDI removed) status: %d",
-                 Status);
-          }
-          if (Status != MFX_ERR_NONE && origNumRefFrame > 4) {
-            warn("MFXVideoENCODE_Init (sysmem) failed, retrying with NumRefFrame=4");
-            QSVEncode->Close();
-            QSVEncodeParams.mfx.NumRefFrame = 4;
-
-            auto COParams =
-                QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
-            if (COParams) {
-              COParams->MaxDecFrameBuffering = 4;
-            }
-            Status = QSVEncode->Init(&QSVEncodeParams);
-            info("\tMFXVideoENCODE_Init (sysmem) retry (NumRefFrame=4) status: %d",
-                 Status);
-          }
-          if (Status != MFX_ERR_NONE && origGopRefDist > 4) {
-            warn("MFXVideoENCODE_Init (sysmem) failed, retrying with GOPRefDist=4");
-            QSVEncode->Close();
-            QSVEncodeParams.mfx.GopRefDist = 4;
-
-            Status = QSVEncode->Init(&QSVEncodeParams);
-            info("\tMFXVideoENCODE_Init (sysmem) retry (GOPRefDist=4) status: %d",
-                 Status);
-          }
-          if (Status != MFX_ERR_NONE && CO3Params) {
-            warn("MFXVideoENCODE_Init (sysmem) failed, retrying with CO3 minimal");
-            QSVEncode->Close();
-            CO3Params->TransformSkip = MFX_CODINGOPTION_OFF;
-            CO3Params->FadeDetection = MFX_CODINGOPTION_OFF;
-            CO3Params->LowDelayHrd = MFX_CODINGOPTION_OFF;
-            CO3Params->AdaptiveCQM = MFX_CODINGOPTION_OFF;
-            CO3Params->AdaptiveRef = MFX_CODINGOPTION_OFF;
-            CO3Params->AdaptiveLTR = MFX_CODINGOPTION_OFF;
-            CO3Params->MotionVectorsOverPicBoundaries = MFX_CODINGOPTION_OFF;
-            CO3Params->DirectBiasAdjustment = MFX_CODINGOPTION_OFF;
-            CO3Params->GlobalMotionBiasAdjustment = MFX_CODINGOPTION_OFF;
-            CO3Params->EnableMBForceIntra = MFX_CODINGOPTION_OFF;
-            CO3Params->MBDisableSkipMap = MFX_CODINGOPTION_OFF;
-            CO3Params->EnableQPOffset = MFX_CODINGOPTION_OFF;
-            CO3Params->RepartitionCheckEnable = MFX_CODINGOPTION_OFF;
-            if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
-              CO3Params->GPB = MFX_CODINGOPTION_OFF;
-            }
-
-            Status = QSVEncode->Init(&QSVEncodeParams);
-            info("\tMFXVideoENCODE_Init (sysmem) retry (CO3 minimal) status: %d",
-                 Status);
-          }
-          auto CO2Params =
-              QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
-          if (Status != MFX_ERR_NONE && CO2Params) {
-            warn("MFXVideoENCODE_Init (sysmem) failed, retrying without CO2");
-            QSVEncode->Close();
-            QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOption2>();
-
-            Status = QSVEncode->Init(&QSVEncodeParams);
-            info("\tMFXVideoENCODE_Init (sysmem) retry (CO2 removed) status: %d",
-                 Status);
-          }
-          if (Status != MFX_ERR_NONE && CO3Params) {
-            warn("MFXVideoENCODE_Init (sysmem) failed, retrying without CO3");
-            QSVEncode->Close();
-            QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOption3>();
-
-            Status = QSVEncode->Init(&QSVEncodeParams);
-            info("\tMFXVideoENCODE_Init (sysmem) retry (CO3 removed) status: %d",
-                 Status);
-          }
-          if (Status < MFX_ERR_NONE) {
-            auto TemporalLayers =
-                QSVEncodeParams.GetExtBuffer<mfxExtTemporalLayers>();
-            if (TemporalLayers && TemporalLayers->NumLayers > 1) {
-              mfxU16 origLayers = TemporalLayers->NumLayers;
-              info("\tCurrent GopRefDist=%d, temporal layers=%d requires GopRefDist>=%d",
-                   QSVEncodeParams.mfx.GopRefDist, origLayers,
-                   1 << (origLayers - 1));
-              for (mfxU16 tryLayers = origLayers - 1; tryLayers >= 1;
-                   tryLayers--) {
-                warn("MFXVideoENCODE_Init (sysmem) failed with temporal "
-                     "layers=%d, retrying with %d layers (requires GopRefDist>=%d)",
-                     origLayers, tryLayers, 1 << (tryLayers - 1));
-                QSVEncode->Close();
-                delete[] QSVLayerArray;
-                QSVLayerArray = new mfxTemporalLayer[tryLayers]();
-                for (mfxU16 i = 0; i < tryLayers; i++) {
-                  QSVLayerArray[i].FrameRateScale =
-                      1 << (tryLayers - 1 - i);
-                  QSVLayerArray[i].QPI = i * 2;
-                  QSVLayerArray[i].QPP = i * 2;
-                  QSVLayerArray[i].QPB = i * 2;
-                }
-                TemporalLayers->NumLayers = tryLayers;
-                TemporalLayers->Layers = QSVLayerArray;
-
-                Status = QSVEncode->Init(&QSVEncodeParams);
-                info("\tMFXVideoENCODE_Init (sysmem) retry "
-                     "(TemporalLayers=%d) status: %d",
-                     tryLayers, Status);
-                if (Status >= MFX_ERR_NONE) {
-                  InputParams->TemporalLayersNum = tryLayers;
-                  info("\tTemporalLayers downgraded to: %d", tryLayers);
-                  break;
-                }
-              }
-            }
-            if (Status < MFX_ERR_NONE) {
-              auto TemporalLayers =
-                  QSVEncodeParams.GetExtBuffer<mfxExtTemporalLayers>();
-              if (TemporalLayers && TemporalLayers->NumLayers > 0) {
-                warn("MFXVideoENCODE_Init (sysmem) failed with temporal "
-                     "layers, retrying without temporal layers");
-                QSVEncode->Close();
-                delete[] QSVLayerArray;
-                QSVLayerArray = nullptr;
-                QSVEncodeParams.RemoveExtBuffer<mfxExtTemporalLayers>();
-
-                Status = QSVEncode->Init(&QSVEncodeParams);
-                info("\tMFXVideoENCODE_Init (sysmem) retry (TemporalLayers "
-                     "removed) status: %d",
-                     Status);
-              }
-            }
-          }
-          if (Status != MFX_ERR_NONE) {
-            auto COParams =
-                QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
-            if (COParams) {
-              warn("MFXVideoENCODE_Init (sysmem) failed, retrying with CO basic");
-              QSVEncode->Close();
-              COParams->IntraPredBlockSize = MFX_BLOCKSIZE_UNKNOWN;
-              COParams->InterPredBlockSize = MFX_BLOCKSIZE_UNKNOWN;
-              COParams->MECostType = 0;
-              COParams->MESearchType = 0;
-
-              Status = QSVEncode->Init(&QSVEncodeParams);
-              info("\tMFXVideoENCODE_Init (sysmem) retry (CO basic) status: %d",
-                   Status);
-            }
-          }
-          if (Status < MFX_ERR_NONE) {
-            error("MFXVideoENCODE_Init (sysmem) failed after all retries (Status=%d)", Status);
-            throw std::runtime_error(
-                "Init(): MFXVideoENCODE_Init error after parameter retries");
-          }
+        if (Status < MFX_ERR_NONE) {
+          error("MFXVideoENCODE_Init (sysmem) failed after all retries (Status=%d)", Status);
+          throw std::runtime_error(
+              "Init(): MFXVideoENCODE_Init error after parameter retries");
         }
       }
     }
@@ -503,54 +348,17 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     if (Status < MFX_ERR_NONE) {
       auto TemporalLayers =
           QSVEncodeParams.GetExtBuffer<mfxExtTemporalLayers>();
-      if (TemporalLayers && TemporalLayers->NumLayers > 1) {
-        mfxU16 origLayers = TemporalLayers->NumLayers;
-        info("\tCurrent GopRefDist=%d, temporal layers=%d requires GopRefDist>=%d",
-             QSVEncodeParams.mfx.GopRefDist, origLayers,
-             1 << (origLayers - 1));
-        for (mfxU16 tryLayers = origLayers - 1; tryLayers >= 1;
-             tryLayers--) {
-          warn("MFXVideoENCODE_Init failed with temporal layers=%d, "
-               "retrying with %d layers (requires GopRefDist>=%d)",
-               origLayers, tryLayers, 1 << (tryLayers - 1));
-          QSVEncode->Close();
-          delete[] QSVLayerArray;
-          QSVLayerArray = new mfxTemporalLayer[tryLayers]();
-          for (mfxU16 i = 0; i < tryLayers; i++) {
-            QSVLayerArray[i].FrameRateScale =
-                1 << (tryLayers - 1 - i);
-            QSVLayerArray[i].QPI = i * 2;
-            QSVLayerArray[i].QPP = i * 2;
-            QSVLayerArray[i].QPB = i * 2;
-          }
-          TemporalLayers->NumLayers = tryLayers;
-          TemporalLayers->Layers = QSVLayerArray;
+      if (TemporalLayers && TemporalLayers->NumLayers > 0) {
+        warn("MFXVideoENCODE_Init failed with temporal layers, "
+             "retrying without temporal layers");
+        QSVEncode->Close();
+        delete[] QSVLayerArray;
+        QSVLayerArray = nullptr;
+        QSVEncodeParams.RemoveExtBuffer<mfxExtTemporalLayers>();
 
-          Status = QSVEncode->Init(&QSVEncodeParams);
-          info("\tMFXVideoENCODE_Init retry (TemporalLayers=%d) status: %d",
-               tryLayers, Status);
-          if (Status >= MFX_ERR_NONE) {
-            InputParams->TemporalLayersNum = tryLayers;
-            info("\tTemporalLayers downgraded to: %d", tryLayers);
-            break;
-          }
-        }
-      }
-      if (Status < MFX_ERR_NONE) {
-        auto TemporalLayers =
-            QSVEncodeParams.GetExtBuffer<mfxExtTemporalLayers>();
-        if (TemporalLayers && TemporalLayers->NumLayers > 0) {
-          warn("MFXVideoENCODE_Init failed with temporal layers, "
-               "retrying without temporal layers");
-          QSVEncode->Close();
-          delete[] QSVLayerArray;
-          QSVLayerArray = nullptr;
-          QSVEncodeParams.RemoveExtBuffer<mfxExtTemporalLayers>();
-
-          Status = QSVEncode->Init(&QSVEncodeParams);
-          info("\tMFXVideoENCODE_Init retry (TemporalLayers removed) status: %d",
-               Status);
-        }
+        Status = QSVEncode->Init(&QSVEncodeParams);
+        info("\tMFXVideoENCODE_Init retry (TemporalLayers removed) status: %d",
+             Status);
       }
     }
 
