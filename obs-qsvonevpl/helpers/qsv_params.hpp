@@ -84,7 +84,7 @@ struct encoder_params {
   bool IntraRefEncoding;
   bool CustomBufferSize;
   bool EncTools;
-  bool VideoFormat10bit;
+  bool VideoFormat10bit = false;
   bool ResetAllowed;
   bool Lowpower;
   bool PercEncPrefilter;

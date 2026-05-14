@@ -1859,6 +1859,7 @@ plugin_context *InitPluginContext(enum codec_enum Codec, obs_data_t *Settings,
     Context->EncoderParams.VideoFormat10bit = true;
     break;
   default:
+    Context->EncoderParams.VideoFormat10bit = false;
     if (VOI->colorspace == VIDEO_CS_2100_PQ ||
         VOI->colorspace == VIDEO_CS_2100_HLG) {
       auto ErrorText = obs_module_text("8bitUnsupportedHdr");
