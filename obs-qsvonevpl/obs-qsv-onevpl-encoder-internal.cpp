@@ -262,62 +262,12 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     Status = SetEncoderParams(InputParams, Codec);
     info("\tSetEncoderParams status:  %d", Status);
 
-    info("\t>>BD after SetEncoderParams: FourCC=0x%04X LumaBD=%d ChromaBD=%d Shift=%d",
-         QSVEncodeParams.mfx.FrameInfo.FourCC,
-         QSVEncodeParams.mfx.FrameInfo.BitDepthLuma,
-         QSVEncodeParams.mfx.FrameInfo.BitDepthChroma,
-         QSVEncodeParams.mfx.FrameInfo.Shift);
-    {
-      auto _co3 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-      if (_co3)
-        info("\t>>CO3_Target after SetEncoderParams: L=%d C=%d",
-             _co3->TargetBitDepthLuma, _co3->TargetBitDepthChroma);
-    }
-
-    auto ForceBitDepthParams = [&]() {
-      bool is10bit = InputParams->VideoFormat10bit;
-      QSVEncodeParams.mfx.FrameInfo.FourCC = static_cast<mfxU32>(InputParams->FourCC);
-      QSVEncodeParams.mfx.FrameInfo.BitDepthLuma = is10bit ? 10 : 0;
-      QSVEncodeParams.mfx.FrameInfo.BitDepthChroma = is10bit ? 10 : 0;
-      QSVEncodeParams.mfx.FrameInfo.Shift = is10bit ? 1 : 0;
-      auto CO3 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-      if (CO3) {
-        CO3->TargetBitDepthLuma = is10bit ? 10 : 0;
-        CO3->TargetBitDepthChroma = is10bit ? 10 : 0;
-      }
-    };
-
     if (Status >= MFX_ERR_NONE) {
       Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
       info("\tMFXVideoENCODE_Query status: %d", Status);
 
-      info("\t>>BD after Query (before force): FourCC=0x%04X LumaBD=%d ChromaBD=%d Shift=%d",
-           QSVEncodeParams.mfx.FrameInfo.FourCC,
-           QSVEncodeParams.mfx.FrameInfo.BitDepthLuma,
-           QSVEncodeParams.mfx.FrameInfo.BitDepthChroma,
-           QSVEncodeParams.mfx.FrameInfo.Shift);
-      {
-        auto _co3 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-        if (_co3)
-          info("\t>>CO3_Target after Query: L=%d C=%d",
-               _co3->TargetBitDepthLuma, _co3->TargetBitDepthChroma);
-      }
-
       if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
         Status = MFX_ERR_NONE;
-      }
-
-      ForceBitDepthParams();
-      info("\t>>BD after force (before Init): FourCC=0x%04X LumaBD=%d ChromaBD=%d Shift=%d",
-           QSVEncodeParams.mfx.FrameInfo.FourCC,
-           QSVEncodeParams.mfx.FrameInfo.BitDepthLuma,
-           QSVEncodeParams.mfx.FrameInfo.BitDepthChroma,
-           QSVEncodeParams.mfx.FrameInfo.Shift);
-      {
-        auto _co3 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-        if (_co3)
-          info("\t>>CO3_Target after force: L=%d C=%d",
-               _co3->TargetBitDepthLuma, _co3->TargetBitDepthChroma);
       }
 
       Status = QSVEncode->Init(&QSVEncodeParams);
@@ -333,7 +283,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
         QSVEncode->Close();
         CO3Params->ScenarioInfo = 0;
 
-        ForceBitDepthParams();
         Status = QSVEncode->Init(&QSVEncodeParams);
         info("\tMFXVideoENCODE_Init retry (ScenarioInfo) status: %d", Status);
       }
@@ -462,49 +411,12 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
         Status = SetEncoderParams(InputParams, Codec);
         info("\tSetEncoderParams (sysmem) status: %d", Status);
 
-        info("\t>>BD (sysmem) after SetEncoderParams: FourCC=0x%04X LumaBD=%d ChromaBD=%d Shift=%d",
-             QSVEncodeParams.mfx.FrameInfo.FourCC,
-             QSVEncodeParams.mfx.FrameInfo.BitDepthLuma,
-             QSVEncodeParams.mfx.FrameInfo.BitDepthChroma,
-             QSVEncodeParams.mfx.FrameInfo.Shift);
-        {
-          auto _co3 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-          if (_co3)
-            info("\t>>CO3_Target (sysmem) after SetEncoderParams: L=%d C=%d",
-                 _co3->TargetBitDepthLuma, _co3->TargetBitDepthChroma);
-        }
-
         if (Status >= MFX_ERR_NONE) {
           Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
           info("\tMFXVideoENCODE_Query (sysmem) status: %d", Status);
 
-          info("\t>>BD (sysmem) after Query (before force): FourCC=0x%04X LumaBD=%d ChromaBD=%d Shift=%d",
-               QSVEncodeParams.mfx.FrameInfo.FourCC,
-               QSVEncodeParams.mfx.FrameInfo.BitDepthLuma,
-               QSVEncodeParams.mfx.FrameInfo.BitDepthChroma,
-               QSVEncodeParams.mfx.FrameInfo.Shift);
-          {
-            auto _co3 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-            if (_co3)
-              info("\t>>CO3_Target (sysmem) after Query: L=%d C=%d",
-                   _co3->TargetBitDepthLuma, _co3->TargetBitDepthChroma);
-          }
-
           if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
             Status = MFX_ERR_NONE;
-          }
-
-          ForceBitDepthParams();
-          info("\t>>BD (sysmem) after force (before Init): FourCC=0x%04X LumaBD=%d ChromaBD=%d Shift=%d",
-               QSVEncodeParams.mfx.FrameInfo.FourCC,
-               QSVEncodeParams.mfx.FrameInfo.BitDepthLuma,
-               QSVEncodeParams.mfx.FrameInfo.BitDepthChroma,
-               QSVEncodeParams.mfx.FrameInfo.Shift);
-          {
-            auto _co3 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-            if (_co3)
-              info("\t>>CO3_Target (sysmem) after force: L=%d C=%d",
-                   _co3->TargetBitDepthLuma, _co3->TargetBitDepthChroma);
           }
 
           Status = QSVEncode->Init(&QSVEncodeParams);
@@ -524,7 +436,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
             QSVEncode->Close();
             CO3Params->ScenarioInfo = 0;
 
-            ForceBitDepthParams();
             Status = QSVEncode->Init(&QSVEncodeParams);
             info("\tMFXVideoENCODE_Init (sysmem) retry (ScenarioInfo) status: %d",
                  Status);
@@ -537,7 +448,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
             QSVEncode->Close();
             QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOptionDDI>();
 
-            ForceBitDepthParams();
             Status = QSVEncode->Init(&QSVEncodeParams);
             info("\tMFXVideoENCODE_Init (sysmem) retry (CODDI removed) status: %d",
                  Status);
@@ -546,8 +456,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
             warn("MFXVideoENCODE_Init (sysmem) failed, retrying with NumRefFrame=4");
             QSVEncode->Close();
             QSVEncodeParams.mfx.NumRefFrame = 4;
-
-            ForceBitDepthParams();
 
             auto COParams =
                 QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
@@ -562,8 +470,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
             warn("MFXVideoENCODE_Init (sysmem) failed, retrying with GOPRefDist=4");
             QSVEncode->Close();
             QSVEncodeParams.mfx.GopRefDist = 4;
-
-            ForceBitDepthParams();
 
             Status = QSVEncode->Init(&QSVEncodeParams);
             info("\tMFXVideoENCODE_Init (sysmem) retry (GOPRefDist=4) status: %d",
@@ -589,7 +495,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
               CO3Params->GPB = MFX_CODINGOPTION_OFF;
             }
 
-            ForceBitDepthParams();
             Status = QSVEncode->Init(&QSVEncodeParams);
             info("\tMFXVideoENCODE_Init (sysmem) retry (CO3 minimal) status: %d",
                  Status);
@@ -601,7 +506,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
             QSVEncode->Close();
             QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOption2>();
 
-            ForceBitDepthParams();
             Status = QSVEncode->Init(&QSVEncodeParams);
             info("\tMFXVideoENCODE_Init (sysmem) retry (CO2 removed) status: %d",
                  Status);
@@ -611,7 +515,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
             QSVEncode->Close();
             QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOption3>();
 
-            ForceBitDepthParams();
             Status = QSVEncode->Init(&QSVEncodeParams);
             info("\tMFXVideoENCODE_Init (sysmem) retry (CO3 removed) status: %d",
                  Status);
@@ -642,7 +545,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
                 TemporalLayers->NumLayers = tryLayers;
                 TemporalLayers->Layers = QSVLayerArray;
 
-                ForceBitDepthParams();
                 Status = QSVEncode->Init(&QSVEncodeParams);
                 info("\tMFXVideoENCODE_Init (sysmem) retry "
                      "(TemporalLayers=%d) status: %d",
@@ -665,7 +567,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
                 QSVLayerArray = nullptr;
                 QSVEncodeParams.RemoveExtBuffer<mfxExtTemporalLayers>();
 
-                ForceBitDepthParams();
                 Status = QSVEncode->Init(&QSVEncodeParams);
                 info("\tMFXVideoENCODE_Init (sysmem) retry (TemporalLayers "
                      "removed) status: %d",
@@ -684,7 +585,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
               COParams->MECostType = 0;
               COParams->MESearchType = 0;
 
-              ForceBitDepthParams();
               Status = QSVEncode->Init(&QSVEncodeParams);
               info("\tMFXVideoENCODE_Init (sysmem) retry (CO basic) status: %d",
                    Status);
@@ -696,7 +596,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
             mfxU16 savedNumExtParam = QSVEncodeParams.NumExtParam;
             QSVEncodeParams.NumExtParam = 0;
 
-            ForceBitDepthParams();
             Status = QSVEncode->Init(&QSVEncodeParams);
             info("\tMFXVideoENCODE_Init (sysmem) retry (no ext buffers) status: %d",
                  Status);
@@ -711,7 +610,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
             mfxU16 savedLowPower = QSVEncodeParams.mfx.LowPower;
             QSVEncodeParams.mfx.LowPower = MFX_CODINGOPTION_OFF;
 
-            ForceBitDepthParams();
             Status = QSVEncode->Init(&QSVEncodeParams);
             info("\tMFXVideoENCODE_Init (sysmem) retry (LowPower=OFF) status: %d",
                  Status);
@@ -747,63 +645,12 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
 #else
     Status = SetEncoderParams(InputParams, Codec);
 
-    info("\t>>BD after SetEncoderParams: FourCC=0x%04X LumaBD=%d ChromaBD=%d Shift=%d",
-         QSVEncodeParams.mfx.FrameInfo.FourCC,
-         QSVEncodeParams.mfx.FrameInfo.BitDepthLuma,
-         QSVEncodeParams.mfx.FrameInfo.BitDepthChroma,
-         QSVEncodeParams.mfx.FrameInfo.Shift);
-    {
-      auto _co3 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-      if (_co3)
-        info("\t>>CO3_Target after SetEncoderParams: L=%d C=%d",
-             _co3->TargetBitDepthLuma, _co3->TargetBitDepthChroma);
-    }
-
-    auto ForceBitDepthParams = [&]() {
-      bool is10bit = InputParams->VideoFormat10bit;
-      QSVEncodeParams.mfx.FrameInfo.FourCC = static_cast<mfxU32>(InputParams->FourCC);
-      QSVEncodeParams.mfx.FrameInfo.BitDepthLuma = is10bit ? 10 : 0;
-      QSVEncodeParams.mfx.FrameInfo.BitDepthChroma = is10bit ? 10 : 0;
-      QSVEncodeParams.mfx.FrameInfo.Shift = is10bit ? 1 : 0;
-      auto CO3 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-      if (CO3) {
-        CO3->TargetBitDepthLuma = is10bit ? 10 : 0;
-        CO3->TargetBitDepthChroma = is10bit ? 10 : 0;
-      }
-    };
-
     if (Status >= MFX_ERR_NONE) {
       Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
       info("\tMFXVideoENCODE_Query status: %d", Status);
-
-      info("\t>>BD after Query (before force): FourCC=0x%04X LumaBD=%d ChromaBD=%d Shift=%d",
-           QSVEncodeParams.mfx.FrameInfo.FourCC,
-           QSVEncodeParams.mfx.FrameInfo.BitDepthLuma,
-           QSVEncodeParams.mfx.FrameInfo.BitDepthChroma,
-           QSVEncodeParams.mfx.FrameInfo.Shift);
-      {
-        auto _co3 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-        if (_co3)
-          info("\t>>CO3_Target after Query: L=%d C=%d",
-               _co3->TargetBitDepthLuma, _co3->TargetBitDepthChroma);
-      }
-
       if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
         Status = MFX_ERR_NONE;
       }
-    }
-
-    ForceBitDepthParams();
-    info("\t>>BD after force (before Init): FourCC=0x%04X LumaBD=%d ChromaBD=%d Shift=%d",
-         QSVEncodeParams.mfx.FrameInfo.FourCC,
-         QSVEncodeParams.mfx.FrameInfo.BitDepthLuma,
-         QSVEncodeParams.mfx.FrameInfo.BitDepthChroma,
-         QSVEncodeParams.mfx.FrameInfo.Shift);
-    {
-      auto _co3 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-      if (_co3)
-        info("\t>>CO3_Target after force: L=%d C=%d",
-             _co3->TargetBitDepthLuma, _co3->TargetBitDepthChroma);
     }
 
     Status = QSVEncode->Init(&QSVEncodeParams);
@@ -816,7 +663,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
         QSVEncode->Close();
         CO3Params->ScenarioInfo = 0;
 
-        ForceBitDepthParams();
         Status = QSVEncode->Init(&QSVEncodeParams);
         info("\tMFXVideoENCODE_Init retry (ScenarioInfo) status: %d", Status);
       }
@@ -848,7 +694,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
           TemporalLayers->NumLayers = tryLayers;
           TemporalLayers->Layers = QSVLayerArray;
 
-          ForceBitDepthParams();
           Status = QSVEncode->Init(&QSVEncodeParams);
           info("\tMFXVideoENCODE_Init retry (TemporalLayers=%d) status: %d",
                tryLayers, Status);
@@ -870,7 +715,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
           QSVLayerArray = nullptr;
           QSVEncodeParams.RemoveExtBuffer<mfxExtTemporalLayers>();
 
-          ForceBitDepthParams();
           Status = QSVEncode->Init(&QSVEncodeParams);
           info("\tMFXVideoENCODE_Init retry (TemporalLayers removed) status: %d",
                Status);
@@ -2658,18 +2502,6 @@ mfxStatus QSVEncoder::GetVideoParam([[maybe_unused]] enum codec_enum Codec) {
   if (Status < MFX_ERR_NONE) {
     error("Error code: %d", Status);
     throw std::runtime_error("GetVideoParam(): Get video parameters error");
-  }
-
-  info("\t>>BD after GetVideoParam: FourCC=0x%04X LumaBD=%d ChromaBD=%d Shift=%d",
-       QSVEncodeParams.mfx.FrameInfo.FourCC,
-       QSVEncodeParams.mfx.FrameInfo.BitDepthLuma,
-       QSVEncodeParams.mfx.FrameInfo.BitDepthChroma,
-       QSVEncodeParams.mfx.FrameInfo.Shift);
-  {
-    auto _co3 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-    if (_co3)
-      info("\t>>CO3_Target after GetVideoParam: L=%d C=%d",
-           _co3->TargetBitDepthLuma, _co3->TargetBitDepthChroma);
   }
 
   return Status;
