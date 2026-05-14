@@ -262,6 +262,18 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     Status = SetEncoderParams(InputParams, Codec);
     info("\tSetEncoderParams status:  %d", Status);
 
+    info("\t>>BD after SetEncoderParams: FourCC=0x%04X LumaBD=%d ChromaBD=%d Shift=%d",
+         QSVEncodeParams.mfx.FrameInfo.FourCC,
+         QSVEncodeParams.mfx.FrameInfo.BitDepthLuma,
+         QSVEncodeParams.mfx.FrameInfo.BitDepthChroma,
+         QSVEncodeParams.mfx.FrameInfo.Shift);
+    {
+      auto _co3 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
+      if (_co3)
+        info("\t>>CO3_Target after SetEncoderParams: L=%d C=%d",
+             _co3->TargetBitDepthLuma, _co3->TargetBitDepthChroma);
+    }
+
     auto ForceBitDepthParams = [&]() {
       bool is10bit = InputParams->VideoFormat10bit;
       QSVEncodeParams.mfx.FrameInfo.FourCC = static_cast<mfxU32>(InputParams->FourCC);
@@ -279,11 +291,35 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
       Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
       info("\tMFXVideoENCODE_Query status: %d", Status);
 
+      info("\t>>BD after Query (before force): FourCC=0x%04X LumaBD=%d ChromaBD=%d Shift=%d",
+           QSVEncodeParams.mfx.FrameInfo.FourCC,
+           QSVEncodeParams.mfx.FrameInfo.BitDepthLuma,
+           QSVEncodeParams.mfx.FrameInfo.BitDepthChroma,
+           QSVEncodeParams.mfx.FrameInfo.Shift);
+      {
+        auto _co3 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
+        if (_co3)
+          info("\t>>CO3_Target after Query: L=%d C=%d",
+               _co3->TargetBitDepthLuma, _co3->TargetBitDepthChroma);
+      }
+
       if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
         Status = MFX_ERR_NONE;
       }
 
       ForceBitDepthParams();
+      info("\t>>BD after force (before Init): FourCC=0x%04X LumaBD=%d ChromaBD=%d Shift=%d",
+           QSVEncodeParams.mfx.FrameInfo.FourCC,
+           QSVEncodeParams.mfx.FrameInfo.BitDepthLuma,
+           QSVEncodeParams.mfx.FrameInfo.BitDepthChroma,
+           QSVEncodeParams.mfx.FrameInfo.Shift);
+      {
+        auto _co3 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
+        if (_co3)
+          info("\t>>CO3_Target after force: L=%d C=%d",
+               _co3->TargetBitDepthLuma, _co3->TargetBitDepthChroma);
+      }
+
       Status = QSVEncode->Init(&QSVEncodeParams);
       info("\tMFXVideoENCODE_Init status: %d", Status);
     }
@@ -426,15 +462,51 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
         Status = SetEncoderParams(InputParams, Codec);
         info("\tSetEncoderParams (sysmem) status: %d", Status);
 
+        info("\t>>BD (sysmem) after SetEncoderParams: FourCC=0x%04X LumaBD=%d ChromaBD=%d Shift=%d",
+             QSVEncodeParams.mfx.FrameInfo.FourCC,
+             QSVEncodeParams.mfx.FrameInfo.BitDepthLuma,
+             QSVEncodeParams.mfx.FrameInfo.BitDepthChroma,
+             QSVEncodeParams.mfx.FrameInfo.Shift);
+        {
+          auto _co3 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
+          if (_co3)
+            info("\t>>CO3_Target (sysmem) after SetEncoderParams: L=%d C=%d",
+                 _co3->TargetBitDepthLuma, _co3->TargetBitDepthChroma);
+        }
+
         if (Status >= MFX_ERR_NONE) {
           Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
           info("\tMFXVideoENCODE_Query (sysmem) status: %d", Status);
+
+          info("\t>>BD (sysmem) after Query (before force): FourCC=0x%04X LumaBD=%d ChromaBD=%d Shift=%d",
+               QSVEncodeParams.mfx.FrameInfo.FourCC,
+               QSVEncodeParams.mfx.FrameInfo.BitDepthLuma,
+               QSVEncodeParams.mfx.FrameInfo.BitDepthChroma,
+               QSVEncodeParams.mfx.FrameInfo.Shift);
+          {
+            auto _co3 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
+            if (_co3)
+              info("\t>>CO3_Target (sysmem) after Query: L=%d C=%d",
+                   _co3->TargetBitDepthLuma, _co3->TargetBitDepthChroma);
+          }
 
           if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
             Status = MFX_ERR_NONE;
           }
 
           ForceBitDepthParams();
+          info("\t>>BD (sysmem) after force (before Init): FourCC=0x%04X LumaBD=%d ChromaBD=%d Shift=%d",
+               QSVEncodeParams.mfx.FrameInfo.FourCC,
+               QSVEncodeParams.mfx.FrameInfo.BitDepthLuma,
+               QSVEncodeParams.mfx.FrameInfo.BitDepthChroma,
+               QSVEncodeParams.mfx.FrameInfo.Shift);
+          {
+            auto _co3 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
+            if (_co3)
+              info("\t>>CO3_Target (sysmem) after force: L=%d C=%d",
+                   _co3->TargetBitDepthLuma, _co3->TargetBitDepthChroma);
+          }
+
           Status = QSVEncode->Init(&QSVEncodeParams);
           info("\tMFXVideoENCODE_Init (sysmem) status: %d", Status);
         }
@@ -675,6 +747,18 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
 #else
     Status = SetEncoderParams(InputParams, Codec);
 
+    info("\t>>BD after SetEncoderParams: FourCC=0x%04X LumaBD=%d ChromaBD=%d Shift=%d",
+         QSVEncodeParams.mfx.FrameInfo.FourCC,
+         QSVEncodeParams.mfx.FrameInfo.BitDepthLuma,
+         QSVEncodeParams.mfx.FrameInfo.BitDepthChroma,
+         QSVEncodeParams.mfx.FrameInfo.Shift);
+    {
+      auto _co3 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
+      if (_co3)
+        info("\t>>CO3_Target after SetEncoderParams: L=%d C=%d",
+             _co3->TargetBitDepthLuma, _co3->TargetBitDepthChroma);
+    }
+
     auto ForceBitDepthParams = [&]() {
       bool is10bit = InputParams->VideoFormat10bit;
       QSVEncodeParams.mfx.FrameInfo.FourCC = static_cast<mfxU32>(InputParams->FourCC);
@@ -691,12 +775,37 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     if (Status >= MFX_ERR_NONE) {
       Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
       info("\tMFXVideoENCODE_Query status: %d", Status);
+
+      info("\t>>BD after Query (before force): FourCC=0x%04X LumaBD=%d ChromaBD=%d Shift=%d",
+           QSVEncodeParams.mfx.FrameInfo.FourCC,
+           QSVEncodeParams.mfx.FrameInfo.BitDepthLuma,
+           QSVEncodeParams.mfx.FrameInfo.BitDepthChroma,
+           QSVEncodeParams.mfx.FrameInfo.Shift);
+      {
+        auto _co3 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
+        if (_co3)
+          info("\t>>CO3_Target after Query: L=%d C=%d",
+               _co3->TargetBitDepthLuma, _co3->TargetBitDepthChroma);
+      }
+
       if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
         Status = MFX_ERR_NONE;
       }
     }
 
     ForceBitDepthParams();
+    info("\t>>BD after force (before Init): FourCC=0x%04X LumaBD=%d ChromaBD=%d Shift=%d",
+         QSVEncodeParams.mfx.FrameInfo.FourCC,
+         QSVEncodeParams.mfx.FrameInfo.BitDepthLuma,
+         QSVEncodeParams.mfx.FrameInfo.BitDepthChroma,
+         QSVEncodeParams.mfx.FrameInfo.Shift);
+    {
+      auto _co3 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
+      if (_co3)
+        info("\t>>CO3_Target after force: L=%d C=%d",
+             _co3->TargetBitDepthLuma, _co3->TargetBitDepthChroma);
+    }
+
     Status = QSVEncode->Init(&QSVEncodeParams);
     if (Status != MFX_ERR_NONE) {
       auto CO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
@@ -2549,6 +2658,18 @@ mfxStatus QSVEncoder::GetVideoParam([[maybe_unused]] enum codec_enum Codec) {
   if (Status < MFX_ERR_NONE) {
     error("Error code: %d", Status);
     throw std::runtime_error("GetVideoParam(): Get video parameters error");
+  }
+
+  info("\t>>BD after GetVideoParam: FourCC=0x%04X LumaBD=%d ChromaBD=%d Shift=%d",
+       QSVEncodeParams.mfx.FrameInfo.FourCC,
+       QSVEncodeParams.mfx.FrameInfo.BitDepthLuma,
+       QSVEncodeParams.mfx.FrameInfo.BitDepthChroma,
+       QSVEncodeParams.mfx.FrameInfo.Shift);
+  {
+    auto _co3 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
+    if (_co3)
+      info("\t>>CO3_Target after GetVideoParam: L=%d C=%d",
+           _co3->TargetBitDepthLuma, _co3->TargetBitDepthChroma);
   }
 
   return Status;
