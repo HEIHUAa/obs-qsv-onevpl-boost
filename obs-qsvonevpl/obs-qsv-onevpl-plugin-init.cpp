@@ -1172,12 +1172,9 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     }
 
     if (std::strcmp(CodecProfileTierData, "main") == 0) {
-      info("\tHEVC tier: user selected 'main', setting MFX_TIER_HEVC_MAIN");
       Context->EncoderParams.CodecProfileTier = MFX_TIER_HEVC_MAIN;
     } else {
       mfxU16 platformCode = QueryPlatformCodeName();
-      info("\tHEVC tier: user selected '%s', platformCode=0x%04X",
-           CodecProfileTierData, platformCode);
       bool highTierUnsupported = platformCode != 0 &&
                                  platformCode < MFX_PLATFORM_TIGERLAKE;
       if (highTierUnsupported) {
@@ -1185,7 +1182,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
              "(platform < TigerLake), falling back to Main Tier");
         Context->EncoderParams.CodecProfileTier = MFX_TIER_HEVC_MAIN;
       } else {
-        info("\tHEVC High Tier supported, setting MFX_TIER_HEVC_HIGH");
         Context->EncoderParams.CodecProfileTier = MFX_TIER_HEVC_HIGH;
       }
     }
