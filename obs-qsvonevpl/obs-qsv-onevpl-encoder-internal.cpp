@@ -566,15 +566,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
         COParams->MESearchType = 0;
         Status = QSVEncode->Init(&QSVEncodeParams);
         info("\tMFXVideoENCODE_Init retry (CO basic) status: %d", Status);
-        info("\tMFXVideoENCODE_Init retry (CO basic) params: RateControl=%d, LowPower=%d, TargetKbps=%d, MaxKbps=%d, QPI=%d, QPP=%d, QPB=%d, ICQQuality=%d",
-             QSVEncodeParams.mfx.RateControlMethod,
-             QSVEncodeParams.mfx.LowPower,
-             QSVEncodeParams.mfx.TargetKbps,
-             QSVEncodeParams.mfx.MaxKbps,
-             QSVEncodeParams.mfx.QPI,
-             QSVEncodeParams.mfx.QPP,
-             QSVEncodeParams.mfx.QPB,
-             QSVEncodeParams.mfx.ICQQuality);
       }
     }
     if (Status < MFX_ERR_NONE) {
