@@ -1434,6 +1434,13 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
            InputParams->TemporalLayersNum, MinGopRefDist);
     }
 
+    if (QSVEncodeParams.mfx.NumRefFrame < QSVEncodeParams.mfx.GopRefDist) {
+      warn("\tNumRefFrame=%d may be too low for GopRefDist=%d with temporal layers=%d, encoder Init may fail",
+           QSVEncodeParams.mfx.NumRefFrame,
+           QSVEncodeParams.mfx.GopRefDist,
+           InputParams->TemporalLayersNum);
+    }
+
     auto TemporalLayersParams =
         QSVEncodeParams.AddExtBuffer<mfxExtTemporalLayers>();
     TemporalLayersParams->Header.BufferId =
@@ -1445,12 +1452,21 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     delete[] QSVLayerArray;
     QSVLayerArray =
         new mfxTemporalLayer[InputParams->TemporalLayersNum]();
-    for (int i = 0; i < InputParams->TemporalLayersNum; i++) {
-      QSVLayerArray[i].FrameRateScale =
-          1 << (InputParams->TemporalLayersNum - 1 - i);
-      QSVLayerArray[i].QPI = i * 2;
-      QSVLayerArray[i].QPP = i * 2;
-      QSVLayerArray[i].QPB = i * 2;
+
+    {
+      mfxU16 baseQPForLayer = 0;
+      int qpStep = 0;
+      if (InputParams->RateControl == MFX_RATECONTROL_CQP) {
+        baseQPForLayer = static_cast<mfxU16>(std::min({InputParams->QPI, InputParams->QPP, InputParams->QPB}));
+        qpStep = 4;
+      }
+      for (int i = 0; i < InputParams->TemporalLayersNum; i++) {
+        QSVLayerArray[i].FrameRateScale =
+            1 << (InputParams->TemporalLayersNum - 1 - i);
+        QSVLayerArray[i].QPI = static_cast<mfxU16>(baseQPForLayer + i * qpStep);
+        QSVLayerArray[i].QPP = static_cast<mfxU16>(baseQPForLayer + i * qpStep);
+        QSVLayerArray[i].QPB = static_cast<mfxU16>(baseQPForLayer + i * qpStep);
+      }
     }
     TemporalLayersParams->Layers = QSVLayerArray;
     info("\tTemporalLayers: %d layers enabled",
