@@ -795,30 +795,18 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_visible(Prop, IsFeatureSupported("transform_skip"));
 
   // ── Reference controls ──────────────────────────────────────
-  Prop = obs_properties_add_int_slider(Props, "num_ref_active_p",
-                                       TEXT_NUM_REF_ACTIVE_P, 0,
-                                       ((Codec == QSV_CODEC_AV1)   ? 16
-                                        : (Codec == QSV_CODEC_AVC) ? 15
-                                                                   : 16),
-                                       1);
+  Prop = obs_properties_add_int(Props, "num_ref_active_p",
+                                TEXT_NUM_REF_ACTIVE_P, 0, 65535, 1);
   obs_property_set_long_description(
       Prop, TEXT_NUM_REF_ACTIVE_P_DESC);
 
-  Prop = obs_properties_add_int_slider(Props, "num_ref_active_bl0",
-                                       TEXT_NUM_REF_ACTIVE_BL0, 0,
-                                       ((Codec == QSV_CODEC_AV1)   ? 16
-                                        : (Codec == QSV_CODEC_AVC) ? 15
-                                                                   : 16),
-                                       1);
+  Prop = obs_properties_add_int(Props, "num_ref_active_bl0",
+                                TEXT_NUM_REF_ACTIVE_BL0, 0, 65535, 1);
   obs_property_set_long_description(
       Prop, TEXT_NUM_REF_ACTIVE_BL0_DESC);
 
-  Prop = obs_properties_add_int_slider(Props, "num_ref_active_bl1",
-                                       TEXT_NUM_REF_ACTIVE_BL1, 0,
-                                       ((Codec == QSV_CODEC_AV1)   ? 16
-                                        : (Codec == QSV_CODEC_AVC) ? 15
-                                                                   : 16),
-                                       1);
+  Prop = obs_properties_add_int(Props, "num_ref_active_bl1",
+                                TEXT_NUM_REF_ACTIVE_BL1, 0, 65535, 1);
   obs_property_set_long_description(
       Prop, TEXT_NUM_REF_ACTIVE_BL1_DESC);
 

@@ -1224,30 +1224,18 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
     if (InputParams->NumRefActiveP.has_value() &&
         InputParams->NumRefActiveP > 0) {
-      if (InputParams->NumRefActiveP.value() > InputParams->NumRefFrame) {
-        InputParams->NumRefActiveP = InputParams->NumRefFrame;
-        warn("\tThe NumRefActiveP value cannot exceed the NumRefFrame value");
-      }
       std::fill(CO3Params->NumRefActiveP, CO3Params->NumRefActiveP + 8,
                 InputParams->NumRefActiveP.value());
     }
 
     if (InputParams->NumRefActiveBL0.has_value() &&
         InputParams->NumRefActiveBL0 > 0) {
-      if (InputParams->NumRefActiveBL0.value() > InputParams->NumRefFrame) {
-        InputParams->NumRefActiveBL0 = InputParams->NumRefFrame;
-        warn("\tThe NumRefActiveBL0 value cannot exceed the NumRefFrame value");
-      }
       std::fill(CO3Params->NumRefActiveBL0, CO3Params->NumRefActiveBL0 + 8,
                 InputParams->NumRefActiveBL0.value());
     }
 
     if (InputParams->NumRefActiveBL1.has_value() &&
         InputParams->NumRefActiveBL1 > 0) {
-      if (InputParams->NumRefActiveBL1.value() > InputParams->NumRefFrame) {
-        InputParams->NumRefActiveBL1 = InputParams->NumRefFrame;
-        warn("\tThe NumRefActiveBL1 value cannot exceed the NumRefFrame value");
-      }
       std::fill(CO3Params->NumRefActiveBL1, CO3Params->NumRefActiveBL1 + 8,
                 InputParams->NumRefActiveBL1.value());
     }
@@ -2155,6 +2143,10 @@ void QSVEncoder::LogActualParams() {
     if (CO3->NumRefActiveBL0[0]) {
       info("\tNumRefActiveBL0 set: %d",
            CO3->NumRefActiveBL0[0]);
+    }
+    if (CO3->NumRefActiveBL1[0]) {
+      info("\tNumRefActiveBL1 set: %d",
+           CO3->NumRefActiveBL1[0]);
     }
     if (CO3->ContentInfo) {
       info("\tContentInfo set: %d",
