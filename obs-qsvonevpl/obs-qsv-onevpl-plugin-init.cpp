@@ -571,18 +571,18 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 
   // ── Bitrate ─────────────────────────────────────────────────
   Prop = obs_properties_add_int(Props, "bitrate", TEXT_TARGET_BITRATE, 50,
-                                2147483647, 5000);
+                                6553500, 5000);
   obs_property_int_set_suffix(Prop, " Kbps");
 
   Prop = obs_properties_add_int(Props, "max_bitrate", TEXT_MAX_BITRATE, 50,
-                                2147483647, 5000);
+                                6553500, 5000);
   obs_property_int_set_suffix(Prop, " Kbps");
 
   Prop = obs_properties_add_bool(Props, "custom_buffer_size",
                                  TEXT_CUSTOM_BUFFER_SIZE);
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
   Prop = obs_properties_add_int(Props, "buffer_size", TEXT_BUFFER_SIZE, 0,
-                                2147483647, 5000);
+                                6553500, 5000);
   obs_property_int_set_suffix(Prop, " KB");
 
   // ── Frame structure ─────────────────────────────────────────
@@ -626,7 +626,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
   Prop = obs_properties_add_int(Props, "win_brc_max_avg_size",
-                                TEXT_WINBRC_MAX_AVG_SIZE, 0, 65535, 1);
+                                TEXT_WINBRC_MAX_AVG_SIZE, 0, 6553500, 1);
   obs_property_int_set_suffix(Prop, " kbps");
   obs_property_set_long_description(Prop,
                                     obs_module_text("WinBRCMaxAvgSize.Tooltip"));
