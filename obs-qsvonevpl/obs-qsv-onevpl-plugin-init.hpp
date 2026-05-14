@@ -150,10 +150,10 @@ struct plugin_context {
 static const char *const qsv_profile_names_av1[] = {"main", "high", "pro", 0};
 
 static const char *const qsv_profile_names_h264[] = {
-    "high", "main", "baseline", "extended", "high422",
+    "high10", "high", "main", "baseline", "extended", "high422",
     "constrained_baseline", "constrained_high", 0};
 
-static const char *const qsv_profile_names_hevc[] = {"main", "mainsp", "rext", "scc", 0};
+static const char *const qsv_profile_names_hevc[] = {"main", "main10", "mainsp", "rext", "scc", 0};
 
 static const char *const qsv_profile_tiers_hevc[] = {"main", "high", 0};
 

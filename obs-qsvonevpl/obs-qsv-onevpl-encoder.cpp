@@ -197,16 +197,28 @@ bool GetSEIData(void *Data, uint8_t **SEI, size_t *Size) {
 
 void GetVideoInfo(void *Data, video_scale_info *Info) {
   plugin_context *Context = static_cast<plugin_context *>(Data);
-  auto pref_format =
-      obs_encoder_get_preferred_video_format(Context->EncoderData);
-  if (!(pref_format == VIDEO_FORMAT_NV12 ||
-        pref_format == VIDEO_FORMAT_P010)) {
-    pref_format = (Info->format == VIDEO_FORMAT_NV12 ||
-                   Info->format == VIDEO_FORMAT_P010)
-                      ? Info->format
-                      : VIDEO_FORMAT_NV12;
+
+  bool use10bit = false;
+
+  switch (Context->Codec) {
+  case QSV_CODEC_HEVC:
+  case QSV_CODEC_AV1: {
+    obs_data_t *settings = obs_encoder_get_settings(Context->EncoderData);
+    const char *profile = obs_data_get_string(settings, "profile");
+    use10bit = (std::strcmp(profile, "main10") == 0);
+    break;
   }
-  Info->format = pref_format;
+  case QSV_CODEC_AVC: {
+    obs_data_t *settings = obs_encoder_get_settings(Context->EncoderData);
+    const char *profile = obs_data_get_string(settings, "profile");
+    use10bit = (std::strcmp(profile, "high10") == 0);
+    break;
+  }
+  default:
+    break;
+  }
+
+  Info->format = use10bit ? VIDEO_FORMAT_P010 : VIDEO_FORMAT_NV12;
 }
 
 mfxU64 ConvertTSOBSMFX(int64_t TS, mfxU32 FpsNum) {
