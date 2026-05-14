@@ -235,94 +235,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
       }
     }
 
-    info("MFXVideoENCODE_Init params (Status=%d). Dump:", Status);
-    info("\tCodecId: 0x%04X, Profile: %d, Level: %d",
-         QSVEncodeParams.mfx.CodecId, QSVEncodeParams.mfx.CodecProfile,
-         QSVEncodeParams.mfx.CodecLevel);
-    info("\tTargetUsage: %d, RateControl: %d, LowPower: %d",
-         QSVEncodeParams.mfx.TargetUsage,
-         QSVEncodeParams.mfx.RateControlMethod,
-         QSVEncodeParams.mfx.LowPower);
-    info("\tFrameInfo: crop %d,%d %dx%d, Aligned: %dx%d, FourCC: 0x%04X, ChromaFormat: %d, PicStruct: %d, Aspect: %dx%d, BitDepth: %d",
-         QSVEncodeParams.mfx.FrameInfo.CropX,
-         QSVEncodeParams.mfx.FrameInfo.CropY,
-         QSVEncodeParams.mfx.FrameInfo.CropW,
-         QSVEncodeParams.mfx.FrameInfo.CropH,
-         QSVEncodeParams.mfx.FrameInfo.Width,
-         QSVEncodeParams.mfx.FrameInfo.Height,
-         QSVEncodeParams.mfx.FrameInfo.FourCC,
-         QSVEncodeParams.mfx.FrameInfo.ChromaFormat,
-         QSVEncodeParams.mfx.FrameInfo.PicStruct,
-         QSVEncodeParams.mfx.FrameInfo.AspectRatioW,
-         QSVEncodeParams.mfx.FrameInfo.AspectRatioH,
-         QSVEncodeParams.mfx.FrameInfo.BitDepthLuma,
-         QSVEncodeParams.mfx.FrameInfo.BitDepthChroma);
-    info("\tFrameRate: %d/%d, NumRefFrame: %d, GopPicSize: %d, GopRefDist: %d, GopOptFlag: 0x%04X, IdrInterval: %d, NumSlice: %d",
-         QSVEncodeParams.mfx.FrameInfo.FrameRateExtN,
-         QSVEncodeParams.mfx.FrameInfo.FrameRateExtD,
-         QSVEncodeParams.mfx.NumRefFrame,
-         QSVEncodeParams.mfx.GopPicSize,
-         QSVEncodeParams.mfx.GopRefDist,
-         QSVEncodeParams.mfx.GopOptFlag,
-         QSVEncodeParams.mfx.IdrInterval,
-         QSVEncodeParams.mfx.NumSlice);
-    info("\tAsyncDepth: %d, IOPattern: 0x%04X, NumExtParam: %d, BRCParamMultiplier: %d",
-         QSVEncodeParams.AsyncDepth, QSVEncodeParams.IOPattern,
-         QSVEncodeParams.NumExtParam,
-         QSVEncodeParams.mfx.BRCParamMultiplier);
-    info("\tRC params: QPI=%d, QPP=%d, QPB=%d, ICQQuality=%d, TargetKbps=%d, MaxKbps=%d, BufferSizeInKB=%d, InitialDelayInKB=%d",
-         QSVEncodeParams.mfx.QPI,
-         QSVEncodeParams.mfx.QPP,
-         QSVEncodeParams.mfx.QPB,
-         QSVEncodeParams.mfx.ICQQuality,
-         QSVEncodeParams.mfx.TargetKbps,
-         QSVEncodeParams.mfx.MaxKbps,
-         QSVEncodeParams.mfx.BufferSizeInKB,
-         QSVEncodeParams.mfx.InitialDelayInKB);
-    info("\tEncodedOrder: %d, DecodedOrder: %d",
-         QSVEncodeParams.mfx.EncodedOrder,
-         QSVEncodeParams.mfx.DecodedOrder);
-    for (mfxU16 i = 0; i < QSVEncodeParams.NumExtParam; i++) {
-      if (QSVEncodeParams.ExtParam[i]) {
-        const char *bufName = "UNKNOWN";
-        switch (QSVEncodeParams.ExtParam[i]->BufferId) {
-        case 0x2000: bufName = "CODING_OPTION"; break;
-        case 0x2001: bufName = "CODING_OPTION2"; break;
-        case 0x2002: bufName = "CODING_OPTION3"; break;
-        case 0x2003: bufName = "CODING_OPTION_SPSPPS"; break;
-        case 0x2004: bufName = "CODING_OPTION_VPS"; break;
-        case 0x2010: bufName = "DDI"; break;
-        case 0x2020: bufName = "AVC_REFPICS"; break;
-        case 0x2040: bufName = "AVC_TEMPORAL_LAYERS"; break;
-        case 0x2050: bufName = "UNIVERSAL_TEMPORAL_LAYERS"; break;
-        case 0x2070: bufName = "HEVC_REFLISTS"; break;
-        case 0x2080: bufName = "BRC"; break;
-        case 0x20A0: bufName = "HEVC_PARAM"; break;
-        case 0x20B0: bufName = "HEVC_TILES"; break;
-        case 0x20C0: bufName = "ENCODER_ROI"; break;
-        case 0x20D0: bufName = "VPP_DENOISE2"; break;
-        case 0x20F0: bufName = "VPP_SCALING"; break;
-        case 0x2100: bufName = "VPP_IMAGE_STABILIZATION"; break;
-        case 0x2120: bufName = "VPP_DETAIL"; break;
-        case 0x2140: bufName = "VPP_PROCAMP"; break;
-        case 0x2160: bufName = "VPP_MCTF"; break;
-        case 0x3020: bufName = "VIDEO_SIGNAL_INFO"; break;
-        case 0x3030: bufName = "MASTERING_DISPLAY_COLOUR_VOLUME"; break;
-        case 0x3040: bufName = "CONTENT_LIGHT_LEVEL_INFO"; break;
-        case 0x4000: bufName = "ENCTOOLS_CONFIG"; break;
-        case 0x5000: bufName = "ENCODER_RESET_OPTION"; break;
-        default: break;
-        }
-        info("\tExtBuf[%d]: %s (Id=0x%04X, Size=%d)", i, bufName,
-             QSVEncodeParams.ExtParam[i]->BufferId,
-             QSVEncodeParams.ExtParam[i]->BufferSz);
-      } else {
-        info("\tExtBuf[%d]: NULL", i);
-      }
-    }
-    info("\tFeature extended buffer size: %d",
-         QSVEncodeParams.NumExtParam);
-
     if (Status < MFX_ERR_NONE) {
       error("MFXVideoENCODE_Init failed (Status=%d)", Status);
       return Status;
@@ -557,7 +469,7 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     info("\tInitTexturePool status:   %d", Status);
 
     Status = GetVideoParam(Codec);
-    info("\tAfter GetVideoParam:     %d", Status);
+    LogActualParams();
 
     if (QSVUseSystemMemoryPath) {
       InitSystemMemorySurfacePool();
@@ -642,94 +554,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
       }
     }
 
-    info("MFXVideoENCODE_Init params (Status=%d). Dump:", Status);
-    info("\tCodecId: 0x%04X, Profile: %d, Level: %d",
-         QSVEncodeParams.mfx.CodecId, QSVEncodeParams.mfx.CodecProfile,
-         QSVEncodeParams.mfx.CodecLevel);
-    info("\tTargetUsage: %d, RateControl: %d, LowPower: %d",
-         QSVEncodeParams.mfx.TargetUsage,
-         QSVEncodeParams.mfx.RateControlMethod,
-         QSVEncodeParams.mfx.LowPower);
-    info("\tFrameInfo: crop %d,%d %dx%d, Aligned: %dx%d, FourCC: 0x%04X, ChromaFormat: %d, PicStruct: %d, Aspect: %dx%d, BitDepth: %d",
-         QSVEncodeParams.mfx.FrameInfo.CropX,
-         QSVEncodeParams.mfx.FrameInfo.CropY,
-         QSVEncodeParams.mfx.FrameInfo.CropW,
-         QSVEncodeParams.mfx.FrameInfo.CropH,
-         QSVEncodeParams.mfx.FrameInfo.Width,
-         QSVEncodeParams.mfx.FrameInfo.Height,
-         QSVEncodeParams.mfx.FrameInfo.FourCC,
-         QSVEncodeParams.mfx.FrameInfo.ChromaFormat,
-         QSVEncodeParams.mfx.FrameInfo.PicStruct,
-         QSVEncodeParams.mfx.FrameInfo.AspectRatioW,
-         QSVEncodeParams.mfx.FrameInfo.AspectRatioH,
-         QSVEncodeParams.mfx.FrameInfo.BitDepthLuma,
-         QSVEncodeParams.mfx.FrameInfo.BitDepthChroma);
-    info("\tFrameRate: %d/%d, NumRefFrame: %d, GopPicSize: %d, GopRefDist: %d, GopOptFlag: 0x%04X, IdrInterval: %d, NumSlice: %d",
-         QSVEncodeParams.mfx.FrameInfo.FrameRateExtN,
-         QSVEncodeParams.mfx.FrameInfo.FrameRateExtD,
-         QSVEncodeParams.mfx.NumRefFrame,
-         QSVEncodeParams.mfx.GopPicSize,
-         QSVEncodeParams.mfx.GopRefDist,
-         QSVEncodeParams.mfx.GopOptFlag,
-         QSVEncodeParams.mfx.IdrInterval,
-         QSVEncodeParams.mfx.NumSlice);
-    info("\tAsyncDepth: %d, IOPattern: 0x%04X, NumExtParam: %d, BRCParamMultiplier: %d",
-         QSVEncodeParams.AsyncDepth, QSVEncodeParams.IOPattern,
-         QSVEncodeParams.NumExtParam,
-         QSVEncodeParams.mfx.BRCParamMultiplier);
-    info("\tRC params: QPI=%d, QPP=%d, QPB=%d, ICQQuality=%d, TargetKbps=%d, MaxKbps=%d, BufferSizeInKB=%d, InitialDelayInKB=%d",
-         QSVEncodeParams.mfx.QPI,
-         QSVEncodeParams.mfx.QPP,
-         QSVEncodeParams.mfx.QPB,
-         QSVEncodeParams.mfx.ICQQuality,
-         QSVEncodeParams.mfx.TargetKbps,
-         QSVEncodeParams.mfx.MaxKbps,
-         QSVEncodeParams.mfx.BufferSizeInKB,
-         QSVEncodeParams.mfx.InitialDelayInKB);
-    info("\tEncodedOrder: %d, DecodedOrder: %d",
-         QSVEncodeParams.mfx.EncodedOrder,
-         QSVEncodeParams.mfx.DecodedOrder);
-    for (mfxU16 i = 0; i < QSVEncodeParams.NumExtParam; i++) {
-      if (QSVEncodeParams.ExtParam[i]) {
-        const char *bufName = "UNKNOWN";
-        switch (QSVEncodeParams.ExtParam[i]->BufferId) {
-        case 0x2000: bufName = "CODING_OPTION"; break;
-        case 0x2001: bufName = "CODING_OPTION2"; break;
-        case 0x2002: bufName = "CODING_OPTION3"; break;
-        case 0x2003: bufName = "CODING_OPTION_SPSPPS"; break;
-        case 0x2004: bufName = "CODING_OPTION_VPS"; break;
-        case 0x2010: bufName = "DDI"; break;
-        case 0x2020: bufName = "AVC_REFPICS"; break;
-        case 0x2040: bufName = "AVC_TEMPORAL_LAYERS"; break;
-        case 0x2050: bufName = "UNIVERSAL_TEMPORAL_LAYERS"; break;
-        case 0x2070: bufName = "HEVC_REFLISTS"; break;
-        case 0x2080: bufName = "BRC"; break;
-        case 0x20A0: bufName = "HEVC_PARAM"; break;
-        case 0x20B0: bufName = "HEVC_TILES"; break;
-        case 0x20C0: bufName = "ENCODER_ROI"; break;
-        case 0x20D0: bufName = "VPP_DENOISE2"; break;
-        case 0x20F0: bufName = "VPP_SCALING"; break;
-        case 0x2100: bufName = "VPP_IMAGE_STABILIZATION"; break;
-        case 0x2120: bufName = "VPP_DETAIL"; break;
-        case 0x2140: bufName = "VPP_PROCAMP"; break;
-        case 0x2160: bufName = "VPP_MCTF"; break;
-        case 0x3020: bufName = "VIDEO_SIGNAL_INFO"; break;
-        case 0x3030: bufName = "MASTERING_DISPLAY_COLOUR_VOLUME"; break;
-        case 0x3040: bufName = "CONTENT_LIGHT_LEVEL_INFO"; break;
-        case 0x4000: bufName = "ENCTOOLS_CONFIG"; break;
-        case 0x5000: bufName = "ENCODER_RESET_OPTION"; break;
-        default: break;
-        }
-        info("\tExtBuf[%d]: %s (Id=0x%04X, Size=%d)", i, bufName,
-             QSVEncodeParams.ExtParam[i]->BufferId,
-             QSVEncodeParams.ExtParam[i]->BufferSz);
-      } else {
-        info("\tExtBuf[%d]: NULL", i);
-      }
-    }
-    info("\tFeature extended buffer size: %d",
-         QSVEncodeParams.NumExtParam);
-
     if (Status < MFX_ERR_NONE) {
       auto COParams =
           QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
@@ -762,7 +586,7 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     info("\tInitTexturePool status:   %d", Status);
 
     Status = GetVideoParam(Codec);
-    info("\tAfter GetVideoParam:     %d", Status);
+    LogActualParams();
 #endif
 
     Status = InitBitstreamBuffer(Codec);
@@ -1008,8 +832,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       InputParams->VideoFormat10bit ? 1 : 0;
 
   QSVEncodeParams.mfx.LowPower = GetCodingOpt(InputParams->Lowpower);
-  info("\tLowpower set: %s",
-       GetCodingOptStatus(QSVEncodeParams.mfx.LowPower).c_str());
 
   QSVEncodeParams.mfx.RateControlMethod =
       static_cast<mfxU16>(InputParams->RateControl);
@@ -1025,7 +847,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     }
     QSVEncodeParams.mfx.NumRefFrame =
         static_cast<mfxU16>(InputParams->NumRefFrame);
-    info("\tNumRefFrame set to: %d", InputParams->NumRefFrame);
   }
 
   QSVEncodeParams.mfx.TargetUsage =
@@ -1035,21 +856,10 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
     mfxU16 combinedProfile = QSVEncodeParams.mfx.CodecProfile |
                              (InputParams->CodecProfileTier << 8);
-    info("\tHEVC combined profile: base=0x%04X, tier=%d (shifted=0x%04X), "
-         "result=0x%04X",
-         QSVEncodeParams.mfx.CodecProfile,
-         InputParams->CodecProfileTier,
-         InputParams->CodecProfileTier << 8,
-         combinedProfile);
     QSVEncodeParams.mfx.CodecProfile = combinedProfile;
   }
-  info("\tCodecProfile: %d (tier %s)", QSVEncodeParams.mfx.CodecProfile,
-       InputParams->CodecProfileTier == MFX_TIER_HEVC_HIGH ? "high" : "main");
 
   QSVEncodeParams.mfx.CodecLevel = InputParams->CodecLevel;
-  if (QSVEncodeParams.mfx.CodecLevel) {
-    info("\tCodecLevel: %d", QSVEncodeParams.mfx.CodecLevel);
-  }
 
   /*BRCParamMultiplier fixed at 100 for driver compatibility
     (UHD 730 rejects values !=100). Raw values clamped to 65535*100
@@ -1063,8 +873,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     mfxU32 limit = static_cast<mfxU32>(65535) * 100;
     return v > limit ? limit : v;
   };
-  info("\tBRCParamMultiplier set: %d (max effective bitrate: %d kbps)",
-       BRC_BASELINE, 65535 * 100);
 
   switch (InputParams->RateControl) {
   case MFX_RATECONTROL_CBR:
@@ -1204,10 +1012,8 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   if ((!InputParams->AdaptiveI && !InputParams->AdaptiveB) ||
       (InputParams->AdaptiveI == false && InputParams->AdaptiveB == false)) {
     QSVEncodeParams.mfx.GopOptFlag = MFX_GOP_STRICT;
-    info("\tGopOptFlag set: STRICT");
   } else {
     QSVEncodeParams.mfx.GopOptFlag = MFX_GOP_CLOSED;
-    info("\tGopOptFlag set: CLOSED");
   }
 
   switch (QSVEncodeParams.mfx.CodecId) {
@@ -1222,12 +1028,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   QSVEncodeParams.mfx.NumSlice = static_cast<mfxU16>(1);
 
   QSVEncodeParams.mfx.GopRefDist = static_cast<mfxU16>(InputParams->GOPRefDist);
-
-  info("\tGOPRefDist set to: %d frames (%d b-frames)",
-       (int)QSVEncodeParams.mfx.GopRefDist,
-       (int)(QSVEncodeParams.mfx.GopRefDist == 0
-                 ? 0
-                 : QSVEncodeParams.mfx.GopRefDist - 1));
 
   if (COEnabled == 1) {
     auto COParams = QSVEncodeParams.AddExtBuffer<mfxExtCodingOption>();
@@ -1261,14 +1061,10 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     }
 
     COParams->RateDistortionOpt = GetCodingOpt(InputParams->RDO);
-    info("\tRDO set: %s",
-         GetCodingOptStatus(COParams->RateDistortionOpt).c_str());
 
     COParams->VuiVclHrdParameters = GetCodingOpt(InputParams->HRDConformance);
     COParams->VuiNalHrdParameters = GetCodingOpt(InputParams->HRDConformance);
     COParams->NalHrdConformance = GetCodingOpt(InputParams->HRDConformance);
-    info("\tHRDConformance set: %s",
-         GetCodingOptStatus(COParams->NalHrdConformance).c_str());
   }
 
   if (CO2Enabled == 1) {
@@ -1292,7 +1088,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     // }
 
     CO2Params->ExtBRC = GetCodingOpt(InputParams->ExtBRC);
-    info("\tExtBRC set: %s", GetCodingOptStatus(CO2Params->ExtBRC).c_str());
 
     if (InputParams->IntraRefEncoding == true) {
 
@@ -1320,8 +1115,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
         QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_QVBR) {
       if (InputParams->Lookahead == true) {
         CO2Params->LookAheadDepth = InputParams->LADepth;
-        info("\tLookahead set to: ON");
-        info("\tLookaheadDepth set to: %d", CO2Params->LookAheadDepth);
       }
     }
 
@@ -1334,63 +1127,45 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     }
 
     CO2Params->MBBRC = GetCodingOpt(InputParams->MBBRC);
-    info("\tMBBRC set: %s", GetCodingOptStatus(CO2Params->MBBRC).c_str());
 
     if (InputParams->GOPRefDist > 1) {
       CO2Params->BRefType = MFX_B_REF_PYRAMID;
-      info("\tBPyramid set: ON");
     } else {
       CO2Params->BRefType = MFX_B_REF_UNKNOWN;
-      info("\tBPyramid set: AUTO");
     }
 
     if (InputParams->Trellis.has_value()) {
       switch (InputParams->Trellis.value()) {
       case 0:
         CO2Params->Trellis = MFX_TRELLIS_OFF;
-        info("\tTrellis set: OFF");
         break;
       case 1:
         CO2Params->Trellis = MFX_TRELLIS_I;
-        info("\tTrellis set: I");
         break;
       case 2:
         CO2Params->Trellis = MFX_TRELLIS_I | MFX_TRELLIS_P;
-        info("\tTrellis set: IP");
         break;
       case 3:
         CO2Params->Trellis = MFX_TRELLIS_I | MFX_TRELLIS_P | MFX_TRELLIS_B;
-        info("\tTrellis set: IPB");
         break;
       case 4:
         CO2Params->Trellis = MFX_TRELLIS_I | MFX_TRELLIS_B;
-        info("\tTrellis set: IB");
         break;
       case 5:
         CO2Params->Trellis = MFX_TRELLIS_P;
-        info("\tTrellis set: P");
         break;
       case 6:
         CO2Params->Trellis = MFX_TRELLIS_P | MFX_TRELLIS_B;
-        info("\tTrellis set: PB");
         break;
       case 7:
         CO2Params->Trellis = MFX_TRELLIS_B;
-        info("\tTrellis set: B");
-        break;
-      default:
-        info("\tTrellis set: AUTO");
         break;
       }
     }
 
     CO2Params->AdaptiveI = GetCodingOpt(InputParams->AdaptiveI);
-    info("\tAdaptiveI set: %s",
-         GetCodingOptStatus(CO2Params->AdaptiveI).c_str());
 
     CO2Params->AdaptiveB = GetCodingOpt(InputParams->AdaptiveB);
-    info("\tAdaptiveB set: %s",
-         GetCodingOptStatus(CO2Params->AdaptiveB).c_str());
 
     if (InputParams->RateControl == MFX_RATECONTROL_CBR ||
         InputParams->RateControl == MFX_RATECONTROL_VBR ||
@@ -1402,30 +1177,20 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
         switch (InputParams->LookAheadDS.value()) {
         case 0:
           CO2Params->LookAheadDS = MFX_LOOKAHEAD_DS_OFF;
-          info("\tLookAheadDS set: SLOW");
           break;
         case 1:
           CO2Params->LookAheadDS = MFX_LOOKAHEAD_DS_2x;
-          info("\tLookAheadDS set: MEDIUM");
           break;
         case 2:
           CO2Params->LookAheadDS = MFX_LOOKAHEAD_DS_4x;
-          info("\tLookAheadDS set: FAST");
-          break;
-        default:
-          info("\tLookAheadDS set: AUTO");
           break;
         }
       }
     }
 
     CO2Params->UseRawRef = GetCodingOpt(InputParams->RawRef);
-    info("\tUseRawRef set: %s",
-         GetCodingOptStatus(CO2Params->UseRawRef).c_str());
 
     CO2Params->BitrateLimit = GetCodingOpt(InputParams->BitrateLimit);
-    info("\tBitrateLimit set: %s",
-         GetCodingOptStatus(CO2Params->BitrateLimit).c_str());
   }
 
   if (CO3Enabled == 1) {
@@ -1441,8 +1206,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CO3Params->TransformSkip = GetCodingOpt(InputParams->TransformSkip);
     CO3Params->EnableMBForceIntra = MFX_CODINGOPTION_ON;
     CO3Params->FadeDetection = GetCodingOpt(InputParams->FadeDetection);
-    info("\tFadeDetection set: %s",
-         GetCodingOptStatus(CO3Params->FadeDetection).c_str());
 
     // if (QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_CBR ||
     //     QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_VBR) {
@@ -1470,8 +1233,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CO3Params->OverscanInfoPresent = MFX_CODINGOPTION_ON;
 
     CO3Params->LowDelayHrd = GetCodingOpt(InputParams->LowDelayHRD);
-    info("\tLowDelayHRD set: %s",
-         GetCodingOptStatus(CO3Params->LowDelayHrd).c_str());
 
     CO3Params->WeightedPred = MFX_WEIGHTED_PRED_DEFAULT;
     CO3Params->WeightedBiPred = MFX_WEIGHTED_PRED_DEFAULT;
@@ -1486,7 +1247,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       }
       std::fill(CO3Params->NumRefActiveP, CO3Params->NumRefActiveP + 8,
                 InputParams->NumRefActiveP.value());
-      info("\tNumRefActiveP set: %d", InputParams->NumRefActiveP.value());
     }
 
     if (InputParams->NumRefActiveBL0.has_value() &&
@@ -1497,7 +1257,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       }
       std::fill(CO3Params->NumRefActiveBL0, CO3Params->NumRefActiveBL0 + 8,
                 InputParams->NumRefActiveBL0.value());
-      info("\tNumRefActiveBL0 set: %d", InputParams->NumRefActiveBL0.value());
     }
 
     if (InputParams->NumRefActiveBL1.has_value() &&
@@ -1508,7 +1267,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       }
       std::fill(CO3Params->NumRefActiveBL1, CO3Params->NumRefActiveBL1 + 8,
                 InputParams->NumRefActiveBL1.value());
-      info("\tNumRefActiveBL0 set: %d", InputParams->NumRefActiveBL1.value());
     }
 
     if (InputParams->IntraRefEncoding == true) {
@@ -1517,34 +1275,24 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
     if (InputParams->ContentInfo.has_value()) {
       CO3Params->ContentInfo = static_cast<mfxU16>(InputParams->ContentInfo.value());
-      if (InputParams->ContentInfo.value() > 0) {
-        info("\tContentInfo set: %d", InputParams->ContentInfo.value());
-      } else {
-        info("\tContentInfo: AUTO");
-      }
     }
 
     if (InputParams->ScenarioInfo.has_value()) {
       switch (InputParams->ScenarioInfo.value()) {
       case 0:
         CO3Params->ScenarioInfo = 0;
-        info("\tScenario: AUTO");
         break;
       case 1:
         CO3Params->ScenarioInfo = 1;
-        info("\tScenario: ARCHIVE");
         break;
       case 2:
         CO3Params->ScenarioInfo = 2;
-        info("\tScenario: LIVE");
         break;
       case 3:
         CO3Params->ScenarioInfo = 3;
-        info("\tScenario: REMOTE GAMING");
         break;
       case 4:
         CO3Params->ScenarioInfo = 4;
-        info("\tScenario: GAME STREAMING");
         break;
       }
     }
@@ -1555,32 +1303,23 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
     if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
       CO3Params->GPB = GetCodingOpt(InputParams->GPB);
-      info("\tGPB set: %s", GetCodingOptStatus(CO3Params->GPB).c_str());
     }
 
     if (InputParams->PPyramid == true) {
       CO3Params->PRefType = MFX_P_REF_PYRAMID;
-      info("\tPPyramid set: PYRAMID");
     } else {
       CO3Params->PRefType = MFX_P_REF_SIMPLE;
-      info("\tPPyramid set: SIMPLE");
     }
 
     CO3Params->AdaptiveCQM = GetCodingOpt(InputParams->AdaptiveCQM);
-    info("\tAdaptiveCQM set: %s",
-         GetCodingOptStatus(CO3Params->AdaptiveCQM).c_str());
 
     CO3Params->AdaptiveRef = GetCodingOpt(InputParams->AdaptiveRef);
-    info("\tAdaptiveRef set: %s",
-         GetCodingOptStatus(CO3Params->AdaptiveRef).c_str());
 
     CO3Params->AdaptiveLTR = GetCodingOpt(InputParams->AdaptiveLTR);
     if (InputParams->ExtBRC == true &&
         QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC) {
       CO3Params->ExtBrcAdaptiveLTR = GetCodingOpt(InputParams->AdaptiveLTR);
     }
-    info("\tAdaptiveLTR set: %s",
-         GetCodingOptStatus(CO3Params->AdaptiveLTR).c_str());
 
     if (InputParams->WinBRC &&
         (QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_CBR ||
@@ -1591,8 +1330,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
       if (InputParams->WinBRCMaxAvgKbps > 0) {
         CO3Params->WinBRCMaxAvgKbps = InputParams->WinBRCMaxAvgKbps;
-        info("\tWinBRCMaxSize set (manual): %d",
-             CO3Params->WinBRCMaxAvgKbps);
       } else {
         mfxF64 winBRCMultiplier = 1.3;
         if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1)
@@ -1603,50 +1340,35 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
         if (winBRCMaxKbps > static_cast<mfxF64>(std::numeric_limits<mfxU16>::max()))
           winBRCMaxKbps = static_cast<mfxF64>(std::numeric_limits<mfxU16>::max());
         CO3Params->WinBRCMaxAvgKbps = static_cast<mfxU16>(winBRCMaxKbps);
-        info("\tWinBRCMaxSize set (auto): %d",
-             CO3Params->WinBRCMaxAvgKbps);
       }
 
       if (InputParams->WinBRCSize > 0) {
         CO3Params->WinBRCSize = InputParams->WinBRCSize;
-        info("\tWinBRCSize set (manual): %d", CO3Params->WinBRCSize);
       } else {
         CO3Params->WinBRCSize =
             static_cast<mfxU16>(QSVEncodeParams.mfx.FrameInfo.FrameRateExtN /
                                 QSVEncodeParams.mfx.FrameInfo.FrameRateExtD);
-        info("\tWinBRCSize set (auto): %d", CO3Params->WinBRCSize);
       }
     }
 
     CO3Params->MotionVectorsOverPicBoundaries =
         GetCodingOpt(InputParams->MotionVectorsOverPicBoundaries);
-    info("\tMotionVectorsOverPicBoundaries set: %s",
-         GetCodingOptStatus(CO3Params->MotionVectorsOverPicBoundaries).c_str());
 
     if (InputParams->GlobalMotionBiasAdjustment.has_value() &&
         InputParams->GlobalMotionBiasAdjustment.value() == true) {
       CO3Params->GlobalMotionBiasAdjustment = MFX_CODINGOPTION_ON;
-      info("\tGlobalMotionBiasAdjustment set: ON");
       if (InputParams->MVCostScalingFactor.has_value()) {
         switch (InputParams->MVCostScalingFactor.value()) {
         case 1:
           CO3Params->MVCostScalingFactor = 1;
-          info("\tMVCostScalingFactor set: 1/2");
           break;
         case 2:
           CO3Params->MVCostScalingFactor = 2;
-          info("\tMVCostScalingFactor set: 1/4");
           break;
         case 3:
           CO3Params->MVCostScalingFactor = 3;
-          info("\tMVCostScalingFactor set: 1/8");
-          break;
-        default:
-          info("\tMVCostScalingFactor set: DEFAULT");
           break;
         }
-      } else {
-        info("\tMVCostScalingFactor set: AUTO");
       }
     } else {
       CO3Params->GlobalMotionBiasAdjustment = MFX_CODINGOPTION_OFF;
@@ -1654,8 +1376,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
     CO3Params->DirectBiasAdjustment =
         GetCodingOpt(InputParams->DirectBiasAdjustment);
-    info("\tDirectBiasAdjustment set: %s",
-         GetCodingOptStatus(CO3Params->DirectBiasAdjustment).c_str());
   }
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -1663,8 +1383,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     auto EncToolsParams = QSVEncodeParams.AddExtBuffer<mfxExtEncToolsConfig>();
     EncToolsParams->Header.BufferId = MFX_EXTBUFF_ENCTOOLS_CONFIG;
     EncToolsParams->Header.BufferSz = sizeof(mfxExtEncToolsConfig);
-
-    info("\tEncTools set: ON");
   }
 
   /*Don't touch it! Magic beyond the control of mere mortals takes place
@@ -1762,24 +1480,18 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       switch (InputParams->SAO.value()) {
       case 0:
         HevcParams->SampleAdaptiveOffset = MFX_SAO_DISABLE;
-        info("\tSAO set: DISABLE");
         break;
       case 1:
         HevcParams->SampleAdaptiveOffset = MFX_SAO_ENABLE_LUMA;
-        info("\tSAO set: LUMA");
         break;
       case 2:
         HevcParams->SampleAdaptiveOffset = MFX_SAO_ENABLE_CHROMA;
-        info("\tSAO set: CHROMA");
         break;
       case 3:
         HevcParams->SampleAdaptiveOffset =
             MFX_SAO_ENABLE_LUMA | MFX_SAO_ENABLE_CHROMA;
-        info("\tSAO set: ALL");
         break;
       }
-    } else {
-      info("\tSAO set: AUTO");
     }
 
     auto HevcTilesParams = QSVEncodeParams.AddExtBuffer<mfxExtHEVCTiles>();
@@ -1804,7 +1516,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
               sizeof(mfxExtAV1ScreenContentTools);
           AV1ScreenContentTools->Palette = MFX_CODINGOPTION_ON;
           AV1ScreenContentTools->IntraBlockCopy = MFX_CODINGOPTION_ON;
-          info("\tAV1ScreenContentTools: AUTO (ON)");
         }
       }
     } else {
@@ -1851,31 +1562,23 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       default:
       case 0:
         TuneQualityParams->TuneQuality = MFX_ENCODE_TUNE_OFF;
-        info("\tTuneQualityMode set: DEFAULT");
         break;
       case 1:
         TuneQualityParams->TuneQuality = MFX_ENCODE_TUNE_PSNR;
-        info("\tTuneQualityMode set: PSNR");
         break;
       case 2:
         TuneQualityParams->TuneQuality = MFX_ENCODE_TUNE_SSIM;
-        info("\tTuneQualityMode set: SSIM");
         break;
       case 3:
         TuneQualityParams->TuneQuality = MFX_ENCODE_TUNE_MS_SSIM;
-        info("\tTuneQualityMode set: MS SSIM");
         break;
       case 4:
         TuneQualityParams->TuneQuality = MFX_ENCODE_TUNE_VMAF;
-        info("\tTuneQualityMode set: VMAF");
         break;
       case 5:
         TuneQualityParams->TuneQuality = MFX_ENCODE_TUNE_PERCEPTUAL;
-        info("\tTuneQualityMode set: PERCEPTUAL");
         break;
       }
-    } else {
-      info("\tTuneQualityMode set: OFF");
     }
   }
 
@@ -1980,8 +1683,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
                                  ? MFX_IOPATTERN_IN_SYSTEM_MEMORY
                                  : MFX_IOPATTERN_IN_VIDEO_MEMORY;
 
-  info("\tFeature extended buffer size: %d", QSVEncodeParams.NumExtParam);
-
   if (!QSVUseSystemMemoryPath && QSVEncode) {
     mfxVideoParam ValidParams = {};
     memcpy(&ValidParams, &QSVEncodeParams, sizeof(mfxVideoParam));
@@ -2001,8 +1702,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   return MFX_ERR_NONE;
 #else
   QSVEncodeParams.IOPattern = MFX_IOPATTERN_IN_VIDEO_MEMORY;
-
-  info("\tFeature extended buffer size: %d", QSVEncodeParams.NumExtParam);
 
   {
     mfxVideoParam ValidParams = {};
@@ -2368,6 +2067,147 @@ mfxStatus QSVEncoder::GetVideoParam([[maybe_unused]] enum codec_enum Codec) {
   }
 
   return Status;
+}
+
+void QSVEncoder::LogActualParams() {
+  info("Actual encoder driver params:");
+
+  auto GetCodingOptStatus = [](const mfxU16 &Value) -> std::string {
+    if (Value == MFX_CODINGOPTION_ON)
+      return "ON";
+    if (Value == MFX_CODINGOPTION_OFF)
+      return "OFF";
+    return "AUTO";
+  };
+
+  auto GetTrellisStatus = [](const mfxU16 &Value) -> std::string {
+    if (Value == MFX_TRELLIS_OFF) return "OFF";
+    if (Value == (MFX_TRELLIS_I | MFX_TRELLIS_P | MFX_TRELLIS_B))
+      return "IPB";
+    if (Value == (MFX_TRELLIS_I | MFX_TRELLIS_P)) return "IP";
+    if (Value == (MFX_TRELLIS_I | MFX_TRELLIS_B)) return "IB";
+    if (Value == (MFX_TRELLIS_P | MFX_TRELLIS_B)) return "PB";
+    if (Value == MFX_TRELLIS_I) return "I";
+    if (Value == MFX_TRELLIS_P) return "P";
+    if (Value == MFX_TRELLIS_B) return "B";
+    return "AUTO";
+  };
+
+  auto GetSAOStatus = [](const mfxU16 &Value) -> std::string {
+    if (Value ==
+        (MFX_SAO_ENABLE_LUMA | MFX_SAO_ENABLE_CHROMA))
+      return "ALL";
+    if (Value == MFX_SAO_ENABLE_LUMA) return "LUMA";
+    if (Value == MFX_SAO_ENABLE_CHROMA) return "CHROMA";
+    if (Value == MFX_SAO_DISABLE) return "DISABLE";
+    return "AUTO";
+  };
+
+  info("\tLowpower set: %s",
+       GetCodingOptStatus(QSVEncodeParams.mfx.LowPower).c_str());
+  info("\tNumRefFrame set to: %d",
+       QSVEncodeParams.mfx.NumRefFrame);
+  info("\tGOPRefDist set to: %d frames (%d b-frames)",
+       QSVEncodeParams.mfx.GopRefDist,
+       QSVEncodeParams.mfx.GopRefDist - 1);
+
+  if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
+    mfxU16 profileBase = QSVEncodeParams.mfx.CodecProfile & 0x00FF;
+    mfxU16 tier = (QSVEncodeParams.mfx.CodecProfile >> 8) & 0xFF;
+    info("\tCodecProfile: %d (tier %s)", profileBase,
+         tier == MFX_TIER_HEVC_HIGH ? "high" : "main");
+  } else {
+    info("\tCodecProfile: %d",
+         QSVEncodeParams.mfx.CodecProfile);
+  }
+
+  if (QSVEncodeParams.mfx.CodecLevel) {
+    info("\tCodecLevel: %d",
+         QSVEncodeParams.mfx.CodecLevel);
+  }
+
+  if (QSVEncodeParams.mfx.BRCParamMultiplier) {
+    info("\tBRCParamMultiplier set: %d",
+         QSVEncodeParams.mfx.BRCParamMultiplier);
+  }
+
+  if (QSVEncodeParams.mfx.GopOptFlag & MFX_GOP_STRICT)
+    info("\tGopOptFlag set: STRICT");
+  else if (QSVEncodeParams.mfx.GopOptFlag & MFX_GOP_CLOSED)
+    info("\tGopOptFlag set: CLOSED");
+
+  auto *CO2 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
+  if (CO2) {
+    info("\tExtBRC set: %s",
+         GetCodingOptStatus(CO2->ExtBRC).c_str());
+    info("\tLookaheadDepth set to: %d",
+         CO2->LookAheadDepth);
+    info("\tMBBRC set: %s",
+         GetCodingOptStatus(CO2->MBBRC).c_str());
+    info("\tBPyramid set: %s",
+         GetCodingOptStatus(CO2->BRefType).c_str());
+    info("\tTrellis set: %s",
+         GetTrellisStatus(CO2->Trellis).c_str());
+    info("\tAdaptiveI set: %s",
+         GetCodingOptStatus(CO2->AdaptiveI).c_str());
+    info("\tAdaptiveB set: %s",
+         GetCodingOptStatus(CO2->AdaptiveB).c_str());
+    info("\tUseRawRef set: %s",
+         GetCodingOptStatus(CO2->UseRawRef).c_str());
+    info("\tBitrateLimit set: %s",
+         GetCodingOptStatus(CO2->BitrateLimit).c_str());
+  }
+
+  auto *CO3 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
+  if (CO3) {
+    info("\tFadeDetection set: %s",
+         GetCodingOptStatus(CO3->FadeDetection).c_str());
+    info("\tLowDelayHRD set: %s",
+         GetCodingOptStatus(CO3->LowDelayHrd).c_str());
+    if (CO3->NumRefActiveP[0]) {
+      info("\tNumRefActiveP set: %d",
+           CO3->NumRefActiveP[0]);
+    }
+    if (CO3->NumRefActiveBL0[0]) {
+      info("\tNumRefActiveBL0 set: %d",
+           CO3->NumRefActiveBL0[0]);
+    }
+    if (CO3->ContentInfo) {
+      info("\tContentInfo set: %d",
+           CO3->ContentInfo);
+    } else {
+      info("\tContentInfo: AUTO");
+    }
+    info("\tGPB set: %s",
+         GetCodingOptStatus(CO3->GPB).c_str());
+    info("\tPPyramid set: %s",
+         CO3->PRefType == MFX_P_REF_PYRAMID ? "PYRAMID" : "SIMPLE");
+    info("\tAdaptiveCQM set: %s",
+         GetCodingOptStatus(CO3->AdaptiveCQM).c_str());
+    info("\tAdaptiveRef set: %s",
+         GetCodingOptStatus(CO3->AdaptiveRef).c_str());
+    info("\tAdaptiveLTR set: %s",
+         GetCodingOptStatus(CO3->AdaptiveLTR).c_str());
+    info("\tMotionVectorsOverPicBoundaries set: %s",
+         GetCodingOptStatus(CO3->MotionVectorsOverPicBoundaries).c_str());
+    info("\tGlobalMotionBiasAdjustment set: %s",
+         GetCodingOptStatus(CO3->GlobalMotionBiasAdjustment).c_str());
+    if (CO3->GlobalMotionBiasAdjustment == MFX_CODINGOPTION_ON &&
+        CO3->MVCostScalingFactor) {
+      info("\tMVCostScalingFactor set: 1/%d",
+           1 << CO3->MVCostScalingFactor);
+    }
+    info("\tDirectBiasAdjustment set: %s",
+         GetCodingOptStatus(CO3->DirectBiasAdjustment).c_str());
+  }
+
+  if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
+    auto *HEVC = QSVEncodeParams.GetExtBuffer<mfxExtHEVCParam>();
+    if (HEVC) {
+      info("\tSAO set: %s",
+           GetSAOStatus(HEVC->SampleAdaptiveOffset).c_str());
+    }
+  }
 }
 
 void QSVEncoder::LoadFrameData(mfxFrameSurface1 *&Surface, uint8_t **FrameData,
