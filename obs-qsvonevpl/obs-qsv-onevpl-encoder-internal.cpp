@@ -263,8 +263,39 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     info("\tSetEncoderParams status:  %d", Status);
 
     if (Status >= MFX_ERR_NONE) {
+      mfxU32 savedFourCC = QSVEncodeParams.mfx.FrameInfo.FourCC;
+      mfxU16 savedBitDepthLuma = QSVEncodeParams.mfx.FrameInfo.BitDepthLuma;
+      mfxU16 savedBitDepthChroma = QSVEncodeParams.mfx.FrameInfo.BitDepthChroma;
+      mfxU16 savedShift = QSVEncodeParams.mfx.FrameInfo.Shift;
+
+      auto SavedCO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
+      mfxU16 savedTargetBitDepthLuma = SavedCO3Params ? SavedCO3Params->TargetBitDepthLuma : 0;
+      mfxU16 savedTargetBitDepthChroma = SavedCO3Params ? SavedCO3Params->TargetBitDepthChroma : 0;
+
       Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
       info("\tMFXVideoENCODE_Query status: %d", Status);
+
+      mfxU32 queriedFourCC = QSVEncodeParams.mfx.FrameInfo.FourCC;
+      mfxU16 queriedBitDepthLuma = QSVEncodeParams.mfx.FrameInfo.BitDepthLuma;
+      mfxU16 queriedBitDepthChroma = QSVEncodeParams.mfx.FrameInfo.BitDepthChroma;
+
+      QSVEncodeParams.mfx.FrameInfo.FourCC = savedFourCC;
+      QSVEncodeParams.mfx.FrameInfo.BitDepthLuma = savedBitDepthLuma;
+      QSVEncodeParams.mfx.FrameInfo.BitDepthChroma = savedBitDepthChroma;
+      QSVEncodeParams.mfx.FrameInfo.Shift = savedShift;
+
+      auto RestoredCO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
+      if (RestoredCO3Params) {
+        RestoredCO3Params->TargetBitDepthLuma = savedTargetBitDepthLuma;
+        RestoredCO3Params->TargetBitDepthChroma = savedTargetBitDepthChroma;
+      }
+
+      if (queriedFourCC != savedFourCC ||
+          queriedBitDepthLuma != savedBitDepthLuma) {
+        warn("MFXVideoENCODE_Query tried to change format parameters (FourCC: 0x%04X, BitDepth: %d/%d), restored to original",
+             queriedFourCC, queriedBitDepthLuma, queriedBitDepthChroma);
+      }
+
       if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
         Status = MFX_ERR_NONE;
       }
@@ -635,8 +666,39 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     Status = SetEncoderParams(InputParams, Codec);
 
     if (Status >= MFX_ERR_NONE) {
+      mfxU32 savedFourCC = QSVEncodeParams.mfx.FrameInfo.FourCC;
+      mfxU16 savedBitDepthLuma = QSVEncodeParams.mfx.FrameInfo.BitDepthLuma;
+      mfxU16 savedBitDepthChroma = QSVEncodeParams.mfx.FrameInfo.BitDepthChroma;
+      mfxU16 savedShift = QSVEncodeParams.mfx.FrameInfo.Shift;
+
+      auto SavedCO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
+      mfxU16 savedTargetBitDepthLuma = SavedCO3Params ? SavedCO3Params->TargetBitDepthLuma : 0;
+      mfxU16 savedTargetBitDepthChroma = SavedCO3Params ? SavedCO3Params->TargetBitDepthChroma : 0;
+
       Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
       info("\tMFXVideoENCODE_Query status: %d", Status);
+
+      mfxU32 queriedFourCC = QSVEncodeParams.mfx.FrameInfo.FourCC;
+      mfxU16 queriedBitDepthLuma = QSVEncodeParams.mfx.FrameInfo.BitDepthLuma;
+      mfxU16 queriedBitDepthChroma = QSVEncodeParams.mfx.FrameInfo.BitDepthChroma;
+
+      QSVEncodeParams.mfx.FrameInfo.FourCC = savedFourCC;
+      QSVEncodeParams.mfx.FrameInfo.BitDepthLuma = savedBitDepthLuma;
+      QSVEncodeParams.mfx.FrameInfo.BitDepthChroma = savedBitDepthChroma;
+      QSVEncodeParams.mfx.FrameInfo.Shift = savedShift;
+
+      auto RestoredCO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
+      if (RestoredCO3Params) {
+        RestoredCO3Params->TargetBitDepthLuma = savedTargetBitDepthLuma;
+        RestoredCO3Params->TargetBitDepthChroma = savedTargetBitDepthChroma;
+      }
+
+      if (queriedFourCC != savedFourCC ||
+          queriedBitDepthLuma != savedBitDepthLuma) {
+        warn("MFXVideoENCODE_Query tried to change format parameters (FourCC: 0x%04X, BitDepth: %d/%d), restored to original",
+             queriedFourCC, queriedBitDepthLuma, queriedBitDepthChroma);
+      }
+
       if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
         Status = MFX_ERR_NONE;
       }
