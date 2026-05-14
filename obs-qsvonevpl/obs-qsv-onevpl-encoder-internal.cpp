@@ -156,59 +156,6 @@ mfxStatus QSVEncoder::CreateSession([[maybe_unused]] enum codec_enum Codec,
       Status = MFXCreateSession(QSVLoader, GPUNum, &QSVSession);
     }
 
-    // Second attempt: basic hardware filters (retry)
-    if (Status < MFX_ERR_NONE) {
-      MFXUnload(QSVLoader);
-
-      QSVLoader = MFXLoad();
-      if (QSVLoader == nullptr) {
-        return MFX_ERR_UNDEFINED_BEHAVIOR;
-      }
-
-      QSVLoaderConfig[0] = MFXCreateConfig(QSVLoader);
-      QSVLoaderVariant[0].Type = MFX_VARIANT_TYPE_U32;
-      QSVLoaderVariant[0].Data.U32 = MFX_IMPL_TYPE_HARDWARE;
-      MFXSetConfigFilterProperty(
-          QSVLoaderConfig[0],
-          reinterpret_cast<const mfxU8 *>("mfxImplDescription.Impl"),
-          QSVLoaderVariant[0]);
-
-      QSVLoaderConfig[1] = MFXCreateConfig(QSVLoader);
-      QSVLoaderVariant[1].Type = MFX_VARIANT_TYPE_U32;
-      QSVLoaderVariant[1].Data.U32 = static_cast<mfxU32>(0x8086);
-      MFXSetConfigFilterProperty(
-          QSVLoaderConfig[1],
-          reinterpret_cast<const mfxU8 *>("mfxImplDescription.VendorID"),
-          QSVLoaderVariant[1]);
-
-#if defined(_WIN32) || defined(_WIN64)
-      if (QSVIsTextureEncoder) {
-        QSVLoaderConfig[2] = MFXCreateConfig(QSVLoader);
-        QSVLoaderVariant[2].Type = MFX_VARIANT_TYPE_U32;
-        QSVLoaderVariant[2].Data.U32 = MFX_ACCEL_MODE_VIA_D3D11;
-        MFXSetConfigFilterProperty(
-            QSVLoaderConfig[2],
-            reinterpret_cast<const mfxU8 *>(
-                "mfxImplDescription.AccelerationMode"),
-            QSVLoaderVariant[2]);
-      }
-#endif
-
-      Status = MFXCreateSession(QSVLoader, GPUNum, &QSVSession);
-    }
-
-    // Third attempt: try with no filters at all (most permissive)
-    if (Status < MFX_ERR_NONE) {
-      MFXUnload(QSVLoader);
-
-      QSVLoader = MFXLoad();
-      if (QSVLoader == nullptr) {
-        return MFX_ERR_UNDEFINED_BEHAVIOR;
-      }
-
-      Status = MFXCreateSession(QSVLoader, GPUNum, &QSVSession);
-    }
-
     if (Status < MFX_ERR_NONE) {
       error("Error code: %d", Status);
       throw std::runtime_error("CreateSession(): MFXCreateSession error");
@@ -590,33 +537,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
                    Status);
             }
           }
-          if (Status != MFX_ERR_NONE) {
-            warn("MFXVideoENCODE_Init (sysmem) failed, retrying with NO ext buffers");
-            QSVEncode->Close();
-            mfxU16 savedNumExtParam = QSVEncodeParams.NumExtParam;
-            QSVEncodeParams.NumExtParam = 0;
-
-            Status = QSVEncode->Init(&QSVEncodeParams);
-            info("\tMFXVideoENCODE_Init (sysmem) retry (no ext buffers) status: %d",
-                 Status);
-            if (Status < MFX_ERR_NONE) {
-              QSVEncodeParams.NumExtParam = savedNumExtParam;
-            }
-          }
-          if (Status != MFX_ERR_NONE &&
-              QSVEncodeParams.mfx.LowPower != MFX_CODINGOPTION_OFF) {
-            warn("MFXVideoENCODE_Init (sysmem) failed, retrying with LowPower=OFF");
-            QSVEncode->Close();
-            mfxU16 savedLowPower = QSVEncodeParams.mfx.LowPower;
-            QSVEncodeParams.mfx.LowPower = MFX_CODINGOPTION_OFF;
-
-            Status = QSVEncode->Init(&QSVEncodeParams);
-            info("\tMFXVideoENCODE_Init (sysmem) retry (LowPower=OFF) status: %d",
-                 Status);
-            if (Status < MFX_ERR_NONE) {
-              QSVEncodeParams.mfx.LowPower = savedLowPower;
-            }
-          }
           if (Status < MFX_ERR_NONE) {
             error("MFXVideoENCODE_Init (sysmem) failed after all retries (Status=%d)", Status);
             throw std::runtime_error(
@@ -833,54 +753,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
              QSVEncodeParams.mfx.ICQQuality);
       }
     }
-    if (Status < MFX_ERR_NONE) {
-      warn("MFXVideoENCODE_Init failed, retrying with NO ext buffers");
-      QSVEncode->Close();
-      mfxU16 savedNumExtParam = QSVEncodeParams.NumExtParam;
-      QSVEncodeParams.NumExtParam = 0;
-      Status = QSVEncode->Init(&QSVEncodeParams);
-      info("\tMFXVideoENCODE_Init retry (no ext buffers) status: %d",
-           Status);
-      info("\tMFXVideoENCODE_Init retry (no ext buffers) params: RateControl=%d, LowPower=%d, TargetKbps=%d, MaxKbps=%d, QPI=%d, QPP=%d, QPB=%d, ICQQuality=%d, NumRefFrame=%d, GopRefDist=%d",
-           QSVEncodeParams.mfx.RateControlMethod,
-           QSVEncodeParams.mfx.LowPower,
-           QSVEncodeParams.mfx.TargetKbps,
-           QSVEncodeParams.mfx.MaxKbps,
-           QSVEncodeParams.mfx.QPI,
-           QSVEncodeParams.mfx.QPP,
-           QSVEncodeParams.mfx.QPB,
-           QSVEncodeParams.mfx.ICQQuality,
-           QSVEncodeParams.mfx.NumRefFrame,
-           QSVEncodeParams.mfx.GopRefDist);
-      if (Status < MFX_ERR_NONE) {
-        QSVEncodeParams.NumExtParam = savedNumExtParam;
-      }
-    }
-    if (Status < MFX_ERR_NONE &&
-        QSVEncodeParams.mfx.LowPower != MFX_CODINGOPTION_OFF) {
-      warn("MFXVideoENCODE_Init failed, retrying with LowPower=OFF");
-      QSVEncode->Close();
-      mfxU16 savedLowPower = QSVEncodeParams.mfx.LowPower;
-      QSVEncodeParams.mfx.LowPower = MFX_CODINGOPTION_OFF;
-      Status = QSVEncode->Init(&QSVEncodeParams);
-      info("\tMFXVideoENCODE_Init retry (LowPower=OFF) status: %d",
-           Status);
-      info("\tMFXVideoENCODE_Init retry (LowPower=OFF) params: RateControl=%d, LowPower=%d, TargetKbps=%d, MaxKbps=%d, QPI=%d, QPP=%d, QPB=%d, ICQQuality=%d, NumRefFrame=%d, GopRefDist=%d",
-           QSVEncodeParams.mfx.RateControlMethod,
-           QSVEncodeParams.mfx.LowPower,
-           QSVEncodeParams.mfx.TargetKbps,
-           QSVEncodeParams.mfx.MaxKbps,
-           QSVEncodeParams.mfx.QPI,
-           QSVEncodeParams.mfx.QPP,
-           QSVEncodeParams.mfx.QPB,
-           QSVEncodeParams.mfx.ICQQuality,
-           QSVEncodeParams.mfx.NumRefFrame,
-           QSVEncodeParams.mfx.GopRefDist);
-      if (Status < MFX_ERR_NONE) {
-        QSVEncodeParams.mfx.LowPower = savedLowPower;
-      }
-    }
-
     if (Status < MFX_ERR_NONE) {
       error("MFXVideoENCODE_Init failed (Status=%d)", Status);
       return Status;
@@ -2489,15 +2361,6 @@ mfxStatus QSVEncoder::GetVideoParam([[maybe_unused]] enum codec_enum Codec) {
   }
 
   mfxStatus Status = QSVEncode->GetVideoParam(&QSVEncodeParams);
-
-  if (Status == MFX_ERR_UNSUPPORTED) {
-    warn("SPSPPS/VPS not supported for GetVideoParam, retrying without");
-    QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOptionSPSPPS>();
-    if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
-      QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOptionVPS>();
-    }
-    Status = QSVEncode->GetVideoParam(&QSVEncodeParams);
-  }
 
   if (Status < MFX_ERR_NONE) {
     error("Error code: %d", Status);
