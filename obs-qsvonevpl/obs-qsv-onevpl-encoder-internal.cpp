@@ -349,8 +349,12 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
       auto TemporalLayers =
           QSVEncodeParams.GetExtBuffer<mfxExtTemporalLayers>();
       if (TemporalLayers && TemporalLayers->NumLayers > 0) {
-        warn("MFXVideoENCODE_Init failed with temporal layers, "
-             "retrying without temporal layers");
+        warn("MFXVideoENCODE_Init failed with temporal layers (err=%d, "
+             "NumLayers=%d, GopRefDist=%d, NumRefFrame=%d), "
+             "retrying without temporal layers",
+             Status, TemporalLayers->NumLayers,
+             QSVEncodeParams.mfx.GopRefDist,
+             QSVEncodeParams.mfx.NumRefFrame);
         QSVEncode->Close();
         delete[] QSVLayerArray;
         QSVLayerArray = nullptr;
