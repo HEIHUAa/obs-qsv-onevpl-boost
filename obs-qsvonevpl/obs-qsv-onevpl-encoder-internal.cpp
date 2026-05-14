@@ -836,15 +836,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   QSVEncodeParams.mfx.RateControlMethod =
       static_cast<mfxU16>(InputParams->RateControl);
 
-  if ((InputParams->NumRefFrame > 0) && (InputParams->NumRefFrame < 17)) {
-    if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC &&
-        InputParams->Lookahead == true &&
-        (InputParams->NumRefFrame < InputParams->GOPRefDist - 1)) {
-      InputParams->NumRefFrame = InputParams->GOPRefDist;
-      blog(LOG_WARNING, "\tThe AVC Codec using Lookahead may be unstable if "
-                        "NumRefFrame < GopRefDist. The NumRefFrame value is "
-                        "automatically set to the GopRefDist value");
-    }
+  if (InputParams->NumRefFrame > 0) {
     QSVEncodeParams.mfx.NumRefFrame =
         static_cast<mfxU16>(InputParams->NumRefFrame);
   }

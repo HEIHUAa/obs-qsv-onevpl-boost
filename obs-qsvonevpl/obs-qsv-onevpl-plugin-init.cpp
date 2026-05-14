@@ -589,15 +589,12 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   Prop = obs_properties_add_int(Props, "keyint_sec", TEXT_KEYINT_SEC, 0, 20, 1);
   obs_property_int_set_suffix(Prop, " s");
 
-  obs_properties_add_int_slider(Props, "num_ref_frame", TEXT_NUM_REF_FRAME, 0,
-                                ((Codec == QSV_CODEC_AV1)   ? 16
-                                 : (Codec == QSV_CODEC_AVC) ? 15
-                                                            : 16),
-                                1);
+  obs_properties_add_int(Props, "num_ref_frame", TEXT_NUM_REF_FRAME, 0,
+                         65535, 1);
 
   Prop =
-      obs_properties_add_int_slider(Props, "gop_ref_dist", TEXT_GOP_REF_DIST, 0,
-                                    32, 1);
+      obs_properties_add_int(Props, "gop_ref_dist", TEXT_GOP_REF_DIST, 0,
+                             65535, 1);
   obs_property_set_long_description(
       Prop, TEXT_GOP_REF_DIST_DESC);
   obs_property_long_description(Prop);
@@ -1446,14 +1443,11 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       Context->EncoderParams.LookAheadDS = 2;
     }
   } else if (std::strcmp(LookaheadData, "LP") == 0) {
-    if (GopRefDistData > 0 && GopRefDistData < 17) {
+    if (GopRefDistData > 0) {
       Context->EncoderParams.Lookahead = true;
       Context->EncoderParams.LookaheadLP = true;
-      if (GopRefDistData > 8) {
-        Context->EncoderParams.LADepth = 8;
-      } else {
-        Context->EncoderParams.LADepth = static_cast<mfxU16>(GopRefDistData);
-      }
+      Context->EncoderParams.LADepth =
+          GopRefDistData > 8 ? 8 : static_cast<mfxU16>(GopRefDistData);
     }
   } else {
     Context->EncoderParams.Lookahead = false;
