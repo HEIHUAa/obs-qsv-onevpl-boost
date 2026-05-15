@@ -2005,6 +2005,23 @@ void QSVEncoder::LogActualParams() {
          GetCodingOptStatus(CO3->DirectBiasAdjustment).c_str());
   }
 
+  auto *TuneQuality = QSVEncodeParams.GetExtBuffer<mfxExtTuneEncodeQuality>();
+  if (TuneQuality) {
+    auto GetTuneQualityName = [](const mfxU16 &Value) -> std::string {
+      switch (Value) {
+      case MFX_ENCODE_TUNE_OFF: return "OFF";
+      case MFX_ENCODE_TUNE_PSNR: return "PSNR";
+      case MFX_ENCODE_TUNE_SSIM: return "SSIM";
+      case MFX_ENCODE_TUNE_MS_SSIM: return "MS SSIM";
+      case MFX_ENCODE_TUNE_VMAF: return "VMAF";
+      case MFX_ENCODE_TUNE_PERCEPTUAL: return "PERCEPTUAL";
+      default: return "DEFAULT";
+      }
+    };
+    info("\tTune quality: %s",
+         GetTuneQualityName(TuneQuality->TuneQuality).c_str());
+  }
+
   if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
     auto *HEVC = QSVEncodeParams.GetExtBuffer<mfxExtHEVCParam>();
     if (HEVC) {

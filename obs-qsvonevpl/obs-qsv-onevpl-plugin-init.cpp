@@ -1789,8 +1789,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     }
   }
 
-  info("\tTune quality: %s", Context->EncoderParams.TuneQualityMode);
-
   info("\tFPS numerator: %d", VOI->fps_num);
   info("\tFPS denominator: %d", VOI->fps_den);
   info("\tOutput width: %d", VideoWidth);
