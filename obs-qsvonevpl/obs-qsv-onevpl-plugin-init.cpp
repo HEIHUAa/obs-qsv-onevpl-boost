@@ -1571,7 +1571,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       else if (Depth > 100)
         Depth = 100;
       Context->EncoderParams.LADepth = static_cast<mfxU16>(Depth);
-      info("\tLookaheadDepth set: %d", Context->EncoderParams.LADepth);
     }
 
     if (std::strcmp(LookaheadDSData, "SLOW") == 0) {
