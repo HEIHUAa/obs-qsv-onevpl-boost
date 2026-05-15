@@ -1998,6 +1998,124 @@ mfxStatus QSVEncoder::GetVideoParam([[maybe_unused]] enum codec_enum Codec) {
   return Status;
 }
 
+/* ── HEVC SPS parser: extract actual CTU size from driver-generated SPS ── */
+
+static mfxU16 hevc_parse_ctb_read_bits(const mfxU8 *data, mfxU16 max_size,
+                                        size_t &byte_pos, int &bit_pos,
+                                        int n) {
+  mfxU16 val = 0;
+  for (int i = 0; i < n && byte_pos < max_size; i++) {
+    val = static_cast<mfxU16>((val << 1) |
+                              ((data[byte_pos] >> bit_pos) & 1));
+    bit_pos--;
+    if (bit_pos < 0) {
+      byte_pos++;
+      bit_pos = 7;
+    }
+  }
+  return val;
+}
+
+static mfxU16 hevc_parse_ctb_read_uev(const mfxU8 *data, mfxU16 max_size,
+                                       size_t &byte_pos, int &bit_pos) {
+  int leading_zeros = 0;
+  while (byte_pos < max_size) {
+    if (hevc_parse_ctb_read_bits(data, max_size, byte_pos, bit_pos, 1) != 0)
+      break;
+    leading_zeros++;
+  }
+  if (leading_zeros == 0)
+    return 0;
+  return static_cast<mfxU16>(
+      (1u << leading_zeros) - 1 +
+      hevc_parse_ctb_read_bits(data, max_size, byte_pos, bit_pos,
+                                leading_zeros));
+}
+
+static mfxU16 parse_hevc_sps_ctb_size(const mfxU8 *sps_data,
+                                       mfxU16 sps_size) {
+  if (!sps_data || sps_size < 2)
+    return 0;
+
+  size_t byte_pos = 2;
+  int bit_pos = 7;
+
+  mfxU16 sps_vps_id =
+      hevc_parse_ctb_read_bits(sps_data, sps_size, byte_pos, bit_pos, 4);
+  (void)sps_vps_id;
+
+  mfxU16 max_sub_layers =
+      hevc_parse_ctb_read_bits(sps_data, sps_size, byte_pos, bit_pos, 3);
+
+  hevc_parse_ctb_read_bits(sps_data, sps_size, byte_pos, bit_pos, 1);
+
+  hevc_parse_ctb_read_bits(sps_data, sps_size, byte_pos, bit_pos, 95);
+
+  if (max_sub_layers > 0) {
+    bool sub_layer_profile_present[7] = {false};
+    bool sub_layer_level_present[7] = {false};
+    for (int j = max_sub_layers - 1; j >= 0; j--) {
+      sub_layer_profile_present[j] =
+          hevc_parse_ctb_read_bits(sps_data, sps_size, byte_pos, bit_pos, 1) != 0;
+      sub_layer_level_present[j] =
+          hevc_parse_ctb_read_bits(sps_data, sps_size, byte_pos, bit_pos, 1) != 0;
+    }
+    for (int j = max_sub_layers - 1; j >= 0; j--) {
+      if (sub_layer_profile_present[j])
+        hevc_parse_ctb_read_bits(sps_data, sps_size, byte_pos, bit_pos, 95);
+      if (sub_layer_level_present[j])
+        hevc_parse_ctb_read_bits(sps_data, sps_size, byte_pos, bit_pos, 8);
+    }
+  }
+
+  hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+
+  mfxU16 chroma_format_idc =
+      hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+
+  if (chroma_format_idc == 3)
+    hevc_parse_ctb_read_bits(sps_data, sps_size, byte_pos, bit_pos, 1);
+
+  hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+  hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+
+  if (hevc_parse_ctb_read_bits(sps_data, sps_size, byte_pos, bit_pos, 1)) {
+    hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+    hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+    hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+    hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+  }
+
+  hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+  hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+
+  hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+
+  bool sub_layer_ordering =
+      hevc_parse_ctb_read_bits(sps_data, sps_size, byte_pos, bit_pos, 1) != 0;
+
+  mfxU16 num_ordering = sub_layer_ordering ? max_sub_layers + 1 : 1;
+  for (mfxU16 i = 0; i < num_ordering; i++) {
+    hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+    hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+    hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+  }
+
+  mfxU16 log2_min_cb =
+      hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+
+  mfxU16 log2_diff =
+      hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+
+  mfxU16 min_cb_log2 = log2_min_cb + 3;
+  mfxU16 ctb_log2 = min_cb_log2 + log2_diff;
+
+  if (ctb_log2 >= 4 && ctb_log2 <= 7)
+    return 1 << ctb_log2;
+
+  return 0;
+}
+
 void QSVEncoder::LogActualParams() {
   info("\tActual encoder driver params:");
 
@@ -2107,6 +2225,24 @@ void QSVEncoder::LogActualParams() {
          GetCodingOptStatus(CO2->BitrateLimit).c_str());
     info("\tAdaptiveMaxFrameSize set: %s",
          GetCodingOptStatus(CO2->MaxFrameSize).c_str());
+  }
+
+  if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
+    auto *SPSPPS = QSVEncodeParams.GetExtBuffer<mfxExtCodingOptionSPSPPS>();
+    if (SPSPPS && SPSPPS->SPSBuffer && SPSPPS->SPSBufSize > 0) {
+      mfxU16 actual_ctb =
+          parse_hevc_sps_ctb_size(SPSPPS->SPSBuffer, SPSPPS->SPSBufSize);
+      if (actual_ctb > 0)
+        info("\tCTU Size (actual): %d", actual_ctb);
+      else
+        info("\tCTU Size: could not parse from SPS");
+    } else {
+      info("\tCTU Size: not available from SPS");
+    }
+  } else if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1) {
+    info("\tCTU Size: N/A (AV1 uses superblocks)");
+  } else {
+    info("\tCTU Size: N/A (AVC uses 16x16 macroblocks)");
   }
 
   auto *CO3 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
