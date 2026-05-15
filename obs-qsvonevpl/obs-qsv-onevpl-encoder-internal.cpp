@@ -783,14 +783,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
         static_cast<mfxU16>(QSVEncodeParams.mfx.BufferSizeInKB / 2);
     info("\tBufferSize set to: %d KB",
          QSVEncodeParams.mfx.BufferSizeInKB * brcMultiplier);
-    if (InputParams->QVBRQuality > 0 && InputParams->QVBRQuality <= 51) {
-      auto CO3Params =
-          QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-      if (CO3Params) {
-        CO3Params->QVBRQuality = InputParams->QVBRQuality;
-        info("\tQVBRQuality set: %d", InputParams->QVBRQuality);
-      }
-    }
     break;
   }
 
@@ -1001,6 +993,11 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CO3Params->TransformSkip = GetCodingOpt(InputParams->TransformSkip);
     CO3Params->EnableMBForceIntra = MFX_CODINGOPTION_ON;
     CO3Params->FadeDetection = GetCodingOpt(InputParams->FadeDetection);
+
+    if (QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_QVBR &&
+        InputParams->QVBRQuality > 0 && InputParams->QVBRQuality <= 51) {
+      CO3Params->QVBRQuality = InputParams->QVBRQuality;
+    }
 
     // if (QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_CBR ||
     //     QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_VBR) {
@@ -1869,7 +1866,7 @@ mfxStatus QSVEncoder::GetVideoParam([[maybe_unused]] enum codec_enum Codec) {
 }
 
 void QSVEncoder::LogActualParams() {
-  info("Actual encoder driver params:");
+  info("\tActual encoder driver params:");
 
   auto GetCodingOptStatus = [](const mfxU16 &Value) -> std::string {
     if (Value == MFX_CODINGOPTION_ON)

@@ -1764,13 +1764,15 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   info("\tCodec: %s", Codec);
   info("\tRate control: %s\n", RateControlData);
 
+  if (Context->EncoderParams.RateControl == MFX_RATECONTROL_QVBR)
+    info("\tQVBR Quality: %d", Context->EncoderParams.QVBRQuality);
+
   if (Context->EncoderParams.RateControl != MFX_RATECONTROL_ICQ &&
       Context->EncoderParams.RateControl != MFX_RATECONTROL_CQP)
     info("\tTarget bitrate: %d", Context->EncoderParams.TargetBitRate);
 
   if (Context->EncoderParams.RateControl == MFX_RATECONTROL_VBR ||
-      Context->EncoderParams.RateControl == MFX_RATECONTROL_VCM ||
-      Context->EncoderParams.RateControl == MFX_RATECONTROL_QVBR)
+      Context->EncoderParams.RateControl == MFX_RATECONTROL_VCM)
     info("\tMax bitrate: %d", Context->EncoderParams.MaxBitRate);
 
   if (Context->EncoderParams.RateControl == MFX_RATECONTROL_ICQ &&
