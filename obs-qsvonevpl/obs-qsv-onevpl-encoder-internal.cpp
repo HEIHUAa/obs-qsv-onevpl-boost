@@ -210,12 +210,67 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     info("\tSetEncoderParams status:  %d", Status);
 
     if (Status >= MFX_ERR_NONE) {
-      // Temporarily skip Query to prevent driver from overriding user params
-      // Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
-      // info("\tMFXVideoENCODE_Query status: %d", Status);
-      // if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
-      //   Status = MFX_ERR_NONE;
-      // }
+      mfxExtCodingOption2 CO2Copy = {};
+      mfxExtCodingOption3 CO3Copy = {};
+      bool HasCO2 = false, HasCO3 = false;
+      if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>()) {
+        CO2Copy = *p;
+        HasCO2 = true;
+      }
+      if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>()) {
+        CO3Copy = *p;
+        HasCO3 = true;
+      }
+
+      Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
+      info("\tMFXVideoENCODE_Query status: %d", Status);
+
+      if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
+        auto CO2After = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
+        auto CO3After = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
+        info("\tDriver auto-corrected parameters:");
+        if (HasCO2 && CO2After) {
+          if (CO2Copy.MBBRC != CO2After->MBBRC)
+            info("\t  MBBRC: %d -> %d", CO2Copy.MBBRC, CO2After->MBBRC);
+          if (CO2Copy.AdaptiveI != CO2After->AdaptiveI)
+            info("\t  AdaptiveI: %d -> %d", CO2Copy.AdaptiveI, CO2After->AdaptiveI);
+          if (CO2Copy.AdaptiveB != CO2After->AdaptiveB)
+            info("\t  AdaptiveB: %d -> %d", CO2Copy.AdaptiveB, CO2After->AdaptiveB);
+          if (CO2Copy.UseRawRef != CO2After->UseRawRef)
+            info("\t  UseRawRef: %d -> %d", CO2Copy.UseRawRef, CO2After->UseRawRef);
+          if (CO2Copy.BitrateLimit != CO2After->BitrateLimit)
+            info("\t  BitrateLimit: %d -> %d", CO2Copy.BitrateLimit, CO2After->BitrateLimit);
+          if (CO2Copy.MaxFrameSize != CO2After->MaxFrameSize)
+            info("\t  MaxFrameSize: %d -> %d", CO2Copy.MaxFrameSize, CO2After->MaxFrameSize);
+        }
+        if (HasCO3 && CO3After) {
+          if (CO3Copy.WeightedPred != CO3After->WeightedPred)
+            info("\t  WeightedPred: %d -> %d", CO3Copy.WeightedPred, CO3After->WeightedPred);
+          if (CO3Copy.WeightedBiPred != CO3After->WeightedBiPred)
+            info("\t  WeightedBiPred: %d -> %d", CO3Copy.WeightedBiPred, CO3After->WeightedBiPred);
+          if (CO3Copy.AdaptiveRef != CO3After->AdaptiveRef)
+            info("\t  AdaptiveRef: %d -> %d", CO3Copy.AdaptiveRef, CO3After->AdaptiveRef);
+          if (CO3Copy.AdaptiveLTR != CO3After->AdaptiveLTR)
+            info("\t  AdaptiveLTR: %d -> %d", CO3Copy.AdaptiveLTR, CO3After->AdaptiveLTR);
+          if (CO3Copy.MotionVectorsOverPicBoundaries != CO3After->MotionVectorsOverPicBoundaries)
+            info("\t  MotionVectorsOverPicBoundaries: %d -> %d", CO3Copy.MotionVectorsOverPicBoundaries, CO3After->MotionVectorsOverPicBoundaries);
+          if (CO3Copy.GlobalMotionBiasAdjustment != CO3After->GlobalMotionBiasAdjustment)
+            info("\t  GlobalMotionBiasAdjustment: %d -> %d", CO3Copy.GlobalMotionBiasAdjustment, CO3After->GlobalMotionBiasAdjustment);
+          if (CO3Copy.MVCostScalingFactor != CO3After->MVCostScalingFactor)
+            info("\t  MVCostScalingFactor: %d -> %d", CO3Copy.MVCostScalingFactor, CO3After->MVCostScalingFactor);
+          if (CO3Copy.DirectBiasAdjustment != CO3After->DirectBiasAdjustment)
+            info("\t  DirectBiasAdjustment: %d -> %d", CO3Copy.DirectBiasAdjustment, CO3After->DirectBiasAdjustment);
+          if (CO3Copy.GPB != CO3After->GPB)
+            info("\t  GPB: %d -> %d", CO3Copy.GPB, CO3After->GPB);
+          if (CO3Copy.PRefType != CO3After->PRefType)
+            info("\t  PPyramid: %d -> %d", CO3Copy.PRefType, CO3After->PRefType);
+          if (CO3Copy.AdaptiveCQM != CO3After->AdaptiveCQM)
+            info("\t  AdaptiveCQM: %d -> %d", CO3Copy.AdaptiveCQM, CO3After->AdaptiveCQM);
+          if (CO3Copy.FadeDetection != CO3After->FadeDetection)
+            info("\t  FadeDetection: %d -> %d", CO3Copy.FadeDetection, CO3After->FadeDetection);
+        }
+        Status = MFX_ERR_NONE;
+      }
 
       Status = QSVEncode->Init(&QSVEncodeParams);
       info("\tMFXVideoENCODE_Init status: %d", Status);
@@ -270,12 +325,67 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
         info("\tSetEncoderParams (sysmem) status: %d", Status);
 
         if (Status >= MFX_ERR_NONE) {
-          // Temporarily skip Query to prevent driver from overriding user params
-          // Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
-          // info("\tMFXVideoENCODE_Query (sysmem) status: %d", Status);
-          // if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
-          //   Status = MFX_ERR_NONE;
-          // }
+          mfxExtCodingOption2 CO2Copy = {};
+          mfxExtCodingOption3 CO3Copy = {};
+          bool HasCO2 = false, HasCO3 = false;
+          if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>()) {
+            CO2Copy = *p;
+            HasCO2 = true;
+          }
+          if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>()) {
+            CO3Copy = *p;
+            HasCO3 = true;
+          }
+
+          Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
+          info("\tMFXVideoENCODE_Query (sysmem) status: %d", Status);
+
+          if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
+            auto CO2After = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
+            auto CO3After = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
+            info("\tDriver auto-corrected parameters (sysmem):");
+            if (HasCO2 && CO2After) {
+              if (CO2Copy.MBBRC != CO2After->MBBRC)
+                info("\t  MBBRC: %d -> %d", CO2Copy.MBBRC, CO2After->MBBRC);
+              if (CO2Copy.AdaptiveI != CO2After->AdaptiveI)
+                info("\t  AdaptiveI: %d -> %d", CO2Copy.AdaptiveI, CO2After->AdaptiveI);
+              if (CO2Copy.AdaptiveB != CO2After->AdaptiveB)
+                info("\t  AdaptiveB: %d -> %d", CO2Copy.AdaptiveB, CO2After->AdaptiveB);
+              if (CO2Copy.UseRawRef != CO2After->UseRawRef)
+                info("\t  UseRawRef: %d -> %d", CO2Copy.UseRawRef, CO2After->UseRawRef);
+              if (CO2Copy.BitrateLimit != CO2After->BitrateLimit)
+                info("\t  BitrateLimit: %d -> %d", CO2Copy.BitrateLimit, CO2After->BitrateLimit);
+              if (CO2Copy.MaxFrameSize != CO2After->MaxFrameSize)
+                info("\t  MaxFrameSize: %d -> %d", CO2Copy.MaxFrameSize, CO2After->MaxFrameSize);
+            }
+            if (HasCO3 && CO3After) {
+              if (CO3Copy.WeightedPred != CO3After->WeightedPred)
+                info("\t  WeightedPred: %d -> %d", CO3Copy.WeightedPred, CO3After->WeightedPred);
+              if (CO3Copy.WeightedBiPred != CO3After->WeightedBiPred)
+                info("\t  WeightedBiPred: %d -> %d", CO3Copy.WeightedBiPred, CO3After->WeightedBiPred);
+              if (CO3Copy.AdaptiveRef != CO3After->AdaptiveRef)
+                info("\t  AdaptiveRef: %d -> %d", CO3Copy.AdaptiveRef, CO3After->AdaptiveRef);
+              if (CO3Copy.AdaptiveLTR != CO3After->AdaptiveLTR)
+                info("\t  AdaptiveLTR: %d -> %d", CO3Copy.AdaptiveLTR, CO3After->AdaptiveLTR);
+              if (CO3Copy.MotionVectorsOverPicBoundaries != CO3After->MotionVectorsOverPicBoundaries)
+                info("\t  MotionVectorsOverPicBoundaries: %d -> %d", CO3Copy.MotionVectorsOverPicBoundaries, CO3After->MotionVectorsOverPicBoundaries);
+              if (CO3Copy.GlobalMotionBiasAdjustment != CO3After->GlobalMotionBiasAdjustment)
+                info("\t  GlobalMotionBiasAdjustment: %d -> %d", CO3Copy.GlobalMotionBiasAdjustment, CO3After->GlobalMotionBiasAdjustment);
+              if (CO3Copy.MVCostScalingFactor != CO3After->MVCostScalingFactor)
+                info("\t  MVCostScalingFactor: %d -> %d", CO3Copy.MVCostScalingFactor, CO3After->MVCostScalingFactor);
+              if (CO3Copy.DirectBiasAdjustment != CO3After->DirectBiasAdjustment)
+                info("\t  DirectBiasAdjustment: %d -> %d", CO3Copy.DirectBiasAdjustment, CO3After->DirectBiasAdjustment);
+              if (CO3Copy.GPB != CO3After->GPB)
+                info("\t  GPB: %d -> %d", CO3Copy.GPB, CO3After->GPB);
+              if (CO3Copy.PRefType != CO3After->PRefType)
+                info("\t  PPyramid: %d -> %d", CO3Copy.PRefType, CO3After->PRefType);
+              if (CO3Copy.AdaptiveCQM != CO3After->AdaptiveCQM)
+                info("\t  AdaptiveCQM: %d -> %d", CO3Copy.AdaptiveCQM, CO3After->AdaptiveCQM);
+              if (CO3Copy.FadeDetection != CO3After->FadeDetection)
+                info("\t  FadeDetection: %d -> %d", CO3Copy.FadeDetection, CO3After->FadeDetection);
+            }
+            Status = MFX_ERR_NONE;
+          }
 
           Status = QSVEncode->Init(&QSVEncodeParams);
           info("\tMFXVideoENCODE_Init (sysmem) status: %d", Status);
@@ -323,12 +433,66 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     Status = SetEncoderParams(InputParams, Codec);
 
     if (Status >= MFX_ERR_NONE) {
-      // Temporarily skip Query to prevent driver from overriding user params
-      // Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
-      // info("\tMFXVideoENCODE_Query status: %d", Status);
-      // if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
-      //   Status = MFX_ERR_NONE;
-      // }
+      mfxExtCodingOption2 CO2Copy = {};
+      mfxExtCodingOption3 CO3Copy = {};
+      bool HasCO2 = false, HasCO3 = false;
+      if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>()) {
+        CO2Copy = *p;
+        HasCO2 = true;
+      }
+      if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>()) {
+        CO3Copy = *p;
+        HasCO3 = true;
+      }
+
+      Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
+      info("\tMFXVideoENCODE_Query status: %d", Status);
+      if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
+        auto CO2After = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
+        auto CO3After = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
+        info("\tDriver auto-corrected parameters:");
+        if (HasCO2 && CO2After) {
+          if (CO2Copy.MBBRC != CO2After->MBBRC)
+            info("\t  MBBRC: %d -> %d", CO2Copy.MBBRC, CO2After->MBBRC);
+          if (CO2Copy.AdaptiveI != CO2After->AdaptiveI)
+            info("\t  AdaptiveI: %d -> %d", CO2Copy.AdaptiveI, CO2After->AdaptiveI);
+          if (CO2Copy.AdaptiveB != CO2After->AdaptiveB)
+            info("\t  AdaptiveB: %d -> %d", CO2Copy.AdaptiveB, CO2After->AdaptiveB);
+          if (CO2Copy.UseRawRef != CO2After->UseRawRef)
+            info("\t  UseRawRef: %d -> %d", CO2Copy.UseRawRef, CO2After->UseRawRef);
+          if (CO2Copy.BitrateLimit != CO2After->BitrateLimit)
+            info("\t  BitrateLimit: %d -> %d", CO2Copy.BitrateLimit, CO2After->BitrateLimit);
+          if (CO2Copy.MaxFrameSize != CO2After->MaxFrameSize)
+            info("\t  MaxFrameSize: %d -> %d", CO2Copy.MaxFrameSize, CO2After->MaxFrameSize);
+        }
+        if (HasCO3 && CO3After) {
+          if (CO3Copy.WeightedPred != CO3After->WeightedPred)
+            info("\t  WeightedPred: %d -> %d", CO3Copy.WeightedPred, CO3After->WeightedPred);
+          if (CO3Copy.WeightedBiPred != CO3After->WeightedBiPred)
+            info("\t  WeightedBiPred: %d -> %d", CO3Copy.WeightedBiPred, CO3After->WeightedBiPred);
+          if (CO3Copy.AdaptiveRef != CO3After->AdaptiveRef)
+            info("\t  AdaptiveRef: %d -> %d", CO3Copy.AdaptiveRef, CO3After->AdaptiveRef);
+          if (CO3Copy.AdaptiveLTR != CO3After->AdaptiveLTR)
+            info("\t  AdaptiveLTR: %d -> %d", CO3Copy.AdaptiveLTR, CO3After->AdaptiveLTR);
+          if (CO3Copy.MotionVectorsOverPicBoundaries != CO3After->MotionVectorsOverPicBoundaries)
+            info("\t  MotionVectorsOverPicBoundaries: %d -> %d", CO3Copy.MotionVectorsOverPicBoundaries, CO3After->MotionVectorsOverPicBoundaries);
+          if (CO3Copy.GlobalMotionBiasAdjustment != CO3After->GlobalMotionBiasAdjustment)
+            info("\t  GlobalMotionBiasAdjustment: %d -> %d", CO3Copy.GlobalMotionBiasAdjustment, CO3After->GlobalMotionBiasAdjustment);
+          if (CO3Copy.MVCostScalingFactor != CO3After->MVCostScalingFactor)
+            info("\t  MVCostScalingFactor: %d -> %d", CO3Copy.MVCostScalingFactor, CO3After->MVCostScalingFactor);
+          if (CO3Copy.DirectBiasAdjustment != CO3After->DirectBiasAdjustment)
+            info("\t  DirectBiasAdjustment: %d -> %d", CO3Copy.DirectBiasAdjustment, CO3After->DirectBiasAdjustment);
+          if (CO3Copy.GPB != CO3After->GPB)
+            info("\t  GPB: %d -> %d", CO3Copy.GPB, CO3After->GPB);
+          if (CO3Copy.PRefType != CO3After->PRefType)
+            info("\t  PPyramid: %d -> %d", CO3Copy.PRefType, CO3After->PRefType);
+          if (CO3Copy.AdaptiveCQM != CO3After->AdaptiveCQM)
+            info("\t  AdaptiveCQM: %d -> %d", CO3Copy.AdaptiveCQM, CO3After->AdaptiveCQM);
+          if (CO3Copy.FadeDetection != CO3After->FadeDetection)
+            info("\t  FadeDetection: %d -> %d", CO3Copy.FadeDetection, CO3After->FadeDetection);
+        }
+        Status = MFX_ERR_NONE;
+      }
     }
 
     Status = QSVEncode->Init(&QSVEncodeParams);
