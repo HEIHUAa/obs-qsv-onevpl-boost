@@ -210,12 +210,12 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     info("\tSetEncoderParams status:  %d", Status);
 
     if (Status >= MFX_ERR_NONE) {
-      Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
-      info("\tMFXVideoENCODE_Query status: %d", Status);
-
-      if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
-        Status = MFX_ERR_NONE;
-      }
+      // Temporarily skip Query to prevent driver from overriding user params
+      // Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
+      // info("\tMFXVideoENCODE_Query status: %d", Status);
+      // if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
+      //   Status = MFX_ERR_NONE;
+      // }
 
       Status = QSVEncode->Init(&QSVEncodeParams);
       info("\tMFXVideoENCODE_Init status: %d", Status);
@@ -270,12 +270,12 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
         info("\tSetEncoderParams (sysmem) status: %d", Status);
 
         if (Status >= MFX_ERR_NONE) {
-          Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
-          info("\tMFXVideoENCODE_Query (sysmem) status: %d", Status);
-
-          if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
-            Status = MFX_ERR_NONE;
-          }
+          // Temporarily skip Query to prevent driver from overriding user params
+          // Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
+          // info("\tMFXVideoENCODE_Query (sysmem) status: %d", Status);
+          // if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
+          //   Status = MFX_ERR_NONE;
+          // }
 
           Status = QSVEncode->Init(&QSVEncodeParams);
           info("\tMFXVideoENCODE_Init (sysmem) status: %d", Status);
@@ -323,11 +323,12 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     Status = SetEncoderParams(InputParams, Codec);
 
     if (Status >= MFX_ERR_NONE) {
-      Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
-      info("\tMFXVideoENCODE_Query status: %d", Status);
-      if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
-        Status = MFX_ERR_NONE;
-      }
+      // Temporarily skip Query to prevent driver from overriding user params
+      // Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
+      // info("\tMFXVideoENCODE_Query status: %d", Status);
+      // if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
+      //   Status = MFX_ERR_NONE;
+      // }
     }
 
     Status = QSVEncode->Init(&QSVEncodeParams);
