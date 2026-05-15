@@ -37,7 +37,7 @@ obq-qsvonevpl-boost 是 obq-qsvonevpl 增强版本 —— OBS Studio（30 及以
 
 ### 安装方法
 
-将下载下来的zip当中的data，obs-plugins文件夹解压到OBS Studio主目录下，也就是看得见bin，data，obs-plugins这三个文件的文件夹下
+将下载下来的zip当中的`data`，`obs-plugins`文件夹解压到OBS Studio主目录下，也就是看得见`bin`，`data`，`obs-plugins`这三个文件的文件夹下
 
 ---
 
