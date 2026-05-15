@@ -2232,10 +2232,11 @@ void QSVEncoder::LogActualParams() {
     if (SPSPPS && SPSPPS->SPSBuffer && SPSPPS->SPSBufSize > 0) {
       mfxU16 actual_ctb =
           parse_hevc_sps_ctb_size(SPSPPS->SPSBuffer, SPSPPS->SPSBufSize);
-      if (actual_ctb > 0)
+      if (actual_ctb > 0) {
         info("\tCTU Size (actual): %d", actual_ctb);
-      else
+      } else {
         info("\tCTU Size: could not parse from SPS");
+      }
     } else {
       info("\tCTU Size: not available from SPS");
     }
