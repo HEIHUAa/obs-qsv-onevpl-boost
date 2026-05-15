@@ -1,4 +1,4 @@
-# obs-qsv-onevpl
+# obs-qsv-onevpl-boost
 
 ## Intel QSV encoder plugin for OBS Studio based on libVPL library
 
@@ -23,7 +23,7 @@
 
 ### obq-qsvonevpl 是什么
 
-obq-qsvonevpl 是 OBS Studio（30 及以上版本）的一个插件。该插件基于 libVPL 库，为 Intel 显卡（UHD 700、Arc Alchemist、Arc Battlemage）实现视频编码器功能，适用于网络直播和本地视频录制。与 OBS Studio 内置的标准插件相比，此插件提供了更高级的编码器设置，以获得更高的视频质量。
+obq-qsvonevpl 是 OBS Studio（30 及以上版本）的一个插件。该插件基于 libVPL 库，为 Intel 显卡（UHD 600*试验中*、UHD 700、Arc Alchemist、Arc Battlemage）实现视频编码器功能，适用于网络直播和本地视频录制。与 OBS Studio 内置的标准插件相比，此插件提供了更高级的编码器设置，以获得更高的视频质量。
 
 ### 原始项目
 
