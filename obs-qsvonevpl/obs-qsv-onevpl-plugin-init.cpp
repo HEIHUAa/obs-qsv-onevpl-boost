@@ -673,15 +673,13 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
-  if (Codec == QSV_CODEC_AV1) {
-    Prop =
-        obs_properties_add_list(Props, "tune_quality", TEXT_TUNE_QUALITY_MODE,
-                                OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-    AddStrings(Prop, qsv_params_condition_tune_quality);
-    obs_property_set_long_description(
-        Prop, TEXT_TUNE_QUALITY_DESC);
-    obs_property_set_visible(Prop, IsFeatureSupported("tune_quality"));
-  }
+  Prop =
+      obs_properties_add_list(Props, "tune_quality", TEXT_TUNE_QUALITY_MODE,
+                              OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition_tune_quality);
+  obs_property_set_long_description(
+      Prop, TEXT_TUNE_QUALITY_DESC);
+  obs_property_set_visible(Prop, IsFeatureSupported("tune_quality"));
 
   // ── Encoder hardware ────────────────────────────────────────
   Prop = obs_properties_add_list(Props, "low_power", TEXT_LOW_POWER,
