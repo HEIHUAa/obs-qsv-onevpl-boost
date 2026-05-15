@@ -147,6 +147,35 @@ struct plugin_context {
 #define TEXT_EXT_BRC_DESC obs_module_text("ExtBRCDesc")
 #define TEXT_GPU_NUMBER_DESC obs_module_text("GPUNumberDesc")
 
+#define TEXT_AV1_CDEF obs_module_text("AV1CDEF")
+#define TEXT_AV1_RESTORATION obs_module_text("AV1Restoration")
+#define TEXT_AV1_LOOP_FILTER obs_module_text("AV1LoopFilter")
+#define TEXT_AV1_SUPER_RES obs_module_text("AV1SuperRes")
+#define TEXT_AV1_INTERP_FILTER obs_module_text("AV1InterpFilter")
+#define TEXT_AV1_ERROR_RESILIENT obs_module_text("AV1ErrorResilient")
+#define TEXT_AV1_CDEF_DESC obs_module_text("AV1CDEFDesc")
+#define TEXT_AV1_RESTORATION_DESC obs_module_text("AV1RestorationDesc")
+#define TEXT_AV1_LOOP_FILTER_DESC obs_module_text("AV1LoopFilterDesc")
+#define TEXT_AV1_SUPER_RES_DESC obs_module_text("AV1SuperResDesc")
+#define TEXT_AV1_INTERP_FILTER_DESC obs_module_text("AV1InterpFilterDesc")
+#define TEXT_AV1_ERROR_RESILIENT_DESC obs_module_text("AV1ErrorResilientDesc")
+
+#define TEXT_VPP_MCTF obs_module_text("VPPMCTF")
+#define TEXT_VPP_MCTF_STRENGTH obs_module_text("VPPMCTFStrength")
+#define TEXT_VPP_MCTF_DESC obs_module_text("VPPMCTFDesc")
+#define TEXT_VPP_MCTF_STRENGTH_DESC obs_module_text("VPPMCTFStrengthDesc")
+
+#define TEXT_WEIGHTED_PRED obs_module_text("WeightedPred")
+#define TEXT_WEIGHTED_BI_PRED obs_module_text("WeightedBiPred")
+#define TEXT_WEIGHTED_PRED_DESC obs_module_text("WeightedPredDesc")
+#define TEXT_WEIGHTED_BI_PRED_DESC obs_module_text("WeightedBiPredDesc")
+
+#define TEXT_ADAPTIVE_MAX_FRAME_SIZE obs_module_text("AdaptiveMaxFrameSize")
+#define TEXT_ADAPTIVE_MAX_FRAME_SIZE_DESC obs_module_text("AdaptiveMaxFrameSizeDesc")
+
+#define TEXT_CTU obs_module_text("CTU")
+#define TEXT_CTU_DESC obs_module_text("CTUDesc")
+
 static const char *const qsv_profile_names_av1[] = {"main", "high", "pro", 0};
 
 static const char *const qsv_profile_names_h264[] = {
@@ -247,6 +276,13 @@ static const char *const qsv_params_condition_denoise_mode[] = {
     "MANUAL | POST ENCODE",
     "OFF",
     0};
+
+static const char *const qsv_params_condition_av1_interp_filter[] = {
+    "DEFAULT", "EIGHTTAP", "EIGHTTAP_SMOOTH", "EIGHTTAP_SHARP", "BILINEAR",
+    "SWITCHABLE", 0};
+
+static const char *const qsv_params_condition_ctu_size[] = {
+    "AUTO", "16", "32", "64", "128", 0};
 
 static void SetDefaultEncoderParams(obs_data_t *, enum codec_enum);
 

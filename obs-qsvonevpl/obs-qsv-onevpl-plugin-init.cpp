@@ -379,6 +379,14 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   Prop = obs_properties_get(Properties, "scaling_mode");
   obs_property_set_visible(Prop, bVisibleVPP);
 
+  {
+    bool vpp_mctf_visible = bVisibleVPP;
+    obs_property_set_visible(obs_properties_get(Properties, "vpp_mctf"), vpp_mctf_visible);
+    const char *vpp_mctf_val = obs_data_get_string(Settings, "vpp_mctf");
+    bool vpp_mctf_strength_visible = vpp_mctf_visible && (std::strcmp(vpp_mctf_val, "ON") == 0);
+    obs_property_set_visible(obs_properties_get(Properties, "vpp_mctf_strength"), vpp_mctf_strength_visible);
+  }
+
   const char *denoise_mode = obs_data_get_string(Settings, "denoise_mode");
   bVisible = std::strcmp(denoise_mode, "MANUAL | PRE ENCODE") == 0 ||
              std::strcmp(denoise_mode, "MANUAL | POST ENCODE") == 0;
@@ -761,6 +769,16 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(
       Prop, TEXT_MV_OVER_PIC_BOUNDARIES_DESC);
 
+  Prop = obs_properties_add_list(Props, "weighted_pred", TEXT_WEIGHTED_PRED,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition_tristate);
+  obs_property_set_long_description(Prop, TEXT_WEIGHTED_PRED_DESC);
+
+  Prop = obs_properties_add_list(Props, "weighted_bi_pred", TEXT_WEIGHTED_BI_PRED,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition_tristate);
+  obs_property_set_long_description(Prop, TEXT_WEIGHTED_BI_PRED_DESC);
+
   Prop = obs_properties_add_list(Props, "trellis", TEXT_TRELLIS,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_trellis);
@@ -785,6 +803,11 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(
       Prop, TEXT_BITRATE_LIMIT_DESC);
 
+  Prop = obs_properties_add_list(Props, "adaptive_max_frame_size", TEXT_ADAPTIVE_MAX_FRAME_SIZE,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition);
+  obs_property_set_long_description(Prop, TEXT_ADAPTIVE_MAX_FRAME_SIZE_DESC);
+
   Prop = obs_properties_add_list(Props, "transform_skip", TEXT_TRANSFORM_SKIP,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_tristate);
@@ -808,6 +831,11 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(
       Prop, TEXT_NUM_REF_ACTIVE_BL1_DESC);
 
+  Prop = obs_properties_add_list(Props, "ctu", TEXT_CTU,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition_ctu_size);
+  obs_property_set_long_description(Prop, TEXT_CTU_DESC);
+
   // ── Codec-specific ──────────────────────────────────────────
   if (Codec == QSV_CODEC_HEVC) {
     Prop =
@@ -830,6 +858,36 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                    TEXT_SCREEN_CONTENT_TOOLS,
                                    OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
     AddStrings(Prop, qsv_params_condition_screen_content_tools);
+
+    Prop = obs_properties_add_list(Props, "av1_cdef", TEXT_AV1_CDEF,
+                                   OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+    AddStrings(Prop, qsv_params_condition_tristate);
+    obs_property_set_long_description(Prop, TEXT_AV1_CDEF_DESC);
+
+    Prop = obs_properties_add_list(Props, "av1_restoration", TEXT_AV1_RESTORATION,
+                                   OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+    AddStrings(Prop, qsv_params_condition_tristate);
+    obs_property_set_long_description(Prop, TEXT_AV1_RESTORATION_DESC);
+
+    Prop = obs_properties_add_list(Props, "av1_loop_filter", TEXT_AV1_LOOP_FILTER,
+                                   OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+    AddStrings(Prop, qsv_params_condition_tristate);
+    obs_property_set_long_description(Prop, TEXT_AV1_LOOP_FILTER_DESC);
+
+    Prop = obs_properties_add_list(Props, "av1_super_res", TEXT_AV1_SUPER_RES,
+                                   OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+    AddStrings(Prop, qsv_params_condition_tristate);
+    obs_property_set_long_description(Prop, TEXT_AV1_SUPER_RES_DESC);
+
+    Prop = obs_properties_add_list(Props, "av1_interp_filter", TEXT_AV1_INTERP_FILTER,
+                                   OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+    AddStrings(Prop, qsv_params_condition_av1_interp_filter);
+    obs_property_set_long_description(Prop, TEXT_AV1_INTERP_FILTER_DESC);
+
+    Prop = obs_properties_add_list(Props, "av1_error_resilient", TEXT_AV1_ERROR_RESILIENT,
+                                   OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+    AddStrings(Prop, qsv_params_condition_tristate);
+    obs_property_set_long_description(Prop, TEXT_AV1_ERROR_RESILIENT_DESC);
   }
 
   if (Codec != QSV_CODEC_AV1) {
@@ -894,6 +952,15 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                  OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition);
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
+
+  Prop = obs_properties_add_list(Props, "vpp_mctf", TEXT_VPP_MCTF,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition);
+  obs_property_set_long_description(Prop, TEXT_VPP_MCTF_DESC);
+  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
+
+  obs_properties_add_int_slider(Props, "vpp_mctf_strength", TEXT_VPP_MCTF_STRENGTH, 0, 20, 1);
+  obs_property_set_long_description(obs_properties_get(Props, "vpp_mctf_strength"), TEXT_VPP_MCTF_STRENGTH_DESC);
 
   // ── Miscellaneous ───────────────────────────────────────────
   Prop = obs_properties_add_list(Props, "scenario_info", TEXT_SCENARIO_INFO,
@@ -995,6 +1062,18 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   const char *BitrateLimitData =
       obs_data_get_string(Settings, "bitrate_limit");
   const char *TuneQualityData = obs_data_get_string(Settings, "tune_quality");
+  const char *AV1CDEFData = obs_data_get_string(Settings, "av1_cdef");
+  const char *AV1RestorationData = obs_data_get_string(Settings, "av1_restoration");
+  const char *AV1LoopFilterData = obs_data_get_string(Settings, "av1_loop_filter");
+  const char *AV1SuperResData = obs_data_get_string(Settings, "av1_super_res");
+  const char *AV1InterpFilterData = obs_data_get_string(Settings, "av1_interp_filter");
+  const char *AV1ErrorResilientData = obs_data_get_string(Settings, "av1_error_resilient");
+  const char *WeightedPredData = obs_data_get_string(Settings, "weighted_pred");
+  const char *WeightedBiPredData = obs_data_get_string(Settings, "weighted_bi_pred");
+  const char *AdaptiveMaxFrameSizeData = obs_data_get_string(Settings, "adaptive_max_frame_size");
+  const char *CTUData = obs_data_get_string(Settings, "ctu");
+  const char *VPPMCTFData = obs_data_get_string(Settings, "vpp_mctf");
+  int VPPMCTFStrengthData = static_cast<int>(obs_data_get_int(Settings, "vpp_mctf_strength"));
   const char *PPyramidData = obs_data_get_string(Settings, "p_pyramid");
   const char *ExtBRCData = obs_data_get_string(Settings, "extbrc");
   const char *EncToolsData = obs_data_get_string(Settings, "enctools");
@@ -1073,6 +1152,80 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   } else if (std::strcmp(TuneQualityData, "DEFAULT") == 0) {
     Context->EncoderParams.TuneQualityMode = 0;
   }
+
+  if (strcmp(AV1CDEFData, "ON") == 0)
+    Context->EncoderParams.AV1CDEF = 1;
+  else if (strcmp(AV1CDEFData, "OFF") == 0)
+    Context->EncoderParams.AV1CDEF = 0;
+  else
+    Context->EncoderParams.AV1CDEF = 2;
+
+  if (strcmp(AV1RestorationData, "ON") == 0)
+    Context->EncoderParams.AV1Restoration = 1;
+  else if (strcmp(AV1RestorationData, "OFF") == 0)
+    Context->EncoderParams.AV1Restoration = 0;
+  else
+    Context->EncoderParams.AV1Restoration = 2;
+
+  if (strcmp(AV1LoopFilterData, "ON") == 0)
+    Context->EncoderParams.AV1LoopFilter = 1;
+  else if (strcmp(AV1LoopFilterData, "OFF") == 0)
+    Context->EncoderParams.AV1LoopFilter = 0;
+  else
+    Context->EncoderParams.AV1LoopFilter = 2;
+
+  if (strcmp(AV1SuperResData, "ON") == 0)
+    Context->EncoderParams.AV1SuperRes = 1;
+  else if (strcmp(AV1SuperResData, "OFF") == 0)
+    Context->EncoderParams.AV1SuperRes = 0;
+  else
+    Context->EncoderParams.AV1SuperRes = 2;
+
+  if (strcmp(AV1InterpFilterData, "DEFAULT") == 0)
+    Context->EncoderParams.AV1InterpFilter = 0;
+  else if (strcmp(AV1InterpFilterData, "EIGHTTAP") == 0)
+    Context->EncoderParams.AV1InterpFilter = 1;
+  else if (strcmp(AV1InterpFilterData, "EIGHTTAP_SMOOTH") == 0)
+    Context->EncoderParams.AV1InterpFilter = 2;
+  else if (strcmp(AV1InterpFilterData, "EIGHTTAP_SHARP") == 0)
+    Context->EncoderParams.AV1InterpFilter = 3;
+  else if (strcmp(AV1InterpFilterData, "BILINEAR") == 0)
+    Context->EncoderParams.AV1InterpFilter = 4;
+  else if (strcmp(AV1InterpFilterData, "SWITCHABLE") == 0)
+    Context->EncoderParams.AV1InterpFilter = 5;
+
+  if (strcmp(AV1ErrorResilientData, "ON") == 0)
+    Context->EncoderParams.AV1ErrorResilient = 1;
+  else if (strcmp(AV1ErrorResilientData, "OFF") == 0)
+    Context->EncoderParams.AV1ErrorResilient = 0;
+  else
+    Context->EncoderParams.AV1ErrorResilient = 2;
+
+  if (strcmp(WeightedPredData, "ON") == 0)
+    Context->EncoderParams.WeightedPred = true;
+  else if (strcmp(WeightedPredData, "OFF") == 0)
+    Context->EncoderParams.WeightedPred = false;
+
+  if (strcmp(WeightedBiPredData, "ON") == 0)
+    Context->EncoderParams.WeightedBiPred = true;
+  else if (strcmp(WeightedBiPredData, "OFF") == 0)
+    Context->EncoderParams.WeightedBiPred = false;
+
+  if (strcmp(AdaptiveMaxFrameSizeData, "ON") == 0)
+    Context->EncoderParams.AdaptiveMaxFrameSize = true;
+  else if (strcmp(AdaptiveMaxFrameSizeData, "OFF") == 0)
+    Context->EncoderParams.AdaptiveMaxFrameSize = false;
+
+  if (strcmp(CTUData, "AUTO") == 0)
+    Context->EncoderParams.CTU = 0;
+  else
+    Context->EncoderParams.CTU = static_cast<mfxU16>(atoi(CTUData));
+
+  if (strcmp(VPPMCTFData, "ON") == 0)
+    Context->EncoderParams.VPPMCTFMode = 1;
+  else
+    Context->EncoderParams.VPPMCTFMode = 0;
+  Context->EncoderParams.VPPMCTFStrength = static_cast<mfxU16>(VPPMCTFStrengthData);
 
   switch (Context->Codec) {
   case QSV_CODEC_AVC:

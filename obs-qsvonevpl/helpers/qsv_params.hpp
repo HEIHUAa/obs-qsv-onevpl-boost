@@ -105,6 +105,14 @@ struct encoder_params {
   std::optional<int> NumRefActiveBL0;
   std::optional<int> NumRefActiveBL1;
   std::optional<int> SAO;
+  std::optional<int> AV1CDEF;
+  std::optional<int> AV1Restoration;
+  std::optional<int> AV1LoopFilter;
+  std::optional<int> AV1SuperRes;
+  std::optional<int> AV1InterpFilter;
+  std::optional<int> AV1ErrorResilient;
+  std::optional<int> VPPMCTFMode;
+  mfxU16 VPPMCTFStrength;
 
   mfxU32 FourCC;
   mfxU16 ChromaFormat;

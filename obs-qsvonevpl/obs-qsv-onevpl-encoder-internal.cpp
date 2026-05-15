@@ -555,6 +555,16 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
     info("\tPercEncPreFilter set: OFF");
   }
 
+  if (InputParams->VPPMCTFMode.has_value() && InputParams->VPPMCTFMode.value() == 1) {
+    auto MCTFParams = QSVProcessingParams.AddExtBuffer<mfxExtVppMctf>();
+    MCTFParams->Header.BufferId = MFX_EXTBUFF_VPP_MCTF;
+    MCTFParams->Header.BufferSz = sizeof(mfxExtVppMctf);
+    MCTFParams->FilterStrength = static_cast<mfxU16>(InputParams->VPPMCTFStrength);
+    info("\tMCTF set: ON | Strength %d", MCTFParams->FilterStrength);
+  } else {
+    info("\tMCTF set: OFF");
+  }
+
   QSVProcessingParams.IOPattern =
       MFX_IOPATTERN_IN_VIDEO_MEMORY | MFX_IOPATTERN_OUT_VIDEO_MEMORY;
 
@@ -978,6 +988,14 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CO2Params->UseRawRef = GetCodingOpt(InputParams->RawRef);
 
     CO2Params->BitrateLimit = GetCodingOpt(InputParams->BitrateLimit);
+
+    if (InputParams->AdaptiveMaxFrameSize.has_value()) {
+      CO2Params->MaxFrameSize = InputParams->AdaptiveMaxFrameSize.value()
+                                     ? MFX_CODINGOPTION_ON
+                                     : MFX_CODINGOPTION_OFF;
+      info("\tAdaptiveMaxFrameSize: %s",
+           InputParams->AdaptiveMaxFrameSize.value() ? "ON" : "OFF");
+    }
   }
 
   if (CO3Enabled == 1) {
@@ -1026,8 +1044,25 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
     CO3Params->LowDelayHrd = GetCodingOpt(InputParams->LowDelayHRD);
 
-    CO3Params->WeightedPred = MFX_WEIGHTED_PRED_DEFAULT;
-    CO3Params->WeightedBiPred = MFX_WEIGHTED_PRED_DEFAULT;
+    if (InputParams->WeightedPred.has_value()) {
+      CO3Params->WeightedPred = InputParams->WeightedPred.value()
+                                     ? MFX_CODINGOPTION_ON
+                                     : MFX_CODINGOPTION_OFF;
+      info("\tWeightedPred: %s",
+           InputParams->WeightedPred.value() ? "ON" : "OFF");
+    } else {
+      CO3Params->WeightedPred = MFX_WEIGHTED_PRED_DEFAULT;
+    }
+
+    if (InputParams->WeightedBiPred.has_value()) {
+      CO3Params->WeightedBiPred = InputParams->WeightedBiPred.value()
+                                       ? MFX_CODINGOPTION_ON
+                                       : MFX_CODINGOPTION_OFF;
+      info("\tWeightedBiPred: %s",
+           InputParams->WeightedBiPred.value() ? "ON" : "OFF");
+    } else {
+      CO3Params->WeightedBiPred = MFX_WEIGHTED_PRED_DEFAULT;
+    }
 
     CO3Params->RepartitionCheckEnable = MFX_CODINGOPTION_ON;
 
@@ -1358,6 +1393,104 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       case 5:
         TuneQualityParams->TuneQuality = MFX_ENCODE_TUNE_PERCEPTUAL;
         break;
+      }
+    }
+
+    if (InputParams->AV1CDEF.has_value() || InputParams->AV1Restoration.has_value() ||
+        InputParams->AV1LoopFilter.has_value() || InputParams->AV1SuperRes.has_value() ||
+        InputParams->AV1InterpFilter.has_value() || InputParams->AV1ErrorResilient.has_value()) {
+      auto AV1AuxDataParams = QSVEncodeParams.AddExtBuffer<mfxExtAV1AuxData>();
+      AV1AuxDataParams->Header.BufferId = MFX_EXTBUFF_AV1_AUXDATA;
+      AV1AuxDataParams->Header.BufferSz = sizeof(mfxExtAV1AuxData);
+
+      if (InputParams->AV1CDEF.has_value()) {
+        switch (InputParams->AV1CDEF.value()) {
+        case 0:
+          AV1AuxDataParams->EnableCdef = MFX_CODINGOPTION_OFF;
+          info("\tAV1 CDEF: OFF");
+          break;
+        case 1:
+          AV1AuxDataParams->EnableCdef = MFX_CODINGOPTION_ON;
+          info("\tAV1 CDEF: ON");
+          break;
+        case 2:
+          AV1AuxDataParams->EnableCdef = MFX_CODINGOPTION_UNKNOWN;
+          info("\tAV1 CDEF: AUTO");
+          break;
+        }
+      }
+
+      if (InputParams->AV1Restoration.has_value()) {
+        switch (InputParams->AV1Restoration.value()) {
+        case 0:
+          AV1AuxDataParams->EnableRestoration = MFX_CODINGOPTION_OFF;
+          info("\tAV1 Restoration: OFF");
+          break;
+        case 1:
+          AV1AuxDataParams->EnableRestoration = MFX_CODINGOPTION_ON;
+          info("\tAV1 Restoration: ON");
+          break;
+        case 2:
+          AV1AuxDataParams->EnableRestoration = MFX_CODINGOPTION_UNKNOWN;
+          info("\tAV1 Restoration: AUTO");
+          break;
+        }
+      }
+
+      if (InputParams->AV1LoopFilter.has_value()) {
+        switch (InputParams->AV1LoopFilter.value()) {
+        case 0:
+          AV1AuxDataParams->EnableLoopFilter = MFX_CODINGOPTION_OFF;
+          info("\tAV1 LoopFilter: OFF");
+          break;
+        case 1:
+          AV1AuxDataParams->EnableLoopFilter = MFX_CODINGOPTION_ON;
+          info("\tAV1 LoopFilter: ON");
+          break;
+        case 2:
+          AV1AuxDataParams->EnableLoopFilter = MFX_CODINGOPTION_UNKNOWN;
+          info("\tAV1 LoopFilter: AUTO");
+          break;
+        }
+      }
+
+      if (InputParams->AV1SuperRes.has_value()) {
+        switch (InputParams->AV1SuperRes.value()) {
+        case 0:
+          AV1AuxDataParams->EnableSuperres = MFX_CODINGOPTION_OFF;
+          info("\tAV1 SuperRes: OFF");
+          break;
+        case 1:
+          AV1AuxDataParams->EnableSuperres = MFX_CODINGOPTION_ON;
+          info("\tAV1 SuperRes: ON");
+          break;
+        case 2:
+          AV1AuxDataParams->EnableSuperres = MFX_CODINGOPTION_UNKNOWN;
+          info("\tAV1 SuperRes: AUTO");
+          break;
+        }
+      }
+
+      if (InputParams->AV1InterpFilter.has_value()) {
+        AV1AuxDataParams->InterpFilter = static_cast<mfxU8>(InputParams->AV1InterpFilter.value());
+        info("\tAV1 InterpFilter: %d", InputParams->AV1InterpFilter.value());
+      }
+
+      if (InputParams->AV1ErrorResilient.has_value()) {
+        switch (InputParams->AV1ErrorResilient.value()) {
+        case 0:
+          AV1AuxDataParams->ErrorResilientMode = MFX_CODINGOPTION_OFF;
+          info("\tAV1 ErrorResilient: OFF");
+          break;
+        case 1:
+          AV1AuxDataParams->ErrorResilientMode = MFX_CODINGOPTION_ON;
+          info("\tAV1 ErrorResilient: ON");
+          break;
+        case 2:
+          AV1AuxDataParams->ErrorResilientMode = MFX_CODINGOPTION_UNKNOWN;
+          info("\tAV1 ErrorResilient: AUTO");
+          break;
+        }
       }
     }
   }
