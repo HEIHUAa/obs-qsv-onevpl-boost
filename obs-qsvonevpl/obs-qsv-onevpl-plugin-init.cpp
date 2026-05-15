@@ -205,9 +205,9 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
 
   obs_data_set_default_string(Settings, "scenario_info", "AUTO");
   obs_data_set_default_string(Settings, "content_info", "AUTO");
-  obs_data_set_default_string(Settings, "transform_skip", "OFF");
-  obs_data_set_default_string(Settings, "fade_detection", "ON");
-  obs_data_set_default_string(Settings, "bitrate_limit", "ON");
+  obs_data_set_default_string(Settings, "transform_skip", "AUTO");
+  obs_data_set_default_string(Settings, "fade_detection", "AUTO");
+  obs_data_set_default_string(Settings, "bitrate_limit", "AUTO");
 
   obs_data_set_default_string(Settings, "screen_content_tools", "AUTO");
 

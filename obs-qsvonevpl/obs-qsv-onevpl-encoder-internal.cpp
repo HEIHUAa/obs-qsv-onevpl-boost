@@ -2032,6 +2032,26 @@ void QSVEncoder::LogActualParams() {
     return "AUTO";
   };
 
+  auto GetInterpFilterName = [](const mfxU8 &Value) -> std::string {
+    switch (Value) {
+    case 0: return "DEFAULT";
+    case 1: return "EIGHTTAP";
+    case 2: return "EIGHTTAP_SMOOTH";
+    case 3: return "EIGHTTAP_SHARP";
+    case 4: return "BILINEAR";
+    case 5: return "SWITCHABLE";
+    default: return "UNKNOWN";
+    }
+  };
+
+  auto GetWeightedPredStatus = [](const mfxU16 &Value) -> std::string {
+    if (Value == MFX_CODINGOPTION_ON)
+      return "ON";
+    if (Value == MFX_CODINGOPTION_OFF)
+      return "OFF";
+    return "DEFAULT";
+  };
+
   info("\tLowpower set: %s",
        GetCodingOptStatus(QSVEncodeParams.mfx.LowPower).c_str());
   info("\tNumRefFrame set to: %d",
@@ -2085,6 +2105,8 @@ void QSVEncoder::LogActualParams() {
          GetCodingOptStatus(CO2->UseRawRef).c_str());
     info("\tBitrateLimit set: %s",
          GetCodingOptStatus(CO2->BitrateLimit).c_str());
+    info("\tAdaptiveMaxFrameSize set: %s",
+         GetCodingOptStatus(CO2->MaxFrameSize).c_str());
   }
 
   auto *CO3 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
@@ -2132,6 +2154,28 @@ void QSVEncoder::LogActualParams() {
     }
     info("\tDirectBiasAdjustment set: %s",
          GetCodingOptStatus(CO3->DirectBiasAdjustment).c_str());
+    info("\tWeightedPred set: %s",
+         GetWeightedPredStatus(CO3->WeightedPred).c_str());
+    info("\tWeightedBiPred set: %s",
+         GetWeightedPredStatus(CO3->WeightedBiPred).c_str());
+  }
+
+  if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1) {
+    auto *AV1AuxData = QSVEncodeParams.GetExtBuffer<mfxExtAV1AuxData>();
+    if (AV1AuxData) {
+      info("\tAV1 CDEF set: %s",
+           GetCodingOptStatus(AV1AuxData->EnableCdef).c_str());
+      info("\tAV1 Restoration set: %s",
+           GetCodingOptStatus(AV1AuxData->EnableRestoration).c_str());
+      info("\tAV1 LoopFilter set: %s",
+           GetCodingOptStatus(AV1AuxData->EnableLoopFilter).c_str());
+      info("\tAV1 SuperRes set: %s",
+           GetCodingOptStatus(AV1AuxData->EnableSuperres).c_str());
+      info("\tAV1 InterpFilter set: %s",
+           GetInterpFilterName(AV1AuxData->InterpFilter).c_str());
+      info("\tAV1 ErrorResilient set: %s",
+           GetCodingOptStatus(AV1AuxData->ErrorResilientMode).c_str());
+    }
   }
 
   auto *TuneQuality = QSVEncodeParams.GetExtBuffer<mfxExtTuneEncodeQuality>();
@@ -2157,6 +2201,14 @@ void QSVEncoder::LogActualParams() {
       info("\tSAO set: %s",
            GetSAOStatus(HEVC->SampleAdaptiveOffset).c_str());
     }
+  }
+
+  auto *MCTF = QSVEncodeParams.GetExtBuffer<mfxExtVppMctf>();
+  if (MCTF) {
+    info("\tMCTF set: ON | Strength %d",
+         MCTF->FilterStrength);
+  } else {
+    info("\tMCTF set: OFF");
   }
 }
 
