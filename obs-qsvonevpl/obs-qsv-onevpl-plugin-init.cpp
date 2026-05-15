@@ -594,7 +594,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 
   Prop =
       obs_properties_add_int(Props, "b_frames", TEXT_B_FRAMES, 0,
-                             7, 1);
+                             65534, 1);
   obs_property_set_long_description(
       Prop, TEXT_B_FRAMES_DESC);
   obs_property_long_description(Prop);
