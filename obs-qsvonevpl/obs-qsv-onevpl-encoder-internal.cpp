@@ -2120,7 +2120,7 @@ void QSVEncoder::LogActualParams() {
       return "ON";
     if (Value == MFX_CODINGOPTION_OFF || Value == 32)
       return "OFF";
-    return "AUTO";
+    return std::to_string(Value);
   };
 
   auto GetTrellisStatus = [](const mfxU16 &Value) -> std::string {
@@ -2163,7 +2163,7 @@ void QSVEncoder::LogActualParams() {
       return "ON";
     if (Value == MFX_CODINGOPTION_OFF || Value == 32)
       return "OFF";
-    return "DEFAULT";
+    return std::to_string(Value);
   };
 
   info("\tLowpower set: %s",
