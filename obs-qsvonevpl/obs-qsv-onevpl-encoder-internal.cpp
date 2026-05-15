@@ -2049,7 +2049,7 @@ static mfxU16 parse_hevc_sps_ctb_size(const mfxU8 *sps_data,
 
   hevc_parse_ctb_read_bits(sps_data, sps_size, byte_pos, bit_pos, 1);
 
-  hevc_parse_ctb_read_bits(sps_data, sps_size, byte_pos, bit_pos, 95);
+  hevc_parse_ctb_read_bits(sps_data, sps_size, byte_pos, bit_pos, 96);
 
   if (max_sub_layers > 0) {
     bool sub_layer_profile_present[7] = {false};
@@ -2062,7 +2062,7 @@ static mfxU16 parse_hevc_sps_ctb_size(const mfxU8 *sps_data,
     }
     for (int j = max_sub_layers - 1; j >= 0; j--) {
       if (sub_layer_profile_present[j])
-        hevc_parse_ctb_read_bits(sps_data, sps_size, byte_pos, bit_pos, 95);
+        hevc_parse_ctb_read_bits(sps_data, sps_size, byte_pos, bit_pos, 96);
       if (sub_layer_level_present[j])
         hevc_parse_ctb_read_bits(sps_data, sps_size, byte_pos, bit_pos, 8);
     }
