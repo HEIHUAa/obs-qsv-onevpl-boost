@@ -803,10 +803,10 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(
       Prop, TEXT_BITRATE_LIMIT_DESC);
 
-  Prop = obs_properties_add_list(Props, "adaptive_max_frame_size", TEXT_ADAPTIVE_MAX_FRAME_SIZE,
-                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition);
+  Prop = obs_properties_add_int(Props, "adaptive_max_frame_size",
+                                TEXT_ADAPTIVE_MAX_FRAME_SIZE, 0, 65535, 100);
   obs_property_set_long_description(Prop, TEXT_ADAPTIVE_MAX_FRAME_SIZE_DESC);
+  obs_property_int_set_suffix(Prop, " Kb");
 
   Prop = obs_properties_add_list(Props, "transform_skip", TEXT_TRANSFORM_SKIP,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -1070,7 +1070,7 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   const char *AV1ErrorResilientData = obs_data_get_string(Settings, "av1_error_resilient");
   const char *WeightedPredData = obs_data_get_string(Settings, "weighted_pred");
   const char *WeightedBiPredData = obs_data_get_string(Settings, "weighted_bi_pred");
-  const char *AdaptiveMaxFrameSizeData = obs_data_get_string(Settings, "adaptive_max_frame_size");
+  int AdaptiveMaxFrameSizeData = static_cast<int>(obs_data_get_int(Settings, "adaptive_max_frame_size"));
   const char *CTUData = obs_data_get_string(Settings, "ctu");
   const char *VPPMCTFData = obs_data_get_string(Settings, "vpp_mctf");
   int VPPMCTFStrengthData = static_cast<int>(obs_data_get_int(Settings, "vpp_mctf_strength"));
@@ -1211,10 +1211,7 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   else if (strcmp(WeightedBiPredData, "OFF") == 0)
     Context->EncoderParams.WeightedBiPred = false;
 
-  if (strcmp(AdaptiveMaxFrameSizeData, "ON") == 0)
-    Context->EncoderParams.AdaptiveMaxFrameSize = true;
-  else if (strcmp(AdaptiveMaxFrameSizeData, "OFF") == 0)
-    Context->EncoderParams.AdaptiveMaxFrameSize = false;
+  Context->EncoderParams.AdaptiveMaxFrameSize = AdaptiveMaxFrameSizeData;
 
   if (strcmp(CTUData, "AUTO") == 0)
     Context->EncoderParams.CTU = 0;

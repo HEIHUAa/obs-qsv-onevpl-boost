@@ -989,13 +989,9 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
     CO2Params->BitrateLimit = GetCodingOpt(InputParams->BitrateLimit);
 
-    if (InputParams->AdaptiveMaxFrameSize.has_value()) {
-      CO2Params->MaxFrameSize = InputParams->AdaptiveMaxFrameSize.value()
-                                     ? MFX_CODINGOPTION_ON
-                                     : MFX_CODINGOPTION_OFF;
-      info("\tAdaptiveMaxFrameSize: %s",
-           InputParams->AdaptiveMaxFrameSize.value() ? "ON" : "OFF");
-    }
+    CO2Params->MaxFrameSize = InputParams->AdaptiveMaxFrameSize;
+    info("\tAdaptiveMaxFrameSize: %d Kb",
+         InputParams->AdaptiveMaxFrameSize);
   }
 
   if (CO3Enabled == 1) {
@@ -1988,7 +1984,26 @@ mfxStatus QSVEncoder::GetVideoParam([[maybe_unused]] enum codec_enum Codec) {
     VPSParams->VPSBufSize = 1024;
   }
 
+  info("\t[debug] LowPower before GetVideoParam: %d",
+       QSVEncodeParams.mfx.LowPower);
+
+  auto *CO2Debug = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
+  if (CO2Debug) {
+    info("\t[debug] CO2 MaxFrameSize before GetVideoParam: %d",
+         CO2Debug->MaxFrameSize);
+  }
+
   mfxStatus Status = QSVEncode->GetVideoParam(&QSVEncodeParams);
+
+  info("\t[debug] LowPower after GetVideoParam: %d",
+       QSVEncodeParams.mfx.LowPower);
+  info("\t[debug] GetVideoParam status: %d", Status);
+
+  auto *CO2DebugAfter = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
+  if (CO2DebugAfter) {
+    info("\t[debug] CO2 MaxFrameSize after GetVideoParam: %d",
+         CO2DebugAfter->MaxFrameSize);
+  }
 
   if (Status < MFX_ERR_NONE) {
     error("Error code: %d", Status);
@@ -2223,8 +2238,11 @@ void QSVEncoder::LogActualParams() {
          GetCodingOptStatus(CO2->UseRawRef).c_str());
     info("\tBitrateLimit set: %s",
          GetCodingOptStatus(CO2->BitrateLimit).c_str());
-    info("\tAdaptiveMaxFrameSize set: %s",
-         GetCodingOptStatus(CO2->MaxFrameSize).c_str());
+    if (CO2->MaxFrameSize > 0) {
+      info("\tAdaptiveMaxFrameSize set: %d Kb", CO2->MaxFrameSize);
+    } else {
+      info("\tAdaptiveMaxFrameSize set: AUTO");
+    }
   }
 
   if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
