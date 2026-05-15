@@ -350,10 +350,10 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
           QSVEncodeParams.GetExtBuffer<mfxExtTemporalLayers>();
       if (TemporalLayers && TemporalLayers->NumLayers > 0) {
         warn("MFXVideoENCODE_Init failed with temporal layers (err=%d, "
-             "NumLayers=%d, GopRefDist=%d, NumRefFrame=%d), "
+             "NumLayers=%d, B-frames=%d, NumRefFrame=%d), "
              "retrying without temporal layers",
              Status, TemporalLayers->NumLayers,
-             QSVEncodeParams.mfx.GopRefDist,
+             QSVEncodeParams.mfx.GopRefDist - 1,
              QSVEncodeParams.mfx.NumRefFrame);
         QSVEncode->Close();
         delete[] QSVLayerArray;
@@ -814,7 +814,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
   QSVEncodeParams.mfx.NumSlice = static_cast<mfxU16>(1);
 
-  QSVEncodeParams.mfx.GopRefDist = static_cast<mfxU16>(InputParams->GOPRefDist);
+  QSVEncodeParams.mfx.GopRefDist = InputParams->BFrames > 0 ? static_cast<mfxU16>(InputParams->BFrames + 1) : 0;
 
   if (COEnabled == 1) {
     auto COParams = QSVEncodeParams.AddExtBuffer<mfxExtCodingOption>();
@@ -915,7 +915,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
     CO2Params->MBBRC = GetCodingOpt(InputParams->MBBRC);
 
-    if (InputParams->GOPRefDist > 1) {
+    if (InputParams->BFrames > 0) {
       CO2Params->BRefType = MFX_B_REF_PYRAMID;
     } else {
       CO2Params->BRefType = MFX_B_REF_UNKNOWN;
@@ -1423,22 +1423,22 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   }
 
   if (InputParams->TemporalLayersNum > 1) {
-    mfxU16 MinGopRefDist = 1 << (InputParams->TemporalLayersNum - 1);
-    if (QSVEncodeParams.mfx.GopRefDist < MinGopRefDist) {
-      info("\tGopRefDist adjusted from %d to %d for temporal layers (%d layers req GopRefDist>=%d)",
-           QSVEncodeParams.mfx.GopRefDist, MinGopRefDist,
-           InputParams->TemporalLayersNum, MinGopRefDist);
-      QSVEncodeParams.mfx.GopRefDist = MinGopRefDist;
+    mfxU16 minGopDist = 1 << (InputParams->TemporalLayersNum - 1);
+    if (QSVEncodeParams.mfx.GopRefDist < minGopDist) {
+      info("\tB-frames adjusted from %d to %d for temporal layers (%d layers require B-frames>=%d)",
+           QSVEncodeParams.mfx.GopRefDist - 1, minGopDist - 1,
+           InputParams->TemporalLayersNum, minGopDist - 1);
+      QSVEncodeParams.mfx.GopRefDist = minGopDist;
     } else {
-      info("\tGopRefDist=%d is sufficient for temporal layers=%d (requires GopRefDist>=%d)",
-           QSVEncodeParams.mfx.GopRefDist,
-           InputParams->TemporalLayersNum, MinGopRefDist);
+      info("\tB-frames=%d is sufficient for temporal layers=%d (requires B-frames>=%d)",
+           QSVEncodeParams.mfx.GopRefDist - 1,
+           InputParams->TemporalLayersNum, minGopDist - 1);
     }
 
     if (QSVEncodeParams.mfx.NumRefFrame < QSVEncodeParams.mfx.GopRefDist) {
-      warn("\tNumRefFrame=%d may be too low for GopRefDist=%d with temporal layers=%d, encoder Init may fail",
+      warn("\tNumRefFrame=%d may be too low for B-frames=%d with temporal layers=%d, encoder Init may fail",
            QSVEncodeParams.mfx.NumRefFrame,
-           QSVEncodeParams.mfx.GopRefDist,
+           QSVEncodeParams.mfx.GopRefDist - 1,
            InputParams->TemporalLayersNum);
     }
 
@@ -1903,8 +1903,7 @@ void QSVEncoder::LogActualParams() {
        GetCodingOptStatus(QSVEncodeParams.mfx.LowPower).c_str());
   info("\tNumRefFrame set to: %d",
        QSVEncodeParams.mfx.NumRefFrame);
-  info("\tGOPRefDist set to: %d frames (%d b-frames)",
-       QSVEncodeParams.mfx.GopRefDist,
+  info("\tB-frames: %d",
        QSVEncodeParams.mfx.GopRefDist - 1);
 
   if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {

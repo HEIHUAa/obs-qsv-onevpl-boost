@@ -24,7 +24,7 @@ struct encoder_params {
   mfxU16 QPB;
   mfxU16 LADepth;
   mfxU16 KeyIntSec;
-  mfxU16 GOPRefDist;
+  mfxU16 BFrames;
   mfxU16 ICQQuality;
   mfxU16 VideoFormat;
   mfxU16 VideoFullRange;

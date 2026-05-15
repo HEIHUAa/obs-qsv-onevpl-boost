@@ -148,7 +148,7 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_int(Settings, "icq_quality", 23);
 
   obs_data_set_default_int(Settings, "keyint_sec", 2);
-  obs_data_set_default_int(Settings, "gop_ref_dist", 4);
+  obs_data_set_default_int(Settings, "b_frames", 3);
   obs_data_set_default_int(Settings, "async_depth", 4);
 
   obs_data_set_default_string(Settings, "intra_ref_encoding", "OFF");
@@ -593,10 +593,10 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                          65535, 1);
 
   Prop =
-      obs_properties_add_int(Props, "gop_ref_dist", TEXT_GOP_REF_DIST, 0,
-                             65535, 1);
+      obs_properties_add_int(Props, "b_frames", TEXT_B_FRAMES, 0,
+                             7, 1);
   obs_property_set_long_description(
-      Prop, TEXT_GOP_REF_DIST_DESC);
+      Prop, TEXT_B_FRAMES_DESC);
   obs_property_long_description(Prop);
 
   // ── Lookahead ───────────────────────────────────────────────
@@ -943,8 +943,8 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       static_cast<int>(obs_data_get_int(Settings, "icq_quality"));
   int KeyIntervalData =
       static_cast<int>(obs_data_get_int(Settings, "keyint_sec"));
-  int GopRefDistData =
-      static_cast<int>(obs_data_get_int(Settings, "gop_ref_dist"));
+  int BFramesData =
+      static_cast<int>(obs_data_get_int(Settings, "b_frames"));
 
   const char *HRDConformanceData =
       obs_data_get_string(Settings, "hrd_conformance");
@@ -1429,11 +1429,11 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       Context->EncoderParams.LookAheadDS = 2;
     }
   } else if (std::strcmp(LookaheadData, "LP") == 0) {
-    if (GopRefDistData > 0) {
+    if (BFramesData > 0) {
       Context->EncoderParams.Lookahead = true;
       Context->EncoderParams.LookaheadLP = true;
       Context->EncoderParams.LADepth =
-          GopRefDistData > 8 ? 8 : static_cast<mfxU16>(GopRefDistData);
+          BFramesData > 7 ? 8 : static_cast<mfxU16>(BFramesData + 1);
     }
   } else {
     Context->EncoderParams.Lookahead = false;
@@ -1698,7 +1698,7 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   Context->EncoderParams.FpsNum = static_cast<mfxU32>(VOI->fps_num);
   Context->EncoderParams.FpsDen = static_cast<mfxU32>(VOI->fps_den);
 
-  Context->EncoderParams.GOPRefDist = static_cast<mfxU16>(GopRefDistData);
+  Context->EncoderParams.BFrames = static_cast<mfxU16>(BFramesData);
   Context->EncoderParams.KeyIntSec = static_cast<mfxU16>(KeyIntervalData);
   Context->EncoderParams.ICQQuality = static_cast<mfxU16>(ICQQualityData);
   Context->EncoderParams.NumRefFrame = static_cast<mfxU16>(NumRefFrameData);
