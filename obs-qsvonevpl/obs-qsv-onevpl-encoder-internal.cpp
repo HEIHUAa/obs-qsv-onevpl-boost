@@ -1984,26 +1984,7 @@ mfxStatus QSVEncoder::GetVideoParam([[maybe_unused]] enum codec_enum Codec) {
     VPSParams->VPSBufSize = 1024;
   }
 
-  info("\t[debug] LowPower before GetVideoParam: %d",
-       QSVEncodeParams.mfx.LowPower);
-
-  auto *CO2Debug = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
-  if (CO2Debug) {
-    info("\t[debug] CO2 MaxFrameSize before GetVideoParam: %d",
-         CO2Debug->MaxFrameSize);
-  }
-
   mfxStatus Status = QSVEncode->GetVideoParam(&QSVEncodeParams);
-
-  info("\t[debug] LowPower after GetVideoParam: %d",
-       QSVEncodeParams.mfx.LowPower);
-  info("\t[debug] GetVideoParam status: %d", Status);
-
-  auto *CO2DebugAfter = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
-  if (CO2DebugAfter) {
-    info("\t[debug] CO2 MaxFrameSize after GetVideoParam: %d",
-         CO2DebugAfter->MaxFrameSize);
-  }
 
   if (Status < MFX_ERR_NONE) {
     error("Error code: %d", Status);
@@ -2135,9 +2116,9 @@ void QSVEncoder::LogActualParams() {
   info("\tActual encoder driver params:");
 
   auto GetCodingOptStatus = [](const mfxU16 &Value) -> std::string {
-    if (Value == MFX_CODINGOPTION_ON)
+    if (Value == MFX_CODINGOPTION_ON || Value == 16)
       return "ON";
-    if (Value == MFX_CODINGOPTION_OFF)
+    if (Value == MFX_CODINGOPTION_OFF || Value == 32)
       return "OFF";
     return "AUTO";
   };
@@ -2178,9 +2159,9 @@ void QSVEncoder::LogActualParams() {
   };
 
   auto GetWeightedPredStatus = [](const mfxU16 &Value) -> std::string {
-    if (Value == MFX_CODINGOPTION_ON)
+    if (Value == MFX_CODINGOPTION_ON || Value == 16)
       return "ON";
-    if (Value == MFX_CODINGOPTION_OFF)
+    if (Value == MFX_CODINGOPTION_OFF || Value == 32)
       return "OFF";
     return "DEFAULT";
   };
