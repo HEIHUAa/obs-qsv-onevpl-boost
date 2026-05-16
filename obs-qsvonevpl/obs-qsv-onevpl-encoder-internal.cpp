@@ -1036,7 +1036,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CO2Params->BufferingPeriodSEI = MFX_BPSEI_IFRAME;
     CO2Params->RepeatPPS = MFX_CODINGOPTION_OFF;
     CO2Params->FixedFrameRate = MFX_CODINGOPTION_ON;
-    CO2Params->DisableDeblockingIdc = MFX_CODINGOPTION_OFF;
+    CO2Params->DisableDeblockingIdc = 0; // enable deblocking filter
     CO2Params->EnableMAD = MFX_CODINGOPTION_ON;
     // if (QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_CBR ||
     //     QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_VBR) {
