@@ -324,8 +324,7 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   bool bVisible_lookahead_lp = std::strcmp(lookahead, "LP") == 0;
 
   Prop = obs_properties_get(Properties, "lookahead_ds");
-  obs_property_set_visible(
-      Prop, bVisible && (bVisible_lookahead_hq || bVisible_lookahead_lp));
+  obs_property_set_visible(Prop, bVisible && bVisible_lookahead_hq);
 
   Prop = obs_properties_get(Properties, "lookahead_latency");
   obs_property_set_visible(Prop, bVisible && bVisible_lookahead_hq);
