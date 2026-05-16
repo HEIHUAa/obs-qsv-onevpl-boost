@@ -2657,9 +2657,9 @@ void QSVEncoder::LoadFrameData(mfxFrameSurface1 *&Surface, uint8_t **FrameData,
 
   if (Surface->Info.FourCC == MFX_FOURCC_NV12) {
     if (Pitch == static_cast<mfxU16>(FrameLinesize[0])) {
-      memcpy(SurfaceData->Y, FrameData[0],
+      avx2_memcpy(SurfaceData->Y, FrameData[0],
              static_cast<size_t>(Height) * Pitch);
-      memcpy(SurfaceData->UV, FrameData[1],
+      avx2_memcpy(SurfaceData->UV, FrameData[1],
              static_cast<size_t>(Height / 2) * Pitch);
     } else {
       PTR = static_cast<mfxU8 *>(SurfaceData->Y + SurfaceInfo->CropX +
@@ -2680,9 +2680,9 @@ void QSVEncoder::LoadFrameData(mfxFrameSurface1 *&Surface, uint8_t **FrameData,
   } else if (Surface->Info.FourCC == MFX_FOURCC_P010) {
     const size_t line_size = static_cast<size_t>(Width) * 2;
     if (Pitch == static_cast<mfxU16>(FrameLinesize[0])) {
-      memcpy(SurfaceData->Y, FrameData[0],
+      avx2_memcpy(SurfaceData->Y, FrameData[0],
              static_cast<size_t>(Height) * Pitch);
-      memcpy(SurfaceData->UV, FrameData[1],
+      avx2_memcpy(SurfaceData->UV, FrameData[1],
              static_cast<size_t>(Height / 2) * Pitch);
     } else {
       PTR = static_cast<mfxU8 *>(SurfaceData->Y + SurfaceInfo->CropX +
@@ -2703,7 +2703,7 @@ void QSVEncoder::LoadFrameData(mfxFrameSurface1 *&Surface, uint8_t **FrameData,
   } else if (Surface->Info.FourCC == MFX_FOURCC_RGB4) {
     const size_t line_size = static_cast<size_t>(Width) * 4;
     if (Pitch == static_cast<mfxU16>(FrameLinesize[0])) {
-      memcpy(SurfaceData->B, FrameData[0],
+      avx2_memcpy(SurfaceData->B, FrameData[0],
              static_cast<size_t>(Height) * Pitch);
     } else {
       for (i = 0; i < Height; i++) {
@@ -2811,10 +2811,12 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
 
 mfxStatus QSVEncoder::GetFreeTaskIndex(int *TaskID) {
   if (!QSVTaskPool.empty()) {
-    for (int i = 0; i < QSVTaskPool.size(); i++) {
-      if (static_cast<mfxSyncPoint>(nullptr) == QSVTaskPool[i].SyncPoint) {
-        QSVSyncTaskID = (i + 1) % static_cast<int>(QSVTaskPool.size());
-        *TaskID = i;
+    int StartIdx = QSVSyncTaskID;
+    for (int i = 0; i < static_cast<int>(QSVTaskPool.size()); i++) {
+      int Idx = (StartIdx + i) % static_cast<int>(QSVTaskPool.size());
+      if (static_cast<mfxSyncPoint>(nullptr) == QSVTaskPool[Idx].SyncPoint) {
+        QSVSyncTaskID = (Idx + 1) % static_cast<int>(QSVTaskPool.size());
+        *TaskID = Idx;
         return MFX_ERR_NONE;
       }
     }
