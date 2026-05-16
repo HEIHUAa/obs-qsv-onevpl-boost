@@ -29,6 +29,8 @@ struct plugin_context {
   mfxU32 CachedFpsNum;
   mfxU32 CachedFpsDen;
   int64_t CachedTSDiv;
+
+  std::mutex EncoderMutex;
 };
 
 #define TEXT_SPEED obs_module_text("TargetUsage")

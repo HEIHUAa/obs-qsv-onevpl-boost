@@ -83,7 +83,7 @@ void DestroyPluginContext(void *Data) {
       try {
 
         {
-          std::lock_guard<std::mutex> lock(Mutex);
+          std::lock_guard<std::mutex> lock(Context->EncoderMutex);
 
           Context->EncoderPTR->ClearData();
 
@@ -688,7 +688,7 @@ bool EncodeTexture(void *Data, encoder_texture *Texture, int64_t PTS,
     return false;
 
   {
-    std::lock_guard<std::mutex> lock(Mutex);
+    std::lock_guard<std::mutex> lock(Context->EncoderMutex);
 
     auto *Bitstream = static_cast<mfxBitstream *>(nullptr);
 
@@ -721,7 +721,7 @@ bool EncodeFrame(void *Data, encoder_frame *Frame, encoder_packet *Packet,
   }
 
   {
-    std::lock_guard<std::mutex> lock(Mutex);
+    std::lock_guard<std::mutex> lock(Context->EncoderMutex);
 
     auto *Bitstream = static_cast<mfxBitstream *>(nullptr);
 

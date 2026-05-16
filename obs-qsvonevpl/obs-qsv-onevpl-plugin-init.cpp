@@ -2002,7 +2002,8 @@ plugin_context *InitPluginContext(enum codec_enum Codec, obs_data_t *Settings,
 
   try {
 
-    std::lock_guard<std::mutex> lock(Mutex);
+    static std::mutex InitMutex;
+    std::lock_guard<std::mutex> lock(InitMutex);
     if (!OpenEncoder(Context->EncoderPTR, &Context->EncoderParams,
                      Context->Codec, IsTextureEncoder)) {
       blog(LOG_WARNING, "QSV failed to init encoder.");

@@ -2779,8 +2779,12 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
     if (MFX_ERR_NONE == Status) {
       break;
     } else if (MFX_ERR_NONE < Status && !QSVTaskPool[TaskID].SyncPoint) {
-      if (MFX_WRN_DEVICE_BUSY == Status)
-        Sleep(1);
+      if (MFX_WRN_DEVICE_BUSY == Status) {
+        if (EncodeRetryCount < 10)
+          Sleep(0);
+        else
+          Sleep(1);
+      }
     } else if (MFX_ERR_NONE < Status && QSVTaskPool[TaskID].SyncPoint) {
       Status = MFX_ERR_NONE;
       break;
@@ -2933,8 +2937,12 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
       if (MFX_ERR_NONE == Status) {
         break;
       } else if (MFX_ERR_NONE < Status && !QSVTaskPool[TaskID].SyncPoint) {
-        if (MFX_WRN_DEVICE_BUSY == Status)
-          Sleep(1);
+        if (MFX_WRN_DEVICE_BUSY == Status) {
+          if (EncodeRetryCount < 10)
+            Sleep(0);
+          else
+            Sleep(1);
+        }
       } else if (MFX_ERR_NONE < Status && QSVTaskPool[TaskID].SyncPoint) {
         Status = MFX_ERR_NONE;
         break;
@@ -3125,8 +3133,12 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
     if (MFX_ERR_NONE == Status) {
       break;
     } else if (MFX_ERR_NONE < Status && !QSVTaskPool[TaskID].SyncPoint) {
-      if (MFX_WRN_DEVICE_BUSY == Status)
-        Sleep(1);
+      if (MFX_WRN_DEVICE_BUSY == Status) {
+        if (EncodeRetryCount < 10)
+          Sleep(0);
+        else
+          Sleep(1);
+      }
     } else if (MFX_ERR_NONE < Status && QSVTaskPool[TaskID].SyncPoint) {
       Status = MFX_ERR_NONE;
       break;

@@ -16,8 +16,6 @@
 #include "obs-qsv-onevpl-plugin-init.hpp"
 #endif
 
-static inline std::mutex Mutex;
-
 static unsigned short VPLVersionMajor;
 static unsigned short VPLVersionMinor;
 
