@@ -1773,167 +1773,15 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
                                  ? MFX_IOPATTERN_IN_SYSTEM_MEMORY
                                  : MFX_IOPATTERN_IN_VIDEO_MEMORY;
 
-  info("\t[debug] SetEncoderParams - all parameter values:");
-  info("\t[debug]   mfx.LowPower: %d", QSVEncodeParams.mfx.LowPower);
-  info("\t[debug]   mfx.RateControlMethod: %d", QSVEncodeParams.mfx.RateControlMethod);
-  info("\t[debug]   mfx.NumRefFrame: %d", QSVEncodeParams.mfx.NumRefFrame);
-  info("\t[debug]   mfx.TargetUsage: %d", QSVEncodeParams.mfx.TargetUsage);
-  info("\t[debug]   mfx.CodecProfile: %d", QSVEncodeParams.mfx.CodecProfile);
-  info("\t[debug]   mfx.CodecLevel: %d", QSVEncodeParams.mfx.CodecLevel);
-  info("\t[debug]   mfx.GopPicSize: %d", QSVEncodeParams.mfx.GopPicSize);
-  info("\t[debug]   mfx.GopRefDist: %d", QSVEncodeParams.mfx.GopRefDist);
-  info("\t[debug]   mfx.GopOptFlag: %d", QSVEncodeParams.mfx.GopOptFlag);
-  info("\t[debug]   mfx.IdrInterval: %d", QSVEncodeParams.mfx.IdrInterval);
-  info("\t[debug]   mfx.NumSlice: %d", QSVEncodeParams.mfx.NumSlice);
-  info("\t[debug]   mfx.BRCParamMultiplier: %d", QSVEncodeParams.mfx.BRCParamMultiplier);
-  info("\t[debug]   mfx.TargetKbps: %d", QSVEncodeParams.mfx.TargetKbps);
-  info("\t[debug]   mfx.MaxKbps: %d", QSVEncodeParams.mfx.MaxKbps);
-  info("\t[debug]   mfx.BufferSizeInKB: %d", QSVEncodeParams.mfx.BufferSizeInKB);
-  info("\t[debug]   mfx.InitialDelayInKB: %d", QSVEncodeParams.mfx.InitialDelayInKB);
-  info("\t[debug]   mfx.ICQQuality: %d", QSVEncodeParams.mfx.ICQQuality);
-  info("\t[debug]   mfx.QPI: %d, QPP: %d, QPB: %d",
-       QSVEncodeParams.mfx.QPI, QSVEncodeParams.mfx.QPP, QSVEncodeParams.mfx.QPB);
-  if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>()) {
-    info("\t[debug]   CO: CAVLC=%d, RateDistortionOpt=%d, IntraPredBlockSize=%d, InterPredBlockSize=%d",
-         p->CAVLC, p->RateDistortionOpt, p->IntraPredBlockSize, p->InterPredBlockSize);
-    info("\t[debug]   CO: MVPrecision=%d, MECostType=%d, MESearchType=%d, MaxDecFrameBuffering=%d",
-         p->MVPrecision, p->MECostType, p->MESearchType, p->MaxDecFrameBuffering);
-    info("\t[debug]   CO: VuiVclHrdParameters=%d, VuiNalHrdParameters=%d, NalHrdConformance=%d",
-         p->VuiVclHrdParameters, p->VuiNalHrdParameters, p->NalHrdConformance);
-  }
-  if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>()) {
-    info("\t[debug]   CO2: MBBRC=%d, BRefType=%d, Trellis=%d, AdaptiveI=%d, AdaptiveB=%d",
-         p->MBBRC, p->BRefType, p->Trellis, p->AdaptiveI, p->AdaptiveB);
-    info("\t[debug]   CO2: UseRawRef=%d, BitrateLimit=%d, MaxFrameSize=%d, LookAheadDepth=%d",
-         p->UseRawRef, p->BitrateLimit, p->MaxFrameSize, p->LookAheadDepth);
-    info("\t[debug]   CO2: ExtBRC=%d, LookAheadDS=%d, IntRefType=%d, IntRefCycleSize=%d",
-         p->ExtBRC, p->LookAheadDS, p->IntRefType, p->IntRefCycleSize);
-  }
-  if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>()) {
-    info("\t[debug]   CO3: WeightedPred=%d, WeightedBiPred=%d, GPB=%d, PRefType=%d",
-         p->WeightedPred, p->WeightedBiPred, p->GPB, p->PRefType);
-    info("\t[debug]   CO3: AdaptiveRef=%d, AdaptiveLTR=%d, AdaptiveCQM=%d, FadeDetection=%d",
-         p->AdaptiveRef, p->AdaptiveLTR, p->AdaptiveCQM, p->FadeDetection);
-    info("\t[debug]   CO3: TransformSkip=%d, LowDelayHrd=%d, ScenarioInfo=%d, ContentInfo=%d",
-         p->TransformSkip, p->LowDelayHrd, p->ScenarioInfo, p->ContentInfo);
-    info("\t[debug]   CO3: MotionVectorsOverPicBoundaries=%d, GlobalMotionBiasAdjustment=%d, MVCostScalingFactor=%d, DirectBiasAdjustment=%d",
-         p->MotionVectorsOverPicBoundaries, p->GlobalMotionBiasAdjustment, p->MVCostScalingFactor, p->DirectBiasAdjustment);
-    info("\t[debug]   CO3: WinBRCMaxAvgKbps=%d, WinBRCSize=%d, QVBRQuality=%d",
-         p->WinBRCMaxAvgKbps, p->WinBRCSize, p->QVBRQuality);
-  }
-  if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
-    if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtHEVCParam>()) {
-      info("\t[debug]   HEVC: SampleAdaptiveOffset=%d, PicWidthInLumaSamples=%d, PicHeightInLumaSamples=%d",
-           p->SampleAdaptiveOffset, p->PicWidthInLumaSamples, p->PicHeightInLumaSamples);
-    }
-  }
-  if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1) {
-    if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtAV1AuxData>()) {
-      info("\t[debug]   AV1AuxData: EnableCdef=%d, EnableRestoration=%d, EnableLoopFilter=%d, EnableSuperres=%d",
-           p->EnableCdef, p->EnableRestoration, p->EnableLoopFilter, p->EnableSuperres);
-      info("\t[debug]   AV1AuxData: InterpFilter=%d, ErrorResilientMode=%d",
-           p->InterpFilter, p->ErrorResilientMode);
-    }
-  }
-
   if (!QSVUseSystemMemoryPath && QSVEncode) {
-    mfxVideoParam ValidParams = {};
-    memcpy(&ValidParams, &QSVEncodeParams, sizeof(mfxVideoParam));
-    mfxStatus Sts = QSVEncode->Query(&QSVEncodeParams, &ValidParams);
-    if (Sts == MFX_ERR_UNSUPPORTED || Sts == MFX_ERR_UNDEFINED_BEHAVIOR) {
-      auto CO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-      if (CO3Params && CO3Params->AdaptiveLTR == MFX_CODINGOPTION_ON) {
-        CO3Params->AdaptiveLTR = MFX_CODINGOPTION_OFF;
-      }
-    } else if (Sts < MFX_ERR_NONE) {
-      throw std::runtime_error(
-          "SetEncoderParams(): Query params error");
-    }
-    return Sts;
+    return QueryAndValidateEncoderParams();
   }
 
   return MFX_ERR_NONE;
 #else
   QSVEncodeParams.IOPattern = MFX_IOPATTERN_IN_VIDEO_MEMORY;
 
-  info("\t[debug] SetEncoderParams - all parameter values:");
-  info("\t[debug]   mfx.LowPower: %d", QSVEncodeParams.mfx.LowPower);
-  info("\t[debug]   mfx.RateControlMethod: %d", QSVEncodeParams.mfx.RateControlMethod);
-  info("\t[debug]   mfx.NumRefFrame: %d", QSVEncodeParams.mfx.NumRefFrame);
-  info("\t[debug]   mfx.TargetUsage: %d", QSVEncodeParams.mfx.TargetUsage);
-  info("\t[debug]   mfx.CodecProfile: %d", QSVEncodeParams.mfx.CodecProfile);
-  info("\t[debug]   mfx.CodecLevel: %d", QSVEncodeParams.mfx.CodecLevel);
-  info("\t[debug]   mfx.GopPicSize: %d", QSVEncodeParams.mfx.GopPicSize);
-  info("\t[debug]   mfx.GopRefDist: %d", QSVEncodeParams.mfx.GopRefDist);
-  info("\t[debug]   mfx.GopOptFlag: %d", QSVEncodeParams.mfx.GopOptFlag);
-  info("\t[debug]   mfx.IdrInterval: %d", QSVEncodeParams.mfx.IdrInterval);
-  info("\t[debug]   mfx.NumSlice: %d", QSVEncodeParams.mfx.NumSlice);
-  info("\t[debug]   mfx.BRCParamMultiplier: %d", QSVEncodeParams.mfx.BRCParamMultiplier);
-  info("\t[debug]   mfx.TargetKbps: %d", QSVEncodeParams.mfx.TargetKbps);
-  info("\t[debug]   mfx.MaxKbps: %d", QSVEncodeParams.mfx.MaxKbps);
-  info("\t[debug]   mfx.BufferSizeInKB: %d", QSVEncodeParams.mfx.BufferSizeInKB);
-  info("\t[debug]   mfx.InitialDelayInKB: %d", QSVEncodeParams.mfx.InitialDelayInKB);
-  info("\t[debug]   mfx.ICQQuality: %d", QSVEncodeParams.mfx.ICQQuality);
-  info("\t[debug]   mfx.QPI: %d, QPP: %d, QPB: %d",
-       QSVEncodeParams.mfx.QPI, QSVEncodeParams.mfx.QPP, QSVEncodeParams.mfx.QPB);
-  if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>()) {
-    info("\t[debug]   CO: CAVLC=%d, RateDistortionOpt=%d, IntraPredBlockSize=%d, InterPredBlockSize=%d",
-         p->CAVLC, p->RateDistortionOpt, p->IntraPredBlockSize, p->InterPredBlockSize);
-    info("\t[debug]   CO: MVPrecision=%d, MECostType=%d, MESearchType=%d, MaxDecFrameBuffering=%d",
-         p->MVPrecision, p->MECostType, p->MESearchType, p->MaxDecFrameBuffering);
-    info("\t[debug]   CO: VuiVclHrdParameters=%d, VuiNalHrdParameters=%d, NalHrdConformance=%d",
-         p->VuiVclHrdParameters, p->VuiNalHrdParameters, p->NalHrdConformance);
-  }
-  if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>()) {
-    info("\t[debug]   CO2: MBBRC=%d, BRefType=%d, Trellis=%d, AdaptiveI=%d, AdaptiveB=%d",
-         p->MBBRC, p->BRefType, p->Trellis, p->AdaptiveI, p->AdaptiveB);
-    info("\t[debug]   CO2: UseRawRef=%d, BitrateLimit=%d, MaxFrameSize=%d, LookAheadDepth=%d",
-         p->UseRawRef, p->BitrateLimit, p->MaxFrameSize, p->LookAheadDepth);
-    info("\t[debug]   CO2: ExtBRC=%d, LookAheadDS=%d, IntRefType=%d, IntRefCycleSize=%d",
-         p->ExtBRC, p->LookAheadDS, p->IntRefType, p->IntRefCycleSize);
-  }
-  if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>()) {
-    info("\t[debug]   CO3: WeightedPred=%d, WeightedBiPred=%d, GPB=%d, PRefType=%d",
-         p->WeightedPred, p->WeightedBiPred, p->GPB, p->PRefType);
-    info("\t[debug]   CO3: AdaptiveRef=%d, AdaptiveLTR=%d, AdaptiveCQM=%d, FadeDetection=%d",
-         p->AdaptiveRef, p->AdaptiveLTR, p->AdaptiveCQM, p->FadeDetection);
-    info("\t[debug]   CO3: TransformSkip=%d, LowDelayHrd=%d, ScenarioInfo=%d, ContentInfo=%d",
-         p->TransformSkip, p->LowDelayHrd, p->ScenarioInfo, p->ContentInfo);
-    info("\t[debug]   CO3: MotionVectorsOverPicBoundaries=%d, GlobalMotionBiasAdjustment=%d, MVCostScalingFactor=%d, DirectBiasAdjustment=%d",
-         p->MotionVectorsOverPicBoundaries, p->GlobalMotionBiasAdjustment, p->MVCostScalingFactor, p->DirectBiasAdjustment);
-    info("\t[debug]   CO3: WinBRCMaxAvgKbps=%d, WinBRCSize=%d, QVBRQuality=%d",
-         p->WinBRCMaxAvgKbps, p->WinBRCSize, p->QVBRQuality);
-  }
-  if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
-    if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtHEVCParam>()) {
-      info("\t[debug]   HEVC: SampleAdaptiveOffset=%d, PicWidthInLumaSamples=%d, PicHeightInLumaSamples=%d",
-           p->SampleAdaptiveOffset, p->PicWidthInLumaSamples, p->PicHeightInLumaSamples);
-    }
-  }
-  if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1) {
-    if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtAV1AuxData>()) {
-      info("\t[debug]   AV1AuxData: EnableCdef=%d, EnableRestoration=%d, EnableLoopFilter=%d, EnableSuperres=%d",
-           p->EnableCdef, p->EnableRestoration, p->EnableLoopFilter, p->EnableSuperres);
-      info("\t[debug]   AV1AuxData: InterpFilter=%d, ErrorResilientMode=%d",
-           p->InterpFilter, p->ErrorResilientMode);
-    }
-  }
-
-  {
-    mfxVideoParam ValidParams = {};
-    memcpy(&ValidParams, &QSVEncodeParams, sizeof(mfxVideoParam));
-    mfxStatus Sts = QSVEncode->Query(&QSVEncodeParams, &ValidParams);
-    if (Sts == MFX_ERR_UNSUPPORTED || Sts == MFX_ERR_UNDEFINED_BEHAVIOR) {
-      auto CO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-      if (CO3Params && CO3Params->AdaptiveLTR == MFX_CODINGOPTION_ON) {
-        CO3Params->AdaptiveLTR = MFX_CODINGOPTION_OFF;
-      }
-    } else if (Sts < MFX_ERR_NONE) {
-      throw std::runtime_error(
-          "SetEncoderParams(): Query params error");
-    }
-    return Sts;
-  }
+  return QueryAndValidateEncoderParams();
 #endif
 }
 
@@ -2058,19 +1906,12 @@ QSVEncoder::InitBitstreamBuffer([[maybe_unused]] enum codec_enum Codec) {
 
     QSVBitstream.DataOffset = 0;
     QSVBitstream.DataLength = 0;
-#if defined(_WIN32) || defined(_WIN64)
-    if (nullptr == (QSVBitstream.Data = static_cast<mfxU8 *>(
-                        _aligned_malloc(QSVBitstream.MaxLength, 32)))) {
+    QSVBitstream.Data = static_cast<mfxU8 *>(
+        AlignedMalloc(QSVBitstream.MaxLength, 32));
+    if (nullptr == QSVBitstream.Data) {
       throw std::runtime_error(
           "InitBitstreamBuffer(): Bitstream memory allocation error");
     }
-#elif defined(__linux__)
-    if (nullptr == (QSVBitstream.Data = static_cast<mfxU8 *>(
-                        aligned_alloc(32, QSVBitstream.MaxLength)))) {
-      throw std::runtime_error(
-          "InitBitstreamBuffer(): Bitstream memory allocation error");
-    }
-#endif
 
     info("\tBitstream size: %d Kb", QSVBitstream.MaxLength / 1000);
   } catch (const std::bad_alloc &) {
@@ -2094,19 +1935,12 @@ mfxStatus QSVEncoder::InitTaskPool([[maybe_unused]] enum codec_enum Codec) {
 
       NewTask.Bitstream.DataOffset = 0;
       NewTask.Bitstream.DataLength = 0;
-#if defined(_WIN32) || defined(_WIN64)
-      if (nullptr == (NewTask.Bitstream.Data = static_cast<mfxU8 *>(
-                          _aligned_malloc(NewTask.Bitstream.MaxLength, 32)))) {
+      NewTask.Bitstream.Data = static_cast<mfxU8 *>(
+          AlignedMalloc(NewTask.Bitstream.MaxLength, 32));
+      if (nullptr == NewTask.Bitstream.Data) {
         throw std::runtime_error(
             "InitTaskPool(): Task memory allocation error");
       }
-#elif defined(__linux__)
-      if (nullptr == (NewTask.Bitstream.Data = static_cast<mfxU8 *>(
-                          aligned_alloc(32, NewTask.Bitstream.MaxLength)))) {
-        throw std::runtime_error(
-            "InitTaskPool(): Task memory allocation error");
-      }
-#endif
       info("\tTask #%d bitstream size: %d Kb", i,
            NewTask.Bitstream.MaxLength / 1000);
 
@@ -2133,11 +1967,7 @@ mfxStatus QSVEncoder::InitTaskPool([[maybe_unused]] enum codec_enum Codec) {
 void QSVEncoder::ReleaseBitstream() {
   if (QSVBitstream.Data) {
     try {
-#if defined(_WIN32) || defined(_WIN64)
-      _aligned_free(QSVBitstream.Data);
-#elif defined(__linux__)
-      free(QSVBitstream.Data);
-#endif
+      AlignedFree(QSVBitstream.Data);
     } catch (const std::bad_alloc &) {
       throw;
     } catch (const std::exception &) {
@@ -2150,11 +1980,7 @@ void QSVEncoder::ReleaseBitstream() {
 void QSVEncoder::ReleaseTask(int TaskID) {
   if (QSVTaskPool[TaskID].Bitstream.Data) {
     try {
-#if defined(_WIN32) || defined(_WIN64)
-      _aligned_free(QSVTaskPool[TaskID].Bitstream.Data);
-#elif defined(__linux__)
-      free(QSVTaskPool[TaskID].Bitstream.Data);
-#endif
+      AlignedFree(QSVTaskPool[TaskID].Bitstream.Data);
     } catch (const std::bad_alloc &) {
       throw;
     } catch (const std::exception &) {
@@ -2184,11 +2010,7 @@ void QSVEncoder::ReleaseTaskPool() {
 
 mfxStatus QSVEncoder::ChangeBitstreamSize(mfxU32 NewSize) {
   try {
-#if defined(_WIN32) || defined(_WIN64)
-    mfxU8 *Data = static_cast<mfxU8 *>(_aligned_malloc(NewSize, 32));
-#elif defined(__linux__)
-    mfxU8 *Data = static_cast<mfxU8 *>(aligned_alloc(32, NewSize));
-#endif
+mfxU8 *Data = static_cast<mfxU8 *>(AlignedMalloc(NewSize, 32));
     if (Data == nullptr) {
       throw std::runtime_error(
           "ChangeBitstreamSize(): Bitstream memory allocation error");
@@ -2222,11 +2044,7 @@ mfxStatus QSVEncoder::ChangeBitstreamSize(mfxU32 NewSize) {
     }
 
     for (int i = 0; i < QSVTaskPool.size(); i++) {
-#if defined(_WIN32) || defined(_WIN64)
-      mfxU8 *TaskData = static_cast<mfxU8 *>(_aligned_malloc(NewSize, 32));
-#elif defined(__linux__)
-      mfxU8 *TaskData = static_cast<mfxU8 *>(aligned_alloc(32, NewSize));
-#endif
+mfxU8 *TaskData = static_cast<mfxU8 *>(AlignedMalloc(NewSize, 32));
       if (TaskData == nullptr) {
         throw std::runtime_error(
             "ChangeBitstreamSize(): Task memory allocation error");
@@ -2639,6 +2457,22 @@ void QSVEncoder::LogActualParams() {
   }
 }
 
+mfxStatus QSVEncoder::QueryAndValidateEncoderParams() {
+  mfxVideoParam ValidParams = {};
+  memcpy(&ValidParams, &QSVEncodeParams, sizeof(mfxVideoParam));
+  mfxStatus Sts = QSVEncode->Query(&QSVEncodeParams, &ValidParams);
+  if (Sts == MFX_ERR_UNSUPPORTED || Sts == MFX_ERR_UNDEFINED_BEHAVIOR) {
+    auto CO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
+    if (CO3Params && CO3Params->AdaptiveLTR == MFX_CODINGOPTION_ON) {
+      CO3Params->AdaptiveLTR = MFX_CODINGOPTION_OFF;
+    }
+  } else if (Sts < MFX_ERR_NONE) {
+    throw std::runtime_error(
+        "SetEncoderParams(): Query params error");
+  }
+  return Sts;
+}
+
 void QSVEncoder::LoadFrameData(mfxFrameSurface1 *&Surface, uint8_t **FrameData,
                                uint32_t *FrameLinesize) {
   mfxU16 Width, Height, i, Pitch;
@@ -2723,32 +2557,17 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
   int TaskID = 0;
 
   while (GetFreeTaskIndex(&TaskID) == MFX_ERR_NOT_FOUND) {
-    do {
-      if (QSVTaskPool[QSVSyncTaskID].SyncPoint == nullptr) {
-        break;
+    SyncStatus = SyncAndSwapPendingTask(Bitstream);
+    if (SyncStatus < MFX_ERR_NONE) {
+      error("Encode.EncodeSync error: %d", SyncStatus);
+      if (QSVEncodeSurface) {
+        QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
+        QSVEncodeSurface = nullptr;
       }
-      SyncStatus = MFXVideoCORE_SyncOperation(
-          QSVSession, QSVTaskPool[QSVSyncTaskID].SyncPoint, 100);
-      if (SyncStatus < MFX_ERR_NONE) {
-        error("Encode.EncodeSync error: %d", SyncStatus);
-        if (QSVEncodeSurface) {
-          QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
-          QSVEncodeSurface = nullptr;
-        }
-        throw std::runtime_error(
-            "Encode(): Sync operation failed - unrecoverable error");
-      }
-    } while (SyncStatus == MFX_WRN_IN_EXECUTION);
-
-    mfxU8 *DataTemp = std::move(QSVBitstream.Data);
-    QSVBitstream = std::move(QSVTaskPool[QSVSyncTaskID].Bitstream);
-
-    QSVTaskPool[QSVSyncTaskID].Bitstream.Data = std::move(DataTemp);
-    QSVTaskPool[QSVSyncTaskID].Bitstream.DataLength = 0;
-    QSVTaskPool[QSVSyncTaskID].Bitstream.DataOffset = 0;
-    QSVTaskPool[QSVSyncTaskID].SyncPoint = nullptr;
-    TaskID = std::move(QSVSyncTaskID);
-    *Bitstream = std::move(&QSVBitstream);
+      throw std::runtime_error(
+          "Encode(): Sync operation failed - unrecoverable error");
+    }
+    TaskID = QSVSyncTaskID;
   }
 
   mfxFrameSurface1 *EncodeSurface = QSVTaskPool[TaskID].Surface;
@@ -2762,18 +2581,63 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
                 std::move(FrameLinesize));
   QSVTaskPool[TaskID].Bitstream.TimeStamp = std::move(TS);
 
-  int EncodeRetryCount = 0;
-  const int MaxEncodeRetries = 200;
+  Status = EncodeFrameRetryLoop(EncodeSurface, nullptr, TaskID, 200);
 
+  return Status;
+}
+#endif
+
+mfxStatus QSVEncoder::GetFreeTaskIndex(int *TaskID) {
+  if (!QSVTaskPool.empty()) {
+    int StartIdx = QSVSyncTaskID;
+    for (int i = 0; i < static_cast<int>(QSVTaskPool.size()); i++) {
+      int Idx = (StartIdx + i) % static_cast<int>(QSVTaskPool.size());
+      if (static_cast<mfxSyncPoint>(nullptr) == QSVTaskPool[Idx].SyncPoint) {
+        QSVSyncTaskID = (Idx + 1) % static_cast<int>(QSVTaskPool.size());
+        *TaskID = Idx;
+        return MFX_ERR_NONE;
+      }
+    }
+  }
+  return MFX_ERR_NOT_FOUND;
+}
+
+mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
+  mfxStatus SyncStatus;
+  do {
+    if (QSVTaskPool[QSVSyncTaskID].SyncPoint == nullptr) {
+      break;
+    }
+    SyncStatus = MFXVideoCORE_SyncOperation(
+        QSVSession, QSVTaskPool[QSVSyncTaskID].SyncPoint, 100);
+    if (SyncStatus < MFX_ERR_NONE) {
+      return SyncStatus;
+    }
+  } while (SyncStatus == MFX_WRN_IN_EXECUTION);
+
+  mfxU8 *DataTemp = std::move(QSVBitstream.Data);
+  QSVBitstream = std::move(QSVTaskPool[QSVSyncTaskID].Bitstream);
+
+  QSVTaskPool[QSVSyncTaskID].Bitstream.Data = std::move(DataTemp);
+  QSVTaskPool[QSVSyncTaskID].Bitstream.DataLength = 0;
+  QSVTaskPool[QSVSyncTaskID].Bitstream.DataOffset = 0;
+  QSVTaskPool[QSVSyncTaskID].SyncPoint = nullptr;
+  *Bitstream = &QSVBitstream;
+  return MFX_ERR_NONE;
+}
+
+mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
+                                            mfxEncodeCtrl *Ctrl, int TaskID,
+                                            mfxU32 MaxRetries) {
+  mfxU32 EncodeRetryCount = 0;
   for (;;) {
-    if (++EncodeRetryCount > MaxEncodeRetries) {
+    if (++EncodeRetryCount > MaxRetries) {
       error("Encode retry count exceeded");
-      throw std::runtime_error(
-          "Encode(): retry count exceeded");
+      throw std::runtime_error("Encode(): retry count exceeded");
     }
 
-    Status = QSVEncode->EncodeFrameAsync(
-        nullptr, EncodeSurface, &QSVTaskPool[TaskID].Bitstream,
+    mfxStatus Status = QSVEncode->EncodeFrameAsync(
+        Ctrl, Surface, &QSVTaskPool[TaskID].Bitstream,
         &QSVTaskPool[TaskID].SyncPoint);
 
     if (MFX_ERR_NONE == Status) {
@@ -2800,28 +2664,10 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
       break;
     } else {
       error("Encode fatal error: %d", Status);
-      throw std::runtime_error(
-          "Encode(): EncodeFrameAsync fatal error");
+      throw std::runtime_error("Encode(): EncodeFrameAsync fatal error");
     }
   }
-
-  return Status;
-}
-#endif
-
-mfxStatus QSVEncoder::GetFreeTaskIndex(int *TaskID) {
-  if (!QSVTaskPool.empty()) {
-    int StartIdx = QSVSyncTaskID;
-    for (int i = 0; i < static_cast<int>(QSVTaskPool.size()); i++) {
-      int Idx = (StartIdx + i) % static_cast<int>(QSVTaskPool.size());
-      if (static_cast<mfxSyncPoint>(nullptr) == QSVTaskPool[Idx].SyncPoint) {
-        QSVSyncTaskID = (Idx + 1) % static_cast<int>(QSVTaskPool.size());
-        *TaskID = Idx;
-        return MFX_ERR_NONE;
-      }
-    }
-  }
-  return MFX_ERR_NOT_FOUND;
+  return MFX_ERR_NONE;
 }
 
 mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
@@ -2844,27 +2690,12 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
 #endif
 
   while (GetFreeTaskIndex(&TaskID) == MFX_ERR_NOT_FOUND) {
-    do {
-      if (QSVTaskPool[QSVSyncTaskID].SyncPoint == nullptr) {
-        break;
-      }
-      SyncStatus = MFXVideoCORE_SyncOperation(
-          QSVSession, QSVTaskPool[QSVSyncTaskID].SyncPoint, 100);
-      if (SyncStatus < MFX_ERR_NONE) {
-        error("Error code: %d", SyncStatus);
-        throw std::runtime_error("Encode(): Syncronization error");
-      }
-    } while (SyncStatus == MFX_WRN_IN_EXECUTION);
-
-    mfxU8 *DataTemp = std::move(QSVBitstream.Data);
-    QSVBitstream = std::move(QSVTaskPool[QSVSyncTaskID].Bitstream);
-
-    QSVTaskPool[QSVSyncTaskID].Bitstream.Data = std::move(DataTemp);
-    QSVTaskPool[QSVSyncTaskID].Bitstream.DataLength = 0;
-    QSVTaskPool[QSVSyncTaskID].Bitstream.DataOffset = 0;
-    QSVTaskPool[QSVSyncTaskID].SyncPoint = nullptr;
-    TaskID = std::move(QSVSyncTaskID);
-    *Bitstream = std::move(&QSVBitstream);
+    SyncStatus = SyncAndSwapPendingTask(Bitstream);
+    if (SyncStatus < MFX_ERR_NONE) {
+      error("Error code: %d", SyncStatus);
+      throw std::runtime_error("Encode(): Syncronization error");
+    }
+    TaskID = QSVSyncTaskID;
   }
 
   try {
@@ -2919,50 +2750,13 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
       QSVEncodeSurface = nullptr;
     }
 
-    int EncodeRetryCount = 0;
-    const int MaxEncodeRetries = 200;
-
-    for (;;) {
-      if (++EncodeRetryCount > MaxEncodeRetries) {
-        error("Encode retry count exceeded");
-        throw std::runtime_error(
-            "Encode(): retry count exceeded");
-      }
-
-      Status = QSVEncode->EncodeFrameAsync(
-          (QSVProcessingEnable && QSVEncodeParams.mfx.CodecId != MFX_CODEC_AV1
-               ? &QSVEncodeCtrlParams
-               : nullptr),
-          (QSVProcessingEnable ? QSVProcessingSurface : QSVEncodeSurface),
-          &QSVTaskPool[TaskID].Bitstream, &QSVTaskPool[TaskID].SyncPoint);
-
-      if (MFX_ERR_NONE == Status) {
-        break;
-      } else if (MFX_ERR_NONE < Status && !QSVTaskPool[TaskID].SyncPoint) {
-        if (MFX_WRN_DEVICE_BUSY == Status) {
-          if (EncodeRetryCount < 10)
-            Sleep(0);
-          else
-            Sleep(1);
-        }
-      } else if (MFX_ERR_NONE < Status && QSVTaskPool[TaskID].SyncPoint) {
-        Status = MFX_ERR_NONE;
-        break;
-      } else if (MFX_ERR_NOT_ENOUGH_BUFFER == Status ||
-                 MFX_ERR_MORE_BITSTREAM == Status) {
-        ChangeBitstreamSize(static_cast<mfxU32>(QSVBitstream.MaxLength * 2));
-        warn("The bitstream buffer size is too small. The size has been "
-             "increased by 2 "
-             "times. New value: %d KB",
-             (QSVBitstream.MaxLength * 2 / 8 / 1000));
-      } else if (MFX_ERR_MORE_DATA == Status) {
-        break;
-      } else {
-        error("Encode fatal error: %d", Status);
-        throw std::runtime_error(
-            "Encode(): EncodeFrameAsync fatal error");
-      }
-    }
+    EncodeFrameRetryLoop(
+        (QSVProcessingEnable ? QSVProcessingSurface : QSVEncodeSurface),
+        (QSVProcessingEnable &&
+                 QSVEncodeParams.mfx.CodecId != MFX_CODEC_AV1
+             ? &QSVEncodeCtrlParams
+             : nullptr),
+        TaskID, 200);
 
     if (QSVProcessingEnable) {
       QSVProcessingSurface->FrameInterface->Release(QSVProcessingSurface);
@@ -3005,32 +2799,17 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
   }
 
   while (GetFreeTaskIndex(&TaskID) == MFX_ERR_NOT_FOUND) {
-    do {
-      if (QSVTaskPool[QSVSyncTaskID].SyncPoint == nullptr) {
-        break;
+    SyncStatus = SyncAndSwapPendingTask(Bitstream);
+    if (SyncStatus < MFX_ERR_NONE) {
+      error("Encode sync error: %d", SyncStatus);
+      if (QSVEncodeSurface) {
+        QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
+        QSVEncodeSurface = nullptr;
       }
-      SyncStatus = MFXVideoCORE_SyncOperation(
-          QSVSession, QSVTaskPool[QSVSyncTaskID].SyncPoint, 100);
-      if (SyncStatus < MFX_ERR_NONE) {
-        error("Encode sync error: %d", SyncStatus);
-        if (QSVEncodeSurface) {
-          QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
-          QSVEncodeSurface = nullptr;
-        }
-        throw std::runtime_error(
-            "Encode(): Sync operation failed - unrecoverable error");
-      }
-    } while (SyncStatus == MFX_WRN_IN_EXECUTION);
-
-    mfxU8 *DataTemp = std::move(QSVBitstream.Data);
-    QSVBitstream = std::move(QSVTaskPool[QSVSyncTaskID].Bitstream);
-
-    QSVTaskPool[QSVSyncTaskID].Bitstream.Data = std::move(DataTemp);
-    QSVTaskPool[QSVSyncTaskID].Bitstream.DataLength = 0;
-    QSVTaskPool[QSVSyncTaskID].Bitstream.DataOffset = 0;
-    QSVTaskPool[QSVSyncTaskID].SyncPoint = nullptr;
-    TaskID = std::move(QSVSyncTaskID);
-    *Bitstream = std::move(&QSVBitstream);
+      throw std::runtime_error(
+          "Encode(): Sync operation failed - unrecoverable error");
+    }
+    TaskID = QSVSyncTaskID;
   }
 
   Status =
@@ -3109,64 +2888,9 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
   }
 
   /*Encode a frame asynchronously (returns immediately)*/
-  int EncodeRetryCount = 0;
-  const int MaxEncodeRetries = 200;
-
-  for (;;) {
-    if (++EncodeRetryCount > MaxEncodeRetries) {
-      error("Encode retry count exceeded");
-      if (QSVProcessingEnable && QSVProcessingSurface) {
-        QSVProcessingSurface->FrameInterface->Release(QSVProcessingSurface);
-        QSVProcessingSurface = nullptr;
-      }
-      if (QSVEncodeSurface) {
-        QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
-        QSVEncodeSurface = nullptr;
-      }
-      throw std::runtime_error(
-          "Encode(): retry count exceeded");
-    }
-
-    Status = QSVEncode->EncodeFrameAsync(
-        nullptr,
-        (QSVProcessingEnable ? QSVProcessingSurface : QSVEncodeSurface),
-        &QSVTaskPool[TaskID].Bitstream, &QSVTaskPool[TaskID].SyncPoint);
-
-    if (MFX_ERR_NONE == Status) {
-      break;
-    } else if (MFX_ERR_NONE < Status && !QSVTaskPool[TaskID].SyncPoint) {
-      if (MFX_WRN_DEVICE_BUSY == Status) {
-        if (EncodeRetryCount < 10)
-          Sleep(0);
-        else
-          Sleep(1);
-      }
-    } else if (MFX_ERR_NONE < Status && QSVTaskPool[TaskID].SyncPoint) {
-      Status = MFX_ERR_NONE;
-      break;
-    } else if (MFX_ERR_NOT_ENOUGH_BUFFER == Status ||
-               MFX_ERR_MORE_BITSTREAM == Status) {
-      ChangeBitstreamSize(static_cast<mfxU32>(QSVBitstream.MaxLength * 2));
-      warn("The bitstream buffer size is too small. The size has been "
-           "increased by 2 "
-           "times. New value: %d KB",
-           (QSVBitstream.MaxLength * 2 / 8 / 1000));
-    } else if (MFX_ERR_MORE_DATA == Status) {
-      break;
-    } else {
-      error("Encode fatal error: %d", Status);
-      if (QSVProcessingEnable && QSVProcessingSurface) {
-        QSVProcessingSurface->FrameInterface->Release(QSVProcessingSurface);
-        QSVProcessingSurface = nullptr;
-      }
-      if (QSVEncodeSurface) {
-        QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
-        QSVEncodeSurface = nullptr;
-      }
-      throw std::runtime_error(
-          "Encode(): EncodeFrameAsync fatal error");
-    }
-  }
+  EncodeFrameRetryLoop(
+      (QSVProcessingEnable ? QSVProcessingSurface : QSVEncodeSurface), nullptr,
+      TaskID, 200);
 
   if (QSVProcessingEnable) {
     QSVProcessingSurface->FrameInterface->Release(QSVProcessingSurface);

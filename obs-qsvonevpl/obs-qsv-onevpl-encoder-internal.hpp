@@ -55,6 +55,7 @@ public:
 
   mfxStatus GetVideoParam(enum codec_enum Codec);
   void LogActualParams();
+  mfxStatus QueryAndValidateEncoderParams();
 
   mfxStatus InitTexturePool();
 #ifdef QSV_UHD600_SUPPORT
@@ -68,6 +69,10 @@ public:
   void ReleaseTaskPool();
   mfxStatus ChangeBitstreamSize(mfxU32 NewSize);
   mfxStatus GetFreeTaskIndex(int *TaskID);
+  mfxStatus SyncAndSwapPendingTask(mfxBitstream **Bitstream);
+  mfxStatus EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
+                                  mfxEncodeCtrl *Ctrl, int TaskID,
+                                  mfxU32 MaxRetries = 200);
 
   void LoadFrameData(mfxFrameSurface1 *&Surface, uint8_t **FrameData,
                      uint32_t *FrameLinesize);

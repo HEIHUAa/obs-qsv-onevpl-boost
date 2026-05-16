@@ -42,6 +42,7 @@
 #ifndef _CSTDLIB_
 #include <cstdlib>
 #endif
+#include <cstring>
 #ifndef _INC_STDLIB
 #include <stdlib.h>
 #endif
@@ -143,6 +144,41 @@ extern size_t AdaptersCount;
 enum codec_enum { QSV_CODEC_AVC, QSV_CODEC_AV1, QSV_CODEC_HEVC };
 
 void ReleaseSessionData(void *);
+
+extern void QSVLog(const int LogLevel, const char *Format, ...);
+
+#if defined(_WIN32) || defined(_WIN64)
+#include <malloc.h>
+#endif
+
+static inline void *AlignedMalloc(size_t Size, size_t Alignment = 32) {
+#if defined(_WIN32) || defined(_WIN64)
+  return _aligned_malloc(Size, Alignment);
+#elif defined(__linux__)
+  return aligned_alloc(Alignment, Size);
+#else
+  return malloc(Size);
+#endif
+}
+
+static inline void AlignedFree(void *Ptr) {
+#if defined(_WIN32) || defined(_WIN64)
+  _aligned_free(Ptr);
+#else
+  free(Ptr);
+#endif
+}
+
+static inline void ParseOptionalBool(const char *Data,
+                                     std::optional<bool> &Param) {
+  if (std::strcmp(Data, "AUTO") == 0) {
+    Param = std::nullopt;
+  } else if (std::strcmp(Data, "ON") == 0) {
+    Param = true;
+  } else if (std::strcmp(Data, "OFF") == 0) {
+    Param = false;
+  }
+}
 
 inline static void avx2_memcpy(uint8_t *Dst, const uint8_t *Src,
                                unsigned long long Size) {
