@@ -1773,6 +1773,69 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
                                  ? MFX_IOPATTERN_IN_SYSTEM_MEMORY
                                  : MFX_IOPATTERN_IN_VIDEO_MEMORY;
 
+  info("\t[debug] SetEncoderParams - all parameter values:");
+  info("\t[debug]   mfx.LowPower: %d", QSVEncodeParams.mfx.LowPower);
+  info("\t[debug]   mfx.RateControlMethod: %d", QSVEncodeParams.mfx.RateControlMethod);
+  info("\t[debug]   mfx.NumRefFrame: %d", QSVEncodeParams.mfx.NumRefFrame);
+  info("\t[debug]   mfx.TargetUsage: %d", QSVEncodeParams.mfx.TargetUsage);
+  info("\t[debug]   mfx.CodecProfile: %d", QSVEncodeParams.mfx.CodecProfile);
+  info("\t[debug]   mfx.CodecLevel: %d", QSVEncodeParams.mfx.CodecLevel);
+  info("\t[debug]   mfx.GopPicSize: %d", QSVEncodeParams.mfx.GopPicSize);
+  info("\t[debug]   mfx.GopRefDist: %d", QSVEncodeParams.mfx.GopRefDist);
+  info("\t[debug]   mfx.GopOptFlag: %d", QSVEncodeParams.mfx.GopOptFlag);
+  info("\t[debug]   mfx.IdrInterval: %d", QSVEncodeParams.mfx.IdrInterval);
+  info("\t[debug]   mfx.NumSlice: %d", QSVEncodeParams.mfx.NumSlice);
+  info("\t[debug]   mfx.BRCParamMultiplier: %d", QSVEncodeParams.mfx.BRCParamMultiplier);
+  info("\t[debug]   mfx.TargetKbps: %d", QSVEncodeParams.mfx.TargetKbps);
+  info("\t[debug]   mfx.MaxKbps: %d", QSVEncodeParams.mfx.MaxKbps);
+  info("\t[debug]   mfx.BufferSizeInKB: %d", QSVEncodeParams.mfx.BufferSizeInKB);
+  info("\t[debug]   mfx.InitialDelayInKB: %d", QSVEncodeParams.mfx.InitialDelayInKB);
+  info("\t[debug]   mfx.ICQQuality: %d", QSVEncodeParams.mfx.ICQQuality);
+  info("\t[debug]   mfx.QPI: %d, QPP: %d, QPB: %d",
+       QSVEncodeParams.mfx.QPI, QSVEncodeParams.mfx.QPP, QSVEncodeParams.mfx.QPB);
+  if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>()) {
+    info("\t[debug]   CO: CAVLC=%d, RateDistortionOpt=%d, IntraPredBlockSize=%d, InterPredBlockSize=%d",
+         p->CAVLC, p->RateDistortionOpt, p->IntraPredBlockSize, p->InterPredBlockSize);
+    info("\t[debug]   CO: MVPrecision=%d, MECostType=%d, MESearchType=%d, MaxDecFrameBuffering=%d",
+         p->MVPrecision, p->MECostType, p->MESearchType, p->MaxDecFrameBuffering);
+    info("\t[debug]   CO: VuiVclHrdParameters=%d, VuiNalHrdParameters=%d, NalHrdConformance=%d",
+         p->VuiVclHrdParameters, p->VuiNalHrdParameters, p->NalHrdConformance);
+  }
+  if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>()) {
+    info("\t[debug]   CO2: MBBRC=%d, BRefType=%d, Trellis=%d, AdaptiveI=%d, AdaptiveB=%d",
+         p->MBBRC, p->BRefType, p->Trellis, p->AdaptiveI, p->AdaptiveB);
+    info("\t[debug]   CO2: UseRawRef=%d, BitrateLimit=%d, MaxFrameSize=%d, LookAheadDepth=%d",
+         p->UseRawRef, p->BitrateLimit, p->MaxFrameSize, p->LookAheadDepth);
+    info("\t[debug]   CO2: ExtBRC=%d, LookAheadDS=%d, IntRefType=%d, IntRefCycleSize=%d",
+         p->ExtBRC, p->LookAheadDS, p->IntRefType, p->IntRefCycleSize);
+  }
+  if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>()) {
+    info("\t[debug]   CO3: WeightedPred=%d, WeightedBiPred=%d, GPB=%d, PRefType=%d",
+         p->WeightedPred, p->WeightedBiPred, p->GPB, p->PRefType);
+    info("\t[debug]   CO3: AdaptiveRef=%d, AdaptiveLTR=%d, AdaptiveCQM=%d, FadeDetection=%d",
+         p->AdaptiveRef, p->AdaptiveLTR, p->AdaptiveCQM, p->FadeDetection);
+    info("\t[debug]   CO3: TransformSkip=%d, LowDelayHrd=%d, ScenarioInfo=%d, ContentInfo=%d",
+         p->TransformSkip, p->LowDelayHrd, p->ScenarioInfo, p->ContentInfo);
+    info("\t[debug]   CO3: MotionVectorsOverPicBoundaries=%d, GlobalMotionBiasAdjustment=%d, MVCostScalingFactor=%d, DirectBiasAdjustment=%d",
+         p->MotionVectorsOverPicBoundaries, p->GlobalMotionBiasAdjustment, p->MVCostScalingFactor, p->DirectBiasAdjustment);
+    info("\t[debug]   CO3: WinBRCMaxAvgKbps=%d, WinBRCSize=%d, QVBRQuality=%d",
+         p->WinBRCMaxAvgKbps, p->WinBRCSize, p->QVBRQuality);
+  }
+  if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
+    if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtHEVCParam>()) {
+      info("\t[debug]   HEVC: SampleAdaptiveOffset=%d, PicWidthInLumaSamples=%d, PicHeightInLumaSamples=%d",
+           p->SampleAdaptiveOffset, p->PicWidthInLumaSamples, p->PicHeightInLumaSamples);
+    }
+  }
+  if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1) {
+    if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtAV1AuxData>()) {
+      info("\t[debug]   AV1AuxData: EnableCdef=%d, EnableRestoration=%d, EnableLoopFilter=%d, EnableSuperres=%d",
+           p->EnableCdef, p->EnableRestoration, p->EnableLoopFilter, p->EnableSuperres);
+      info("\t[debug]   AV1AuxData: InterpFilter=%d, ErrorResilientMode=%d",
+           p->InterpFilter, p->ErrorResilientMode);
+    }
+  }
+
   if (!QSVUseSystemMemoryPath && QSVEncode) {
     mfxVideoParam ValidParams = {};
     memcpy(&ValidParams, &QSVEncodeParams, sizeof(mfxVideoParam));
@@ -1792,6 +1855,69 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   return MFX_ERR_NONE;
 #else
   QSVEncodeParams.IOPattern = MFX_IOPATTERN_IN_VIDEO_MEMORY;
+
+  info("\t[debug] SetEncoderParams - all parameter values:");
+  info("\t[debug]   mfx.LowPower: %d", QSVEncodeParams.mfx.LowPower);
+  info("\t[debug]   mfx.RateControlMethod: %d", QSVEncodeParams.mfx.RateControlMethod);
+  info("\t[debug]   mfx.NumRefFrame: %d", QSVEncodeParams.mfx.NumRefFrame);
+  info("\t[debug]   mfx.TargetUsage: %d", QSVEncodeParams.mfx.TargetUsage);
+  info("\t[debug]   mfx.CodecProfile: %d", QSVEncodeParams.mfx.CodecProfile);
+  info("\t[debug]   mfx.CodecLevel: %d", QSVEncodeParams.mfx.CodecLevel);
+  info("\t[debug]   mfx.GopPicSize: %d", QSVEncodeParams.mfx.GopPicSize);
+  info("\t[debug]   mfx.GopRefDist: %d", QSVEncodeParams.mfx.GopRefDist);
+  info("\t[debug]   mfx.GopOptFlag: %d", QSVEncodeParams.mfx.GopOptFlag);
+  info("\t[debug]   mfx.IdrInterval: %d", QSVEncodeParams.mfx.IdrInterval);
+  info("\t[debug]   mfx.NumSlice: %d", QSVEncodeParams.mfx.NumSlice);
+  info("\t[debug]   mfx.BRCParamMultiplier: %d", QSVEncodeParams.mfx.BRCParamMultiplier);
+  info("\t[debug]   mfx.TargetKbps: %d", QSVEncodeParams.mfx.TargetKbps);
+  info("\t[debug]   mfx.MaxKbps: %d", QSVEncodeParams.mfx.MaxKbps);
+  info("\t[debug]   mfx.BufferSizeInKB: %d", QSVEncodeParams.mfx.BufferSizeInKB);
+  info("\t[debug]   mfx.InitialDelayInKB: %d", QSVEncodeParams.mfx.InitialDelayInKB);
+  info("\t[debug]   mfx.ICQQuality: %d", QSVEncodeParams.mfx.ICQQuality);
+  info("\t[debug]   mfx.QPI: %d, QPP: %d, QPB: %d",
+       QSVEncodeParams.mfx.QPI, QSVEncodeParams.mfx.QPP, QSVEncodeParams.mfx.QPB);
+  if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>()) {
+    info("\t[debug]   CO: CAVLC=%d, RateDistortionOpt=%d, IntraPredBlockSize=%d, InterPredBlockSize=%d",
+         p->CAVLC, p->RateDistortionOpt, p->IntraPredBlockSize, p->InterPredBlockSize);
+    info("\t[debug]   CO: MVPrecision=%d, MECostType=%d, MESearchType=%d, MaxDecFrameBuffering=%d",
+         p->MVPrecision, p->MECostType, p->MESearchType, p->MaxDecFrameBuffering);
+    info("\t[debug]   CO: VuiVclHrdParameters=%d, VuiNalHrdParameters=%d, NalHrdConformance=%d",
+         p->VuiVclHrdParameters, p->VuiNalHrdParameters, p->NalHrdConformance);
+  }
+  if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>()) {
+    info("\t[debug]   CO2: MBBRC=%d, BRefType=%d, Trellis=%d, AdaptiveI=%d, AdaptiveB=%d",
+         p->MBBRC, p->BRefType, p->Trellis, p->AdaptiveI, p->AdaptiveB);
+    info("\t[debug]   CO2: UseRawRef=%d, BitrateLimit=%d, MaxFrameSize=%d, LookAheadDepth=%d",
+         p->UseRawRef, p->BitrateLimit, p->MaxFrameSize, p->LookAheadDepth);
+    info("\t[debug]   CO2: ExtBRC=%d, LookAheadDS=%d, IntRefType=%d, IntRefCycleSize=%d",
+         p->ExtBRC, p->LookAheadDS, p->IntRefType, p->IntRefCycleSize);
+  }
+  if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>()) {
+    info("\t[debug]   CO3: WeightedPred=%d, WeightedBiPred=%d, GPB=%d, PRefType=%d",
+         p->WeightedPred, p->WeightedBiPred, p->GPB, p->PRefType);
+    info("\t[debug]   CO3: AdaptiveRef=%d, AdaptiveLTR=%d, AdaptiveCQM=%d, FadeDetection=%d",
+         p->AdaptiveRef, p->AdaptiveLTR, p->AdaptiveCQM, p->FadeDetection);
+    info("\t[debug]   CO3: TransformSkip=%d, LowDelayHrd=%d, ScenarioInfo=%d, ContentInfo=%d",
+         p->TransformSkip, p->LowDelayHrd, p->ScenarioInfo, p->ContentInfo);
+    info("\t[debug]   CO3: MotionVectorsOverPicBoundaries=%d, GlobalMotionBiasAdjustment=%d, MVCostScalingFactor=%d, DirectBiasAdjustment=%d",
+         p->MotionVectorsOverPicBoundaries, p->GlobalMotionBiasAdjustment, p->MVCostScalingFactor, p->DirectBiasAdjustment);
+    info("\t[debug]   CO3: WinBRCMaxAvgKbps=%d, WinBRCSize=%d, QVBRQuality=%d",
+         p->WinBRCMaxAvgKbps, p->WinBRCSize, p->QVBRQuality);
+  }
+  if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
+    if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtHEVCParam>()) {
+      info("\t[debug]   HEVC: SampleAdaptiveOffset=%d, PicWidthInLumaSamples=%d, PicHeightInLumaSamples=%d",
+           p->SampleAdaptiveOffset, p->PicWidthInLumaSamples, p->PicHeightInLumaSamples);
+    }
+  }
+  if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1) {
+    if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtAV1AuxData>()) {
+      info("\t[debug]   AV1AuxData: EnableCdef=%d, EnableRestoration=%d, EnableLoopFilter=%d, EnableSuperres=%d",
+           p->EnableCdef, p->EnableRestoration, p->EnableLoopFilter, p->EnableSuperres);
+      info("\t[debug]   AV1AuxData: InterpFilter=%d, ErrorResilientMode=%d",
+           p->InterpFilter, p->ErrorResilientMode);
+    }
+  }
 
   {
     mfxVideoParam ValidParams = {};
