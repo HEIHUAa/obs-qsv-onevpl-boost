@@ -816,10 +816,8 @@ void QSVEncoder::ParseCustomCodingOptions(const std::string &Options) {
       else if (Field == "MESearchType") { COParams->MESearchType = ParsedVal; Applied = true; }
       else if (Field == "MVSearchWindow.x") { COParams->MVSearchWindow.x = static_cast<mfxI16>(std::stoi(Val)); Applied = true; }
       else if (Field == "MVSearchWindow.y") { COParams->MVSearchWindow.y = static_cast<mfxI16>(std::stoi(Val)); Applied = true; }
-      else if (Field == "EndOfSequence") { COParams->EndOfSequence = ParsedVal; Applied = true; }
       else if (Field == "RecoveryPointSEI") { COParams->RecoveryPointSEI = ParsedVal; Applied = true; }
       else if (Field == "NalHrdConformance") { COParams->NalHrdConformance = ParsedVal; Applied = true; }
-      else if (Field == "SingleSeiNalUnit") { COParams->SingleSeiNalUnit = ParsedVal; Applied = true; }
       else if (Field == "VuiVclHrdParameters") { COParams->VuiVclHrdParameters = ParsedVal; Applied = true; }
       else if (Field == "VuiNalHrdParameters") { COParams->VuiNalHrdParameters = ParsedVal; Applied = true; }
       else if (Field == "PicTimingSEI") { COParams->PicTimingSEI = ParsedVal; Applied = true; }
@@ -828,18 +826,10 @@ void QSVEncoder::ParseCustomCodingOptions(const std::string &Options) {
       else if (Field == "RefPicListReordering") { COParams->RefPicListReordering = ParsedVal; Applied = true; }
       else if (Field == "AUDelimiter") { COParams->AUDelimiter = ParsedVal; Applied = true; }
       else if (Field == "MaxDecFrameBuffering") { COParams->MaxDecFrameBuffering = ParsedVal; Applied = true; }
-      else if (Field == "MaxFrameSize") { COParams->MaxFrameSize = ParsedVal; Applied = true; }
-      else if (Field == "MaxSliceSize") { COParams->MaxSliceSize = ParsedVal; Applied = true; }
-      else if (Field == "BitrateLimit") { COParams->BitrateLimit = ParsedVal; Applied = true; }
       else if (Field == "FieldOutput") { COParams->FieldOutput = ParsedVal; Applied = true; }
       else if (Field == "IntraPredBlockSize") { COParams->IntraPredBlockSize = ParsedVal; Applied = true; }
       else if (Field == "InterPredBlockSize") { COParams->InterPredBlockSize = ParsedVal; Applied = true; }
       else if (Field == "MVPrecision") { COParams->MVPrecision = ParsedVal; Applied = true; }
-      else if (Field == "MaxFrameSizeI") { COParams->MaxFrameSizeI = ParsedVal; Applied = true; }
-      else if (Field == "MaxFrameSizeP") { COParams->MaxFrameSizeP = ParsedVal; Applied = true; }
-      else if (Field == "WeightedPred") { COParams->WeightedPred = ParsedVal; Applied = true; }
-      else if (Field == "WeightedBiPred") { COParams->WeightedBiPred = ParsedVal; Applied = true; }
-      else if (Field == "LowDelayHrd") { COParams->LowDelayHrd = ParsedVal; Applied = true; }
     }
 
     else if (Scope == "CO2" && CO2Params) {
@@ -857,13 +847,12 @@ void QSVEncoder::ParseCustomCodingOptions(const std::string &Options) {
       else if (Field == "AdaptiveI") { CO2Params->AdaptiveI = ParsedVal; Applied = true; }
       else if (Field == "AdaptiveB") { CO2Params->AdaptiveB = ParsedVal; Applied = true; }
       else if (Field == "LookAheadDS") { CO2Params->LookAheadDS = ParsedVal; Applied = true; }
-      else if (Field == "SkipFrame") { CO2Params->SkipFrame = ParsedVal; Applied = true; }
-      else if (Field == "MinQPI") { CO2Params->MinQPI = ParsedVal; Applied = true; }
-      else if (Field == "MaxQPI") { CO2Params->MaxQPI = ParsedVal; Applied = true; }
-      else if (Field == "MinQPP") { CO2Params->MinQPP = ParsedVal; Applied = true; }
-      else if (Field == "MaxQPP") { CO2Params->MaxQPP = ParsedVal; Applied = true; }
-      else if (Field == "MinQPB") { CO2Params->MinQPB = ParsedVal; Applied = true; }
-      else if (Field == "MaxQPB") { CO2Params->MaxQPB = ParsedVal; Applied = true; }
+      else if (Field == "MinQPI") { CO2Params->MinQPI = static_cast<mfxU8>(ParsedVal); Applied = true; }
+      else if (Field == "MaxQPI") { CO2Params->MaxQPI = static_cast<mfxU8>(ParsedVal); Applied = true; }
+      else if (Field == "MinQPP") { CO2Params->MinQPP = static_cast<mfxU8>(ParsedVal); Applied = true; }
+      else if (Field == "MaxQPP") { CO2Params->MaxQPP = static_cast<mfxU8>(ParsedVal); Applied = true; }
+      else if (Field == "MinQPB") { CO2Params->MinQPB = static_cast<mfxU8>(ParsedVal); Applied = true; }
+      else if (Field == "MaxQPB") { CO2Params->MaxQPB = static_cast<mfxU8>(ParsedVal); Applied = true; }
       else if (Field == "DisableDeblockingIdc") { CO2Params->DisableDeblockingIdc = ParsedVal; Applied = true; }
       else if (Field == "EnableMAD") { CO2Params->EnableMAD = ParsedVal; Applied = true; }
       else if (Field == "UseRawRef") { CO2Params->UseRawRef = ParsedVal; Applied = true; }
@@ -886,8 +875,6 @@ void QSVEncoder::ParseCustomCodingOptions(const std::string &Options) {
       else if (Field == "EnableQPOffset") { CO3Params->EnableQPOffset = ParsedVal; Applied = true; }
       else if (Field == "TransformSkip") { CO3Params->TransformSkip = ParsedVal; Applied = true; }
       else if (Field == "EnableMBForceIntra") { CO3Params->EnableMBForceIntra = ParsedVal; Applied = true; }
-      else if (Field == "MaxFrameSizeI") { CO3Params->MaxFrameSizeI = ParsedVal; Applied = true; }
-      else if (Field == "MaxFrameSizeP") { CO3Params->MaxFrameSizeP = ParsedVal; Applied = true; }
       else if (Field == "GPB") { CO3Params->GPB = ParsedVal; Applied = true; }
       else if (Field == "PRefType") { CO3Params->PRefType = ParsedVal; Applied = true; }
       else if (Field == "RepartitionCheckEnable") { CO3Params->RepartitionCheckEnable = ParsedVal; Applied = true; }
