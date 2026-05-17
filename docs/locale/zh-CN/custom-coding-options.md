@@ -241,5 +241,5 @@ CODDI.DDI.InterPredBlockSize=64
 - 对于当前未启用的缓冲区（例如 AV1 编码时的 CODDI），其字段将被静默忽略并记录警告日志。
 - 设置不正确可能导致编码器失败或画质下降，请谨慎使用。
 - 插件会在 `info` 级别日志中记录所有已应用的自定义选项。请在 OBS 日志中查看以验证你的设置。
-- CO3 中的数组字段（`QPOffset[8]`、`NumRefActiveP[8]`、`NumRefActiveBL0[8]`、`NumRefActiveBL1[8]`）**不支持**通过此文本解析器设置。如需使用请在 C++ 代码中配置。
+- CO3 中的数组字段（`QPOffset[8]`、`NumRefActiveP[8]`、`NumRefActiveBL0[8]`、`NumRefActiveBL1[8]`）仅作为参考列出，**无法**通过此文本解析器设置。如需使用请在 C++ 代码中配置。
 - CO 中标有 **"保留字段，必须为 0"** 的字段仅为向后兼容而存在，不应设置。请改用对应的 CODDI 版本。

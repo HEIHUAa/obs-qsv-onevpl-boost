@@ -241,5 +241,5 @@ Low-level driver tuning parameters. **"Magic beyond the control of mere mortals.
 - Fields for a buffer that is not currently enabled (e.g., CODDI for AV1) will be silently ignored with a warning log.
 - Incorrect values may cause encoder failures or degraded quality. Use with caution.
 - The plugin logs all applied custom options at `info` level. Check the OBS log to verify your settings.
-- Array fields (`QPOffset[8]`, `NumRefActiveP[8]`, `NumRefActiveBL0[8]`, `NumRefActiveBL1[8]`) in CO3 are **not supported** via this text parser. These must be set through C++ code if needed.
+- Array fields (`QPOffset[8]`, `NumRefActiveP[8]`, `NumRefActiveBL0[8]`, `NumRefActiveBL1[8]`) in CO3 are documented for reference only but **cannot be set** via this text parser. These must be configured in C++ code if needed.
 - CO fields marked **"Reserved. Must be 0."** exist for backward compatibility but should not be set. Use their CODDI equivalents instead.

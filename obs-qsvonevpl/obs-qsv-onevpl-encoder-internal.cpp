@@ -2006,7 +2006,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     info("\tTemporalLayers: %d layers enabled",
          InputParams->TemporalLayersNum);
   }
-    }
 
 #ifdef QSV_UHD600_SUPPORT
   QSVEncodeParams.IOPattern = QSVUseSystemMemoryPath
