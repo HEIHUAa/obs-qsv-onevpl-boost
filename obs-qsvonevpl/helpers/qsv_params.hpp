@@ -122,5 +122,7 @@ struct encoder_params {
   int ScreenContentTools;
 
   int TemporalLayersNum;
+
+  std::string CustomCodingOptions;
 };
 

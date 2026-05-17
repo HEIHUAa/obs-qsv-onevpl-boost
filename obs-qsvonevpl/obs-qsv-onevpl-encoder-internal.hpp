@@ -53,6 +53,8 @@ public:
   mfxStatus SetEncoderParams(struct encoder_params *InputParams,
                              enum codec_enum Codec);
 
+  void ParseCustomCodingOptions(const std::string &Options);
+
   mfxStatus GetVideoParam(enum codec_enum Codec);
   void LogActualParams();
   mfxStatus QueryAndValidateEncoderParams();

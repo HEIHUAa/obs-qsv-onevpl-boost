@@ -175,6 +175,9 @@ struct plugin_context {
 #define TEXT_ADAPTIVE_MAX_FRAME_SIZE obs_module_text("AdaptiveMaxFrameSize")
 #define TEXT_ADAPTIVE_MAX_FRAME_SIZE_DESC obs_module_text("AdaptiveMaxFrameSizeDesc")
 
+#define TEXT_CUSTOM_CODING_OPTIONS obs_module_text("CustomCodingOptions")
+#define TEXT_CUSTOM_CODING_OPTIONS_DESC obs_module_text("CustomCodingOptionsDesc")
+
 #define TEXT_CTU obs_module_text("CTU")
 #define TEXT_CTU_DESC obs_module_text("CTUDesc")
 

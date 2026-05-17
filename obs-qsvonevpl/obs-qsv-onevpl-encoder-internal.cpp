@@ -1,5 +1,6 @@
 #pragma warning(disable : 4996)
 #include "obs-qsv-onevpl-encoder-internal.hpp"
+#include <sstream>
 
 QSVEncoder::QSVEncoder()
     : QSVPlatform(), QSVVersion(), QSVLoader(), QSVLoaderConfig(),
@@ -743,6 +744,217 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
   QSVProcessingAuxData = QSVEncodeCtrlParams.AddExtBuffer<mfxExtVppAuxData>();
 
   return Status;
+}
+
+static mfxU16 ParseCodingOptionValue(const std::string &Val) {
+  if (Val == "ON" || Val == "on")
+    return MFX_CODINGOPTION_ON;
+  if (Val == "OFF" || Val == "off")
+    return MFX_CODINGOPTION_OFF;
+  if (Val == "UNKNOWN" || Val == "unknown")
+    return MFX_CODINGOPTION_UNKNOWN;
+  return static_cast<mfxU16>(std::stoul(Val));
+}
+
+void QSVEncoder::ParseCustomCodingOptions(const std::string &Options) {
+  auto *COParams = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
+  auto *CO2Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
+  auto *CO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
+  auto *CODDIParams = QSVEncodeParams.GetExtBuffer<mfxExtCodingOptionDDI>();
+
+  std::istringstream Stream(Options);
+  std::string Line;
+  int LineNo = 0;
+
+  while (std::getline(Stream, Line)) {
+    LineNo++;
+    while (!Line.empty() && (Line.back() == '\r' || Line.back() == ' ' ||
+                             Line.back() == '\t'))
+      Line.pop_back();
+    while (!Line.empty() && (Line.front() == ' ' || Line.front() == '\t'))
+      Line.erase(0, 1);
+
+    if (Line.empty() || Line[0] == '#' || Line[0] == ';')
+      continue;
+
+    size_t EqualPos = Line.find('=');
+    if (EqualPos == std::string::npos) {
+      warn("\tCustomCodingOptions line %d: missing '=', skipping: %s", LineNo,
+           Line.c_str());
+      continue;
+    }
+
+    std::string Key = Line.substr(0, EqualPos);
+    std::string Val = Line.substr(EqualPos + 1);
+
+    while (!Key.empty() && (Key.back() == ' ' || Key.back() == '\t'))
+      Key.pop_back();
+    while (!Key.empty() && (Key.front() == ' ' || Key.front() == '\t'))
+      Key.erase(0, 1);
+    while (!Val.empty() && (Val.back() == ' ' || Val.back() == '\t'))
+      Val.pop_back();
+    while (!Val.empty() && (Val.front() == ' ' || Val.front() == '\t'))
+      Val.erase(0, 1);
+
+    size_t DotPos = Key.find('.');
+    if (DotPos == std::string::npos) {
+      warn("\tCustomCodingOptions line %d: missing scope prefix (CO/CO2/CO3/CODDI), skipping: %s",
+           LineNo, Key.c_str());
+      continue;
+    }
+
+    std::string Scope = Key.substr(0, DotPos);
+    std::string Field = Key.substr(DotPos + 1);
+
+    mfxU16 ParsedVal = ParseCodingOptionValue(Val);
+    bool Applied = false;
+
+    if (Scope == "CO" && COParams) {
+      if (Field == "CAVLC") { COParams->CAVLC = ParsedVal; Applied = true; }
+      else if (Field == "RateDistortionOpt") { COParams->RateDistortionOpt = ParsedVal; Applied = true; }
+      else if (Field == "MECostType") { COParams->MECostType = ParsedVal; Applied = true; }
+      else if (Field == "MESearchType") { COParams->MESearchType = ParsedVal; Applied = true; }
+      else if (Field == "MVSearchWindow.x") { COParams->MVSearchWindow.x = static_cast<mfxI16>(std::stoi(Val)); Applied = true; }
+      else if (Field == "MVSearchWindow.y") { COParams->MVSearchWindow.y = static_cast<mfxI16>(std::stoi(Val)); Applied = true; }
+      else if (Field == "EndOfSequence") { COParams->EndOfSequence = ParsedVal; Applied = true; }
+      else if (Field == "RecoveryPointSEI") { COParams->RecoveryPointSEI = ParsedVal; Applied = true; }
+      else if (Field == "NalHrdConformance") { COParams->NalHrdConformance = ParsedVal; Applied = true; }
+      else if (Field == "SingleSeiNalUnit") { COParams->SingleSeiNalUnit = ParsedVal; Applied = true; }
+      else if (Field == "VuiVclHrdParameters") { COParams->VuiVclHrdParameters = ParsedVal; Applied = true; }
+      else if (Field == "VuiNalHrdParameters") { COParams->VuiNalHrdParameters = ParsedVal; Applied = true; }
+      else if (Field == "PicTimingSEI") { COParams->PicTimingSEI = ParsedVal; Applied = true; }
+      else if (Field == "ResetRefList") { COParams->ResetRefList = ParsedVal; Applied = true; }
+      else if (Field == "RefPicMarkRep") { COParams->RefPicMarkRep = ParsedVal; Applied = true; }
+      else if (Field == "RefPicListReordering") { COParams->RefPicListReordering = ParsedVal; Applied = true; }
+      else if (Field == "AUDelimiter") { COParams->AUDelimiter = ParsedVal; Applied = true; }
+      else if (Field == "MaxDecFrameBuffering") { COParams->MaxDecFrameBuffering = ParsedVal; Applied = true; }
+      else if (Field == "MaxFrameSize") { COParams->MaxFrameSize = ParsedVal; Applied = true; }
+      else if (Field == "MaxSliceSize") { COParams->MaxSliceSize = ParsedVal; Applied = true; }
+      else if (Field == "BitrateLimit") { COParams->BitrateLimit = ParsedVal; Applied = true; }
+      else if (Field == "FieldOutput") { COParams->FieldOutput = ParsedVal; Applied = true; }
+      else if (Field == "IntraPredBlockSize") { COParams->IntraPredBlockSize = ParsedVal; Applied = true; }
+      else if (Field == "InterPredBlockSize") { COParams->InterPredBlockSize = ParsedVal; Applied = true; }
+      else if (Field == "MVPrecision") { COParams->MVPrecision = ParsedVal; Applied = true; }
+      else if (Field == "MaxFrameSizeI") { COParams->MaxFrameSizeI = ParsedVal; Applied = true; }
+      else if (Field == "MaxFrameSizeP") { COParams->MaxFrameSizeP = ParsedVal; Applied = true; }
+      else if (Field == "WeightedPred") { COParams->WeightedPred = ParsedVal; Applied = true; }
+      else if (Field == "WeightedBiPred") { COParams->WeightedBiPred = ParsedVal; Applied = true; }
+      else if (Field == "LowDelayHrd") { COParams->LowDelayHrd = ParsedVal; Applied = true; }
+    }
+
+    else if (Scope == "CO2" && CO2Params) {
+      if (Field == "IntRefType") { CO2Params->IntRefType = ParsedVal; Applied = true; }
+      else if (Field == "IntRefCycleSize") { CO2Params->IntRefCycleSize = ParsedVal; Applied = true; }
+      else if (Field == "IntRefQPDelta") { CO2Params->IntRefQPDelta = ParsedVal; Applied = true; }
+      else if (Field == "MaxFrameSize") { CO2Params->MaxFrameSize = ParsedVal; Applied = true; }
+      else if (Field == "BitrateLimit") { CO2Params->BitrateLimit = ParsedVal; Applied = true; }
+      else if (Field == "MBBRC") { CO2Params->MBBRC = ParsedVal; Applied = true; }
+      else if (Field == "ExtBRC") { CO2Params->ExtBRC = ParsedVal; Applied = true; }
+      else if (Field == "LookAheadDepth") { CO2Params->LookAheadDepth = ParsedVal; Applied = true; }
+      else if (Field == "Trellis") { CO2Params->Trellis = ParsedVal; Applied = true; }
+      else if (Field == "RepeatPPS") { CO2Params->RepeatPPS = ParsedVal; Applied = true; }
+      else if (Field == "BRefType") { CO2Params->BRefType = ParsedVal; Applied = true; }
+      else if (Field == "AdaptiveI") { CO2Params->AdaptiveI = ParsedVal; Applied = true; }
+      else if (Field == "AdaptiveB") { CO2Params->AdaptiveB = ParsedVal; Applied = true; }
+      else if (Field == "LookAheadDS") { CO2Params->LookAheadDS = ParsedVal; Applied = true; }
+      else if (Field == "SkipFrame") { CO2Params->SkipFrame = ParsedVal; Applied = true; }
+      else if (Field == "MinQPI") { CO2Params->MinQPI = ParsedVal; Applied = true; }
+      else if (Field == "MaxQPI") { CO2Params->MaxQPI = ParsedVal; Applied = true; }
+      else if (Field == "MinQPP") { CO2Params->MinQPP = ParsedVal; Applied = true; }
+      else if (Field == "MaxQPP") { CO2Params->MaxQPP = ParsedVal; Applied = true; }
+      else if (Field == "MinQPB") { CO2Params->MinQPB = ParsedVal; Applied = true; }
+      else if (Field == "MaxQPB") { CO2Params->MaxQPB = ParsedVal; Applied = true; }
+      else if (Field == "DisableDeblockingIdc") { CO2Params->DisableDeblockingIdc = ParsedVal; Applied = true; }
+      else if (Field == "EnableMAD") { CO2Params->EnableMAD = ParsedVal; Applied = true; }
+      else if (Field == "UseRawRef") { CO2Params->UseRawRef = ParsedVal; Applied = true; }
+      else if (Field == "BufferingPeriodSEI") { CO2Params->BufferingPeriodSEI = ParsedVal; Applied = true; }
+      else if (Field == "FixedFrameRate") { CO2Params->FixedFrameRate = ParsedVal; Applied = true; }
+    }
+
+    else if (Scope == "CO3" && CO3Params) {
+      if (Field == "TargetBitDepthLuma") { CO3Params->TargetBitDepthLuma = ParsedVal; Applied = true; }
+      else if (Field == "TargetBitDepthChroma") { CO3Params->TargetBitDepthChroma = ParsedVal; Applied = true; }
+      else if (Field == "WeightedPred") { CO3Params->WeightedPred = ParsedVal; Applied = true; }
+      else if (Field == "WeightedBiPred") { CO3Params->WeightedBiPred = ParsedVal; Applied = true; }
+      else if (Field == "LowDelayHrd") { CO3Params->LowDelayHrd = ParsedVal; Applied = true; }
+      else if (Field == "BitstreamRestriction") { CO3Params->BitstreamRestriction = ParsedVal; Applied = true; }
+      else if (Field == "AspectRatioInfoPresent") { CO3Params->AspectRatioInfoPresent = ParsedVal; Applied = true; }
+      else if (Field == "OverscanInfoPresent") { CO3Params->OverscanInfoPresent = ParsedVal; Applied = true; }
+      else if (Field == "TimingInfoPresent") { CO3Params->TimingInfoPresent = ParsedVal; Applied = true; }
+      else if (Field == "FadeDetection") { CO3Params->FadeDetection = ParsedVal; Applied = true; }
+      else if (Field == "QVBRQuality") { CO3Params->QVBRQuality = ParsedVal; Applied = true; }
+      else if (Field == "EnableQPOffset") { CO3Params->EnableQPOffset = ParsedVal; Applied = true; }
+      else if (Field == "TransformSkip") { CO3Params->TransformSkip = ParsedVal; Applied = true; }
+      else if (Field == "EnableMBForceIntra") { CO3Params->EnableMBForceIntra = ParsedVal; Applied = true; }
+      else if (Field == "MaxFrameSizeI") { CO3Params->MaxFrameSizeI = ParsedVal; Applied = true; }
+      else if (Field == "MaxFrameSizeP") { CO3Params->MaxFrameSizeP = ParsedVal; Applied = true; }
+      else if (Field == "GPB") { CO3Params->GPB = ParsedVal; Applied = true; }
+      else if (Field == "PRefType") { CO3Params->PRefType = ParsedVal; Applied = true; }
+      else if (Field == "RepartitionCheckEnable") { CO3Params->RepartitionCheckEnable = ParsedVal; Applied = true; }
+      else if (Field == "IntRefCycleDist") { CO3Params->IntRefCycleDist = ParsedVal; Applied = true; }
+      else if (Field == "ContentInfo") { CO3Params->ContentInfo = ParsedVal; Applied = true; }
+      else if (Field == "ScenarioInfo") { CO3Params->ScenarioInfo = ParsedVal; Applied = true; }
+      else if (Field == "EnableMBQP") { CO3Params->EnableMBQP = ParsedVal; Applied = true; }
+      else if (Field == "TargetChromaFormatPlus1") { CO3Params->TargetChromaFormatPlus1 = ParsedVal; Applied = true; }
+    }
+
+    else if (Scope == "CODDI" && CODDIParams) {
+      if (Field == "IntraPredCostType") { CODDIParams->IntraPredCostType = ParsedVal; Applied = true; }
+      else if (Field == "MEInterpolationMethod") { CODDIParams->MEInterpolationMethod = ParsedVal; Applied = true; }
+      else if (Field == "MEFractionalSearchType") { CODDIParams->MEFractionalSearchType = ParsedVal; Applied = true; }
+      else if (Field == "MaxMVs") { CODDIParams->MaxMVs = ParsedVal; Applied = true; }
+      else if (Field == "SkipCheck") { CODDIParams->SkipCheck = ParsedVal; Applied = true; }
+      else if (Field == "DirectCheck") { CODDIParams->DirectCheck = ParsedVal; Applied = true; }
+      else if (Field == "BiDirSearch") { CODDIParams->BiDirSearch = ParsedVal; Applied = true; }
+      else if (Field == "MBAFF") { CODDIParams->MBAFF = ParsedVal; Applied = true; }
+      else if (Field == "FieldPrediction") { CODDIParams->FieldPrediction = ParsedVal; Applied = true; }
+      else if (Field == "RefOppositeField") { CODDIParams->RefOppositeField = ParsedVal; Applied = true; }
+      else if (Field == "ChromaInME") { CODDIParams->ChromaInME = ParsedVal; Applied = true; }
+      else if (Field == "WeightedPrediction") { CODDIParams->WeightedPrediction = ParsedVal; Applied = true; }
+      else if (Field == "MVPrediction") { CODDIParams->MVPrediction = ParsedVal; Applied = true; }
+      else if (Field == "BRCPrecision") { CODDIParams->BRCPrecision = ParsedVal; Applied = true; }
+      else if (Field == "RefRaw") { CODDIParams->RefRaw = ParsedVal; Applied = true; }
+      else if (Field == "ConstQP") { CODDIParams->ConstQP = ParsedVal; Applied = true; }
+      else if (Field == "GlobalSearch") { CODDIParams->GlobalSearch = ParsedVal; Applied = true; }
+      else if (Field == "LocalSearch") { CODDIParams->LocalSearch = ParsedVal; Applied = true; }
+      else if (Field == "EarlySkip") { CODDIParams->EarlySkip = ParsedVal; Applied = true; }
+      else if (Field == "LaScaleFactor") { CODDIParams->LaScaleFactor = ParsedVal; Applied = true; }
+      else if (Field == "IBC") { CODDIParams->IBC = ParsedVal; Applied = true; }
+      else if (Field == "Palette") { CODDIParams->Palette = ParsedVal; Applied = true; }
+      else if (Field == "StrengthN") { CODDIParams->StrengthN = ParsedVal; Applied = true; }
+      else if (Field == "FractionalQP") { CODDIParams->FractionalQP = ParsedVal; Applied = true; }
+      else if (Field == "NumActiveRefP") { CODDIParams->NumActiveRefP = ParsedVal; Applied = true; }
+      else if (Field == "NumActiveRefBL0") { CODDIParams->NumActiveRefBL0 = ParsedVal; Applied = true; }
+      else if (Field == "NumActiveRefBL1") { CODDIParams->NumActiveRefBL1 = ParsedVal; Applied = true; }
+      else if (Field == "DisablePSubMBPartition") { CODDIParams->DisablePSubMBPartition = ParsedVal; Applied = true; }
+      else if (Field == "DisableBSubMBPartition") { CODDIParams->DisableBSubMBPartition = ParsedVal; Applied = true; }
+      else if (Field == "WeightedBiPredIdc") { CODDIParams->WeightedBiPredIdc = ParsedVal; Applied = true; }
+      else if (Field == "DirectSpatialMvPredFlag") { CODDIParams->DirectSpatialMvPredFlag = ParsedVal; Applied = true; }
+      else if (Field == "Transform8x8Mode") { CODDIParams->Transform8x8Mode = ParsedVal; Applied = true; }
+      else if (Field == "LongStartCodes") { CODDIParams->LongStartCodes = ParsedVal; Applied = true; }
+      else if (Field == "CabacInitIdcPlus1") { CODDIParams->CabacInitIdcPlus1 = ParsedVal; Applied = true; }
+      else if (Field == "QpUpdateRange") { CODDIParams->QpUpdateRange = ParsedVal; Applied = true; }
+      else if (Field == "RegressionWindow") { CODDIParams->RegressionWindow = ParsedVal; Applied = true; }
+      else if (Field == "LookAheadDependency") { CODDIParams->LookAheadDependency = ParsedVal; Applied = true; }
+      else if (Field == "Hme") { CODDIParams->Hme = ParsedVal; Applied = true; }
+      else if (Field == "WriteIVFHeaders") { CODDIParams->WriteIVFHeaders = ParsedVal; Applied = true; }
+      else if (Field == "RefreshFrameContext") { CODDIParams->RefreshFrameContext = ParsedVal; Applied = true; }
+      else if (Field == "ChangeFrameContextIdxForTS") { CODDIParams->ChangeFrameContextIdxForTS = ParsedVal; Applied = true; }
+      else if (Field == "SuperFrameForTS") { CODDIParams->SuperFrameForTS = ParsedVal; Applied = true; }
+      else if (Field == "QpAdjust") { CODDIParams->QpAdjust = ParsedVal; Applied = true; }
+      else if (Field == "TMVP") { CODDIParams->TMVP = ParsedVal; Applied = true; }
+      else if (Field == "DDI.IntraPredBlockSize") { CODDIParams->DDI.IntraPredBlockSize = ParsedVal; Applied = true; }
+      else if (Field == "DDI.InterPredBlockSize") { CODDIParams->DDI.InterPredBlockSize = ParsedVal; Applied = true; }
+    }
+
+    if (Applied) {
+      info("\tCustomCodingOptions[%d]: %s.%s = %s (%d)", LineNo,
+           Scope.c_str(), Field.c_str(), Val.c_str(), ParsedVal);
+    } else {
+      warn("\tCustomCodingOptions line %d: unknown field '%s.%s' or buffer not available",
+           LineNo, Scope.c_str(), Field.c_str());
+    }
+  }
 }
 
 mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
@@ -1766,6 +1978,10 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     TemporalLayersParams->Layers = QSVLayerArray;
     info("\tTemporalLayers: %d layers enabled",
          InputParams->TemporalLayersNum);
+  }
+
+  if (!InputParams->CustomCodingOptions.empty()) {
+    ParseCustomCodingOptions(InputParams->CustomCodingOptions);
   }
 
   #ifdef QSV_UHD600_SUPPORT

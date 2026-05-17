@@ -982,6 +982,12 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
       Prop, TEXT_GPU_NUMBER_DESC);
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
+  Prop = obs_properties_add_text(Props, "custom_coding_options",
+                                 TEXT_CUSTOM_CODING_OPTIONS,
+                                 OBS_TEXT_MULTILINE);
+  obs_property_set_long_description(
+      Prop, TEXT_CUSTOM_CODING_OPTIONS_DESC);
+
   return Props;
 }
 
@@ -1800,6 +1806,12 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
 
   Context->EncoderParams.TemporalLayersNum =
       static_cast<mfxU16>(TemporalLayersData);
+
+  const char *CustomCodingOptionsData =
+      obs_data_get_string(Settings, "custom_coding_options");
+  if (CustomCodingOptionsData) {
+    Context->EncoderParams.CustomCodingOptions = CustomCodingOptionsData;
+  }
 
   Context->EncoderParams.ProcessingEnable = false;
   if ((Context->EncoderParams.VPPDenoiseMode.has_value() ||
