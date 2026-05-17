@@ -105,56 +105,85 @@ mfxStatus QSVEncoder::GetVPLVersion(mfxVersion &Version) {
   return Status;
 }
 
+static bool TrySetupSessionFilters(mfxLoader Loader, const char *ImplName,
+                                   bool IsTextureEncoder) {
+  mfxConfig Config;
+
+  Config = MFXCreateConfig(Loader);
+  mfxVariant Variant{};
+  Variant.Type = MFX_VARIANT_TYPE_U32;
+  Variant.Data.U32 = MFX_IMPL_TYPE_HARDWARE;
+  MFXSetConfigFilterProperty(
+      Config,
+      reinterpret_cast<const mfxU8 *>("mfxImplDescription.Impl"),
+      Variant);
+
+  Config = MFXCreateConfig(Loader);
+  Variant.Type = MFX_VARIANT_TYPE_U32;
+  Variant.Data.U32 = static_cast<mfxU32>(0x8086);
+  MFXSetConfigFilterProperty(
+      Config,
+      reinterpret_cast<const mfxU8 *>("mfxImplDescription.VendorID"),
+      Variant);
+
+  if (ImplName != nullptr) {
+    Config = MFXCreateConfig(Loader);
+    Variant.Type = MFX_VARIANT_TYPE_PTR;
+    Variant.Data.Ptr = mfxHDL(ImplName);
+    MFXSetConfigFilterProperty(
+        Config,
+        reinterpret_cast<const mfxU8 *>("mfxImplDescription.ImplName"),
+        Variant);
+  }
+
+#if defined(_WIN32) || defined(_WIN64)
+  if (IsTextureEncoder && ImplName != nullptr &&
+      strcmp(ImplName, "mfx-gen") == 0) {
+    Config = MFXCreateConfig(Loader);
+    Variant.Type = MFX_VARIANT_TYPE_U32;
+    Variant.Data.U32 = MFX_ACCEL_MODE_VIA_D3D11;
+    MFXSetConfigFilterProperty(
+        Config,
+        reinterpret_cast<const mfxU8 *>(
+            "mfxImplDescription.AccelerationMode"),
+        Variant);
+  }
+#endif
+
+  return true;
+}
+
 mfxStatus QSVEncoder::CreateSession([[maybe_unused]] enum codec_enum Codec,
                                     [[maybe_unused]] void **Data, int GPUNum) {
   mfxStatus Status = MFX_ERR_NONE;
   try {
-    // First attempt: basic hardware filters
+    // Attempt 1: try mfx-gen (oneVPL native implementation)
     {
       QSVLoader = MFXLoad();
       if (QSVLoader == nullptr) {
         return MFX_ERR_UNDEFINED_BEHAVIOR;
       }
-
-      QSVLoaderConfig[0] = MFXCreateConfig(QSVLoader);
-      QSVLoaderVariant[0].Type = MFX_VARIANT_TYPE_U32;
-      QSVLoaderVariant[0].Data.U32 = MFX_IMPL_TYPE_HARDWARE;
-      MFXSetConfigFilterProperty(
-          QSVLoaderConfig[0],
-          reinterpret_cast<const mfxU8 *>("mfxImplDescription.Impl"),
-          QSVLoaderVariant[0]);
-
-      QSVLoaderConfig[1] = MFXCreateConfig(QSVLoader);
-      QSVLoaderVariant[1].Type = MFX_VARIANT_TYPE_U32;
-      QSVLoaderVariant[1].Data.U32 = static_cast<mfxU32>(0x8086);
-      MFXSetConfigFilterProperty(
-          QSVLoaderConfig[1],
-          reinterpret_cast<const mfxU8 *>("mfxImplDescription.VendorID"),
-          QSVLoaderVariant[1]);
-
-      QSVLoaderConfig[2] = MFXCreateConfig(QSVLoader);
-      QSVLoaderVariant[2].Type = MFX_VARIANT_TYPE_PTR;
-      QSVLoaderVariant[2].Data.Ptr = mfxHDL("mfx-gen");
-      MFXSetConfigFilterProperty(
-          QSVLoaderConfig[2],
-          reinterpret_cast<const mfxU8 *>("mfxImplDescription.ImplName"),
-          QSVLoaderVariant[2]);
-
-#if defined(_WIN32) || defined(_WIN64)
-      if (QSVIsTextureEncoder) {
-        QSVLoaderConfig[3] = MFXCreateConfig(QSVLoader);
-        QSVLoaderVariant[3].Type = MFX_VARIANT_TYPE_U32;
-        QSVLoaderVariant[3].Data.U32 = MFX_ACCEL_MODE_VIA_D3D11;
-        MFXSetConfigFilterProperty(
-            QSVLoaderConfig[3],
-            reinterpret_cast<const mfxU8 *>(
-                "mfxImplDescription.AccelerationMode"),
-            QSVLoaderVariant[3]);
-      }
-#endif
-
+      TrySetupSessionFilters(QSVLoader, "mfx-gen", QSVIsTextureEncoder);
       Status = MFXCreateSession(QSVLoader, GPUNum, &QSVSession);
     }
+
+    // Fallback: if mfx-gen failed and not texture encoder, try mfx-msdk for legacy hardware
+#ifdef QSV_UHD600_SUPPORT
+    if (Status < MFX_ERR_NONE && !QSVIsTextureEncoder) {
+      warn("mfx-gen session failed (%d), retrying with mfx-msdk...",
+           Status);
+      MFXUnload(QSVLoader);
+      QSVLoader = nullptr;
+
+      QSVLoader = MFXLoad();
+      if (QSVLoader != nullptr) {
+        TrySetupSessionFilters(QSVLoader, "mfx-msdk", QSVIsTextureEncoder);
+        Status = MFXCreateSession(QSVLoader, GPUNum, &QSVSession);
+      } else {
+        Status = MFX_ERR_UNDEFINED_BEHAVIOR;
+      }
+    }
+#endif
 
     if (Status < MFX_ERR_NONE) {
       error("Error code: %d", Status);

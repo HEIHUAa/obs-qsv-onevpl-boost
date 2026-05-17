@@ -147,11 +147,24 @@ if(WIN32)
       /INCREMENTAL:NO
     )
 
-    if(TARGET VPL)
+    # Try multiple VPL target names to handle both add_subdirectory
+    # and find_package scenarios
+    set(QSV_VPL_TARGET "")
+    foreach(_t VPL VPL::VPL VPL::dispatcher dispatcher)
+      if(TARGET ${_t})
+        set(QSV_VPL_TARGET ${_t})
+        break()
+      endif()
+    endforeach()
+
+    if(QSV_VPL_TARGET)
       add_custom_command(TARGET obs-qsvonevpl-uhd600 POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-          $<TARGET_FILE:VPL>
+          $<TARGET_FILE:${QSV_VPL_TARGET}>
           $<TARGET_FILE_DIR:obs-qsvonevpl-uhd600>
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          $<TARGET_FILE:${QSV_VPL_TARGET}>
+          $<TARGET_FILE_DIR:obs-qsvonevpl-uhd600>/libvpid.dll
       )
     endif()
 
@@ -160,6 +173,17 @@ if(WIN32)
       RUNTIME DESTINATION "obs-plugins/64bit"
       LIBRARY DESTINATION "obs-plugins"
     )
+
+    # Install libvpl.dll alongside the UHD600 plugin when built from source (add_subdirectory).
+    # When VPL is found via find_package, the DLL is already on the system, no need to install.
+    if(TARGET VPL)
+      get_target_property(_qsv_vpl_type VPL TYPE)
+      if(_qsv_vpl_type STREQUAL "SHARED_LIBRARY")
+        install(TARGETS VPL
+          RUNTIME DESTINATION "obs-plugins/64bit"
+        )
+      endif()
+    endif()
   endif()
 
   # source_group is to show the files in the IDE #
