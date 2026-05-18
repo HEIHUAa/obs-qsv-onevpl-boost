@@ -58,7 +58,7 @@ struct encoder_params {
   std::optional<bool> AdaptiveRef;
   std::optional<bool> AdaptiveCQM;
   std::optional<bool> AdaptiveLTR;
-  mfxU16 AdaptiveMaxFrameSize;
+  mfxU32 AdaptiveMaxFrameSize;
   std::optional<bool> RDO;
   std::optional<bool> RawRef;
   std::optional<bool> GPB;
