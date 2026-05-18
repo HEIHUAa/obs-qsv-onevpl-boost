@@ -365,6 +365,13 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   Prop = obs_properties_get(Properties, "low_delay_hrd");
   obs_property_set_visible(Prop, bVisible);
 
+  bool bMaxFrameSizeVisible = !(bIsCQP || bIsICQ);
+  Prop = obs_properties_get(Properties, "adaptive_max_frame_size");
+  obs_property_set_visible(Prop, bMaxFrameSizeVisible);
+  if (!bMaxFrameSizeVisible) {
+    obs_data_set_int(Settings, "adaptive_max_frame_size", 0);
+  }
+
   const char *global_motion_bias_adjustment_enable =
       obs_data_get_string(Settings, "global_motion_bias_adjustment");
   bVisible = ((std::strcmp(global_motion_bias_adjustment_enable, "ON") == 0));
@@ -817,6 +824,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                 TEXT_ADAPTIVE_MAX_FRAME_SIZE, 0, 2147483647, 100);
   obs_property_set_long_description(Prop, TEXT_ADAPTIVE_MAX_FRAME_SIZE_DESC);
   obs_property_int_set_suffix(Prop, " bytes");
+  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
   Prop = obs_properties_add_list(Props, "transform_skip", TEXT_TRANSFORM_SKIP,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
