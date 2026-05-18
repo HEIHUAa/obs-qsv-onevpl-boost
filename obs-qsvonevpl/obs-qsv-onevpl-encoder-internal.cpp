@@ -91,17 +91,35 @@ void QSVEncoder::ReleaseSystemMemorySurfacePool() {
 
 mfxStatus QSVEncoder::GetVPLVersion(mfxVersion &Version) {
   mfxStatus Status = MFX_ERR_NONE;
-  QSVLoader = MFXLoad();
-  if (QSVLoader == nullptr) {
-    throw std::runtime_error("GetVPLSession(): MFXLoad error");
+
+  mfxLoader Loader = nullptr;
+  bool IsLocalLoader = false;
+  {
+    std::lock_guard<std::mutex> Lock(GlobalLoaderMutex);
+    Loader = GlobalQSVLoader;
   }
-  Status = MFXCreateSession(QSVLoader, 0, &QSVSession);
+
+  if (!Loader) {
+    Loader = MFXLoad();
+    if (Loader == nullptr) {
+      throw std::runtime_error("GetVPLSession(): MFXLoad error");
+    }
+    IsLocalLoader = true;
+  }
+
+  Status = MFXCreateSession(Loader, 0, &QSVSession);
   if (Status >= MFX_ERR_NONE) {
     MFXQueryVersion(QSVSession, &QSVVersion);
     Version = QSVVersion;
     MFXClose(QSVSession);
-    MFXUnload(QSVLoader);
+    QSVSession = nullptr;
+    if (IsLocalLoader) {
+      MFXUnload(Loader);
+    }
   } else {
+    if (IsLocalLoader) {
+      MFXUnload(Loader);
+    }
     throw std::runtime_error("GetVPLSession(): MFXCreateSession error");
   }
 
@@ -111,15 +129,27 @@ mfxStatus QSVEncoder::GetVPLVersion(mfxVersion &Version) {
 mfxStatus QSVEncoder::CreateSession([[maybe_unused]] enum codec_enum Codec,
                                     [[maybe_unused]] void **Data, int GPUNum) {
   mfxStatus Status = MFX_ERR_NONE;
+  bool UsingGlobalLoader = false;
+
   try {
-    // First attempt: basic hardware filters
+    mfxLoader Loader = nullptr;
+
     {
+      std::lock_guard<std::mutex> Lock(GlobalLoaderMutex);
+      if (GlobalQSVLoader) {
+        Loader = GlobalQSVLoader;
+        UsingGlobalLoader = true;
+      }
+    }
+
+    if (!Loader) {
       QSVLoader = MFXLoad();
       if (QSVLoader == nullptr) {
         return MFX_ERR_UNDEFINED_BEHAVIOR;
       }
+      Loader = QSVLoader;
 
-      QSVLoaderConfig[0] = MFXCreateConfig(QSVLoader);
+      QSVLoaderConfig[0] = MFXCreateConfig(Loader);
       QSVLoaderVariant[0].Type = MFX_VARIANT_TYPE_U32;
       QSVLoaderVariant[0].Data.U32 = MFX_IMPL_TYPE_HARDWARE;
       MFXSetConfigFilterProperty(
@@ -127,7 +157,7 @@ mfxStatus QSVEncoder::CreateSession([[maybe_unused]] enum codec_enum Codec,
           reinterpret_cast<const mfxU8 *>("mfxImplDescription.Impl"),
           QSVLoaderVariant[0]);
 
-      QSVLoaderConfig[1] = MFXCreateConfig(QSVLoader);
+      QSVLoaderConfig[1] = MFXCreateConfig(Loader);
       QSVLoaderVariant[1].Type = MFX_VARIANT_TYPE_U32;
       QSVLoaderVariant[1].Data.U32 = static_cast<mfxU32>(0x8086);
       MFXSetConfigFilterProperty(
@@ -135,29 +165,34 @@ mfxStatus QSVEncoder::CreateSession([[maybe_unused]] enum codec_enum Codec,
           reinterpret_cast<const mfxU8 *>("mfxImplDescription.VendorID"),
           QSVLoaderVariant[1]);
 
-      QSVLoaderConfig[2] = MFXCreateConfig(QSVLoader);
+      QSVLoaderConfig[2] = MFXCreateConfig(Loader);
       QSVLoaderVariant[2].Type = MFX_VARIANT_TYPE_PTR;
       QSVLoaderVariant[2].Data.Ptr = mfxHDL("mfx-gen");
       MFXSetConfigFilterProperty(
           QSVLoaderConfig[2],
           reinterpret_cast<const mfxU8 *>("mfxImplDescription.ImplName"),
           QSVLoaderVariant[2]);
+    }
 
 #if defined(_WIN32) || defined(_WIN64)
-      if (QSVIsTextureEncoder) {
-        QSVLoaderConfig[3] = MFXCreateConfig(QSVLoader);
-        QSVLoaderVariant[3].Type = MFX_VARIANT_TYPE_U32;
-        QSVLoaderVariant[3].Data.U32 = MFX_ACCEL_MODE_VIA_D3D11;
-        MFXSetConfigFilterProperty(
-            QSVLoaderConfig[3],
-            reinterpret_cast<const mfxU8 *>(
-                "mfxImplDescription.AccelerationMode"),
-            QSVLoaderVariant[3]);
+    if (QSVIsTextureEncoder) {
+      mfxConfig TextureConfig = MFXCreateConfig(Loader);
+      mfxVariant TextureVariant{};
+      TextureVariant.Type = MFX_VARIANT_TYPE_U32;
+      TextureVariant.Data.U32 = MFX_ACCEL_MODE_VIA_D3D11;
+      MFXSetConfigFilterProperty(
+          TextureConfig,
+          reinterpret_cast<const mfxU8 *>(
+              "mfxImplDescription.AccelerationMode"),
+          TextureVariant);
+      if (!UsingGlobalLoader) {
+        QSVLoaderConfig[3] = TextureConfig;
+        QSVLoaderVariant[3] = TextureVariant;
       }
+    }
 #endif
 
-      Status = MFXCreateSession(QSVLoader, GPUNum, &QSVSession);
-    }
+    Status = MFXCreateSession(Loader, GPUNum, &QSVSession);
 
     if (Status < MFX_ERR_NONE) {
       error("Error code: %d", Status);
@@ -3070,8 +3105,10 @@ mfxStatus QSVEncoder::ClearData() {
     if (QSVSession) {
       Status = MFXClose(QSVSession);
       if (Status >= MFX_ERR_NONE) {
-        MFXDispReleaseImplDescription(QSVLoader, nullptr);
-        MFXUnload(QSVLoader);
+        if (QSVLoader) {
+          MFXDispReleaseImplDescription(QSVLoader, nullptr);
+          MFXUnload(QSVLoader);
+        }
         QSVSession = nullptr;
         QSVLoader = nullptr;
       }

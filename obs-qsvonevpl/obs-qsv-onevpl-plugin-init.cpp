@@ -98,15 +98,27 @@ static mfxU16 QueryPlatformCodeName() {
         return CachedQSVPlatform.CodeName;
     }
 
-    // Try mfx-gen first (newer hardware)
+    mfxLoader GlobalLoader = nullptr;
     {
-        mfxLoader Loader = MFXLoad();
-        if (Loader != nullptr) {
-            if (TryQueryPlatformCodeName(Loader, "mfx-gen")) {
+        std::lock_guard<std::mutex> Lock(GlobalLoaderMutex);
+        GlobalLoader = GlobalQSVLoader;
+    }
+
+    if (GlobalLoader != nullptr) {
+        if (TryQueryPlatformCodeName(GlobalLoader, "mfx-gen")) {
+            return CachedQSVPlatform.CodeName;
+        }
+    } else {
+        // Try mfx-gen first (newer hardware)
+        {
+            mfxLoader Loader = MFXLoad();
+            if (Loader != nullptr) {
+                if (TryQueryPlatformCodeName(Loader, "mfx-gen")) {
+                    MFXUnload(Loader);
+                    return CachedQSVPlatform.CodeName;
+                }
                 MFXUnload(Loader);
-                return CachedQSVPlatform.CodeName;
             }
-            MFXUnload(Loader);
         }
     }
 

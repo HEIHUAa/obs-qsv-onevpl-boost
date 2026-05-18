@@ -74,8 +74,53 @@ extern obs_encoder_info AV1TextureEncoderInfo;
 extern obs_encoder_info HEVCFrameEncoderInfo;
 extern obs_encoder_info HEVCTextureEncoderInfo;
 
+mfxLoader GlobalQSVLoader = nullptr;
+std::mutex GlobalLoaderMutex;
 
+void InitGlobalLoader() {
+  std::lock_guard<std::mutex> lock(GlobalLoaderMutex);
+  if (GlobalQSVLoader)
+    return;
 
+  mfxLoader Loader = MFXLoad();
+  if (!Loader)
+    return;
+
+  mfxConfig Config = MFXCreateConfig(Loader);
+  mfxVariant Variant{};
+  Variant.Type = MFX_VARIANT_TYPE_U32;
+  Variant.Data.U32 = MFX_IMPL_TYPE_HARDWARE;
+  MFXSetConfigFilterProperty(
+      Config,
+      reinterpret_cast<const mfxU8 *>("mfxImplDescription.Impl"),
+      Variant);
+
+  Config = MFXCreateConfig(Loader);
+  Variant.Type = MFX_VARIANT_TYPE_U32;
+  Variant.Data.U32 = static_cast<mfxU32>(0x8086);
+  MFXSetConfigFilterProperty(
+      Config,
+      reinterpret_cast<const mfxU8 *>("mfxImplDescription.VendorID"),
+      Variant);
+
+  Config = MFXCreateConfig(Loader);
+  Variant.Type = MFX_VARIANT_TYPE_PTR;
+  Variant.Data.Ptr = mfxHDL("mfx-gen");
+  MFXSetConfigFilterProperty(
+      Config,
+      reinterpret_cast<const mfxU8 *>("mfxImplDescription.ImplName"),
+      Variant);
+
+  GlobalQSVLoader = Loader;
+}
+
+void ReleaseGlobalLoader() {
+  std::lock_guard<std::mutex> lock(GlobalLoaderMutex);
+  if (GlobalQSVLoader) {
+    MFXUnload(GlobalQSVLoader);
+    GlobalQSVLoader = nullptr;
+  }
+}
 
 bool obs_module_load([[maybe_unused]] void) {
   AdaptersCount = MAX_ADAPTERS;
@@ -95,18 +140,24 @@ bool obs_module_load([[maybe_unused]] void) {
     obs_register_encoder(&H264FrameEncoderInfo);
     obs_register_encoder(&H264TextureEncoderInfo);
     info( "QSV AVC support");
+    InitGlobalLoader();
   }
   if (SupportAV1) {
     obs_register_encoder(&AV1FrameEncoderInfo);
     obs_register_encoder(&AV1TextureEncoderInfo);
     info( "QSV AV1 support");
+    InitGlobalLoader();
   }
   if (SupportHEVC) {
     obs_register_encoder(&HEVCFrameEncoderInfo);
     obs_register_encoder(&HEVCTextureEncoderInfo);
     info( "QSV HEVC support");
+    InitGlobalLoader();
   }
 
-
   return true;
+}
+
+void obs_module_unload(void) {
+  ReleaseGlobalLoader();
 }

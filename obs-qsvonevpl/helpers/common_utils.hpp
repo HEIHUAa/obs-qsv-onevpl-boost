@@ -147,6 +147,12 @@ void ReleaseSessionData(void *);
 
 extern void QSVLog(const int LogLevel, const char *Format, ...);
 
+extern mfxLoader GlobalQSVLoader;
+extern std::mutex GlobalLoaderMutex;
+
+void InitGlobalLoader();
+void ReleaseGlobalLoader();
+
 #if defined(_WIN32) || defined(_WIN64)
 #include <malloc.h>
 #endif
