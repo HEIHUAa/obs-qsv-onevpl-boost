@@ -2427,7 +2427,7 @@ void QSVEncoder::LogActualParams() {
     info("\tBitrateLimit set: %s",
          GetCodingOptStatus(CO2->BitrateLimit).c_str());
     if (CO2->MaxFrameSize > 0) {
-      info("\tAdaptiveMaxFrameSize set: %d Kb", CO2->MaxFrameSize);
+      info("\tAdaptiveMaxFrameSize set: %d bytes", CO2->MaxFrameSize);
     } else {
       info("\tAdaptiveMaxFrameSize set: AUTO");
     }

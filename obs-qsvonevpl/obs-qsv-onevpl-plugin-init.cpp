@@ -805,7 +805,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   Prop = obs_properties_add_int(Props, "adaptive_max_frame_size",
                                 TEXT_ADAPTIVE_MAX_FRAME_SIZE, 0, 65535, 100);
   obs_property_set_long_description(Prop, TEXT_ADAPTIVE_MAX_FRAME_SIZE_DESC);
-  obs_property_int_set_suffix(Prop, " Kb");
+  obs_property_int_set_suffix(Prop, " bytes");
 
   Prop = obs_properties_add_list(Props, "transform_skip", TEXT_TRANSFORM_SKIP,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
