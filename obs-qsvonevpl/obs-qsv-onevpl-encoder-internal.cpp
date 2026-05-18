@@ -1,7 +1,11 @@
 #pragma warning(disable : 4996)
 #include "obs-qsv-onevpl-encoder-internal.hpp"
+#include <algorithm>
+#include <cctype>
 #include <cstddef>
 #include <sstream>
+#include <string>
+#include <string_view>
 
 constexpr mfxU32 BRC_MAX_KBPS_LIMIT = 65535;
 
@@ -710,6 +714,22 @@ static mfxU16 ParseCodingOptionValue(const std::string &Val) {
   return static_cast<mfxU16>(std::stoul(Val));
 }
 
+static bool iequals(std::string_view a, std::string_view b) noexcept {
+    return std::ranges::equal(a, b, [](unsigned char ca, unsigned char cb) {
+        return std::tolower(ca) == std::tolower(cb);
+    });
+}
+
+static std::string FormatFieldValue([[maybe_unused]] const std::string& Field,
+                                    mfxU16 Value,
+                                    const std::string& RawVal) {
+    std::string_view sv = RawVal;
+    if (iequals(sv, "ON"))      return "ON";
+    if (iequals(sv, "OFF"))     return "OFF";
+    if (iequals(sv, "UNKNOWN")) return "UNKNOWN";
+    return std::to_string(Value);
+}
+
 enum FieldType : uint8_t {
   FT_U16,
   FT_S16,
@@ -964,8 +984,9 @@ void QSVEncoder::ParseCustomCodingOptions(const std::string &Options) {
 
     if (Applied) {
       mfxU16 ParsedVal = ParseCodingOptionValue(Val);
-      info("\tCustomCodingOptions[%d]: %s.%s = %s (%d)", LineNo,
-           Scope.c_str(), Field.c_str(), Val.c_str(), ParsedVal);
+      info("\tCustomCodingOptions[%d]: %s.%s = %s (%s)", LineNo,
+           Scope.c_str(), Field.c_str(), Val.c_str(),
+           FormatFieldValue(Field, ParsedVal, Val).c_str());
     } else {
       warn("\tCustomCodingOptions line %d: unknown field '%s.%s' or buffer not available",
            LineNo, Scope.c_str(), Field.c_str());
