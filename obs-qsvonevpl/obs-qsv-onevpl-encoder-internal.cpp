@@ -643,7 +643,7 @@ struct FieldEntry {
   FieldType type;
 };
 
-static constexpr auto CO_FIELDS = std::to_array<FieldEntry>({
+static const FieldEntry CO_FIELDS[] = {
   FieldEntry{"CAVLC", offsetof(mfxExtCodingOption, CAVLC), FT_U16},
   {"RateDistortionOpt", offsetof(mfxExtCodingOption, RateDistortionOpt), FT_U16},
   {"MECostType", offsetof(mfxExtCodingOption, MECostType), FT_U16},
@@ -671,7 +671,7 @@ static constexpr auto CO_FIELDS = std::to_array<FieldEntry>({
   {"EndOfStream", offsetof(mfxExtCodingOption, EndOfStream), FT_U16},
 };
 
-static constexpr auto CO2_FIELDS = std::to_array<FieldEntry>({
+static const FieldEntry CO2_FIELDS[] = {
   FieldEntry{"IntRefType", offsetof(mfxExtCodingOption2, IntRefType), FT_U16},
   {"IntRefCycleSize", offsetof(mfxExtCodingOption2, IntRefCycleSize), FT_U16},
   {"IntRefQPDelta", offsetof(mfxExtCodingOption2, IntRefQPDelta), FT_U16},
@@ -703,7 +703,7 @@ static constexpr auto CO2_FIELDS = std::to_array<FieldEntry>({
   {"FixedFrameRate", offsetof(mfxExtCodingOption2, FixedFrameRate), FT_U16},
 };
 
-static constexpr auto CO3_FIELDS = std::to_array<FieldEntry>({
+static const FieldEntry CO3_FIELDS[] = {
   FieldEntry{"NumSliceI", offsetof(mfxExtCodingOption3, NumSliceI), FT_U16},
   {"NumSliceP", offsetof(mfxExtCodingOption3, NumSliceP), FT_U16},
   {"NumSliceB", offsetof(mfxExtCodingOption3, NumSliceB), FT_U16},
@@ -747,7 +747,7 @@ static constexpr auto CO3_FIELDS = std::to_array<FieldEntry>({
   {"ExtBrcAdaptiveLTR", offsetof(mfxExtCodingOption3, ExtBrcAdaptiveLTR), FT_U16},
 };
 
-static constexpr auto CODDI_FIELDS = std::to_array<FieldEntry>({
+static const FieldEntry CODDI_FIELDS[] = {
   FieldEntry{"IntraPredCostType", offsetof(mfxExtCodingOptionDDI, IntraPredCostType), FT_U16},
   {"MEInterpolationMethod", offsetof(mfxExtCodingOptionDDI, MEInterpolationMethod), FT_U16},
   {"MEFractionalSearchType", offsetof(mfxExtCodingOptionDDI, MEFractionalSearchType), FT_U16},
