@@ -183,8 +183,7 @@ static inline void ParseOptionalBool(const char *Data,
 inline static void avx2_memcpy(uint8_t *Dst, const uint8_t *Src,
                                unsigned long long Size) {
   if (Size < 128) {
-    for (int i = 0; i < Size; i++)
-      Dst[i] = Src[i];
+    memcpy(Dst, Src, Size);
     return;
   }
   uint8_t *DstFin = Dst + Size;

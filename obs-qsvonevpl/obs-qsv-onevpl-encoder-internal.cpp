@@ -2,6 +2,8 @@
 #include "obs-qsv-onevpl-encoder-internal.hpp"
 #include <sstream>
 
+constexpr mfxU32 BRC_MAX_KBPS_LIMIT = 65535;
+
 QSVEncoder::QSVEncoder()
     : QSVPlatform(), QSVVersion(), QSVLoader(), QSVLoaderConfig(),
       QSVLoaderVariant(), QSVSession(nullptr), QSVImpl(), QSVEncodeSurface(),
@@ -175,6 +177,57 @@ mfxStatus QSVEncoder::CreateSession([[maybe_unused]] enum codec_enum Codec,
   }
 }
 
+static void LogCO2CO3Corrections(
+    const char *Prefix,
+    MFXVideoParam &Params,
+    const mfxExtCodingOption2 *CO2Before,
+    const mfxExtCodingOption3 *CO3Before,
+    bool HasCO2, bool HasCO3) {
+  auto CO2After = Params.GetExtBuffer<mfxExtCodingOption2>();
+  auto CO3After = Params.GetExtBuffer<mfxExtCodingOption3>();
+  info("\tDriver auto-corrected parameters%s:", Prefix);
+  if (HasCO2 && CO2After) {
+    if (CO2Before->MBBRC != CO2After->MBBRC)
+      info("\t  MBBRC: %d -> %d", CO2Before->MBBRC, CO2After->MBBRC);
+    if (CO2Before->AdaptiveI != CO2After->AdaptiveI)
+      info("\t  AdaptiveI: %d -> %d", CO2Before->AdaptiveI, CO2After->AdaptiveI);
+    if (CO2Before->AdaptiveB != CO2After->AdaptiveB)
+      info("\t  AdaptiveB: %d -> %d", CO2Before->AdaptiveB, CO2After->AdaptiveB);
+    if (CO2Before->UseRawRef != CO2After->UseRawRef)
+      info("\t  UseRawRef: %d -> %d", CO2Before->UseRawRef, CO2After->UseRawRef);
+    if (CO2Before->BitrateLimit != CO2After->BitrateLimit)
+      info("\t  BitrateLimit: %d -> %d", CO2Before->BitrateLimit, CO2After->BitrateLimit);
+    if (CO2Before->MaxFrameSize != CO2After->MaxFrameSize)
+      info("\t  MaxFrameSize: %d -> %d", CO2Before->MaxFrameSize, CO2After->MaxFrameSize);
+  }
+  if (HasCO3 && CO3After) {
+    if (CO3Before->WeightedPred != CO3After->WeightedPred)
+      info("\t  WeightedPred: %d -> %d", CO3Before->WeightedPred, CO3After->WeightedPred);
+    if (CO3Before->WeightedBiPred != CO3After->WeightedBiPred)
+      info("\t  WeightedBiPred: %d -> %d", CO3Before->WeightedBiPred, CO3After->WeightedBiPred);
+    if (CO3Before->AdaptiveRef != CO3After->AdaptiveRef)
+      info("\t  AdaptiveRef: %d -> %d", CO3Before->AdaptiveRef, CO3After->AdaptiveRef);
+    if (CO3Before->AdaptiveLTR != CO3After->AdaptiveLTR)
+      info("\t  AdaptiveLTR: %d -> %d", CO3Before->AdaptiveLTR, CO3After->AdaptiveLTR);
+    if (CO3Before->MotionVectorsOverPicBoundaries != CO3After->MotionVectorsOverPicBoundaries)
+      info("\t  MotionVectorsOverPicBoundaries: %d -> %d", CO3Before->MotionVectorsOverPicBoundaries, CO3After->MotionVectorsOverPicBoundaries);
+    if (CO3Before->GlobalMotionBiasAdjustment != CO3After->GlobalMotionBiasAdjustment)
+      info("\t  GlobalMotionBiasAdjustment: %d -> %d", CO3Before->GlobalMotionBiasAdjustment, CO3After->GlobalMotionBiasAdjustment);
+    if (CO3Before->MVCostScalingFactor != CO3After->MVCostScalingFactor)
+      info("\t  MVCostScalingFactor: %d -> %d", CO3Before->MVCostScalingFactor, CO3After->MVCostScalingFactor);
+    if (CO3Before->DirectBiasAdjustment != CO3After->DirectBiasAdjustment)
+      info("\t  DirectBiasAdjustment: %d -> %d", CO3Before->DirectBiasAdjustment, CO3After->DirectBiasAdjustment);
+    if (CO3Before->GPB != CO3After->GPB)
+      info("\t  GPB: %d -> %d", CO3Before->GPB, CO3After->GPB);
+    if (CO3Before->PRefType != CO3After->PRefType)
+      info("\t  PPyramid: %d -> %d", CO3Before->PRefType, CO3After->PRefType);
+    if (CO3Before->AdaptiveCQM != CO3After->AdaptiveCQM)
+      info("\t  AdaptiveCQM: %d -> %d", CO3Before->AdaptiveCQM, CO3After->AdaptiveCQM);
+    if (CO3Before->FadeDetection != CO3After->FadeDetection)
+      info("\t  FadeDetection: %d -> %d", CO3Before->FadeDetection, CO3After->FadeDetection);
+  }
+}
+
 mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
                            bool bIsTextureEncoder) {
   mfxStatus Status = MFX_ERR_NONE;
@@ -227,49 +280,8 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
       info("\tMFXVideoENCODE_Query status: %d", Status);
 
       if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
-        auto CO2After = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
-        auto CO3After = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-        info("\tDriver auto-corrected parameters:");
-        if (HasCO2 && CO2After) {
-          if (CO2Copy.MBBRC != CO2After->MBBRC)
-            info("\t  MBBRC: %d -> %d", CO2Copy.MBBRC, CO2After->MBBRC);
-          if (CO2Copy.AdaptiveI != CO2After->AdaptiveI)
-            info("\t  AdaptiveI: %d -> %d", CO2Copy.AdaptiveI, CO2After->AdaptiveI);
-          if (CO2Copy.AdaptiveB != CO2After->AdaptiveB)
-            info("\t  AdaptiveB: %d -> %d", CO2Copy.AdaptiveB, CO2After->AdaptiveB);
-          if (CO2Copy.UseRawRef != CO2After->UseRawRef)
-            info("\t  UseRawRef: %d -> %d", CO2Copy.UseRawRef, CO2After->UseRawRef);
-          if (CO2Copy.BitrateLimit != CO2After->BitrateLimit)
-            info("\t  BitrateLimit: %d -> %d", CO2Copy.BitrateLimit, CO2After->BitrateLimit);
-          if (CO2Copy.MaxFrameSize != CO2After->MaxFrameSize)
-            info("\t  MaxFrameSize: %d -> %d", CO2Copy.MaxFrameSize, CO2After->MaxFrameSize);
-        }
-        if (HasCO3 && CO3After) {
-          if (CO3Copy.WeightedPred != CO3After->WeightedPred)
-            info("\t  WeightedPred: %d -> %d", CO3Copy.WeightedPred, CO3After->WeightedPred);
-          if (CO3Copy.WeightedBiPred != CO3After->WeightedBiPred)
-            info("\t  WeightedBiPred: %d -> %d", CO3Copy.WeightedBiPred, CO3After->WeightedBiPred);
-          if (CO3Copy.AdaptiveRef != CO3After->AdaptiveRef)
-            info("\t  AdaptiveRef: %d -> %d", CO3Copy.AdaptiveRef, CO3After->AdaptiveRef);
-          if (CO3Copy.AdaptiveLTR != CO3After->AdaptiveLTR)
-            info("\t  AdaptiveLTR: %d -> %d", CO3Copy.AdaptiveLTR, CO3After->AdaptiveLTR);
-          if (CO3Copy.MotionVectorsOverPicBoundaries != CO3After->MotionVectorsOverPicBoundaries)
-            info("\t  MotionVectorsOverPicBoundaries: %d -> %d", CO3Copy.MotionVectorsOverPicBoundaries, CO3After->MotionVectorsOverPicBoundaries);
-          if (CO3Copy.GlobalMotionBiasAdjustment != CO3After->GlobalMotionBiasAdjustment)
-            info("\t  GlobalMotionBiasAdjustment: %d -> %d", CO3Copy.GlobalMotionBiasAdjustment, CO3After->GlobalMotionBiasAdjustment);
-          if (CO3Copy.MVCostScalingFactor != CO3After->MVCostScalingFactor)
-            info("\t  MVCostScalingFactor: %d -> %d", CO3Copy.MVCostScalingFactor, CO3After->MVCostScalingFactor);
-          if (CO3Copy.DirectBiasAdjustment != CO3After->DirectBiasAdjustment)
-            info("\t  DirectBiasAdjustment: %d -> %d", CO3Copy.DirectBiasAdjustment, CO3After->DirectBiasAdjustment);
-          if (CO3Copy.GPB != CO3After->GPB)
-            info("\t  GPB: %d -> %d", CO3Copy.GPB, CO3After->GPB);
-          if (CO3Copy.PRefType != CO3After->PRefType)
-            info("\t  PPyramid: %d -> %d", CO3Copy.PRefType, CO3After->PRefType);
-          if (CO3Copy.AdaptiveCQM != CO3After->AdaptiveCQM)
-            info("\t  AdaptiveCQM: %d -> %d", CO3Copy.AdaptiveCQM, CO3After->AdaptiveCQM);
-          if (CO3Copy.FadeDetection != CO3After->FadeDetection)
-            info("\t  FadeDetection: %d -> %d", CO3Copy.FadeDetection, CO3After->FadeDetection);
-        }
+        LogCO2CO3Corrections("", QSVEncodeParams, &CO2Copy, &CO3Copy,
+                             HasCO2, HasCO3);
         Status = MFX_ERR_NONE;
       }
 
@@ -346,49 +358,8 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
           info("\tMFXVideoENCODE_Query (sysmem) status: %d", Status);
 
           if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
-            auto CO2After = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
-            auto CO3After = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-            info("\tDriver auto-corrected parameters (sysmem):");
-            if (HasCO2 && CO2After) {
-              if (CO2Copy.MBBRC != CO2After->MBBRC)
-                info("\t  MBBRC: %d -> %d", CO2Copy.MBBRC, CO2After->MBBRC);
-              if (CO2Copy.AdaptiveI != CO2After->AdaptiveI)
-                info("\t  AdaptiveI: %d -> %d", CO2Copy.AdaptiveI, CO2After->AdaptiveI);
-              if (CO2Copy.AdaptiveB != CO2After->AdaptiveB)
-                info("\t  AdaptiveB: %d -> %d", CO2Copy.AdaptiveB, CO2After->AdaptiveB);
-              if (CO2Copy.UseRawRef != CO2After->UseRawRef)
-                info("\t  UseRawRef: %d -> %d", CO2Copy.UseRawRef, CO2After->UseRawRef);
-              if (CO2Copy.BitrateLimit != CO2After->BitrateLimit)
-                info("\t  BitrateLimit: %d -> %d", CO2Copy.BitrateLimit, CO2After->BitrateLimit);
-              if (CO2Copy.MaxFrameSize != CO2After->MaxFrameSize)
-                info("\t  MaxFrameSize: %d -> %d", CO2Copy.MaxFrameSize, CO2After->MaxFrameSize);
-            }
-            if (HasCO3 && CO3After) {
-              if (CO3Copy.WeightedPred != CO3After->WeightedPred)
-                info("\t  WeightedPred: %d -> %d", CO3Copy.WeightedPred, CO3After->WeightedPred);
-              if (CO3Copy.WeightedBiPred != CO3After->WeightedBiPred)
-                info("\t  WeightedBiPred: %d -> %d", CO3Copy.WeightedBiPred, CO3After->WeightedBiPred);
-              if (CO3Copy.AdaptiveRef != CO3After->AdaptiveRef)
-                info("\t  AdaptiveRef: %d -> %d", CO3Copy.AdaptiveRef, CO3After->AdaptiveRef);
-              if (CO3Copy.AdaptiveLTR != CO3After->AdaptiveLTR)
-                info("\t  AdaptiveLTR: %d -> %d", CO3Copy.AdaptiveLTR, CO3After->AdaptiveLTR);
-              if (CO3Copy.MotionVectorsOverPicBoundaries != CO3After->MotionVectorsOverPicBoundaries)
-                info("\t  MotionVectorsOverPicBoundaries: %d -> %d", CO3Copy.MotionVectorsOverPicBoundaries, CO3After->MotionVectorsOverPicBoundaries);
-              if (CO3Copy.GlobalMotionBiasAdjustment != CO3After->GlobalMotionBiasAdjustment)
-                info("\t  GlobalMotionBiasAdjustment: %d -> %d", CO3Copy.GlobalMotionBiasAdjustment, CO3After->GlobalMotionBiasAdjustment);
-              if (CO3Copy.MVCostScalingFactor != CO3After->MVCostScalingFactor)
-                info("\t  MVCostScalingFactor: %d -> %d", CO3Copy.MVCostScalingFactor, CO3After->MVCostScalingFactor);
-              if (CO3Copy.DirectBiasAdjustment != CO3After->DirectBiasAdjustment)
-                info("\t  DirectBiasAdjustment: %d -> %d", CO3Copy.DirectBiasAdjustment, CO3After->DirectBiasAdjustment);
-              if (CO3Copy.GPB != CO3After->GPB)
-                info("\t  GPB: %d -> %d", CO3Copy.GPB, CO3After->GPB);
-              if (CO3Copy.PRefType != CO3After->PRefType)
-                info("\t  PPyramid: %d -> %d", CO3Copy.PRefType, CO3After->PRefType);
-              if (CO3Copy.AdaptiveCQM != CO3After->AdaptiveCQM)
-                info("\t  AdaptiveCQM: %d -> %d", CO3Copy.AdaptiveCQM, CO3After->AdaptiveCQM);
-              if (CO3Copy.FadeDetection != CO3After->FadeDetection)
-                info("\t  FadeDetection: %d -> %d", CO3Copy.FadeDetection, CO3After->FadeDetection);
-            }
+            LogCO2CO3Corrections(" (sysmem)", QSVEncodeParams, &CO2Copy, &CO3Copy,
+                                 HasCO2, HasCO3);
             Status = MFX_ERR_NONE;
           }
 
@@ -457,49 +428,8 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
       Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
       info("\tMFXVideoENCODE_Query status: %d", Status);
       if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
-        auto CO2After = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
-        auto CO3After = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-        info("\tDriver auto-corrected parameters:");
-        if (HasCO2 && CO2After) {
-          if (CO2Copy.MBBRC != CO2After->MBBRC)
-            info("\t  MBBRC: %d -> %d", CO2Copy.MBBRC, CO2After->MBBRC);
-          if (CO2Copy.AdaptiveI != CO2After->AdaptiveI)
-            info("\t  AdaptiveI: %d -> %d", CO2Copy.AdaptiveI, CO2After->AdaptiveI);
-          if (CO2Copy.AdaptiveB != CO2After->AdaptiveB)
-            info("\t  AdaptiveB: %d -> %d", CO2Copy.AdaptiveB, CO2After->AdaptiveB);
-          if (CO2Copy.UseRawRef != CO2After->UseRawRef)
-            info("\t  UseRawRef: %d -> %d", CO2Copy.UseRawRef, CO2After->UseRawRef);
-          if (CO2Copy.BitrateLimit != CO2After->BitrateLimit)
-            info("\t  BitrateLimit: %d -> %d", CO2Copy.BitrateLimit, CO2After->BitrateLimit);
-          if (CO2Copy.MaxFrameSize != CO2After->MaxFrameSize)
-            info("\t  MaxFrameSize: %d -> %d", CO2Copy.MaxFrameSize, CO2After->MaxFrameSize);
-        }
-        if (HasCO3 && CO3After) {
-          if (CO3Copy.WeightedPred != CO3After->WeightedPred)
-            info("\t  WeightedPred: %d -> %d", CO3Copy.WeightedPred, CO3After->WeightedPred);
-          if (CO3Copy.WeightedBiPred != CO3After->WeightedBiPred)
-            info("\t  WeightedBiPred: %d -> %d", CO3Copy.WeightedBiPred, CO3After->WeightedBiPred);
-          if (CO3Copy.AdaptiveRef != CO3After->AdaptiveRef)
-            info("\t  AdaptiveRef: %d -> %d", CO3Copy.AdaptiveRef, CO3After->AdaptiveRef);
-          if (CO3Copy.AdaptiveLTR != CO3After->AdaptiveLTR)
-            info("\t  AdaptiveLTR: %d -> %d", CO3Copy.AdaptiveLTR, CO3After->AdaptiveLTR);
-          if (CO3Copy.MotionVectorsOverPicBoundaries != CO3After->MotionVectorsOverPicBoundaries)
-            info("\t  MotionVectorsOverPicBoundaries: %d -> %d", CO3Copy.MotionVectorsOverPicBoundaries, CO3After->MotionVectorsOverPicBoundaries);
-          if (CO3Copy.GlobalMotionBiasAdjustment != CO3After->GlobalMotionBiasAdjustment)
-            info("\t  GlobalMotionBiasAdjustment: %d -> %d", CO3Copy.GlobalMotionBiasAdjustment, CO3After->GlobalMotionBiasAdjustment);
-          if (CO3Copy.MVCostScalingFactor != CO3After->MVCostScalingFactor)
-            info("\t  MVCostScalingFactor: %d -> %d", CO3Copy.MVCostScalingFactor, CO3After->MVCostScalingFactor);
-          if (CO3Copy.DirectBiasAdjustment != CO3After->DirectBiasAdjustment)
-            info("\t  DirectBiasAdjustment: %d -> %d", CO3Copy.DirectBiasAdjustment, CO3After->DirectBiasAdjustment);
-          if (CO3Copy.GPB != CO3After->GPB)
-            info("\t  GPB: %d -> %d", CO3Copy.GPB, CO3After->GPB);
-          if (CO3Copy.PRefType != CO3After->PRefType)
-            info("\t  PPyramid: %d -> %d", CO3Copy.PRefType, CO3After->PRefType);
-          if (CO3Copy.AdaptiveCQM != CO3After->AdaptiveCQM)
-            info("\t  AdaptiveCQM: %d -> %d", CO3Copy.AdaptiveCQM, CO3After->AdaptiveCQM);
-          if (CO3Copy.FadeDetection != CO3After->FadeDetection)
-            info("\t  FadeDetection: %d -> %d", CO3Copy.FadeDetection, CO3After->FadeDetection);
-        }
+        LogCO2CO3Corrections("", QSVEncodeParams, &CO2Copy, &CO3Copy,
+                             HasCO2, HasCO3);
         Status = MFX_ERR_NONE;
       }
     }
@@ -986,11 +916,10 @@ void QSVEncoder::ParseCustomCodingOptions(const std::string &Options) {
 
 mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
                                        enum codec_enum Codec) {
-  /*It's only for debug*/
-  bool COEnabled = 1;
-  bool CO2Enabled = 1;
-  bool CO3Enabled = 1;
-  bool CODDIEnabled = 1;
+  bool COEnabled = true;
+  bool CO2Enabled = true;
+  bool CO3Enabled = true;
+  bool CODDIEnabled = true;
 
   switch (Codec) {
   case QSV_CODEC_AV1:
@@ -1079,7 +1008,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   QSVEncodeParams.mfx.BRCParamMultiplier = BRC_BASELINE;
 
   const auto brcClamp = [](mfxU32 v) {
-    mfxU32 limit = static_cast<mfxU32>(65535) * 100;
+    mfxU32 limit = static_cast<mfxU32>(BRC_MAX_KBPS_LIMIT) * 100;
     return v > limit ? limit : v;
   };
 
@@ -2040,7 +1969,7 @@ bool QSVEncoder::UpdateParams(struct encoder_params *InputParams) {
     if (brcM == 0) brcM = 1;
     mfxU32 clampedTarget = InputParams->TargetBitRate;
     {
-      mfxU32 limit = static_cast<mfxU32>(65535) * brcM;
+      mfxU32 limit = static_cast<mfxU32>(BRC_MAX_KBPS_LIMIT) * brcM;
       if (clampedTarget > limit) clampedTarget = limit;
     }
     mfxU16 resetTargetKbps =
@@ -2056,7 +1985,7 @@ bool QSVEncoder::UpdateParams(struct encoder_params *InputParams) {
   case MFX_RATECONTROL_QVBR: {
     mfxU16 brcM = QSVResetParams.mfx.BRCParamMultiplier;
     if (brcM == 0) brcM = 1;
-    mfxU32 limit = static_cast<mfxU32>(65535) * brcM;
+    mfxU32 limit = static_cast<mfxU32>(BRC_MAX_KBPS_LIMIT) * brcM;
     mfxU32 clampedTarget = InputParams->TargetBitRate;
     if (clampedTarget > limit) clampedTarget = limit;
     mfxU32 clampedMax = InputParams->MaxBitRate;
@@ -2093,6 +2022,7 @@ bool QSVEncoder::UpdateParams(struct encoder_params *InputParams) {
           static_cast<mfxU16>(InputParams->ICQQuality);
       QSVResetParamsChanged = true;
     }
+    break;
   }
   if (QSVResetParamsChanged == true) {
     auto ResetParams = QSVEncodeParams.AddExtBuffer<mfxExtEncoderResetOption>();
@@ -2205,67 +2135,47 @@ mfxStatus QSVEncoder::InitTaskPool([[maybe_unused]] enum codec_enum Codec) {
 
 void QSVEncoder::ReleaseBitstream() {
   if (QSVBitstream.Data) {
-    try {
-      AlignedFree(QSVBitstream.Data);
-    } catch (const std::bad_alloc &) {
-      throw;
-    } catch (const std::exception &) {
-      throw;
-    }
+    AlignedFree(QSVBitstream.Data);
   }
   QSVBitstream.Data = nullptr;
 }
 
 void QSVEncoder::ReleaseTask(int TaskID) {
   if (QSVTaskPool[TaskID].Bitstream.Data) {
-    try {
-      AlignedFree(QSVTaskPool[TaskID].Bitstream.Data);
-    } catch (const std::bad_alloc &) {
-      throw;
-    } catch (const std::exception &) {
-      throw;
-    }
+    AlignedFree(QSVTaskPool[TaskID].Bitstream.Data);
   }
   QSVTaskPool[TaskID].Bitstream.Data = nullptr;
 }
 
 void QSVEncoder::ReleaseTaskPool() {
   if (!QSVTaskPool.empty()) {
-    try {
-      for (int i = 0; i < QSVTaskPool.size(); i++) {
-        ReleaseTask(i);
-      }
-
-      QSVTaskPool.clear();
-      QSVTaskPool.shrink_to_fit();
-
-    } catch (const std::bad_alloc &) {
-      throw;
-    } catch (const std::exception &) {
-      throw;
+    for (int i = 0; i < QSVTaskPool.size(); i++) {
+      ReleaseTask(i);
     }
+
+    QSVTaskPool.clear();
+    QSVTaskPool.shrink_to_fit();
   }
 }
 
 mfxStatus QSVEncoder::ChangeBitstreamSize(mfxU32 NewSize) {
-  try {
 mfxU8 *Data = static_cast<mfxU8 *>(AlignedMalloc(NewSize, 32));
     if (Data == nullptr) {
       throw std::runtime_error(
           "ChangeBitstreamSize(): Bitstream memory allocation error");
     }
 
-    mfxU32 DataLen = std::move(QSVBitstream.DataLength);
+    mfxU32 DataLen = QSVBitstream.DataLength;
     if (QSVBitstream.DataLength) {
       memcpy(Data, QSVBitstream.Data + QSVBitstream.DataOffset,
              std::min(DataLen, NewSize));
     }
     ReleaseBitstream();
 
-    QSVBitstream.Data = std::move(Data);
+    QSVBitstream.Data = Data;
     QSVBitstream.DataOffset = 0;
-    QSVBitstream.DataLength = std::move(static_cast<mfxU32>(DataLen));
-    QSVBitstream.MaxLength = std::move(static_cast<mfxU32>(NewSize));
+    QSVBitstream.DataLength = static_cast<mfxU32>(DataLen);
+    QSVBitstream.MaxLength = NewSize;
 
     for (int i = 0; i < QSVTaskPool.size(); i++) {
       if (QSVTaskPool[i].SyncPoint != nullptr) {
@@ -2289,7 +2199,7 @@ mfxU8 *TaskData = static_cast<mfxU8 *>(AlignedMalloc(NewSize, 32));
             "ChangeBitstreamSize(): Task memory allocation error");
       }
 
-      mfxU32 TaskDataLen = std::move(QSVTaskPool[i].Bitstream.DataLength);
+      mfxU32 TaskDataLen = QSVTaskPool[i].Bitstream.DataLength;
       if (QSVTaskPool[i].Bitstream.DataLength) {
         memcpy(TaskData,
                QSVTaskPool[i].Bitstream.Data +
@@ -2298,19 +2208,13 @@ mfxU8 *TaskData = static_cast<mfxU8 *>(AlignedMalloc(NewSize, 32));
       }
       ReleaseTask(i);
 
-      QSVTaskPool[i].Bitstream.Data = std::move(TaskData);
+      QSVTaskPool[i].Bitstream.Data = TaskData;
       QSVTaskPool[i].Bitstream.DataOffset = 0;
       QSVTaskPool[i].Bitstream.DataLength =
-          std::move(static_cast<mfxU32>(TaskDataLen));
+          static_cast<mfxU32>(TaskDataLen);
       QSVTaskPool[i].Bitstream.MaxLength =
-          std::move(static_cast<mfxU32>(NewSize));
+          NewSize;
     }
-
-  } catch (const std::bad_alloc &) {
-    throw;
-  } catch (const std::exception &) {
-    throw;
-  }
 
   return MFX_ERR_NONE;
 }
@@ -2462,14 +2366,6 @@ static mfxU16 parse_hevc_sps_ctb_size(const mfxU8 *sps_data,
 
 void QSVEncoder::LogActualParams() {
   info("\tActual encoder driver params:");
-
-  auto GetCodingOptStatus = [](const mfxU16 &Value) -> std::string {
-    if (Value == MFX_CODINGOPTION_ON || Value == 16)
-      return "ON";
-    if (Value == MFX_CODINGOPTION_OFF || Value == 32)
-      return "OFF";
-    return "AUTO";
-  };
 
   auto GetTrellisStatus = [](const mfxU16 &Value) -> std::string {
     if (Value == MFX_TRELLIS_OFF) return "OFF";
@@ -2816,9 +2712,8 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
   }
 
   EncodeSurface->Data.TimeStamp = TS;
-  LoadFrameData(EncodeSurface, std::move(FrameData),
-                std::move(FrameLinesize));
-  QSVTaskPool[TaskID].Bitstream.TimeStamp = std::move(TS);
+  LoadFrameData(EncodeSurface, FrameData, FrameLinesize);
+  QSVTaskPool[TaskID].Bitstream.TimeStamp = TS;
 
   Status = EncodeFrameRetryLoop(EncodeSurface, nullptr, TaskID, 200);
 
@@ -3061,10 +2956,9 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
   }
 
   QSVEncodeSurface->Data.TimeStamp = TS;
-  LoadFrameData(QSVEncodeSurface, std::move(FrameData),
-                std::move(FrameLinesize));
+  LoadFrameData(QSVEncodeSurface, FrameData, FrameLinesize);
 
-  QSVTaskPool[TaskID].Bitstream.TimeStamp = std::move(TS);
+  QSVTaskPool[TaskID].Bitstream.TimeStamp = TS;
 
   Status = QSVEncodeSurface->FrameInterface->Unmap(QSVEncodeSurface);
   if (Status < MFX_ERR_NONE) {
@@ -3143,6 +3037,16 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
 
 mfxStatus QSVEncoder::Drain() {
   mfxStatus Status = MFX_ERR_NONE;
+
+  while (Status >= MFX_ERR_NONE) {
+    mfxSyncPoint SyncPoint = nullptr;
+    Status = MFXVideoENCODE_EncodeFrameAsync(
+        QSVEncode, nullptr, nullptr, nullptr, &SyncPoint);
+    if (Status == MFX_ERR_NONE && SyncPoint != nullptr) {
+      Status = MFXVideoCORE_SyncOperation(QSVSession, SyncPoint, 5000);
+    }
+  }
+  Status = MFX_ERR_NONE;
 
   for (auto &Task : QSVTaskPool) {
     if (Task.SyncPoint != nullptr) {

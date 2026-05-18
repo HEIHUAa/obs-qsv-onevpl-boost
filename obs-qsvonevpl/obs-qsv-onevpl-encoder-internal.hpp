@@ -1,9 +1,5 @@
 #pragma once
 
-#ifndef __QSVEncoder_H__
-#define __QSVEncoder_H__
-#endif
-
 #ifndef __QSV_VPL_COMMON_UTILS_H__
 #include "helpers/common_utils.hpp"
 #endif
