@@ -45,7 +45,7 @@ target_compile_features(obs-qsvonevpl PRIVATE cxx_std_23)
 
 if(WIN32)
 target_compile_options(obs-qsvonevpl PRIVATE
-  $<$<CONFIG:Release>:/O3>
+  $<$<CONFIG:Release>:/O2>
   $<$<CONFIG:Release>:/Gw>
   $<$<CONFIG:Release>:/Zc:inline>
   $<$<CONFIG:Debug>:/Od>
