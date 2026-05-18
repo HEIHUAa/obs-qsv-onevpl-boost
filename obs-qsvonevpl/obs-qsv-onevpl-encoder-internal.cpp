@@ -3040,8 +3040,8 @@ mfxStatus QSVEncoder::Drain() {
 
   while (Status >= MFX_ERR_NONE) {
     mfxSyncPoint SyncPoint = nullptr;
-    Status = MFXVideoENCODE_EncodeFrameAsync(
-        QSVEncode, nullptr, nullptr, nullptr, &SyncPoint);
+    Status = QSVEncode->EncodeFrameAsync(
+        nullptr, nullptr, nullptr, &SyncPoint);
     if (Status == MFX_ERR_NONE && SyncPoint != nullptr) {
       Status = MFXVideoCORE_SyncOperation(QSVSession, SyncPoint, 5000);
     }
