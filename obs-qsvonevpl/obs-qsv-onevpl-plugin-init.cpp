@@ -343,14 +343,25 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
     obs_data_set_string(Settings, "mbbrc", "OFF");
   }
 
+  bool bRateControlVisible = !bIsICQ;
   bool use_bufsize = obs_data_get_bool(Settings, "custom_buffer_size");
+  Prop = obs_properties_get(Properties, "custom_buffer_size");
+  obs_property_set_visible(Prop, bRateControlVisible);
   Prop = obs_properties_get(Properties, "buffer_size");
-  obs_property_set_visible(Prop, use_bufsize);
+  obs_property_set_visible(Prop, bRateControlVisible && use_bufsize);
+  if (!bRateControlVisible) {
+    obs_data_set_bool(Settings, "custom_buffer_size", false);
+  }
 
   const char *hrd_conformance =
       obs_data_get_string(Settings, "hrd_conformance");
-  bVisible = std::strcmp(hrd_conformance, "ON") == 0 ||
-             std::strcmp(hrd_conformance, "AUTO") == 0;
+  Prop = obs_properties_get(Properties, "hrd_conformance");
+  obs_property_set_visible(Prop, bRateControlVisible);
+  if (!bRateControlVisible) {
+    obs_data_set_string(Settings, "hrd_conformance", "OFF");
+  }
+  bVisible = bRateControlVisible && (std::strcmp(hrd_conformance, "ON") == 0 ||
+             std::strcmp(hrd_conformance, "AUTO") == 0);
   Prop = obs_properties_get(Properties, "low_delay_hrd");
   obs_property_set_visible(Prop, bVisible);
 
