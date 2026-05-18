@@ -45,17 +45,19 @@ target_compile_features(obs-qsvonevpl PRIVATE cxx_std_23)
 
 if(WIN32)
 target_compile_options(obs-qsvonevpl PRIVATE
-  $<$<CONFIG:Release>:/O2>
+  $<$<CONFIG:Release>:/O1>
   $<$<CONFIG:Release>:/Gw>
   $<$<CONFIG:Release>:/Zc:inline>
   $<$<CONFIG:Debug>:/Od>
-  /Oi
+  $<$<CONFIG:Release>:/Oi>
   /MP
   $<$<CONFIG:Release>:/GL>
   $<$<CONFIG:Release>:/Gy>
 )
 target_link_options(obs-qsvonevpl PRIVATE
   $<$<CONFIG:Release>:/LTCG>
+  $<$<CONFIG:Release>:/OPT:REF>
+  $<$<CONFIG:Release>:/OPT:ICF>
   /INCREMENTAL:NO
 )
 endif()
@@ -133,17 +135,19 @@ if(WIN32)
     target_compile_features(obs-qsvonevpl-uhd600 PRIVATE cxx_std_23)
 
     target_compile_options(obs-qsvonevpl-uhd600 PRIVATE
-      $<$<CONFIG:Release>:/O2>
+      $<$<CONFIG:Release>:/O1>
       $<$<CONFIG:Release>:/Gw>
       $<$<CONFIG:Release>:/Zc:inline>
       $<$<CONFIG:Debug>:/Od>
-      /Oi
+      $<$<CONFIG:Release>:/Oi>
       /MP
       $<$<CONFIG:Release>:/GL>
       $<$<CONFIG:Release>:/Gy>
     )
     target_link_options(obs-qsvonevpl-uhd600 PRIVATE
       $<$<CONFIG:Release>:/LTCG>
+      $<$<CONFIG:Release>:/OPT:REF>
+      $<$<CONFIG:Release>:/OPT:ICF>
       /INCREMENTAL:NO
     )
 
