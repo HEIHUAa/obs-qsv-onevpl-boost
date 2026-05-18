@@ -1,9 +1,11 @@
 #pragma warning(disable : 4996)
 #include "obs-qsv-onevpl-encoder-internal.hpp"
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstddef>
 #include <sstream>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -136,85 +138,81 @@ mfxStatus QSVEncoder::CreateSession([[maybe_unused]] enum codec_enum Codec,
   mfxStatus Status = MFX_ERR_NONE;
   bool UsingGlobalLoader = false;
 
-  try {
-    mfxLoader Loader = nullptr;
+  mfxLoader Loader = nullptr;
 
-    {
-      std::lock_guard<std::mutex> Lock(GlobalLoaderMutex);
-      if (GlobalQSVLoader) {
-        Loader = GlobalQSVLoader;
-        UsingGlobalLoader = true;
-      }
+  {
+    std::lock_guard<std::mutex> Lock(GlobalLoaderMutex);
+    if (GlobalQSVLoader) {
+      Loader = GlobalQSVLoader;
+      UsingGlobalLoader = true;
     }
+  }
 
-    if (!Loader) {
-      QSVLoader = MFXLoad();
-      if (QSVLoader == nullptr) {
-        return MFX_ERR_UNDEFINED_BEHAVIOR;
-      }
-      Loader = QSVLoader;
-
-      QSVLoaderConfig[0] = MFXCreateConfig(Loader);
-      QSVLoaderVariant[0].Type = MFX_VARIANT_TYPE_U32;
-      QSVLoaderVariant[0].Data.U32 = MFX_IMPL_TYPE_HARDWARE;
-      MFXSetConfigFilterProperty(
-          QSVLoaderConfig[0],
-          reinterpret_cast<const mfxU8 *>("mfxImplDescription.Impl"),
-          QSVLoaderVariant[0]);
-
-      QSVLoaderConfig[1] = MFXCreateConfig(Loader);
-      QSVLoaderVariant[1].Type = MFX_VARIANT_TYPE_U32;
-      QSVLoaderVariant[1].Data.U32 = static_cast<mfxU32>(0x8086);
-      MFXSetConfigFilterProperty(
-          QSVLoaderConfig[1],
-          reinterpret_cast<const mfxU8 *>("mfxImplDescription.VendorID"),
-          QSVLoaderVariant[1]);
-
-      QSVLoaderConfig[2] = MFXCreateConfig(Loader);
-      QSVLoaderVariant[2].Type = MFX_VARIANT_TYPE_PTR;
-      QSVLoaderVariant[2].Data.Ptr = mfxHDL("mfx-gen");
-      MFXSetConfigFilterProperty(
-          QSVLoaderConfig[2],
-          reinterpret_cast<const mfxU8 *>("mfxImplDescription.ImplName"),
-          QSVLoaderVariant[2]);
+  if (!Loader) {
+    QSVLoader = MFXLoad();
+    if (QSVLoader == nullptr) {
+      return MFX_ERR_UNDEFINED_BEHAVIOR;
     }
+    Loader = QSVLoader;
+
+    QSVLoaderConfig[0] = MFXCreateConfig(Loader);
+    QSVLoaderVariant[0].Type = MFX_VARIANT_TYPE_U32;
+    QSVLoaderVariant[0].Data.U32 = MFX_IMPL_TYPE_HARDWARE;
+    MFXSetConfigFilterProperty(
+        QSVLoaderConfig[0],
+        reinterpret_cast<const mfxU8 *>("mfxImplDescription.Impl"),
+        QSVLoaderVariant[0]);
+
+    QSVLoaderConfig[1] = MFXCreateConfig(Loader);
+    QSVLoaderVariant[1].Type = MFX_VARIANT_TYPE_U32;
+    QSVLoaderVariant[1].Data.U32 = static_cast<mfxU32>(0x8086);
+    MFXSetConfigFilterProperty(
+        QSVLoaderConfig[1],
+        reinterpret_cast<const mfxU8 *>("mfxImplDescription.VendorID"),
+        QSVLoaderVariant[1]);
+
+    QSVLoaderConfig[2] = MFXCreateConfig(Loader);
+    QSVLoaderVariant[2].Type = MFX_VARIANT_TYPE_PTR;
+    QSVLoaderVariant[2].Data.Ptr = mfxHDL("mfx-gen");
+    MFXSetConfigFilterProperty(
+        QSVLoaderConfig[2],
+        reinterpret_cast<const mfxU8 *>("mfxImplDescription.ImplName"),
+        QSVLoaderVariant[2]);
+  }
 
 #if defined(_WIN32) || defined(_WIN64)
-    if (QSVIsTextureEncoder) {
-      mfxConfig TextureConfig = MFXCreateConfig(Loader);
-      mfxVariant TextureVariant{};
-      TextureVariant.Type = MFX_VARIANT_TYPE_U32;
-      TextureVariant.Data.U32 = MFX_ACCEL_MODE_VIA_D3D11;
-      MFXSetConfigFilterProperty(
-          TextureConfig,
-          reinterpret_cast<const mfxU8 *>(
-              "mfxImplDescription.AccelerationMode"),
-          TextureVariant);
-      if (!UsingGlobalLoader) {
-        QSVLoaderConfig[3] = TextureConfig;
-        QSVLoaderVariant[3] = TextureVariant;
-      }
+  if (QSVIsTextureEncoder) {
+    mfxConfig TextureConfig = MFXCreateConfig(Loader);
+    mfxVariant TextureVariant{};
+    TextureVariant.Type = MFX_VARIANT_TYPE_U32;
+    TextureVariant.Data.U32 = MFX_ACCEL_MODE_VIA_D3D11;
+    MFXSetConfigFilterProperty(
+        TextureConfig,
+        reinterpret_cast<const mfxU8 *>(
+            "mfxImplDescription.AccelerationMode"),
+        TextureVariant);
+    if (!UsingGlobalLoader) {
+      QSVLoaderConfig[3] = TextureConfig;
+      QSVLoaderVariant[3] = TextureVariant;
     }
+  }
 #endif
 
-    Status = MFXCreateSession(Loader, GPUNum, &QSVSession);
+  Status = MFXCreateSession(Loader, GPUNum, &QSVSession);
 
-    if (Status < MFX_ERR_NONE) {
-      error("Error code: %d", Status);
-      throw std::runtime_error("CreateSession(): MFXCreateSession error");
-    }
-
-    MFXQueryIMPL(QSVSession, &QSVImpl);
-
-    MFXVideoCORE_QueryPlatform(QSVSession, &QSVPlatform);
-    info("\tAdapter type: %s",
-         QSVPlatform.MediaAdapterType == MFX_MEDIA_DISCRETE ? "Discrete"
-                                                            : "Integrate");
-
-    return Status;
-  } catch (const std::exception &) {
-    throw;
+  if (Status < MFX_ERR_NONE) {
+    error("Error code: %d", Status);
+    throw std::runtime_error("CreateSession(): MFXCreateSession error");
   }
+
+  MFXQueryIMPL(QSVSession, &QSVImpl);
+
+  MFXVideoCORE_QueryPlatform(QSVSession, &QSVPlatform);
+  info("\tAdapter type: %s",
+       QSVPlatform.MediaAdapterType == MFX_MEDIA_DISCRETE ? "Discrete"
+                                                          : "Integrate");
+
+  return Status;
 }
 
 static void LogCO2CO3Corrections(
@@ -268,12 +266,68 @@ static void LogCO2CO3Corrections(
   }
 }
 
+mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
+                                          enum codec_enum Codec,
+                                          const char *log_prefix) {
+  mfxStatus Status = SetEncoderParams(InputParams, Codec);
+  info("\tSetEncoderParams%s status:  %d", log_prefix, Status);
+
+  if (Status >= MFX_ERR_NONE) {
+    mfxExtCodingOption2 CO2Copy = {};
+    mfxExtCodingOption3 CO3Copy = {};
+    bool HasCO2 = false, HasCO3 = false;
+    if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>()) {
+      CO2Copy = *p;
+      HasCO2 = true;
+    }
+    if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>()) {
+      CO3Copy = *p;
+      HasCO3 = true;
+    }
+
+    Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
+    info("\tMFXVideoENCODE_Query%s status: %d", log_prefix, Status);
+
+    if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
+      LogCO2CO3Corrections(log_prefix, QSVEncodeParams, &CO2Copy, &CO3Copy,
+                           HasCO2, HasCO3);
+      Status = MFX_ERR_NONE;
+    }
+
+    if (!InputParams->CustomCodingOptions.empty()) {
+      ParseCustomCodingOptions(InputParams->CustomCodingOptions);
+    }
+
+    Status = QSVEncode->Init(&QSVEncodeParams);
+    info("\tMFXVideoENCODE_Init%s status: %d", log_prefix, Status);
+  }
+
+  if (Status < MFX_ERR_NONE) {
+    auto CO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
+    if (CO3Params && CO3Params->ScenarioInfo != 0) {
+      warn("MFXVideoENCODE_Init%s failed with ScenarioInfo=%d, retrying without ScenarioInfo",
+           log_prefix, CO3Params->ScenarioInfo);
+      QSVEncode->Close();
+      CO3Params->ScenarioInfo = 0;
+
+      Status = QSVEncode->Init(&QSVEncodeParams);
+      info("\tMFXVideoENCODE_Init%s retry (ScenarioInfo) status: %d", log_prefix, Status);
+    }
+  }
+
+  if (Status < MFX_ERR_NONE) {
+    QSVEncode->Close();
+  }
+
+  return Status;
+}
+
 mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
                            bool bIsTextureEncoder) {
   mfxStatus Status = MFX_ERR_NONE;
 
-  QSVIsTextureEncoder = std::move(bIsTextureEncoder);
-  QSVProcessingEnable = std::move(InputParams->ProcessingEnable);
+  QSVIsTextureEncoder = bIsTextureEncoder;
+  QSVProcessingEnable = InputParams->ProcessingEnable;
 
   info("\tEncoder type: %s",
        QSVIsTextureEncoder ? "Texture import" : "Frame import");
@@ -299,137 +353,26 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
 #ifdef QSV_UHD600_SUPPORT
     QSVUseSystemMemoryPath = false;
 
-    // === Step 1: Try original path (IOPattern=VIDEO_MEMORY, no ext buf removal) ===
-    Status = SetEncoderParams(InputParams, Codec);
-    info("\tSetEncoderParams status:  %d", Status);
+    Status = InitEncoderInternal(InputParams, Codec, "");
 
-    if (Status >= MFX_ERR_NONE) {
-      mfxExtCodingOption2 CO2Copy = {};
-      mfxExtCodingOption3 CO3Copy = {};
-      bool HasCO2 = false, HasCO3 = false;
-      if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>()) {
-        CO2Copy = *p;
-        HasCO2 = true;
-      }
-      if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>()) {
-        CO3Copy = *p;
-        HasCO3 = true;
-      }
-
-      Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
-      info("\tMFXVideoENCODE_Query status: %d", Status);
-
-      if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
-        LogCO2CO3Corrections("", QSVEncodeParams, &CO2Copy, &CO3Copy,
-                             HasCO2, HasCO3);
-        Status = MFX_ERR_NONE;
-      }
-
-      if (!InputParams->CustomCodingOptions.empty()) {
-        ParseCustomCodingOptions(InputParams->CustomCodingOptions);
-      }
-
-      Status = QSVEncode->Init(&QSVEncodeParams);
-      info("\tMFXVideoENCODE_Init status: %d", Status);
-    }
-
-    if (Status < MFX_ERR_NONE) {
-      auto CO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-      if (CO3Params && CO3Params->ScenarioInfo != 0) {
-        warn("MFXVideoENCODE_Init failed with ScenarioInfo=%d, retrying without ScenarioInfo",
-             CO3Params->ScenarioInfo);
-        QSVEncode->Close();
-        CO3Params->ScenarioInfo = 0;
-
-        Status = QSVEncode->Init(&QSVEncodeParams);
-        info("\tMFXVideoENCODE_Init retry (ScenarioInfo) status: %d", Status);
-      }
-    }
-
-    if (Status < MFX_ERR_NONE) {
-      error("MFXVideoENCODE_Init failed (Status=%d)", Status);
-      return Status;
-    }
-
-    // === Step 2: Test if GetSurface() works or fallback to system memory ===
     if (!QSVIsTextureEncoder) {
-      bool NeedSystemMemoryFallback = false;
-
       if (Status >= MFX_ERR_NONE) {
         mfxFrameSurface1 *TestSurface = nullptr;
         mfxStatus GetSts = QSVEncode->GetSurface(&TestSurface);
         if (GetSts < MFX_ERR_NONE) {
           info("\tGetSurface() not supported (%d), switch to system memory path",
                GetSts);
-          NeedSystemMemoryFallback = true;
+          QSVEncode->Close();
+          QSVUseSystemMemoryPath = true;
+          Status = InitEncoderInternal(InputParams, Codec, " (sysmem)");
         } else {
           info("\tGetSurface() supported, using original VIDEO_MEMORY path");
           TestSurface->FrameInterface->Release(TestSurface);
         }
       } else {
         info("\tOriginal Init failed (%d), switch to system memory path", Status);
-        NeedSystemMemoryFallback = true;
-      }
-
-      if (NeedSystemMemoryFallback) {
         QSVUseSystemMemoryPath = true;
-        if (QSVEncode) {
-          QSVEncode->Close();
-        }
-
-        // Rebuild with system memory path
-        Status = SetEncoderParams(InputParams, Codec);
-        info("\tSetEncoderParams (sysmem) status: %d", Status);
-
-        if (Status >= MFX_ERR_NONE) {
-          mfxExtCodingOption2 CO2Copy = {};
-          mfxExtCodingOption3 CO3Copy = {};
-          bool HasCO2 = false, HasCO3 = false;
-          if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>()) {
-            CO2Copy = *p;
-            HasCO2 = true;
-          }
-          if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>()) {
-            CO3Copy = *p;
-            HasCO3 = true;
-          }
-
-          Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
-          info("\tMFXVideoENCODE_Query (sysmem) status: %d", Status);
-
-          if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
-            LogCO2CO3Corrections(" (sysmem)", QSVEncodeParams, &CO2Copy, &CO3Copy,
-                                 HasCO2, HasCO3);
-            Status = MFX_ERR_NONE;
-          }
-
-          if (!InputParams->CustomCodingOptions.empty()) {
-            ParseCustomCodingOptions(InputParams->CustomCodingOptions);
-          }
-
-          Status = QSVEncode->Init(&QSVEncodeParams);
-          info("\tMFXVideoENCODE_Init (sysmem) status: %d", Status);
-        }
-
-        if (Status < MFX_ERR_NONE) {
-          auto CO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-          if (CO3Params && CO3Params->ScenarioInfo != 0) {
-            warn("MFXVideoENCODE_Init (sysmem) failed with ScenarioInfo=%d, retrying",
-                 CO3Params->ScenarioInfo);
-            QSVEncode->Close();
-            CO3Params->ScenarioInfo = 0;
-
-            Status = QSVEncode->Init(&QSVEncodeParams);
-            info("\tMFXVideoENCODE_Init (sysmem) retry (ScenarioInfo) status: %d",
-                 Status);
-          }
-        }
-
-        if (Status < MFX_ERR_NONE) {
-          error("MFXVideoENCODE_Init (sysmem) failed after all retries (Status=%d)", Status);
-          throw std::runtime_error(
-              "Init(): MFXVideoENCODE_Init error after parameter retries");
-        }
+        Status = InitEncoderInternal(InputParams, Codec, " (sysmem)");
       }
     }
 
@@ -450,48 +393,7 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
       InitSystemMemorySurfacePool();
     }
 #else
-    Status = SetEncoderParams(InputParams, Codec);
-
-    if (Status >= MFX_ERR_NONE) {
-      mfxExtCodingOption2 CO2Copy = {};
-      mfxExtCodingOption3 CO3Copy = {};
-      bool HasCO2 = false, HasCO3 = false;
-      if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>()) {
-        CO2Copy = *p;
-        HasCO2 = true;
-      }
-      if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>()) {
-        CO3Copy = *p;
-        HasCO3 = true;
-      }
-
-      Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
-      info("\tMFXVideoENCODE_Query status: %d", Status);
-      if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
-        LogCO2CO3Corrections("", QSVEncodeParams, &CO2Copy, &CO3Copy,
-                             HasCO2, HasCO3);
-        Status = MFX_ERR_NONE;
-      }
-    }
-
-    if (!InputParams->CustomCodingOptions.empty()) {
-      ParseCustomCodingOptions(InputParams->CustomCodingOptions);
-    }
-
-    Status = QSVEncode->Init(&QSVEncodeParams);
-    if (Status != MFX_ERR_NONE) {
-      auto CO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-      if (CO3Params && CO3Params->ScenarioInfo != 0) {
-        warn("MFXVideoENCODE_Init failed with ScenarioInfo=%d, "
-             "retrying without ScenarioInfo",
-             CO3Params->ScenarioInfo);
-        QSVEncode->Close();
-        CO3Params->ScenarioInfo = 0;
-
-        Status = QSVEncode->Init(&QSVEncodeParams);
-        info("\tMFXVideoENCODE_Init retry (ScenarioInfo) status: %d", Status);
-      }
-    }
+    Status = InitEncoderInternal(InputParams, Codec, "");
 
     if (Status < MFX_ERR_NONE) {
       auto TemporalLayers =
@@ -704,14 +606,14 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
   return Status;
 }
 
-static mfxU16 ParseCodingOptionValue(const std::string &Val) {
+static mfxU16 ParseCodingOptionValue(std::string_view Val) {
   if (Val == "ON" || Val == "on")
     return MFX_CODINGOPTION_ON;
   if (Val == "OFF" || Val == "off")
     return MFX_CODINGOPTION_OFF;
   if (Val == "UNKNOWN" || Val == "unknown")
     return MFX_CODINGOPTION_UNKNOWN;
-  return static_cast<mfxU16>(std::stoul(Val));
+  return static_cast<mfxU16>(std::stoul(std::string(Val)));
 }
 
 static bool iequals(std::string_view a, std::string_view b) noexcept {
@@ -720,13 +622,12 @@ static bool iequals(std::string_view a, std::string_view b) noexcept {
     });
 }
 
-static std::string FormatFieldValue([[maybe_unused]] const std::string& Field,
+static std::string FormatFieldValue([[maybe_unused]] std::string_view Field,
                                     mfxU16 Value,
-                                    const std::string& RawVal) {
-    std::string_view sv = RawVal;
-    if (iequals(sv, "ON"))      return "ON";
-    if (iequals(sv, "OFF"))     return "OFF";
-    if (iequals(sv, "UNKNOWN")) return "UNKNOWN";
+                                    std::string_view RawVal) {
+    if (iequals(RawVal, "ON"))      return "ON";
+    if (iequals(RawVal, "OFF"))     return "OFF";
+    if (iequals(RawVal, "UNKNOWN")) return "UNKNOWN";
     return std::to_string(Value);
 }
 
@@ -742,8 +643,8 @@ struct FieldEntry {
   FieldType type;
 };
 
-static const FieldEntry CO_FIELDS[] = {
-  {"CAVLC", offsetof(mfxExtCodingOption, CAVLC), FT_U16},
+static constexpr std::array CO_FIELDS = {
+  FieldEntry{"CAVLC", offsetof(mfxExtCodingOption, CAVLC), FT_U16},
   {"RateDistortionOpt", offsetof(mfxExtCodingOption, RateDistortionOpt), FT_U16},
   {"MECostType", offsetof(mfxExtCodingOption, MECostType), FT_U16},
   {"MESearchType", offsetof(mfxExtCodingOption, MESearchType), FT_U16},
@@ -769,10 +670,9 @@ static const FieldEntry CO_FIELDS[] = {
   {"MVPrecision", offsetof(mfxExtCodingOption, MVPrecision), FT_U16},
   {"EndOfStream", offsetof(mfxExtCodingOption, EndOfStream), FT_U16},
 };
-static constexpr size_t CO_COUNT = sizeof(CO_FIELDS) / sizeof(CO_FIELDS[0]);
 
-static const FieldEntry CO2_FIELDS[] = {
-  {"IntRefType", offsetof(mfxExtCodingOption2, IntRefType), FT_U16},
+static constexpr std::array CO2_FIELDS = {
+  FieldEntry{"IntRefType", offsetof(mfxExtCodingOption2, IntRefType), FT_U16},
   {"IntRefCycleSize", offsetof(mfxExtCodingOption2, IntRefCycleSize), FT_U16},
   {"IntRefQPDelta", offsetof(mfxExtCodingOption2, IntRefQPDelta), FT_U16},
   {"MaxFrameSize", offsetof(mfxExtCodingOption2, MaxFrameSize), FT_U16},
@@ -802,10 +702,9 @@ static const FieldEntry CO2_FIELDS[] = {
   {"BufferingPeriodSEI", offsetof(mfxExtCodingOption2, BufferingPeriodSEI), FT_U16},
   {"FixedFrameRate", offsetof(mfxExtCodingOption2, FixedFrameRate), FT_U16},
 };
-static constexpr size_t CO2_COUNT = sizeof(CO2_FIELDS) / sizeof(CO2_FIELDS[0]);
 
-static const FieldEntry CO3_FIELDS[] = {
-  {"NumSliceI", offsetof(mfxExtCodingOption3, NumSliceI), FT_U16},
+static constexpr std::array CO3_FIELDS = {
+  FieldEntry{"NumSliceI", offsetof(mfxExtCodingOption3, NumSliceI), FT_U16},
   {"NumSliceP", offsetof(mfxExtCodingOption3, NumSliceP), FT_U16},
   {"NumSliceB", offsetof(mfxExtCodingOption3, NumSliceB), FT_U16},
   {"WinBRCMaxAvgKbps", offsetof(mfxExtCodingOption3, WinBRCMaxAvgKbps), FT_U16},
@@ -847,10 +746,9 @@ static const FieldEntry CO3_FIELDS[] = {
   {"EnableNalUnitType", offsetof(mfxExtCodingOption3, EnableNalUnitType), FT_U16},
   {"ExtBrcAdaptiveLTR", offsetof(mfxExtCodingOption3, ExtBrcAdaptiveLTR), FT_U16},
 };
-static constexpr size_t CO3_COUNT = sizeof(CO3_FIELDS) / sizeof(CO3_FIELDS[0]);
 
-static const FieldEntry CODDI_FIELDS[] = {
-  {"IntraPredCostType", offsetof(mfxExtCodingOptionDDI, IntraPredCostType), FT_U16},
+static constexpr std::array CODDI_FIELDS = {
+  FieldEntry{"IntraPredCostType", offsetof(mfxExtCodingOptionDDI, IntraPredCostType), FT_U16},
   {"MEInterpolationMethod", offsetof(mfxExtCodingOptionDDI, MEInterpolationMethod), FT_U16},
   {"MEFractionalSearchType", offsetof(mfxExtCodingOptionDDI, MEFractionalSearchType), FT_U16},
   {"MaxMVs", offsetof(mfxExtCodingOptionDDI, MaxMVs), FT_U16},
@@ -897,15 +795,14 @@ static const FieldEntry CODDI_FIELDS[] = {
   {"DDI.IntraPredBlockSize", offsetof(mfxExtCodingOptionDDI, DDI), FT_U16},
   {"DDI.InterPredBlockSize", offsetof(mfxExtCodingOptionDDI, DDI) + sizeof(mfxU16), FT_U16},
 };
-static constexpr size_t CODDI_COUNT = sizeof(CODDI_FIELDS) / sizeof(CODDI_FIELDS[0]);
 
-static bool ApplyField(void *base, const FieldEntry *entries, size_t count,
+static bool ApplyField(void *base, std::span<const FieldEntry> entries,
                        const std::string &field, const std::string &val) {
-  for (size_t i = 0; i < count; i++) {
-    if (field != entries[i].name)
+  for (const auto &e : entries) {
+    if (field != e.name)
       continue;
-    void *ptr = reinterpret_cast<char *>(base) + entries[i].offset;
-    switch (entries[i].type) {
+    void *ptr = reinterpret_cast<char *>(base) + e.offset;
+    switch (e.type) {
     case FT_U16:
       *reinterpret_cast<mfxU16 *>(ptr) = ParseCodingOptionValue(val);
       break;
@@ -974,13 +871,13 @@ void QSVEncoder::ParseCustomCodingOptions(const std::string &Options) {
     bool Applied = false;
 
     if (Scope == "CO" && COParams)
-      Applied = ApplyField(COParams, CO_FIELDS, CO_COUNT, Field, Val);
+      Applied = ApplyField(COParams, CO_FIELDS, Field, Val);
     else if (Scope == "CO2" && CO2Params)
-      Applied = ApplyField(CO2Params, CO2_FIELDS, CO2_COUNT, Field, Val);
+      Applied = ApplyField(CO2Params, CO2_FIELDS, Field, Val);
     else if (Scope == "CO3" && CO3Params)
-      Applied = ApplyField(CO3Params, CO3_FIELDS, CO3_COUNT, Field, Val);
+      Applied = ApplyField(CO3Params, CO3_FIELDS, Field, Val);
     else if (Scope == "CODDI" && CODDIParams)
-      Applied = ApplyField(CODDIParams, CODDI_FIELDS, CODDI_COUNT, Field, Val);
+      Applied = ApplyField(CODDIParams, CODDI_FIELDS, Field, Val);
 
     if (Applied) {
       mfxU16 ParsedVal = ParseCodingOptionValue(Val);
@@ -2154,67 +2051,54 @@ mfxStatus QSVEncoder::InitTexturePool() {
 
 mfxStatus
 QSVEncoder::InitBitstreamBuffer([[maybe_unused]] enum codec_enum Codec) {
-  try {
-    QSVBitstream.MaxLength =
-        static_cast<mfxU32>(QSVEncodeParams.mfx.BufferSizeInKB * 1000 *
-                            QSVEncodeParams.mfx.BRCParamMultiplier);
+  QSVBitstream.MaxLength =
+      static_cast<mfxU32>(QSVEncodeParams.mfx.BufferSizeInKB * 1000 *
+                          QSVEncodeParams.mfx.BRCParamMultiplier);
 
-    QSVBitstream.DataOffset = 0;
-    QSVBitstream.DataLength = 0;
-    QSVBitstream.Data = static_cast<mfxU8 *>(
-        AlignedMalloc(QSVBitstream.MaxLength, 32));
-    if (nullptr == QSVBitstream.Data) {
-      throw std::runtime_error(
-          "InitBitstreamBuffer(): Bitstream memory allocation error");
-    }
-
-    info("\tBitstream size: %d Kb", QSVBitstream.MaxLength / 1000);
-  } catch (const std::bad_alloc &) {
-    throw;
-  } catch (const std::exception &) {
-    throw;
+  QSVBitstream.DataOffset = 0;
+  QSVBitstream.DataLength = 0;
+  QSVBitstream.Data = static_cast<mfxU8 *>(
+      AlignedMalloc(QSVBitstream.MaxLength, 32));
+  if (nullptr == QSVBitstream.Data) {
+    throw std::runtime_error(
+        "InitBitstreamBuffer(): Bitstream memory allocation error");
   }
+
+  info("\tBitstream size: %d Kb", QSVBitstream.MaxLength / 1000);
   return MFX_ERR_NONE;
 }
 
 mfxStatus QSVEncoder::InitTaskPool([[maybe_unused]] enum codec_enum Codec) {
-  try {
-    QSVSyncTaskID = 0;
-    Task NewTask = {};
-    QSVTaskPool.reserve(QSVEncodeParams.AsyncDepth);
+  QSVSyncTaskID = 0;
+  Task NewTask = {};
+  QSVTaskPool.reserve(QSVEncodeParams.AsyncDepth);
 
-    for (int i = 0; i < QSVEncodeParams.AsyncDepth; i++) {
-      NewTask.Bitstream.MaxLength =
-          static_cast<mfxU32>(QSVEncodeParams.mfx.BufferSizeInKB * 1000 *
-                              QSVEncodeParams.mfx.BRCParamMultiplier);
+  for (int i = 0; i < QSVEncodeParams.AsyncDepth; i++) {
+    NewTask.Bitstream.MaxLength =
+        static_cast<mfxU32>(QSVEncodeParams.mfx.BufferSizeInKB * 1000 *
+                            QSVEncodeParams.mfx.BRCParamMultiplier);
 
-      NewTask.Bitstream.DataOffset = 0;
-      NewTask.Bitstream.DataLength = 0;
-      NewTask.Bitstream.Data = static_cast<mfxU8 *>(
-          AlignedMalloc(NewTask.Bitstream.MaxLength, 32));
-      if (nullptr == NewTask.Bitstream.Data) {
-        throw std::runtime_error(
-            "InitTaskPool(): Task memory allocation error");
-      }
-      info("\tTask #%d bitstream size: %d Kb", i,
-           NewTask.Bitstream.MaxLength / 1000);
+    NewTask.Bitstream.DataOffset = 0;
+    NewTask.Bitstream.DataLength = 0;
+    NewTask.Bitstream.Data = static_cast<mfxU8 *>(
+        AlignedMalloc(NewTask.Bitstream.MaxLength, 32));
+    if (nullptr == NewTask.Bitstream.Data) {
+      throw std::runtime_error(
+          "InitTaskPool(): Task memory allocation error");
+    }
+    info("\tTask #%d bitstream size: %d Kb", i,
+         NewTask.Bitstream.MaxLength / 1000);
 
-      QSVTaskPool.push_back(NewTask);
+    QSVTaskPool.push_back(NewTask);
 
 #ifdef QSV_UHD600_SUPPORT
-      if (!QSVIsTextureEncoder && i < static_cast<int>(QSVSystemMemPool.size())) {
-        QSVTaskPool[i].Surface = &QSVSystemMemPool[i].Surface;
-      }
-#endif
+    if (!QSVIsTextureEncoder && i < static_cast<int>(QSVSystemMemPool.size())) {
+      QSVTaskPool[i].Surface = &QSVSystemMemPool[i].Surface;
     }
-
-    info("\tTaskPool count: %d", QSVTaskPool.size());
-
-  } catch (const std::bad_alloc &) {
-    throw;
-  } catch (const std::exception &) {
-    throw;
+#endif
   }
+
+  info("\tTaskPool count: %d", QSVTaskPool.size());
 
   return MFX_ERR_NONE;
 }
@@ -2835,10 +2719,10 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
     }
   } while (SyncStatus == MFX_WRN_IN_EXECUTION);
 
-  mfxU8 *DataTemp = std::move(QSVBitstream.Data);
-  QSVBitstream = std::move(QSVTaskPool[QSVSyncTaskID].Bitstream);
+  mfxU8 *DataTemp = QSVBitstream.Data;
+  QSVBitstream = QSVTaskPool[QSVSyncTaskID].Bitstream;
 
-  QSVTaskPool[QSVSyncTaskID].Bitstream.Data = std::move(DataTemp);
+  QSVTaskPool[QSVSyncTaskID].Bitstream.Data = DataTemp;
   QSVTaskPool[QSVSyncTaskID].Bitstream.DataLength = 0;
   QSVTaskPool[QSVSyncTaskID].Bitstream.DataOffset = 0;
   QSVTaskPool[QSVSyncTaskID].SyncPoint = nullptr;
@@ -2860,29 +2744,29 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
         Ctrl, Surface, &QSVTaskPool[TaskID].Bitstream,
         &QSVTaskPool[TaskID].SyncPoint);
 
-    if (MFX_ERR_NONE == Status) {
+    if (MFX_ERR_NONE == Status) [[likely]] {
       break;
-    } else if (MFX_ERR_NONE < Status && !QSVTaskPool[TaskID].SyncPoint) {
+    } else if (MFX_ERR_NONE < Status && !QSVTaskPool[TaskID].SyncPoint) [[unlikely]] {
       if (MFX_WRN_DEVICE_BUSY == Status) {
         if (EncodeRetryCount < 10)
           Sleep(0);
         else
           Sleep(1);
       }
-    } else if (MFX_ERR_NONE < Status && QSVTaskPool[TaskID].SyncPoint) {
+    } else if (MFX_ERR_NONE < Status && QSVTaskPool[TaskID].SyncPoint) [[likely]] {
       Status = MFX_ERR_NONE;
       break;
     } else if (MFX_ERR_NOT_ENOUGH_BUFFER == Status ||
-               MFX_ERR_MORE_BITSTREAM == Status) {
+               MFX_ERR_MORE_BITSTREAM == Status) [[unlikely]] {
       ChangeBitstreamSize(
           static_cast<mfxU32>(QSVBitstream.MaxLength * 2));
       warn("The bitstream buffer size is too small. The size has been "
            "increased by 2 "
            "times. New value: %d KB",
            (QSVBitstream.MaxLength * 2 / 8 / 1000));
-    } else if (MFX_ERR_MORE_DATA == Status) {
+    } else if (MFX_ERR_MORE_DATA == Status) [[unlikely]] {
       break;
-    } else {
+    } else [[unlikely]] {
       error("Encode fatal error: %d", Status);
       throw std::runtime_error("Encode(): EncodeFrameAsync fatal error");
     }

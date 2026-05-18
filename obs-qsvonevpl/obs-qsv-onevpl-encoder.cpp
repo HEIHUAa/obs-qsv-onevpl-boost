@@ -4,6 +4,7 @@
 #include "obs-qsv-onevpl-encoder.hpp"
 #endif
 #include <cstring>
+#include <vector>
 
 mfxVersion VPLVersion = {{0, 1}}; // for backward compatibility
 std::atomic<bool> IsActive{false};
@@ -357,7 +358,8 @@ static size_t StripHEVCNALTemporalLayer(uint8_t *dst, const uint8_t *src,
     return src_size;
   }
 
-  uint8_t *rbsp = (uint8_t *)alloca(src_size + 4);
+  std::vector<uint8_t> rbsp_buf(src_size + 4);
+  uint8_t *rbsp = rbsp_buf.data();
   size_t rbsp_size = hevc_extract_rbsp(rbsp, src, src_size);
 
   if (rbsp_size < 6) {
@@ -394,7 +396,8 @@ static size_t StripHEVCNALTemporalLayer(uint8_t *dst, const uint8_t *src,
   }
 
   size_t rbsp_out_alloc = rbsp_size + rbsp_size / 2 + 64;
-  uint8_t *rbsp_out = (uint8_t *)alloca(rbsp_out_alloc);
+  std::vector<uint8_t> rbsp_out_buf(rbsp_out_alloc);
+  uint8_t *rbsp_out = rbsp_out_buf.data();
   memset(rbsp_out, 0, rbsp_out_alloc);
 
   memcpy(rbsp_out, rbsp, 6);

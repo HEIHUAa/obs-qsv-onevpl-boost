@@ -103,6 +103,10 @@ public:
     }
   }
 
+  mfxStatus InitEncoderInternal(encoder_params *InputParams,
+                                enum codec_enum Codec,
+                                const char *log_prefix);
+
 private:
   mfxPlatform QSVPlatform{};
   mfxVersion QSVVersion;

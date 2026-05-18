@@ -43,6 +43,11 @@
 #include <cstdlib>
 #endif
 #include <cstring>
+#if defined(_WIN32) || defined(_WIN64)
+#include <intrin.h>
+#elif defined(__x86_64__) || defined(__i386__)
+#include <cpuid.h>
+#endif
 #ifndef _INC_STDLIB
 #include <stdlib.h>
 #endif
@@ -188,7 +193,22 @@ static inline void ParseOptionalBool(const char *Data,
 
 inline static void avx2_memcpy(uint8_t *Dst, const uint8_t *Src,
                                unsigned long long Size) {
-  if (Size < 128) {
+  static const bool HasAVX2 = [] {
+#if defined(_WIN32) || defined(_WIN64)
+    int cpuInfo[4] = {};
+    __cpuidex(cpuInfo, 7, 0);
+    return (cpuInfo[1] >> 5) & 1;
+#elif defined(__x86_64__) || defined(__i386__)
+    unsigned int eax = 7, ecx = 0;
+    unsigned int cpuInfo[4] = {};
+    __get_cpuid_count(eax, ecx, &cpuInfo[0], &cpuInfo[1], &cpuInfo[2], &cpuInfo[3]);
+    return (cpuInfo[1] >> 5) & 1;
+#else
+    return false;
+#endif
+  }();
+
+  if (!HasAVX2 || Size < 128) {
     memcpy(Dst, Src, Size);
     return;
   }
