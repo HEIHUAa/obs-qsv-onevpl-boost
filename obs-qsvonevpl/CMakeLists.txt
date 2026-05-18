@@ -53,6 +53,7 @@ target_compile_options(obs-qsvonevpl PRIVATE
   /MP
   $<$<CONFIG:Release>:/GL>
   $<$<CONFIG:Release>:/Gy>
+  $<$<CONFIG:Release>:/GR->
 )
 target_link_options(obs-qsvonevpl PRIVATE
   $<$<CONFIG:Release>:/LTCG>
@@ -143,6 +144,7 @@ if(WIN32)
       /MP
       $<$<CONFIG:Release>:/GL>
       $<$<CONFIG:Release>:/Gy>
+      $<$<CONFIG:Release>:/GR->
     )
     target_link_options(obs-qsvonevpl-uhd600 PRIVATE
       $<$<CONFIG:Release>:/LTCG>
