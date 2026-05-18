@@ -553,37 +553,27 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
     switch (InputParams->VPPDenoiseMode.value()) {
     case 1:
       DenoiseParams->Mode = MFX_DENOISE_MODE_INTEL_HVS_AUTO_BDRATE;
-      info("\tDenoise set: AUTO | BDRATE | PRE ENCODE");
       break;
     case 2:
       DenoiseParams->Mode = MFX_DENOISE_MODE_INTEL_HVS_AUTO_ADJUST;
-      info("\tDenoise set: AUTO | ADJUST | POST ENCODE");
       break;
     case 3:
       DenoiseParams->Mode = MFX_DENOISE_MODE_INTEL_HVS_AUTO_SUBJECTIVE;
-      info("\tDenoise set: AUTO | SUBJECTIVE | PRE ENCODE");
       break;
     case 4:
       DenoiseParams->Mode = MFX_DENOISE_MODE_INTEL_HVS_PRE_MANUAL;
       DenoiseParams->Strength =
           static_cast<mfxU16>(InputParams->DenoiseStrength);
-      info("\tDenoise set: MANUAL | STRENGTH %d | PRE ENCODE",
-           DenoiseParams->Strength);
       break;
     case 5:
       DenoiseParams->Mode = MFX_DENOISE_MODE_INTEL_HVS_POST_MANUAL;
       DenoiseParams->Strength =
           static_cast<mfxU16>(InputParams->DenoiseStrength);
-      info("\tDenoise set: MANUAL | STRENGTH %d | POST ENCODE",
-           DenoiseParams->Strength);
       break;
     default:
       DenoiseParams->Mode = MFX_DENOISE_MODE_DEFAULT;
-      info("\tDenoise set: DEFAULT");
       break;
     }
-  } else {
-    info("\tDenoise set: OFF");
   }
 
   if (InputParams->VPPDetail.has_value()) {
@@ -592,9 +582,6 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
     DetailParams->Header.BufferSz = sizeof(mfxExtVPPDetail);
     DetailParams->DetailFactor =
         static_cast<mfxU16>(InputParams->VPPDetail.value());
-    info("\tDetail set: %d", InputParams->VPPDetail.value());
-  } else {
-    info("\tDetail set: OFF");
   }
 
   if (InputParams->VPPScalingMode.has_value()) {
@@ -605,29 +592,22 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
     case 1:
       ScalingParams->ScalingMode = MFX_SCALING_MODE_QUALITY;
       ScalingParams->InterpolationMethod = MFX_INTERPOLATION_ADVANCED;
-      info("\tScaling set: QUALITY + ADVANCED");
       break;
     case 2:
       ScalingParams->ScalingMode = MFX_SCALING_MODE_INTEL_GEN_VEBOX;
       ScalingParams->InterpolationMethod = MFX_INTERPOLATION_ADVANCED;
-      info("\tScaling set: VEBOX + ADVANCED");
       break;
     case 3:
       ScalingParams->ScalingMode = MFX_SCALING_MODE_LOWPOWER;
       ScalingParams->InterpolationMethod = MFX_INTERPOLATION_NEAREST_NEIGHBOR;
-      info("\tScaling set: LOWPOWER + NEAREST NEIGHBOR");
       break;
     case 4:
       ScalingParams->ScalingMode = MFX_SCALING_MODE_LOWPOWER;
       ScalingParams->InterpolationMethod = MFX_INTERPOLATION_ADVANCED;
-      info("\tScaling set: LOWPOWER + ADVANCED");
       break;
     default:
-      info("\tScaling set: AUTO");
       break;
     }
-  } else {
-    info("\tScaling set: OFF");
   }
 
   if (InputParams->VPPImageStabMode.has_value()) {
@@ -638,18 +618,13 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
     switch (InputParams->VPPImageStabMode.value()) {
     case 1:
       ImageStabParams->Mode = MFX_IMAGESTAB_MODE_UPSCALE;
-      info("\tImageStab set: UPSCALE");
       break;
     case 2:
       ImageStabParams->Mode = MFX_IMAGESTAB_MODE_BOXING;
-      info("\tImageStab set: BOXING");
       break;
     default:
-      info("\tImageStab set: AUTO");
       break;
     }
-  } else {
-    info("\tImageStab set: OFF");
   }
 
   if (InputParams->PercEncPrefilter == true) {
@@ -658,9 +633,6 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
     PercEncPrefilterParams->Header.BufferId =
         MFX_EXTBUFF_VPP_PERC_ENC_PREFILTER;
     PercEncPrefilterParams->Header.BufferSz = sizeof(mfxExtVPPPercEncPrefilter);
-    info("\tPercEncPreFilter set: ON");
-  } else {
-    info("\tPercEncPreFilter set: OFF");
   }
 
   if (InputParams->VPPMCTFMode.has_value() && InputParams->VPPMCTFMode.value() == 1) {
@@ -668,9 +640,6 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
     MCTFParams->Header.BufferId = MFX_EXTBUFF_VPP_MCTF;
     MCTFParams->Header.BufferSz = sizeof(mfxExtVppMctf);
     MCTFParams->FilterStrength = static_cast<mfxU16>(InputParams->VPPMCTFStrength);
-    info("\tMCTF set: ON | Strength %d", MCTFParams->FilterStrength);
-  } else {
-    info("\tMCTF set: OFF");
   }
 
   QSVProcessingParams.IOPattern =
@@ -1323,8 +1292,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CO2Params->BitrateLimit = GetCodingOpt(InputParams->BitrateLimit);
 
     CO2Params->MaxFrameSize = InputParams->AdaptiveMaxFrameSize;
-    info("\tAdaptiveMaxFrameSize: %d Kb",
-         InputParams->AdaptiveMaxFrameSize);
   }
 
   if (CO3Enabled == 1) {
@@ -1377,8 +1344,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       CO3Params->WeightedPred = InputParams->WeightedPred.value()
                                      ? MFX_CODINGOPTION_ON
                                      : MFX_CODINGOPTION_OFF;
-      info("\tWeightedPred: %s",
-           InputParams->WeightedPred.value() ? "ON" : "OFF");
     } else {
       CO3Params->WeightedPred = MFX_WEIGHTED_PRED_DEFAULT;
     }
@@ -1387,8 +1352,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       CO3Params->WeightedBiPred = InputParams->WeightedBiPred.value()
                                        ? MFX_CODINGOPTION_ON
                                        : MFX_CODINGOPTION_OFF;
-      info("\tWeightedBiPred: %s",
-           InputParams->WeightedBiPred.value() ? "ON" : "OFF");
     } else {
       CO3Params->WeightedBiPred = MFX_WEIGHTED_PRED_DEFAULT;
     }
