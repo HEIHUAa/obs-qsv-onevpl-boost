@@ -201,6 +201,8 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_int(Settings, "detail_factor", 50);
   obs_data_set_default_string(Settings, "image_stab_mode", "OFF");
   obs_data_set_default_string(Settings, "scaling_mode", "OFF");
+  obs_data_set_default_int(Settings, "vpp_out_width", 0);
+  obs_data_set_default_int(Settings, "vpp_out_height", 0);
   obs_data_set_default_string(Settings, "perc_enc_prefilter", "OFF");
 
   obs_data_set_default_string(Settings, "scenario_info", "AUTO");
@@ -343,7 +345,7 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
     obs_data_set_string(Settings, "mbbrc", "OFF");
   }
 
-  bool bRateControlVisible = !bIsICQ;
+  bool bRateControlVisible = !bIsICQ && !bIsCQP;
   bool use_bufsize = obs_data_get_bool(Settings, "custom_buffer_size");
   Prop = obs_properties_get(Properties, "custom_buffer_size");
   obs_property_set_visible(Prop, bRateControlVisible);
@@ -395,14 +397,18 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   obs_property_set_visible(Prop, bVisibleVPP);
   Prop = obs_properties_get(Properties, "scaling_mode");
   obs_property_set_visible(Prop, bVisibleVPP);
+  const char *scaling_mode = obs_data_get_string(Settings, "scaling_mode");
+  bool bScalingModeActive = std::strcmp(scaling_mode, "OFF") != 0;
+  Prop = obs_properties_get(Properties, "vpp_out_width");
+  obs_property_set_visible(Prop, bVisibleVPP && bScalingModeActive);
+  Prop = obs_properties_get(Properties, "vpp_out_height");
+  obs_property_set_visible(Prop, bVisibleVPP && bScalingModeActive);
+  Prop = obs_properties_get(Properties, "vpp_mctf");
+  obs_property_set_visible(Prop, bVisibleVPP);
 
-  {
-    bool vpp_mctf_visible = bVisibleVPP;
-    obs_property_set_visible(obs_properties_get(Properties, "vpp_mctf"), vpp_mctf_visible);
-    const char *vpp_mctf_val = obs_data_get_string(Settings, "vpp_mctf");
-    bool vpp_mctf_strength_visible = vpp_mctf_visible && (std::strcmp(vpp_mctf_val, "ON") == 0);
-    obs_property_set_visible(obs_properties_get(Properties, "vpp_mctf_strength"), vpp_mctf_strength_visible);
-  }
+  const char *vpp_mctf_val = obs_data_get_string(Settings, "vpp_mctf");
+  bool vpp_mctf_strength_visible = bVisibleVPP && (std::strcmp(vpp_mctf_val, "ON") == 0);
+  obs_property_set_visible(obs_properties_get(Properties, "vpp_mctf_strength"), vpp_mctf_strength_visible);
 
   const char *denoise_mode = obs_data_get_string(Settings, "denoise_mode");
   bVisible = std::strcmp(denoise_mode, "MANUAL | PRE ENCODE") == 0 ||
@@ -831,7 +837,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_long_description(
       Prop, TEXT_TRANSFORM_SKIP_DESC);
-  obs_property_set_visible(Prop, IsFeatureSupported("transform_skip"));
+  obs_property_set_visible(Prop, Codec == QSV_CODEC_HEVC && IsFeatureSupported("transform_skip"));
 
   // ── Reference controls ──────────────────────────────────────
   Prop = obs_properties_add_int(Props, "num_ref_active_p",
@@ -951,6 +957,14 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_scaling_mode);
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
+
+  Prop = obs_properties_add_int(Props, "vpp_out_width", TEXT_VPP_OUT_WIDTH,
+                                0, 8192, 2);
+  obs_property_set_visible(Prop, false);
+
+  Prop = obs_properties_add_int(Props, "vpp_out_height", TEXT_VPP_OUT_HEIGHT,
+                                0, 8192, 4);
+  obs_property_set_visible(Prop, false);
 
   Prop = obs_properties_add_list(Props, "detail", TEXT_DETAIL,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -1732,6 +1746,15 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.VPPScalingMode = 4;
   } else if (std::strcmp(ScalingModeData, "AUTO") == 0) {
     Context->EncoderParams.VPPScalingMode = 0;
+  }
+
+  int64_t VPPOutWidthData = obs_data_get_int(Settings, "vpp_out_width");
+  int64_t VPPOutHeightData = obs_data_get_int(Settings, "vpp_out_height");
+  if (VPPOutWidthData > 0 && VPPOutHeightData > 0) {
+    Context->EncoderParams.VPPOutWidth =
+        static_cast<mfxU16>(VPPOutWidthData);
+    Context->EncoderParams.VPPOutHeight =
+        static_cast<mfxU16>(VPPOutHeightData);
   }
 
   if (std::strcmp(ImageStabModeData, "UPSCALE") == 0) {

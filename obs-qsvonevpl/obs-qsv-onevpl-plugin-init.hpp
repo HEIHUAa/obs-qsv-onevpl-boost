@@ -93,6 +93,8 @@ struct plugin_context {
 #define TEXT_DENOISE_STRENGTH obs_module_text("Denoise_Strength")
 #define TEXT_DENOISE_MODE obs_module_text("Denoise_Mode")
 #define TEXT_SCALING_MODE obs_module_text("Scaling_Mode")
+#define TEXT_VPP_OUT_WIDTH obs_module_text("VPPOutWidth")
+#define TEXT_VPP_OUT_HEIGHT obs_module_text("VPPOutHeight")
 #define TEXT_IMAGE_STAB_MODE obs_module_text("ImageStab_Mode")
 #define TEXT_DETAIL obs_module_text("Detail_Enhancement")
 #define TEXT_DETAIL_FACTOR obs_module_text("Detail_Factor")

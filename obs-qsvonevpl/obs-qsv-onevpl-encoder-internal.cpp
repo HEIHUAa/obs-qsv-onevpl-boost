@@ -534,12 +534,19 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
   QSVProcessingParams.vpp.Out.FourCC = static_cast<mfxU32>(InputParams->FourCC);
   QSVProcessingParams.vpp.Out.ChromaFormat =
       static_cast<mfxU16>(InputParams->ChromaFormat);
+  mfxU16 vppOutWidth = InputParams->VPPOutWidth > 0
+      ? InputParams->VPPOutWidth.value()
+      : InputParams->Width;
+  mfxU16 vppOutHeight = InputParams->VPPOutHeight > 0
+      ? InputParams->VPPOutHeight.value()
+      : InputParams->Height;
+
   QSVProcessingParams.vpp.Out.Width =
-      static_cast<mfxU16>((((InputParams->Width + 15) >> 4) << 4));
+      static_cast<mfxU16>((((vppOutWidth + 15) >> 4) << 4));
   QSVProcessingParams.vpp.Out.Height =
-      static_cast<mfxU16>((((InputParams->Height + 15) >> 4) << 4));
-  QSVProcessingParams.vpp.Out.CropW = static_cast<mfxU16>(InputParams->Width);
-  QSVProcessingParams.vpp.Out.CropH = static_cast<mfxU16>(InputParams->Height);
+      static_cast<mfxU16>((((vppOutHeight + 15) >> 4) << 4));
+  QSVProcessingParams.vpp.Out.CropW = static_cast<mfxU16>(vppOutWidth);
+  QSVProcessingParams.vpp.Out.CropH = static_cast<mfxU16>(vppOutHeight);
   QSVProcessingParams.vpp.Out.PicStruct = MFX_PICSTRUCT_PROGRESSIVE;
   QSVProcessingParams.vpp.Out.FrameRateExtN =
       static_cast<mfxU32>(InputParams->FpsNum);
@@ -906,12 +913,24 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   // Width must be a multiple of 16
   // Height must be a multiple of 16 in case of frame picture and a
   // multiple of 32 in case of field picture
+  mfxU16 encodeWidth = InputParams->VPPOutWidth > 0
+      ? InputParams->VPPOutWidth.value()
+      : InputParams->Width;
+  mfxU16 encodeHeight = InputParams->VPPOutHeight > 0
+      ? InputParams->VPPOutHeight.value()
+      : InputParams->Height;
+
+  if (InputParams->VPPOutWidth > 0 && InputParams->VPPOutHeight > 0) {
+    info("\tVPP scaling active, output resolution: %dx%d",
+         encodeWidth, encodeHeight);
+  }
+
   QSVEncodeParams.mfx.FrameInfo.Width =
-      static_cast<mfxU16>((((InputParams->Width + 15) >> 4) << 4));
+      static_cast<mfxU16>((((encodeWidth + 15) >> 4) << 4));
   info("\tWidth: %d", QSVEncodeParams.mfx.FrameInfo.Width);
 
   QSVEncodeParams.mfx.FrameInfo.Height =
-      static_cast<mfxU16>((((InputParams->Height + 15) >> 4) << 4));
+      static_cast<mfxU16>((((encodeHeight + 15) >> 4) << 4));
   info("\tHeight: %d", QSVEncodeParams.mfx.FrameInfo.Height);
 
   QSVEncodeParams.mfx.FrameInfo.ChromaFormat =
@@ -923,10 +942,10 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
   QSVEncodeParams.mfx.FrameInfo.CropY = 0;
 
-  QSVEncodeParams.mfx.FrameInfo.CropW = static_cast<mfxU16>(InputParams->Width);
+  QSVEncodeParams.mfx.FrameInfo.CropW = static_cast<mfxU16>(encodeWidth);
 
   QSVEncodeParams.mfx.FrameInfo.CropH =
-      static_cast<mfxU16>(InputParams->Height);
+      static_cast<mfxU16>(encodeHeight);
 
   QSVEncodeParams.mfx.FrameInfo.FrameRateExtN =
       static_cast<mfxU32>(InputParams->FpsNum);

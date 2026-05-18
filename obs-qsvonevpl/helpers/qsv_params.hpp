@@ -113,6 +113,8 @@ struct encoder_params {
   std::optional<int> AV1ErrorResilient;
   std::optional<int> VPPMCTFMode;
   mfxU16 VPPMCTFStrength;
+  std::optional<mfxU16> VPPOutWidth;
+  std::optional<mfxU16> VPPOutHeight;
 
   mfxU32 FourCC;
   mfxU16 ChromaFormat;
