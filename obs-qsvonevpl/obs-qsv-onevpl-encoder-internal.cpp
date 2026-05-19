@@ -297,12 +297,30 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
       Status = MFX_ERR_NONE;
     }
 
-    if (!InputParams->CustomCodingOptions.empty()) {
-      ParseCustomCodingOptions(InputParams->CustomCodingOptions);
+    if (Status == MFX_ERR_UNSUPPORTED ||
+        Status == MFX_ERR_UNDEFINED_BEHAVIOR) {
+      auto CO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
+      if (CO3Params && CO3Params->AdaptiveLTR == MFX_CODINGOPTION_ON) {
+        CO3Params->AdaptiveLTR = MFX_CODINGOPTION_OFF;
+        Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
+        info("\tMFXVideoENCODE_Query%s (AdaptiveLTR fixed) status: %d",
+             log_prefix, Status);
+        if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
+          LogCO2CO3Corrections(log_prefix, QSVEncodeParams, &CO2Copy, &CO3Copy,
+                               HasCO2, HasCO3);
+          Status = MFX_ERR_NONE;
+        }
+      }
     }
 
-    Status = QSVEncode->Init(&QSVEncodeParams);
-    info("\tMFXVideoENCODE_Init%s status: %d", log_prefix, Status);
+    if (Status >= MFX_ERR_NONE) {
+      if (!InputParams->CustomCodingOptions.empty()) {
+        ParseCustomCodingOptions(InputParams->CustomCodingOptions);
+      }
+
+      Status = QSVEncode->Init(&QSVEncodeParams);
+      info("\tMFXVideoENCODE_Init%s status: %d", log_prefix, Status);
+    }
   }
 
   if (Status < MFX_ERR_NONE) {
@@ -1927,15 +1945,11 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
                                  ? MFX_IOPATTERN_IN_SYSTEM_MEMORY
                                  : MFX_IOPATTERN_IN_VIDEO_MEMORY;
 
-  if (!QSVUseSystemMemoryPath && QSVEncode) {
-    return QueryAndValidateEncoderParams();
-  }
-
   return MFX_ERR_NONE;
 #else
   QSVEncodeParams.IOPattern = MFX_IOPATTERN_IN_VIDEO_MEMORY;
 
-  return QueryAndValidateEncoderParams();
+  return MFX_ERR_NONE;
 #endif
 }
 
