@@ -122,6 +122,21 @@ void ReleaseGlobalLoader() {
   }
 }
 
+static void WarmUpVPLSession() {
+  std::lock_guard<std::mutex> lock(GlobalLoaderMutex);
+  if (!GlobalQSVLoader)
+    return;
+
+  mfxSession WarmupSession = nullptr;
+  mfxStatus Sts = MFXCreateSession(GlobalQSVLoader, 0, &WarmupSession);
+  if (Sts >= MFX_ERR_NONE) {
+    info("oneVPL warm-up session created successfully");
+    MFXClose(WarmupSession);
+  } else {
+    info("oneVPL warm-up session creation failed: %d", Sts);
+  }
+}
+
 bool obs_module_load([[maybe_unused]] void) {
   AdaptersCount = MAX_ADAPTERS;
   GetAdaptersInfo(AdaptersInfo, &AdaptersCount);
@@ -153,6 +168,10 @@ bool obs_module_load([[maybe_unused]] void) {
     obs_register_encoder(&HEVCTextureEncoderInfo);
     info( "QSV HEVC support");
     InitGlobalLoader();
+  }
+
+  if (SupportAVC || SupportAV1 || SupportHEVC) {
+    WarmUpVPLSession();
   }
 
   return true;

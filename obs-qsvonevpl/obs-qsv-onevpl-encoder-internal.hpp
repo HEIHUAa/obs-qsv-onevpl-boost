@@ -19,6 +19,7 @@ public:
   ~QSVEncoder();
 
   mfxStatus GetVPLVersion(mfxVersion &);
+  mfxVersion GetCachedVPLVersion() const { return QSVVersion; }
   mfxStatus Init(struct encoder_params *InputParams, enum codec_enum Codec,
                  bool IsTextureEncoder);
 #ifdef QSV_UHD600_SUPPORT
