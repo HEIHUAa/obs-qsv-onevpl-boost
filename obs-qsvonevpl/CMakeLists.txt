@@ -142,22 +142,16 @@ if(WIN32)
       $<$<CONFIG:Debug>:/Od>
       $<$<CONFIG:Release>:/Oi>
       /MP
+      $<$<CONFIG:Release>:/GL>
       $<$<CONFIG:Release>:/Gy>
       $<$<CONFIG:Release>:/GR->
     )
     target_link_options(obs-qsvonevpl-uhd600 PRIVATE
+      $<$<CONFIG:Release>:/LTCG>
       $<$<CONFIG:Release>:/OPT:REF>
       $<$<CONFIG:Release>:/OPT:ICF>
       /INCREMENTAL:NO
     )
-
-    if(TARGET VPL)
-      add_custom_command(TARGET obs-qsvonevpl-uhd600 POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-          $<TARGET_FILE:VPL>
-          $<TARGET_FILE_DIR:obs-qsvonevpl-uhd600>
-      )
-    endif()
 
     install(
       TARGETS obs-qsvonevpl-uhd600
