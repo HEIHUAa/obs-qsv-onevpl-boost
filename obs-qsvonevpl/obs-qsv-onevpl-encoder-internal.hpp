@@ -54,7 +54,6 @@ public:
 
   mfxStatus GetVideoParam(enum codec_enum Codec);
   void LogActualParams();
-  mfxStatus QueryAndValidateEncoderParams();
 
   mfxStatus InitTexturePool();
 #ifdef QSV_UHD600_SUPPORT

@@ -297,22 +297,6 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
       Status = MFX_ERR_NONE;
     }
 
-    if (Status == MFX_ERR_UNSUPPORTED ||
-        Status == MFX_ERR_UNDEFINED_BEHAVIOR) {
-      auto CO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-      if (CO3Params && CO3Params->AdaptiveLTR == MFX_CODINGOPTION_ON) {
-        CO3Params->AdaptiveLTR = MFX_CODINGOPTION_OFF;
-        Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
-        info("\tMFXVideoENCODE_Query%s (AdaptiveLTR fixed) status: %d",
-             log_prefix, Status);
-        if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
-          LogCO2CO3Corrections(log_prefix, QSVEncodeParams, &CO2Copy, &CO3Copy,
-                               HasCO2, HasCO3);
-          Status = MFX_ERR_NONE;
-        }
-      }
-    }
-
     if (Status >= MFX_ERR_NONE) {
       if (!InputParams->CustomCodingOptions.empty()) {
         ParseCustomCodingOptions(InputParams->CustomCodingOptions);
@@ -2577,22 +2561,6 @@ void QSVEncoder::LogActualParams() {
   } else {
     info("\tMCTF set: OFF");
   }
-}
-
-mfxStatus QSVEncoder::QueryAndValidateEncoderParams() {
-  mfxVideoParam ValidParams = {};
-  memcpy(&ValidParams, &QSVEncodeParams, sizeof(mfxVideoParam));
-  mfxStatus Sts = QSVEncode->Query(&QSVEncodeParams, &ValidParams);
-  if (Sts == MFX_ERR_UNSUPPORTED || Sts == MFX_ERR_UNDEFINED_BEHAVIOR) {
-    auto CO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-    if (CO3Params && CO3Params->AdaptiveLTR == MFX_CODINGOPTION_ON) {
-      CO3Params->AdaptiveLTR = MFX_CODINGOPTION_OFF;
-    }
-  } else if (Sts < MFX_ERR_NONE) {
-    throw std::runtime_error(
-        "SetEncoderParams(): Query params error");
-  }
-  return Sts;
 }
 
 void QSVEncoder::LoadFrameData(mfxFrameSurface1 *&Surface, uint8_t **FrameData,
