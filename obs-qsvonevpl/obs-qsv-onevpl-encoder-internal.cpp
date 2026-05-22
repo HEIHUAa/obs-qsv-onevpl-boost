@@ -302,8 +302,24 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
         ParseCustomCodingOptions(InputParams->CustomCodingOptions);
       }
 
+      mfxExtCodingOption2 CO2InitCopy = {};
+      mfxExtCodingOption3 CO3InitCopy = {};
+      bool HasCO2Init = false, HasCO3Init = false;
+      if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>()) {
+        CO2InitCopy = *p;
+        HasCO2Init = true;
+      }
+      if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>()) {
+        CO3InitCopy = *p;
+        HasCO3Init = true;
+      }
+
       Status = QSVEncode->Init(&QSVEncodeParams);
       info("\tMFXVideoENCODE_Init%s status: %d", log_prefix, Status);
+
+      LogCO2CO3Corrections(" (Init)", QSVEncodeParams,
+                           &CO2InitCopy, &CO3InitCopy,
+                           HasCO2Init, HasCO3Init);
     }
   }
 

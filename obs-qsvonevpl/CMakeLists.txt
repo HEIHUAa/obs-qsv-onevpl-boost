@@ -153,6 +153,14 @@ if(WIN32)
       /INCREMENTAL:NO
     )
 
+    if(TARGET VPL)
+      add_custom_command(TARGET obs-qsvonevpl-uhd600 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          $<TARGET_FILE:VPL>
+          $<TARGET_FILE_DIR:obs-qsvonevpl-uhd600>
+      )
+    endif()
+
     install(
       TARGETS obs-qsvonevpl-uhd600
       RUNTIME DESTINATION "obs-plugins/64bit"
