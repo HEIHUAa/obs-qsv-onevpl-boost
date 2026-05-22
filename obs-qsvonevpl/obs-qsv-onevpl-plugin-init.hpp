@@ -264,7 +264,9 @@ static const char *const qsv_params_condition_hevc_sao[] = {
     "AUTO", "DISABLE", "LUMA", "CHROMA", "ALL", 0};
 
 static const char *const qsv_params_condition_scenario_info[] = {
-    "OFF", "AUTO", "ARCHIVE", "LIVE", "REMOTE_GAMING", "GAME_STREAMING", 0};
+    "OFF", "AUTO", "DISPLAY_REMOTING", "VIDEO_CONFERENCE", "ARCHIVE",
+    "LIVE_STREAMING", "CAMERA_CAPTURE", "VIDEO_SURVEILLANCE",
+    "GAME_STREAMING", "REMOTE_GAMING", 0};
 
 static const char *const qsv_params_condition_content_info[] = {
     "OFF", "AUTO", "NOISY_VIDEO", "GAME", "CAMERA_SCENE",

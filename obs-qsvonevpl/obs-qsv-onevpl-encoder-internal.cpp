@@ -1426,23 +1426,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     }
 
     if (InputParams->ScenarioInfo.has_value()) {
-      switch (InputParams->ScenarioInfo.value()) {
-      case 0:
-        CO3Params->ScenarioInfo = 0;
-        break;
-      case 1:
-        CO3Params->ScenarioInfo = 1;
-        break;
-      case 2:
-        CO3Params->ScenarioInfo = 2;
-        break;
-      case 3:
-        CO3Params->ScenarioInfo = 3;
-        break;
-      case 4:
-        CO3Params->ScenarioInfo = 4;
-        break;
-      }
+      CO3Params->ScenarioInfo = static_cast<mfxU16>(InputParams->ScenarioInfo.value());
     }
 
     if (QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_CQP) {

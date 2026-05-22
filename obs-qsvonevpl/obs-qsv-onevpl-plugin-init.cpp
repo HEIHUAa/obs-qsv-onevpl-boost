@@ -1656,14 +1656,22 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.ScenarioInfo = std::nullopt;
   } else if (std::strcmp(ScenarioInfoData, "AUTO") == 0) {
     Context->EncoderParams.ScenarioInfo = 0;
-  } else if (std::strcmp(ScenarioInfoData, "ARCHIVE") == 0) {
+  } else if (std::strcmp(ScenarioInfoData, "DISPLAY_REMOTING") == 0) {
     Context->EncoderParams.ScenarioInfo = 1;
-  } else if (std::strcmp(ScenarioInfoData, "LIVE") == 0) {
+  } else if (std::strcmp(ScenarioInfoData, "VIDEO_CONFERENCE") == 0) {
     Context->EncoderParams.ScenarioInfo = 2;
-  } else if (std::strcmp(ScenarioInfoData, "REMOTE_GAMING") == 0) {
+  } else if (std::strcmp(ScenarioInfoData, "ARCHIVE") == 0) {
     Context->EncoderParams.ScenarioInfo = 3;
-  } else if (std::strcmp(ScenarioInfoData, "GAME_STREAMING") == 0) {
+  } else if (std::strcmp(ScenarioInfoData, "LIVE_STREAMING") == 0) {
     Context->EncoderParams.ScenarioInfo = 4;
+  } else if (std::strcmp(ScenarioInfoData, "CAMERA_CAPTURE") == 0) {
+    Context->EncoderParams.ScenarioInfo = 5;
+  } else if (std::strcmp(ScenarioInfoData, "VIDEO_SURVEILLANCE") == 0) {
+    Context->EncoderParams.ScenarioInfo = 6;
+  } else if (std::strcmp(ScenarioInfoData, "GAME_STREAMING") == 0) {
+    Context->EncoderParams.ScenarioInfo = 7;
+  } else if (std::strcmp(ScenarioInfoData, "REMOTE_GAMING") == 0) {
+    Context->EncoderParams.ScenarioInfo = 8;
   }
 
   if (std::strcmp(ContentInfoData, "OFF") == 0) {
