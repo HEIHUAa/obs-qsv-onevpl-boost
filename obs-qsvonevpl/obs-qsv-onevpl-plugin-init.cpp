@@ -228,8 +228,6 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_int(Settings, "temporal_layers", 0);
 
   obs_data_set_default_int(Settings, "gpu_number", 0);
-
-  obs_data_set_default_bool(Settings, "auto_speed_downgrade", true);
 }
 
 static inline const char *LocaleKey(const char *str) {
@@ -1030,9 +1028,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
       Prop, TEXT_GPU_NUMBER_DESC);
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
-  obs_properties_add_bool(Props, "auto_speed_downgrade",
-                                 TEXT_AUTO_SPEED_DOWNGRADE);
-
   Prop = obs_properties_add_text(Props, "custom_coding_options",
                                  TEXT_CUSTOM_CODING_OPTIONS,
                                  OBS_TEXT_MULTILINE);
@@ -1166,12 +1161,7 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
 
   int GPUNumData = static_cast<int>(obs_data_get_int(Settings, "gpu_number"));
 
-  bool AutoSpeedDowngradeData =
-      obs_data_get_bool(Settings, "auto_speed_downgrade");
-
   Context->EncoderParams.GPUNum = GPUNumData;
-
-  Context->AutoSpeedDowngrade = AutoSpeedDowngradeData;
 
   Context->CachedFpsNum = static_cast<mfxU32>(VOI->fps_num);
   Context->CachedFpsDen = static_cast<mfxU32>(VOI->fps_den);
@@ -1199,11 +1189,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.TargetUsage = MFX_TARGETUSAGE_7;
     info("\tTarget usage set: TU7 (Veryfast)");
   }
-
-  Context->CurrentTargetUsageIndex =
-      Context->EncoderParams.TargetUsage - 1;
-  Context->OriginalTargetUsageIndex =
-      Context->EncoderParams.TargetUsage - 1;
 
   if (std::strcmp(TuneQualityData, "PSNR") == 0) {
     Context->EncoderParams.TuneQualityMode = 1;
@@ -2008,15 +1993,6 @@ plugin_context *InitPluginContext(enum codec_enum Codec, obs_data_t *Settings,
   }
 
   GetEncoderParams(Context, Settings);
-
-  Context->FrameEncodeStartTime = 0;
-  Context->FrameEncodeTimeUs = 0;
-  Context->ConsecutiveSlowFrames = 0;
-  Context->CurrentTargetUsageIndex = 3; // 默认TU4 (Balanced), 索引3
-  Context->OriginalTargetUsageIndex = 3;
-  Context->NormalFramesAfterDowngrade = 0;
-  Context->PendingTargetUsageChange = false;
-  Context->PendingTargetUsageIndex = 0;
 
   try {
 

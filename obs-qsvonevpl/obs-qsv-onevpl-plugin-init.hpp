@@ -30,16 +30,6 @@ struct plugin_context {
   mfxU32 CachedFpsDen;
   int64_t CachedTSDiv;
 
-  bool AutoSpeedDowngrade;
-  uint64_t FrameEncodeStartTime;
-  mfxU32 FrameEncodeTimeUs;
-  mfxU32 ConsecutiveSlowFrames;
-  mfxU16 CurrentTargetUsageIndex;
-  mfxU16 OriginalTargetUsageIndex;
-  mfxU32 NormalFramesAfterDowngrade;
-  bool PendingTargetUsageChange;
-  mfxU16 PendingTargetUsageIndex;
-
   std::mutex EncoderMutex;
 };
 
@@ -192,8 +182,6 @@ struct plugin_context {
 
 #define TEXT_CTU obs_module_text("CTU")
 #define TEXT_CTU_DESC obs_module_text("CTUDesc")
-
-#define TEXT_AUTO_SPEED_DOWNGRADE obs_module_text("AutoSpeedDowngrade")
 
 static const char *const qsv_profile_names_av1[] = {"main", "high", "pro", 0};
 

@@ -34,7 +34,6 @@ public:
   mfxStatus ClearData();
   mfxStatus ReconfigureEncoder();
   bool UpdateParams(struct encoder_params *InputParams);
-  void SetPendingSpeedChange(mfxU16 NewTargetUsage);
 
   protected:
   typedef struct Task {
@@ -173,10 +172,6 @@ private:
   mfxU32 QSVProcessingRefCount;
 
   mfxSyncPoint QSVProcessingSyncPoint;
-
-  bool QSVApplySpeedChange;
-  mfxU16 QSVNewTargetUsage;
-  mfxStatus ApplyPendingSpeedChangeSafe();
   
   enum class AdditionalFourCC {
     MFX_FOURCC_IMC3 = MFX_MAKEFOURCC('I', 'M', 'C', '3'),
