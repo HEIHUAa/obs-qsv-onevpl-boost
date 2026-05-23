@@ -2007,6 +2007,8 @@ plugin_context *InitPluginContext(enum codec_enum Codec, obs_data_t *Settings,
 
   Context->ConsecutiveSlowFrames = 0;
   Context->NormalFramesAfterDowngrade = 0;
+  Context->TotalFramesEncoded = 0;
+  Context->FramesSinceSpeedChange = 0;
 
   try {
 

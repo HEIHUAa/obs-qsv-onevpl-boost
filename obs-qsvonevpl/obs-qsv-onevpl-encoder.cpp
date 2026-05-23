@@ -676,9 +676,26 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
   Bitstream->DataOffset = 0;
 }
 
+static constexpr mfxU32 WARMUP_FRAMES = 30;
+static constexpr mfxU32 COOLDOWN_FRAMES = 60;
+static constexpr mfxU32 SLOW_FRAME_THRESHOLD = 5;
+static constexpr mfxU32 RESTORE_FRAME_THRESHOLD = 100;
+
 static void CheckAndApplySpeedDowngrade(plugin_context *Context) {
   if (!Context->AutoSpeedDowngrade)
     return;
+
+  Context->TotalFramesEncoded++;
+  Context->FramesSinceSpeedChange++;
+
+  if (Context->TotalFramesEncoded < WARMUP_FRAMES)
+    return;
+
+  if (Context->FramesSinceSpeedChange < COOLDOWN_FRAMES) {
+    Context->ConsecutiveSlowFrames = 0;
+    Context->NormalFramesAfterDowngrade = 0;
+    return;
+  }
 
   uint64_t encode_time_ns = Context->EncoderPTR->GetLastEncodeTimeNs();
   Context->EncoderPTR->ClearLastEncodeTime();
@@ -693,11 +710,12 @@ static void CheckAndApplySpeedDowngrade(plugin_context *Context) {
   if (encode_time_ns > frame_interval_ns * 3 / 2) {
     Context->ConsecutiveSlowFrames++;
 
-    if (Context->ConsecutiveSlowFrames >= 5 &&
+    if (Context->ConsecutiveSlowFrames >= SLOW_FRAME_THRESHOLD &&
         Context->CurrentTargetUsage < MFX_TARGETUSAGE_7) {
       Context->CurrentTargetUsage++;
       Context->ConsecutiveSlowFrames = 0;
       Context->NormalFramesAfterDowngrade = 0;
+      Context->FramesSinceSpeedChange = 0;
 
       blog(LOG_INFO,
            "[QSV VPL] Auto speed downgrade: TU%d -> TU%d",
@@ -713,10 +731,11 @@ static void CheckAndApplySpeedDowngrade(plugin_context *Context) {
 
     if (Context->CurrentTargetUsage > Context->OriginalTargetUsage) {
       Context->NormalFramesAfterDowngrade++;
-      if (Context->NormalFramesAfterDowngrade >= 100) {
+      if (Context->NormalFramesAfterDowngrade >= RESTORE_FRAME_THRESHOLD) {
         Context->NormalFramesAfterDowngrade = 0;
         Context->ConsecutiveSlowFrames = 0;
         Context->CurrentTargetUsage--;
+        Context->FramesSinceSpeedChange = 0;
 
         blog(LOG_INFO,
              "[QSV VPL] Auto speed restore: TU%d -> TU%d",
