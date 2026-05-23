@@ -22,8 +22,7 @@ QSVEncoder::QSVEncoder()
       QSVResetParamsChanged(false), QSVEncodeParams(), QSVEncodeCtrlParams(),
       QSVProcessingAuxData(), QSVAllocateRequest(), QSVIsTextureEncoder(),
       QSVMemoryInterface(), HWManager(nullptr), QSVProcessingEnable(),
-      QSVProcessingSyncPoint(nullptr), QSVLastFrameEncodeTimeNs(0),
-      QSVApplySpeedChange(false), QSVNewTargetUsage(0) {}
+      QSVProcessingSyncPoint(nullptr), QSVLastFrameEncodeTimeNs(0) {}
 
 QSVEncoder::~QSVEncoder() {
   if (QSVEncode || QSVProcessing) {
@@ -473,8 +472,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
   }
 
   HWManager::HWEncoderCounter++;
-
-  QSVEncParamsSnapshot = *InputParams;
 
   return Status;
 }
@@ -2011,10 +2008,6 @@ bool QSVEncoder::UpdateParams(struct encoder_params *InputParams) {
     }
     break;
   }
-  if (QSVResetParams.mfx.TargetUsage != InputParams->TargetUsage) {
-    QSVResetParams.mfx.TargetUsage = InputParams->TargetUsage;
-    QSVResetParamsChanged = true;
-  }
   if (QSVResetParamsChanged == true) {
     auto ResetParams = QSVEncodeParams.AddExtBuffer<mfxExtEncoderResetOption>();
     ResetParams->Header.BufferId = MFX_EXTBUFF_ENCODER_RESET_OPTION;
@@ -2033,48 +2026,6 @@ mfxStatus QSVEncoder::ReconfigureEncoder() {
   } else {
     return MFX_ERR_NONE;
   }
-}
-
-void QSVEncoder::RequestTargetUsageChange(mfxU16 NewTargetUsage) {
-  QSVApplySpeedChange = true;
-  QSVNewTargetUsage = NewTargetUsage;
-}
-
-mfxStatus QSVEncoder::ApplyPendingSpeedChange() {
-  if (!QSVApplySpeedChange)
-    return MFX_ERR_NONE;
-  QSVApplySpeedChange = false;
-
-  for (int i = 0; i < static_cast<int>(QSVTaskPool.size()); i++) {
-    if (QSVTaskPool[i].SyncPoint == nullptr)
-      continue;
-    mfxStatus SyncSts;
-    do {
-      SyncSts = MFXVideoCORE_SyncOperation(QSVSession,
-                                           QSVTaskPool[i].SyncPoint, 100);
-    } while (SyncSts == MFX_WRN_IN_EXECUTION);
-
-    if (SyncSts < MFX_ERR_NONE)
-      warn("Speed change drain sync error: %d", SyncSts);
-
-    if (QSVTaskPool[i].SubmitTimeNs != 0) {
-      QSVLastFrameEncodeTimeNs =
-          os_gettime_ns() - QSVTaskPool[i].SubmitTimeNs;
-      QSVTaskPool[i].SubmitTimeNs = 0;
-    }
-    QSVTaskPool[i].SyncPoint = nullptr;
-  }
-
-  blog(LOG_INFO, "[QSV VPL] Applying speed change to TU%d", QSVNewTargetUsage);
-
-  QSVEncParamsSnapshot.TargetUsage = QSVNewTargetUsage;
-  if (UpdateParams(&QSVEncParamsSnapshot)) {
-    mfxStatus Status = ReconfigureEncoder();
-    if (Status < MFX_ERR_NONE)
-      warn("Speed change Reset failed: %d", Status);
-    return Status;
-  }
-  return MFX_ERR_NONE;
 }
 
 mfxStatus QSVEncoder::InitTexturePool() {
@@ -2709,8 +2660,6 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
     TaskID = QSVSyncTaskID;
   }
 
-  ApplyPendingSpeedChange();
-
   mfxFrameSurface1 *EncodeSurface = QSVTaskPool[TaskID].Surface;
   if (!EncodeSurface) {
     error("System memory surface is null for task %d", TaskID);
@@ -2845,8 +2794,6 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
     TaskID = QSVSyncTaskID;
   }
 
-  ApplyPendingSpeedChange();
-
   try {
     HWManager->CopyTexture(Texture, std::move(TextureHandle), LockKey,
                            static_cast<mfxU64 *>(NextKey));
@@ -2950,8 +2897,6 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
     }
     TaskID = QSVSyncTaskID;
   }
-
-  ApplyPendingSpeedChange();
 
   Status = QSVEncode->GetSurface(&QSVEncodeSurface);
   if (Status < MFX_ERR_NONE) {

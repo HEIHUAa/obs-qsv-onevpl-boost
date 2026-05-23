@@ -676,10 +676,10 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
   Bitstream->DataOffset = 0;
 }
 
-static constexpr mfxU32 WARMUP_FRAMES = 30;
-static constexpr mfxU32 COOLDOWN_FRAMES = 60;
-static constexpr mfxU32 SLOW_FRAME_THRESHOLD = 5;
-static constexpr mfxU32 RESTORE_FRAME_THRESHOLD = 100;
+static constexpr mfxU32 WARMUP_FRAMES = 120;
+static constexpr mfxU32 COOLDOWN_FRAMES = 300;
+static constexpr mfxU32 SLOW_FRAME_THRESHOLD = 8;
+static constexpr mfxU32 MAX_DOWNGRADE_STEPS = 2;
 
 static void CheckAndApplySpeedDowngrade(plugin_context *Context) {
   if (!Context->AutoSpeedDowngrade)
@@ -693,9 +693,11 @@ static void CheckAndApplySpeedDowngrade(plugin_context *Context) {
 
   if (Context->FramesSinceSpeedChange < COOLDOWN_FRAMES) {
     Context->ConsecutiveSlowFrames = 0;
-    Context->NormalFramesAfterDowngrade = 0;
     return;
   }
+
+  if (Context->PendingSpeedReinit)
+    return;
 
   uint64_t encode_time_ns = Context->EncoderPTR->GetLastEncodeTimeNs();
   Context->EncoderPTR->ClearLastEncodeTime();
@@ -711,10 +713,10 @@ static void CheckAndApplySpeedDowngrade(plugin_context *Context) {
     Context->ConsecutiveSlowFrames++;
 
     if (Context->ConsecutiveSlowFrames >= SLOW_FRAME_THRESHOLD &&
-        Context->CurrentTargetUsage < MFX_TARGETUSAGE_7) {
+        Context->CurrentTargetUsage < MFX_TARGETUSAGE_7 &&
+        (Context->CurrentTargetUsage - Context->OriginalTargetUsage) < MAX_DOWNGRADE_STEPS) {
       Context->CurrentTargetUsage++;
       Context->ConsecutiveSlowFrames = 0;
-      Context->NormalFramesAfterDowngrade = 0;
       Context->FramesSinceSpeedChange = 0;
 
       blog(LOG_INFO,
@@ -722,32 +724,12 @@ static void CheckAndApplySpeedDowngrade(plugin_context *Context) {
            Context->CurrentTargetUsage - 1,
            Context->CurrentTargetUsage);
 
-      Context->EncoderPTR->RequestTargetUsageChange(
-          Context->CurrentTargetUsage);
+      Context->PendingSpeedReinit = true;
+      Context->NewTargetUsageForReinit = Context->CurrentTargetUsage;
     }
   } else {
     if (Context->ConsecutiveSlowFrames > 0)
       Context->ConsecutiveSlowFrames--;
-
-    if (Context->CurrentTargetUsage > Context->OriginalTargetUsage) {
-      Context->NormalFramesAfterDowngrade++;
-      if (Context->NormalFramesAfterDowngrade >= RESTORE_FRAME_THRESHOLD) {
-        Context->NormalFramesAfterDowngrade = 0;
-        Context->ConsecutiveSlowFrames = 0;
-        Context->CurrentTargetUsage--;
-        Context->FramesSinceSpeedChange = 0;
-
-        blog(LOG_INFO,
-             "[QSV VPL] Auto speed restore: TU%d -> TU%d",
-             Context->CurrentTargetUsage + 1,
-             Context->CurrentTargetUsage);
-
-        Context->EncoderPTR->RequestTargetUsageChange(
-            Context->CurrentTargetUsage);
-      }
-    } else {
-      Context->NormalFramesAfterDowngrade = 0;
-    }
   }
 }
 
@@ -771,6 +753,36 @@ bool EncodeTexture(void *Data, encoder_texture *Texture, int64_t PTS,
 
   {
     std::lock_guard<std::mutex> lock(Context->EncoderMutex);
+
+    if (Context->PendingSpeedReinit) {
+      Context->PendingSpeedReinit = false;
+
+      blog(LOG_INFO, "[QSV VPL] Reinitializing encoder with TU%d",
+           Context->NewTargetUsageForReinit);
+
+      mfxStatus drainStatus = Context->EncoderPTR->Drain();
+      if (drainStatus < MFX_ERR_NONE) {
+        warn("[QSV VPL] Drain before reinit returned %d", drainStatus);
+      }
+      Context->EncoderPTR.reset();
+
+      Context->EncoderParams.TargetUsage =
+          Context->NewTargetUsageForReinit;
+      Context->CurrentTargetUsage =
+          Context->NewTargetUsageForReinit;
+
+      if (!OpenEncoder(Context->EncoderPTR, &Context->EncoderParams,
+                        Context->Codec, true)) {
+        error("Failed to reinit encoder for speed change");
+        return false;
+      }
+
+      Context->FramesSinceSpeedChange = 0;
+      Context->TotalFramesEncoded = 0;
+
+      blog(LOG_INFO, "[QSV VPL] Encoder reinitialized with TU%d",
+           Context->NewTargetUsageForReinit);
+    }
 
     auto *Bitstream = static_cast<mfxBitstream *>(nullptr);
 
@@ -806,6 +818,36 @@ bool EncodeFrame(void *Data, encoder_frame *Frame, encoder_packet *Packet,
 
   {
     std::lock_guard<std::mutex> lock(Context->EncoderMutex);
+
+    if (Context->PendingSpeedReinit) {
+      Context->PendingSpeedReinit = false;
+
+      blog(LOG_INFO, "[QSV VPL] Reinitializing encoder with TU%d",
+           Context->NewTargetUsageForReinit);
+
+      mfxStatus drainStatus = Context->EncoderPTR->Drain();
+      if (drainStatus < MFX_ERR_NONE) {
+        warn("[QSV VPL] Drain before reinit returned %d", drainStatus);
+      }
+      Context->EncoderPTR.reset();
+
+      Context->EncoderParams.TargetUsage =
+          Context->NewTargetUsageForReinit;
+      Context->CurrentTargetUsage =
+          Context->NewTargetUsageForReinit;
+
+      if (!OpenEncoder(Context->EncoderPTR, &Context->EncoderParams,
+                        Context->Codec, false)) {
+        error("Failed to reinit encoder for speed change");
+        return false;
+      }
+
+      Context->FramesSinceSpeedChange = 0;
+      Context->TotalFramesEncoded = 0;
+
+      blog(LOG_INFO, "[QSV VPL] Encoder reinitialized with TU%d",
+           Context->NewTargetUsageForReinit);
+    }
 
     auto *Bitstream = static_cast<mfxBitstream *>(nullptr);
 

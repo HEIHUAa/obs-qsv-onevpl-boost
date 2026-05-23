@@ -34,9 +34,10 @@ struct plugin_context {
   mfxU16 CurrentTargetUsage;
   mfxU16 OriginalTargetUsage;
   mfxU32 ConsecutiveSlowFrames;
-  mfxU32 NormalFramesAfterDowngrade;
   mfxU32 TotalFramesEncoded;
   mfxU32 FramesSinceSpeedChange;
+  bool PendingSpeedReinit;
+  mfxU16 NewTargetUsageForReinit;
 
   std::mutex EncoderMutex;
 };
