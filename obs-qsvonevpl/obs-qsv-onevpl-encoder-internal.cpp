@@ -22,7 +22,7 @@ QSVEncoder::QSVEncoder()
       QSVResetParamsChanged(false), QSVEncodeParams(), QSVEncodeCtrlParams(),
       QSVProcessingAuxData(), QSVAllocateRequest(), QSVIsTextureEncoder(),
       QSVMemoryInterface(), HWManager(nullptr), QSVProcessingEnable(),
-      QSVProcessingSyncPoint(nullptr) {}
+      QSVProcessingSyncPoint(nullptr), QSVApplySpeedChange(false) {}
 
 QSVEncoder::~QSVEncoder() {
   if (QSVEncode || QSVProcessing) {
@@ -2008,6 +2008,10 @@ bool QSVEncoder::UpdateParams(struct encoder_params *InputParams) {
     }
     break;
   }
+  if (QSVResetParams.mfx.TargetUsage != InputParams->TargetUsage) {
+    QSVResetParams.mfx.TargetUsage = InputParams->TargetUsage;
+    QSVResetParamsChanged = true;
+  }
   if (QSVResetParamsChanged == true) {
     auto ResetParams = QSVEncodeParams.AddExtBuffer<mfxExtEncoderResetOption>();
     ResetParams->Header.BufferId = MFX_EXTBUFF_ENCODER_RESET_OPTION;
@@ -2018,6 +2022,22 @@ bool QSVEncoder::UpdateParams(struct encoder_params *InputParams) {
   } else {
     return false;
   }
+}
+
+void QSVEncoder::SetPendingSpeedChange(mfxU16 NewTargetUsage) {
+  QSVApplySpeedChange = true;
+  QSVNewTargetUsage = NewTargetUsage;
+}
+
+mfxStatus QSVEncoder::ApplyPendingSpeedChangeSafe() {
+  if (!QSVApplySpeedChange)
+    return MFX_ERR_NONE;
+  QSVApplySpeedChange = false;
+  mfxStatus Status = QSVEncode->GetVideoParam(&QSVResetParams);
+  if (Status < MFX_ERR_NONE)
+    return Status;
+  QSVResetParams.mfx.TargetUsage = QSVNewTargetUsage;
+  return QSVEncode->Reset(&QSVResetParams);
 }
 
 mfxStatus QSVEncoder::ReconfigureEncoder() {
@@ -2660,6 +2680,8 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
     TaskID = QSVSyncTaskID;
   }
 
+  ApplyPendingSpeedChangeSafe();
+
   mfxFrameSurface1 *EncodeSurface = QSVTaskPool[TaskID].Surface;
   if (!EncodeSurface) {
     error("System memory surface is null for task %d", TaskID);
@@ -2787,6 +2809,8 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
     TaskID = QSVSyncTaskID;
   }
 
+  ApplyPendingSpeedChangeSafe();
+
   try {
     HWManager->CopyTexture(Texture, std::move(TextureHandle), LockKey,
                            static_cast<mfxU64 *>(NextKey));
@@ -2900,6 +2924,8 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
     }
     TaskID = QSVSyncTaskID;
   }
+
+  ApplyPendingSpeedChangeSafe();
 
   Status =
       QSVEncodeSurface->FrameInterface->Map(QSVEncodeSurface, MFX_MAP_WRITE);
