@@ -686,8 +686,6 @@ static void CheckAndApplySpeedDowngrade(plugin_context *Context) {
   if (encode_time_ns == 0 || Context->CachedFpsNum == 0)
     return;
 
-  mfxU32 encode_time_us = static_cast<mfxU32>(encode_time_ns / 1000);
-
   uint64_t frame_interval_ns =
       (static_cast<uint64_t>(Context->CachedFpsDen) * 1000000000ULL) /
       static_cast<uint64_t>(Context->CachedFpsNum);

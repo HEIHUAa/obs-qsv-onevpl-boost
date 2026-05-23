@@ -2044,9 +2044,35 @@ mfxStatus QSVEncoder::ApplyPendingSpeedChange() {
   if (!QSVApplySpeedChange)
     return MFX_ERR_NONE;
   QSVApplySpeedChange = false;
+
+  for (int i = 0; i < static_cast<int>(QSVTaskPool.size()); i++) {
+    if (QSVTaskPool[i].SyncPoint == nullptr)
+      continue;
+    mfxStatus SyncSts;
+    do {
+      SyncSts = MFXVideoCORE_SyncOperation(QSVSession,
+                                           QSVTaskPool[i].SyncPoint, 100);
+    } while (SyncSts == MFX_WRN_IN_EXECUTION);
+
+    if (SyncSts < MFX_ERR_NONE)
+      warn("Speed change drain sync error: %d", SyncSts);
+
+    if (QSVTaskPool[i].SubmitTimeNs != 0) {
+      QSVLastFrameEncodeTimeNs =
+          os_gettime_ns() - QSVTaskPool[i].SubmitTimeNs;
+      QSVTaskPool[i].SubmitTimeNs = 0;
+    }
+    QSVTaskPool[i].SyncPoint = nullptr;
+  }
+
+  blog(LOG_INFO, "[QSV VPL] Applying speed change to TU%d", QSVNewTargetUsage);
+
   QSVEncParamsSnapshot.TargetUsage = QSVNewTargetUsage;
   if (UpdateParams(&QSVEncParamsSnapshot)) {
-    return ReconfigureEncoder();
+    mfxStatus Status = ReconfigureEncoder();
+    if (Status < MFX_ERR_NONE)
+      warn("Speed change Reset failed: %d", Status);
+    return Status;
   }
   return MFX_ERR_NONE;
 }
