@@ -39,11 +39,6 @@ struct plugin_context {
   bool PendingSpeedReinit;
   mfxU16 NewTargetUsageForReinit;
 
-  std::vector<std::vector<uint8_t>> DrainedPacketQueue;
-  std::vector<mfxU64> DrainedTimestamps;
-  std::vector<bool> DrainedKeyFrames;
-  size_t DrainedPacketIndex;
-
   std::mutex EncoderMutex;
 };
 

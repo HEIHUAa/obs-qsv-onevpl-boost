@@ -738,35 +738,6 @@ bool EncodeTexture(void *Data, encoder_texture *Texture, int64_t PTS,
                    bool *ReceivedPacketStatus) {
   plugin_context *Context = static_cast<plugin_context *>(Data);
 
-  if (Context->DrainedPacketIndex < Context->DrainedPacketQueue.size()) {
-    auto &data = Context->DrainedPacketQueue[Context->DrainedPacketIndex];
-
-    Context->PacketData.clear();
-    Context->PacketData.insert(Context->PacketData.end(), data.begin(),
-                               data.end());
-
-    Packet->data = Context->PacketData.data();
-    Packet->size = Context->PacketData.size();
-    Packet->type = OBS_ENCODER_VIDEO;
-    Packet->pts = ConvertTSMFXOBS(
-        static_cast<mfxI64>(
-            Context->DrainedTimestamps[Context->DrainedPacketIndex]),
-        Context->CachedFpsNum, Context->CachedFpsDen, Context->CachedTSDiv);
-    Packet->dts = Packet->pts;
-
-    bool isKey =
-        Context->DrainedKeyFrames[Context->DrainedPacketIndex];
-    Packet->keyframe = isKey;
-    Packet->priority = isKey ? static_cast<int>(OBS_NAL_PRIORITY_HIGHEST)
-                             : static_cast<int>(OBS_NAL_PRIORITY_DISPOSABLE);
-    Packet->drop_priority = static_cast<int>(OBS_NAL_PRIORITY_HIGH);
-
-    *ReceivedPacketStatus = true;
-    Context->DrainedPacketIndex++;
-    *NextKey = LockKey;
-    return true;
-  }
-
 #if defined(_WIN32) || defined(_WIN64)
   if (!Texture || Texture->handle == static_cast<uint32_t>(-1)) {
 #else
@@ -789,20 +760,10 @@ bool EncodeTexture(void *Data, encoder_texture *Texture, int64_t PTS,
       blog(LOG_INFO, "[QSV VPL] Reinitializing encoder with TU%d",
            Context->NewTargetUsageForReinit);
 
-      Context->DrainedPacketQueue.clear();
-      Context->DrainedTimestamps.clear();
-      Context->DrainedKeyFrames.clear();
-      Context->EncoderPTR->DrainWithOutput(
-          Context->DrainedPacketQueue, Context->DrainedTimestamps,
-          Context->DrainedKeyFrames);
-      Context->DrainedPacketIndex = 0;
-
-      if (!Context->DrainedPacketQueue.empty()) {
-        blog(LOG_INFO,
-             "[QSV VPL] Collected %zu drain frames during reinit",
-             Context->DrainedPacketQueue.size());
+      mfxStatus drainStatus = Context->EncoderPTR->Drain();
+      if (drainStatus < MFX_ERR_NONE) {
+        warn("[QSV VPL] Drain before reinit returned %d", drainStatus);
       }
-
       Context->EncoderPTR.reset();
 
       Context->EncoderParams.TargetUsage =
@@ -821,37 +782,6 @@ bool EncodeTexture(void *Data, encoder_texture *Texture, int64_t PTS,
 
       blog(LOG_INFO, "[QSV VPL] Encoder reinitialized with TU%d",
            Context->NewTargetUsageForReinit);
-
-      if (Context->DrainedPacketIndex < Context->DrainedPacketQueue.size()) {
-        auto &data = Context->DrainedPacketQueue[Context->DrainedPacketIndex];
-
-        Context->PacketData.clear();
-        Context->PacketData.insert(Context->PacketData.end(), data.begin(),
-                                   data.end());
-
-        Packet->data = Context->PacketData.data();
-        Packet->size = Context->PacketData.size();
-        Packet->type = OBS_ENCODER_VIDEO;
-        Packet->pts = ConvertTSMFXOBS(
-            static_cast<mfxI64>(
-                Context->DrainedTimestamps[Context->DrainedPacketIndex]),
-            Context->CachedFpsNum, Context->CachedFpsDen,
-            Context->CachedTSDiv);
-        Packet->dts = Packet->pts;
-
-        bool isKey =
-            Context->DrainedKeyFrames[Context->DrainedPacketIndex];
-        Packet->keyframe = isKey;
-        Packet->priority =
-            isKey ? static_cast<int>(OBS_NAL_PRIORITY_HIGHEST)
-                  : static_cast<int>(OBS_NAL_PRIORITY_DISPOSABLE);
-        Packet->drop_priority = static_cast<int>(OBS_NAL_PRIORITY_HIGH);
-
-        *ReceivedPacketStatus = true;
-        Context->DrainedPacketIndex++;
-        *NextKey = LockKey;
-        return true;
-      }
     }
 
     auto *Bitstream = static_cast<mfxBitstream *>(nullptr);
@@ -882,39 +812,7 @@ bool EncodeFrame(void *Data, encoder_frame *Frame, encoder_packet *Packet,
 
   plugin_context *Context = static_cast<plugin_context *>(Data);
 
-  if (!Packet || !ReceivedPacketStatus) {
-    return false;
-  }
-
-  if (Context->DrainedPacketIndex < Context->DrainedPacketQueue.size()) {
-    auto &data = Context->DrainedPacketQueue[Context->DrainedPacketIndex];
-
-    Context->PacketData.clear();
-    Context->PacketData.insert(Context->PacketData.end(), data.begin(),
-                               data.end());
-
-    Packet->data = Context->PacketData.data();
-    Packet->size = Context->PacketData.size();
-    Packet->type = OBS_ENCODER_VIDEO;
-    Packet->pts = ConvertTSMFXOBS(
-        static_cast<mfxI64>(
-            Context->DrainedTimestamps[Context->DrainedPacketIndex]),
-        Context->CachedFpsNum, Context->CachedFpsDen, Context->CachedTSDiv);
-    Packet->dts = Packet->pts;
-
-    bool isKey =
-        Context->DrainedKeyFrames[Context->DrainedPacketIndex];
-    Packet->keyframe = isKey;
-    Packet->priority = isKey ? static_cast<int>(OBS_NAL_PRIORITY_HIGHEST)
-                             : static_cast<int>(OBS_NAL_PRIORITY_DISPOSABLE);
-    Packet->drop_priority = static_cast<int>(OBS_NAL_PRIORITY_HIGH);
-
-    *ReceivedPacketStatus = true;
-    Context->DrainedPacketIndex++;
-    return true;
-  }
-
-  if (!Frame) {
+  if (!Frame || !Packet || !ReceivedPacketStatus) {
     return false;
   }
 
@@ -927,20 +825,10 @@ bool EncodeFrame(void *Data, encoder_frame *Frame, encoder_packet *Packet,
       blog(LOG_INFO, "[QSV VPL] Reinitializing encoder with TU%d",
            Context->NewTargetUsageForReinit);
 
-      Context->DrainedPacketQueue.clear();
-      Context->DrainedTimestamps.clear();
-      Context->DrainedKeyFrames.clear();
-      Context->EncoderPTR->DrainWithOutput(
-          Context->DrainedPacketQueue, Context->DrainedTimestamps,
-          Context->DrainedKeyFrames);
-      Context->DrainedPacketIndex = 0;
-
-      if (!Context->DrainedPacketQueue.empty()) {
-        blog(LOG_INFO,
-             "[QSV VPL] Collected %zu drain frames during reinit",
-             Context->DrainedPacketQueue.size());
+      mfxStatus drainStatus = Context->EncoderPTR->Drain();
+      if (drainStatus < MFX_ERR_NONE) {
+        warn("[QSV VPL] Drain before reinit returned %d", drainStatus);
       }
-
       Context->EncoderPTR.reset();
 
       Context->EncoderParams.TargetUsage =
@@ -959,36 +847,6 @@ bool EncodeFrame(void *Data, encoder_frame *Frame, encoder_packet *Packet,
 
       blog(LOG_INFO, "[QSV VPL] Encoder reinitialized with TU%d",
            Context->NewTargetUsageForReinit);
-
-      if (Context->DrainedPacketIndex < Context->DrainedPacketQueue.size()) {
-        auto &data = Context->DrainedPacketQueue[Context->DrainedPacketIndex];
-
-        Context->PacketData.clear();
-        Context->PacketData.insert(Context->PacketData.end(), data.begin(),
-                                   data.end());
-
-        Packet->data = Context->PacketData.data();
-        Packet->size = Context->PacketData.size();
-        Packet->type = OBS_ENCODER_VIDEO;
-        Packet->pts = ConvertTSMFXOBS(
-            static_cast<mfxI64>(
-                Context->DrainedTimestamps[Context->DrainedPacketIndex]),
-            Context->CachedFpsNum, Context->CachedFpsDen,
-            Context->CachedTSDiv);
-        Packet->dts = Packet->pts;
-
-        bool isKey =
-            Context->DrainedKeyFrames[Context->DrainedPacketIndex];
-        Packet->keyframe = isKey;
-        Packet->priority =
-            isKey ? static_cast<int>(OBS_NAL_PRIORITY_HIGHEST)
-                  : static_cast<int>(OBS_NAL_PRIORITY_DISPOSABLE);
-        Packet->drop_priority = static_cast<int>(OBS_NAL_PRIORITY_HIGH);
-
-        *ReceivedPacketStatus = true;
-        Context->DrainedPacketIndex++;
-        return true;
-      }
     }
 
     auto *Bitstream = static_cast<mfxBitstream *>(nullptr);
