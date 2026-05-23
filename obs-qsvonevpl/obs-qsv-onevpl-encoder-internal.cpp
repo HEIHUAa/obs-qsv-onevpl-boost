@@ -3020,6 +3020,48 @@ mfxStatus QSVEncoder::Drain() {
   return Status;
 }
 
+mfxStatus QSVEncoder::FastReinitTargetUsage(mfxU16 NewTargetUsage,
+                                            enum codec_enum Codec) {
+  mfxStatus Status = Drain();
+  if (Status < MFX_ERR_NONE) {
+    warn("FastReinit: Drain returned %d", Status);
+  }
+
+  QSVEncode->Close();
+  QSVEncode.reset();
+
+  QSVEncodeParams.mfx.TargetUsage = NewTargetUsage;
+
+  QSVEncode = std::make_unique<MFXVideoENCODE>(QSVSession);
+
+  Status = QSVEncode->Init(&QSVEncodeParams);
+  info("FastReinit: MFXVideoENCODE_Init status: %d (TU%d)", Status,
+       NewTargetUsage);
+
+  if (Status < MFX_ERR_NONE) {
+    auto CO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
+    if (CO3Params && CO3Params->ScenarioInfo != 0) {
+      warn("FastReinit: retrying without ScenarioInfo");
+      QSVEncode->Close();
+      QSVEncode.reset();
+      QSVEncode = std::make_unique<MFXVideoENCODE>(QSVSession);
+      CO3Params->ScenarioInfo = 0;
+      Status = QSVEncode->Init(&QSVEncodeParams);
+      info("FastReinit: retry status: %d", Status);
+    }
+  }
+
+  if (Status >= MFX_ERR_NONE) {
+    ReleaseTaskPool();
+    ReleaseBitstream();
+    InitBitstreamBuffer(Codec);
+    InitTaskPool(Codec);
+    info("FastReinit: encoder reinitialized with TU%d", NewTargetUsage);
+  }
+
+  return Status;
+}
+
 mfxStatus QSVEncoder::ClearData() {
   mfxStatus Status = MFX_ERR_NONE;
   try {

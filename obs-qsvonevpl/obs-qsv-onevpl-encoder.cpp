@@ -757,31 +757,22 @@ bool EncodeTexture(void *Data, encoder_texture *Texture, int64_t PTS,
     if (Context->PendingSpeedReinit) {
       Context->PendingSpeedReinit = false;
 
-      blog(LOG_INFO, "[QSV VPL] Reinitializing encoder with TU%d",
+      blog(LOG_INFO, "[QSV VPL] Applying speed change to TU%d",
            Context->NewTargetUsageForReinit);
 
-      mfxStatus drainStatus = Context->EncoderPTR->Drain();
-      if (drainStatus < MFX_ERR_NONE) {
-        warn("[QSV VPL] Drain before reinit returned %d", drainStatus);
+      mfxStatus sts = Context->EncoderPTR->FastReinitTargetUsage(
+          Context->NewTargetUsageForReinit, Context->Codec);
+      if (sts < MFX_ERR_NONE) {
+        error("[QSV VPL] FastReinitTargetUsage failed: %d", sts);
+        return false;
       }
-      Context->EncoderPTR.reset();
 
       Context->EncoderParams.TargetUsage =
           Context->NewTargetUsageForReinit;
       Context->CurrentTargetUsage =
           Context->NewTargetUsageForReinit;
-
-      if (!OpenEncoder(Context->EncoderPTR, &Context->EncoderParams,
-                        Context->Codec, true)) {
-        error("Failed to reinit encoder for speed change");
-        return false;
-      }
-
       Context->FramesSinceSpeedChange = 0;
       Context->TotalFramesEncoded = 0;
-
-      blog(LOG_INFO, "[QSV VPL] Encoder reinitialized with TU%d",
-           Context->NewTargetUsageForReinit);
     }
 
     auto *Bitstream = static_cast<mfxBitstream *>(nullptr);
@@ -822,31 +813,22 @@ bool EncodeFrame(void *Data, encoder_frame *Frame, encoder_packet *Packet,
     if (Context->PendingSpeedReinit) {
       Context->PendingSpeedReinit = false;
 
-      blog(LOG_INFO, "[QSV VPL] Reinitializing encoder with TU%d",
+      blog(LOG_INFO, "[QSV VPL] Applying speed change to TU%d",
            Context->NewTargetUsageForReinit);
 
-      mfxStatus drainStatus = Context->EncoderPTR->Drain();
-      if (drainStatus < MFX_ERR_NONE) {
-        warn("[QSV VPL] Drain before reinit returned %d", drainStatus);
+      mfxStatus sts = Context->EncoderPTR->FastReinitTargetUsage(
+          Context->NewTargetUsageForReinit, Context->Codec);
+      if (sts < MFX_ERR_NONE) {
+        error("[QSV VPL] FastReinitTargetUsage failed: %d", sts);
+        return false;
       }
-      Context->EncoderPTR.reset();
 
       Context->EncoderParams.TargetUsage =
           Context->NewTargetUsageForReinit;
       Context->CurrentTargetUsage =
           Context->NewTargetUsageForReinit;
-
-      if (!OpenEncoder(Context->EncoderPTR, &Context->EncoderParams,
-                        Context->Codec, false)) {
-        error("Failed to reinit encoder for speed change");
-        return false;
-      }
-
       Context->FramesSinceSpeedChange = 0;
       Context->TotalFramesEncoded = 0;
-
-      blog(LOG_INFO, "[QSV VPL] Encoder reinitialized with TU%d",
-           Context->NewTargetUsageForReinit);
     }
 
     auto *Bitstream = static_cast<mfxBitstream *>(nullptr);
