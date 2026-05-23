@@ -36,7 +36,7 @@ public:
   bool UpdateParams(struct encoder_params *InputParams);
   uint64_t GetLastEncodeTimeNs() const { return QSVLastFrameEncodeTimeNs; }
   void ClearLastEncodeTime() { QSVLastFrameEncodeTimeNs = 0; }
-  void Drain();
+  mfxStatus Drain();
 
   protected:
   typedef struct Task {
@@ -78,8 +78,6 @@ public:
 
   void LoadFrameData(mfxFrameSurface1 *&Surface, uint8_t **FrameData,
                      uint32_t *FrameLinesize);
-
-  mfxStatus Drain();
 
   template <typename T>
   static inline T GetTriState(const std::optional<bool> &Value,
