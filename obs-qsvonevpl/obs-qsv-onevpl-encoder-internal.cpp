@@ -22,7 +22,8 @@ QSVEncoder::QSVEncoder()
       QSVResetParamsChanged(false), QSVEncodeParams(), QSVEncodeCtrlParams(),
       QSVProcessingAuxData(), QSVAllocateRequest(), QSVIsTextureEncoder(),
       QSVMemoryInterface(), HWManager(nullptr), QSVProcessingEnable(),
-      QSVProcessingSyncPoint(nullptr) {}
+      QSVProcessingSyncPoint(nullptr), QSVLastFrameEncodeTimeNs(0),
+      QSVApplySpeedChange(false), QSVNewTargetUsage(0) {}
 
 QSVEncoder::~QSVEncoder() {
   if (QSVEncode || QSVProcessing) {
@@ -472,6 +473,8 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
   }
 
   HWManager::HWEncoderCounter++;
+
+  QSVEncParamsSnapshot = *InputParams;
 
   return Status;
 }
@@ -2008,6 +2011,10 @@ bool QSVEncoder::UpdateParams(struct encoder_params *InputParams) {
     }
     break;
   }
+  if (QSVResetParams.mfx.TargetUsage != InputParams->TargetUsage) {
+    QSVResetParams.mfx.TargetUsage = InputParams->TargetUsage;
+    QSVResetParamsChanged = true;
+  }
   if (QSVResetParamsChanged == true) {
     auto ResetParams = QSVEncodeParams.AddExtBuffer<mfxExtEncoderResetOption>();
     ResetParams->Header.BufferId = MFX_EXTBUFF_ENCODER_RESET_OPTION;
@@ -2026,6 +2033,22 @@ mfxStatus QSVEncoder::ReconfigureEncoder() {
   } else {
     return MFX_ERR_NONE;
   }
+}
+
+void QSVEncoder::RequestTargetUsageChange(mfxU16 NewTargetUsage) {
+  QSVApplySpeedChange = true;
+  QSVNewTargetUsage = NewTargetUsage;
+}
+
+mfxStatus QSVEncoder::ApplyPendingSpeedChange() {
+  if (!QSVApplySpeedChange)
+    return MFX_ERR_NONE;
+  QSVApplySpeedChange = false;
+  QSVEncParamsSnapshot.TargetUsage = QSVNewTargetUsage;
+  if (UpdateParams(&QSVEncParamsSnapshot)) {
+    return ReconfigureEncoder();
+  }
+  return MFX_ERR_NONE;
 }
 
 mfxStatus QSVEncoder::InitTexturePool() {
@@ -2660,6 +2683,8 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
     TaskID = QSVSyncTaskID;
   }
 
+  ApplyPendingSpeedChange();
+
   mfxFrameSurface1 *EncodeSurface = QSVTaskPool[TaskID].Surface;
   if (!EncodeSurface) {
     error("System memory surface is null for task %d", TaskID);
@@ -2704,6 +2729,12 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
     }
   } while (SyncStatus == MFX_WRN_IN_EXECUTION);
 
+  if (QSVTaskPool[QSVSyncTaskID].SubmitTimeNs != 0) {
+    QSVLastFrameEncodeTimeNs =
+        os_gettime_ns() - QSVTaskPool[QSVSyncTaskID].SubmitTimeNs;
+    QSVTaskPool[QSVSyncTaskID].SubmitTimeNs = 0;
+  }
+
   mfxU8 *DataTemp = QSVBitstream.Data;
   QSVBitstream = QSVTaskPool[QSVSyncTaskID].Bitstream;
 
@@ -2730,6 +2761,7 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
         &QSVTaskPool[TaskID].SyncPoint);
 
     if (MFX_ERR_NONE == Status) [[likely]] {
+      QSVTaskPool[TaskID].SubmitTimeNs = os_gettime_ns();
       break;
     } else if (MFX_ERR_NONE < Status && !QSVTaskPool[TaskID].SyncPoint) [[unlikely]] {
       if (MFX_WRN_DEVICE_BUSY == Status) {
@@ -2786,6 +2818,8 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
     }
     TaskID = QSVSyncTaskID;
   }
+
+  ApplyPendingSpeedChange();
 
   try {
     HWManager->CopyTexture(Texture, std::move(TextureHandle), LockKey,
@@ -2881,24 +2915,22 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
   *Bitstream = nullptr;
   int TaskID = 0;
 
-  Status = QSVEncode->GetSurface(&QSVEncodeSurface);
-  if (Status < MFX_ERR_NONE) {
-    error("Error code: %d", Status);
-    throw std::runtime_error("Encode(): Get encode surface error");
-  }
-
   while (GetFreeTaskIndex(&TaskID) == MFX_ERR_NOT_FOUND) {
     SyncStatus = SyncAndSwapPendingTask(Bitstream);
     if (SyncStatus < MFX_ERR_NONE) {
       error("Encode sync error: %d", SyncStatus);
-      if (QSVEncodeSurface) {
-        QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
-        QSVEncodeSurface = nullptr;
-      }
       throw std::runtime_error(
           "Encode(): Sync operation failed - unrecoverable error");
     }
     TaskID = QSVSyncTaskID;
+  }
+
+  ApplyPendingSpeedChange();
+
+  Status = QSVEncode->GetSurface(&QSVEncodeSurface);
+  if (Status < MFX_ERR_NONE) {
+    error("Error code: %d", Status);
+    throw std::runtime_error("Encode(): Get encode surface error");
   }
 
   Status =

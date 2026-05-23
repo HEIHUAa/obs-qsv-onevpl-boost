@@ -151,6 +151,9 @@ bool UpdateEncoderParams(void *Data, obs_data_t *Params) {
     Context->EncoderParams.ExtBRC = 0;
   }
 
+  Context->AutoSpeedDowngrade =
+      obs_data_get_bool(Params, "auto_speed_downgrade");
+
   if (Context->EncoderPTR->UpdateParams(&Context->EncoderParams)) {
     mfxStatus Status = Context->EncoderPTR->ReconfigureEncoder();
 
@@ -673,6 +676,64 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
   Bitstream->DataOffset = 0;
 }
 
+static void CheckAndApplySpeedDowngrade(plugin_context *Context) {
+  if (!Context->AutoSpeedDowngrade)
+    return;
+
+  uint64_t encode_time_ns = Context->EncoderPTR->GetLastEncodeTimeNs();
+  Context->EncoderPTR->ClearLastEncodeTime();
+
+  if (encode_time_ns == 0 || Context->CachedFpsNum == 0)
+    return;
+
+  mfxU32 encode_time_us = static_cast<mfxU32>(encode_time_ns / 1000);
+
+  uint64_t frame_interval_ns =
+      (static_cast<uint64_t>(Context->CachedFpsDen) * 1000000000ULL) /
+      static_cast<uint64_t>(Context->CachedFpsNum);
+
+  if (encode_time_ns > frame_interval_ns * 3 / 2) {
+    Context->ConsecutiveSlowFrames++;
+
+    if (Context->ConsecutiveSlowFrames >= 5 &&
+        Context->CurrentTargetUsage < MFX_TARGETUSAGE_7) {
+      Context->CurrentTargetUsage++;
+      Context->ConsecutiveSlowFrames = 0;
+      Context->NormalFramesAfterDowngrade = 0;
+
+      blog(LOG_INFO,
+           "[QSV VPL] Auto speed downgrade: TU%d -> TU%d",
+           Context->CurrentTargetUsage - 1,
+           Context->CurrentTargetUsage);
+
+      Context->EncoderPTR->RequestTargetUsageChange(
+          Context->CurrentTargetUsage);
+    }
+  } else {
+    if (Context->ConsecutiveSlowFrames > 0)
+      Context->ConsecutiveSlowFrames--;
+
+    if (Context->CurrentTargetUsage > Context->OriginalTargetUsage) {
+      Context->NormalFramesAfterDowngrade++;
+      if (Context->NormalFramesAfterDowngrade >= 100) {
+        Context->NormalFramesAfterDowngrade = 0;
+        Context->ConsecutiveSlowFrames = 0;
+        Context->CurrentTargetUsage--;
+
+        blog(LOG_INFO,
+             "[QSV VPL] Auto speed restore: TU%d -> TU%d",
+             Context->CurrentTargetUsage + 1,
+             Context->CurrentTargetUsage);
+
+        Context->EncoderPTR->RequestTargetUsageChange(
+            Context->CurrentTargetUsage);
+      }
+    } else {
+      Context->NormalFramesAfterDowngrade = 0;
+    }
+  }
+}
+
 bool EncodeTexture(void *Data, encoder_texture *Texture, int64_t PTS,
                    uint64_t LockKey, uint64_t *NextKey, encoder_packet *Packet,
                    bool *ReceivedPacketStatus) {
@@ -712,6 +773,8 @@ bool EncodeTexture(void *Data, encoder_texture *Texture, int64_t PTS,
                        ReceivedPacketStatus);
   }
 
+  CheckAndApplySpeedDowngrade(Context);
+
   return true;
 }
 
@@ -747,8 +810,10 @@ bool EncodeFrame(void *Data, encoder_frame *Frame, encoder_packet *Packet,
     }
 
     ParseEncodedPacket(Context, Packet, Bitstream,
-                       ReceivedPacketStatus);
+                     ReceivedPacketStatus);
   }
+
+  CheckAndApplySpeedDowngrade(Context);
 
   return true;
 }

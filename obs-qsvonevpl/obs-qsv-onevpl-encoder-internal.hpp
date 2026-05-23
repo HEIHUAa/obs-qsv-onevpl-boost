@@ -34,12 +34,19 @@ public:
   mfxStatus ClearData();
   mfxStatus ReconfigureEncoder();
   bool UpdateParams(struct encoder_params *InputParams);
+  uint64_t GetLastEncodeTimeNs() const { return QSVLastFrameEncodeTimeNs; }
+  void ClearLastEncodeTime() { QSVLastFrameEncodeTimeNs = 0; }
+
+  struct encoder_params *GetEncoderParamsPtr() { return &QSVEncParamsSnapshot; }
+  mfxU16 GetCurrentTargetUsage() const { return QSVEncParamsSnapshot.TargetUsage; }
+  void RequestTargetUsageChange(mfxU16 NewTargetUsage);
 
   protected:
   typedef struct Task {
     mfxBitstream Bitstream;
     mfxSyncPoint SyncPoint;
     mfxFrameSurface1 *Surface;
+    uint64_t SubmitTimeNs;
   } Task;
 
   mfxStatus CreateSession(enum codec_enum Codec, [[maybe_unused]] void **Data,
@@ -68,6 +75,7 @@ public:
   mfxStatus ChangeBitstreamSize(mfxU32 NewSize);
   mfxStatus GetFreeTaskIndex(int *TaskID);
   mfxStatus SyncAndSwapPendingTask(mfxBitstream **Bitstream);
+  mfxStatus ApplyPendingSpeedChange();
   mfxStatus EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
                                   mfxEncodeCtrl *Ctrl, int TaskID,
                                   mfxU32 MaxRetries = 200);
@@ -172,6 +180,11 @@ private:
   mfxU32 QSVProcessingRefCount;
 
   mfxSyncPoint QSVProcessingSyncPoint;
+
+  uint64_t QSVLastFrameEncodeTimeNs;
+  bool QSVApplySpeedChange;
+  mfxU16 QSVNewTargetUsage;
+  struct encoder_params QSVEncParamsSnapshot;
   
   enum class AdditionalFourCC {
     MFX_FOURCC_IMC3 = MFX_MAKEFOURCC('I', 'M', 'C', '3'),
