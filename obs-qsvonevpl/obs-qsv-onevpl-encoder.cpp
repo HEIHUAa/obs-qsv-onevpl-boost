@@ -761,7 +761,8 @@ bool EncodeTexture(void *Data, encoder_texture *Texture, int64_t PTS,
            Context->NewTargetUsageForReinit);
 
       mfxStatus sts = Context->EncoderPTR->FastReinitTargetUsage(
-          Context->NewTargetUsageForReinit, Context->Codec);
+          Context->NewTargetUsageForReinit, &Context->EncoderParams,
+          Context->Codec);
       if (sts < MFX_ERR_NONE) {
         error("[QSV VPL] FastReinitTargetUsage failed: %d", sts);
         return false;
@@ -817,7 +818,8 @@ bool EncodeFrame(void *Data, encoder_frame *Frame, encoder_packet *Packet,
            Context->NewTargetUsageForReinit);
 
       mfxStatus sts = Context->EncoderPTR->FastReinitTargetUsage(
-          Context->NewTargetUsageForReinit, Context->Codec);
+          Context->NewTargetUsageForReinit, &Context->EncoderParams,
+          Context->Codec);
       if (sts < MFX_ERR_NONE) {
         error("[QSV VPL] FastReinitTargetUsage failed: %d", sts);
         return false;

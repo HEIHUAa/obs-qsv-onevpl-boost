@@ -3021,6 +3021,7 @@ mfxStatus QSVEncoder::Drain() {
 }
 
 mfxStatus QSVEncoder::FastReinitTargetUsage(mfxU16 NewTargetUsage,
+                                            struct encoder_params *InputParams,
                                             enum codec_enum Codec) {
   mfxStatus Status = Drain();
   if (Status < MFX_ERR_NONE) {
@@ -3030,24 +3031,36 @@ mfxStatus QSVEncoder::FastReinitTargetUsage(mfxU16 NewTargetUsage,
   QSVEncode->Close();
   QSVEncode.reset();
 
-  QSVEncodeParams.mfx.TargetUsage = NewTargetUsage;
+  InputParams->TargetUsage = NewTargetUsage;
 
-  QSVEncode = std::make_unique<MFXVideoENCODE>(QSVSession);
-
-  Status = QSVEncode->Init(&QSVEncodeParams);
-  info("FastReinit: MFXVideoENCODE_Init status: %d (TU%d)", Status,
+  QSVEncodeParams.ClearAllBuffers();
+  Status = SetEncoderParams(InputParams, Codec);
+  info("FastReinit: SetEncoderParams status: %d (TU%d)", Status,
        NewTargetUsage);
 
-  if (Status < MFX_ERR_NONE) {
-    auto CO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-    if (CO3Params && CO3Params->ScenarioInfo != 0) {
-      warn("FastReinit: retrying without ScenarioInfo");
-      QSVEncode->Close();
-      QSVEncode.reset();
-      QSVEncode = std::make_unique<MFXVideoENCODE>(QSVSession);
-      CO3Params->ScenarioInfo = 0;
+  if (Status >= MFX_ERR_NONE) {
+    QSVEncode = std::make_unique<MFXVideoENCODE>(QSVSession);
+
+    Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
+    info("FastReinit: Query status: %d", Status);
+
+    if (Status >= MFX_ERR_NONE || Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
       Status = QSVEncode->Init(&QSVEncodeParams);
-      info("FastReinit: retry status: %d", Status);
+      info("FastReinit: Init status: %d (TU%d)", Status, NewTargetUsage);
+    }
+
+    if (Status < MFX_ERR_NONE) {
+      auto CO3Params =
+          QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
+      if (CO3Params && CO3Params->ScenarioInfo != 0) {
+        warn("FastReinit: retrying without ScenarioInfo");
+        QSVEncode->Close();
+        QSVEncode.reset();
+        QSVEncode = std::make_unique<MFXVideoENCODE>(QSVSession);
+        CO3Params->ScenarioInfo = 0;
+        Status = QSVEncode->Init(&QSVEncodeParams);
+        info("FastReinit: retry status: %d", Status);
+      }
     }
   }
 

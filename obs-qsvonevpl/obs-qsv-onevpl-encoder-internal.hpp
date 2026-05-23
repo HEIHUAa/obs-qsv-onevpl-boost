@@ -37,7 +37,9 @@ public:
   uint64_t GetLastEncodeTimeNs() const { return QSVLastFrameEncodeTimeNs; }
   void ClearLastEncodeTime() { QSVLastFrameEncodeTimeNs = 0; }
   mfxStatus Drain();
-  mfxStatus FastReinitTargetUsage(mfxU16 NewTargetUsage, enum codec_enum Codec);
+  mfxStatus FastReinitTargetUsage(mfxU16 NewTargetUsage,
+                                 struct encoder_params *InputParams,
+                                 enum codec_enum Codec);
 
   protected:
   typedef struct Task {
