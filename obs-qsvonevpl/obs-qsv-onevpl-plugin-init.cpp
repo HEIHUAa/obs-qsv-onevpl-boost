@@ -2010,6 +2010,7 @@ plugin_context *InitPluginContext(enum codec_enum Codec, obs_data_t *Settings,
   Context->FramesSinceSpeedChange = 0;
   Context->PendingSpeedReinit = false;
   Context->NewTargetUsageForReinit = 0;
+  Context->DrainedPacketIndex = 0;
 
   try {
 

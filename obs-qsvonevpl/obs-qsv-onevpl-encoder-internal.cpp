@@ -3020,6 +3020,58 @@ mfxStatus QSVEncoder::Drain() {
   return Status;
 }
 
+void QSVEncoder::DrainWithOutput(
+    std::vector<std::vector<uint8_t>> &OutData,
+    std::vector<mfxU64> &OutTimestamps,
+    std::vector<bool> &OutKeyFrames) {
+
+  mfxU32 tmpBufSize = QSVEncodeParams.mfx.BufferSizeInKB * 1000 *
+                      QSVEncodeParams.mfx.BRCParamMultiplier;
+  std::vector<mfxU8> tmpBuf(tmpBufSize);
+
+  auto collectFrame = [&](mfxBitstream &bs) {
+    if (bs.DataLength > 0) {
+      OutData.emplace_back(bs.Data + bs.DataOffset,
+                           bs.Data + bs.DataOffset + bs.DataLength);
+      OutTimestamps.push_back(bs.TimeStamp);
+      OutKeyFrames.push_back(
+          (bs.FrameType & MFX_FRAMETYPE_IDR) != 0 ||
+          (bs.FrameType & MFX_FRAMETYPE_I) != 0 ||
+          (bs.FrameType & MFX_FRAMETYPE_xI) != 0 ||
+          (bs.FrameType & MFX_FRAMETYPE_xIDR) != 0);
+    }
+  };
+
+  mfxStatus Status = MFX_ERR_NONE;
+  while (Status >= MFX_ERR_NONE) {
+    mfxSyncPoint SyncPoint = nullptr;
+    mfxBitstream tmpBs = {};
+    tmpBs.MaxLength = tmpBufSize;
+    tmpBs.Data = tmpBuf.data();
+    Status = QSVEncode->EncodeFrameAsync(
+        nullptr, nullptr, &tmpBs, &SyncPoint);
+    if (Status == MFX_ERR_NONE && SyncPoint != nullptr) {
+      Status = MFXVideoCORE_SyncOperation(QSVSession, SyncPoint, 5000);
+      if (Status >= MFX_ERR_NONE) {
+        collectFrame(tmpBs);
+      }
+    }
+  }
+
+  for (auto &Task : QSVTaskPool) {
+    if (Task.SyncPoint != nullptr) {
+      mfxStatus SyncSts = MFXVideoCORE_SyncOperation(
+          QSVSession, Task.SyncPoint, 5000);
+      if (SyncSts >= MFX_ERR_NONE) {
+        collectFrame(Task.Bitstream);
+      } else {
+        warn("DrainWithOutput sync warning: %d", SyncSts);
+      }
+      Task.SyncPoint = nullptr;
+    }
+  }
+}
+
 mfxStatus QSVEncoder::ClearData() {
   mfxStatus Status = MFX_ERR_NONE;
   try {

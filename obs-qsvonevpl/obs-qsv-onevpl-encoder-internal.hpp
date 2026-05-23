@@ -37,6 +37,9 @@ public:
   uint64_t GetLastEncodeTimeNs() const { return QSVLastFrameEncodeTimeNs; }
   void ClearLastEncodeTime() { QSVLastFrameEncodeTimeNs = 0; }
   mfxStatus Drain();
+  void DrainWithOutput(std::vector<std::vector<uint8_t>> &OutData,
+                       std::vector<mfxU64> &OutTimestamps,
+                       std::vector<bool> &OutKeyFrames);
 
   protected:
   typedef struct Task {
