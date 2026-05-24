@@ -103,14 +103,6 @@ void InitGlobalLoader() {
       reinterpret_cast<const mfxU8 *>("mfxImplDescription.VendorID"),
       Variant);
 
-  Config = MFXCreateConfig(Loader);
-  Variant.Type = MFX_VARIANT_TYPE_PTR;
-  Variant.Data.Ptr = mfxHDL("mfx-gen");
-  MFXSetConfigFilterProperty(
-      Config,
-      reinterpret_cast<const mfxU8 *>("mfxImplDescription.ImplName"),
-      Variant);
-
   GlobalQSVLoader = Loader;
 }
 

@@ -53,8 +53,7 @@ static bool IsFeatureSupported(const char *PropertyName) {
 static mfxPlatform CachedQSVPlatform{};
 static bool CachedQSVPlatformValid = false;
 
-static bool TryQueryPlatformCodeName(mfxLoader Loader,
-                                     const char *ImplName) {
+static bool TryQueryPlatformCodeName(mfxLoader Loader) {
     mfxConfig Config = MFXCreateConfig(Loader);
     mfxVariant Variant{};
     Variant.Type = MFX_VARIANT_TYPE_U32;
@@ -71,16 +70,6 @@ static bool TryQueryPlatformCodeName(mfxLoader Loader,
         Config,
         reinterpret_cast<const mfxU8 *>("mfxImplDescription.VendorID"),
         Variant);
-
-    if (ImplName != nullptr) {
-        Config = MFXCreateConfig(Loader);
-        Variant.Type = MFX_VARIANT_TYPE_PTR;
-        Variant.Data.Ptr = mfxHDL(ImplName);
-        MFXSetConfigFilterProperty(
-            Config,
-            reinterpret_cast<const mfxU8 *>("mfxImplDescription.ImplName"),
-            Variant);
-    }
 
     mfxSession Session{};
     mfxStatus Status = MFXCreateSession(Loader, 0, &Session);
@@ -105,13 +94,13 @@ static mfxU16 QueryPlatformCodeName() {
     }
 
     if (GlobalLoader != nullptr) {
-        if (TryQueryPlatformCodeName(GlobalLoader, nullptr)) {
+        if (TryQueryPlatformCodeName(GlobalLoader)) {
             return CachedQSVPlatform.CodeName;
         }
     } else {
         mfxLoader Loader = MFXLoad();
         if (Loader != nullptr) {
-            if (TryQueryPlatformCodeName(Loader, nullptr)) {
+            if (TryQueryPlatformCodeName(Loader)) {
                 MFXUnload(Loader);
                 return CachedQSVPlatform.CodeName;
             }
