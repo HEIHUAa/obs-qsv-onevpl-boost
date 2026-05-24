@@ -34,19 +34,12 @@ public:
   mfxStatus ClearData();
   mfxStatus ReconfigureEncoder();
   bool UpdateParams(struct encoder_params *InputParams);
-  uint64_t GetLastEncodeTimeNs() const { return QSVLastFrameEncodeTimeNs; }
-  void ClearLastEncodeTime() { QSVLastFrameEncodeTimeNs = 0; }
-  mfxStatus Drain();
-  mfxStatus FastReinitTargetUsage(mfxU16 NewTargetUsage,
-                                 struct encoder_params *InputParams,
-                                 enum codec_enum Codec);
 
   protected:
   typedef struct Task {
     mfxBitstream Bitstream;
     mfxSyncPoint SyncPoint;
     mfxFrameSurface1 *Surface;
-    uint64_t SubmitTimeNs;
   } Task;
 
   mfxStatus CreateSession(enum codec_enum Codec, [[maybe_unused]] void **Data,
@@ -81,6 +74,8 @@ public:
 
   void LoadFrameData(mfxFrameSurface1 *&Surface, uint8_t **FrameData,
                      uint32_t *FrameLinesize);
+
+  mfxStatus Drain();
 
   template <typename T>
   static inline T GetTriState(const std::optional<bool> &Value,
@@ -177,8 +172,6 @@ private:
   mfxU32 QSVProcessingRefCount;
 
   mfxSyncPoint QSVProcessingSyncPoint;
-
-  uint64_t QSVLastFrameEncodeTimeNs;
   
   enum class AdditionalFourCC {
     MFX_FOURCC_IMC3 = MFX_MAKEFOURCC('I', 'M', 'C', '3'),

@@ -22,7 +22,7 @@ QSVEncoder::QSVEncoder()
       QSVResetParamsChanged(false), QSVEncodeParams(), QSVEncodeCtrlParams(),
       QSVProcessingAuxData(), QSVAllocateRequest(), QSVIsTextureEncoder(),
       QSVMemoryInterface(), HWManager(nullptr), QSVProcessingEnable(),
-      QSVProcessingSyncPoint(nullptr), QSVLastFrameEncodeTimeNs(0) {}
+      QSVProcessingSyncPoint(nullptr) {}
 
 QSVEncoder::~QSVEncoder() {
   if (QSVEncode || QSVProcessing) {
@@ -2704,12 +2704,6 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
     }
   } while (SyncStatus == MFX_WRN_IN_EXECUTION);
 
-  if (QSVTaskPool[QSVSyncTaskID].SubmitTimeNs != 0) {
-    QSVLastFrameEncodeTimeNs =
-        os_gettime_ns() - QSVTaskPool[QSVSyncTaskID].SubmitTimeNs;
-    QSVTaskPool[QSVSyncTaskID].SubmitTimeNs = 0;
-  }
-
   mfxU8 *DataTemp = QSVBitstream.Data;
   QSVBitstream = QSVTaskPool[QSVSyncTaskID].Bitstream;
 
@@ -2736,7 +2730,6 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
         &QSVTaskPool[TaskID].SyncPoint);
 
     if (MFX_ERR_NONE == Status) [[likely]] {
-      QSVTaskPool[TaskID].SubmitTimeNs = os_gettime_ns();
       break;
     } else if (MFX_ERR_NONE < Status && !QSVTaskPool[TaskID].SyncPoint) [[unlikely]] {
       if (MFX_WRN_DEVICE_BUSY == Status) {
@@ -2888,20 +2881,24 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
   *Bitstream = nullptr;
   int TaskID = 0;
 
-  while (GetFreeTaskIndex(&TaskID) == MFX_ERR_NOT_FOUND) {
-    SyncStatus = SyncAndSwapPendingTask(Bitstream);
-    if (SyncStatus < MFX_ERR_NONE) {
-      error("Encode sync error: %d", SyncStatus);
-      throw std::runtime_error(
-          "Encode(): Sync operation failed - unrecoverable error");
-    }
-    TaskID = QSVSyncTaskID;
-  }
-
   Status = QSVEncode->GetSurface(&QSVEncodeSurface);
   if (Status < MFX_ERR_NONE) {
     error("Error code: %d", Status);
     throw std::runtime_error("Encode(): Get encode surface error");
+  }
+
+  while (GetFreeTaskIndex(&TaskID) == MFX_ERR_NOT_FOUND) {
+    SyncStatus = SyncAndSwapPendingTask(Bitstream);
+    if (SyncStatus < MFX_ERR_NONE) {
+      error("Encode sync error: %d", SyncStatus);
+      if (QSVEncodeSurface) {
+        QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
+        QSVEncodeSurface = nullptr;
+      }
+      throw std::runtime_error(
+          "Encode(): Sync operation failed - unrecoverable error");
+    }
+    TaskID = QSVSyncTaskID;
   }
 
   Status =
@@ -3015,61 +3012,6 @@ mfxStatus QSVEncoder::Drain() {
       }
       Task.SyncPoint = nullptr;
     }
-  }
-
-  return Status;
-}
-
-mfxStatus QSVEncoder::FastReinitTargetUsage(mfxU16 NewTargetUsage,
-                                            struct encoder_params *InputParams,
-                                            enum codec_enum Codec) {
-  mfxStatus Status = Drain();
-  if (Status < MFX_ERR_NONE) {
-    warn("FastReinit: Drain returned %d", Status);
-  }
-
-  QSVEncode->Close();
-  QSVEncode.reset();
-
-  InputParams->TargetUsage = NewTargetUsage;
-
-  QSVEncodeParams.ClearAllBuffers();
-  Status = SetEncoderParams(InputParams, Codec);
-  info("FastReinit: SetEncoderParams status: %d (TU%d)", Status,
-       NewTargetUsage);
-
-  if (Status >= MFX_ERR_NONE) {
-    QSVEncode = std::make_unique<MFXVideoENCODE>(QSVSession);
-
-    Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
-    info("FastReinit: Query status: %d", Status);
-
-    if (Status >= MFX_ERR_NONE || Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
-      Status = QSVEncode->Init(&QSVEncodeParams);
-      info("FastReinit: Init status: %d (TU%d)", Status, NewTargetUsage);
-    }
-
-    if (Status < MFX_ERR_NONE) {
-      auto CO3Params =
-          QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-      if (CO3Params && CO3Params->ScenarioInfo != 0) {
-        warn("FastReinit: retrying without ScenarioInfo");
-        QSVEncode->Close();
-        QSVEncode.reset();
-        QSVEncode = std::make_unique<MFXVideoENCODE>(QSVSession);
-        CO3Params->ScenarioInfo = 0;
-        Status = QSVEncode->Init(&QSVEncodeParams);
-        info("FastReinit: retry status: %d", Status);
-      }
-    }
-  }
-
-  if (Status >= MFX_ERR_NONE) {
-    ReleaseTaskPool();
-    ReleaseBitstream();
-    InitBitstreamBuffer(Codec);
-    InitTaskPool(Codec);
-    info("FastReinit: encoder reinitialized with TU%d", NewTargetUsage);
   }
 
   return Status;

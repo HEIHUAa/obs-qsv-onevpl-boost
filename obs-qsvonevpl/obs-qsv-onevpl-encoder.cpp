@@ -151,9 +151,6 @@ bool UpdateEncoderParams(void *Data, obs_data_t *Params) {
     Context->EncoderParams.ExtBRC = 0;
   }
 
-  Context->AutoSpeedDowngrade =
-      obs_data_get_bool(Params, "auto_speed_downgrade");
-
   if (Context->EncoderPTR->UpdateParams(&Context->EncoderParams)) {
     mfxStatus Status = Context->EncoderPTR->ReconfigureEncoder();
 
@@ -676,63 +673,6 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
   Bitstream->DataOffset = 0;
 }
 
-static constexpr mfxU32 WARMUP_FRAMES = 120;
-static constexpr mfxU32 COOLDOWN_FRAMES = 300;
-static constexpr mfxU32 SLOW_FRAME_THRESHOLD = 8;
-static constexpr mfxU32 MAX_DOWNGRADE_STEPS = 2;
-
-static void CheckAndApplySpeedDowngrade(plugin_context *Context) {
-  if (!Context->AutoSpeedDowngrade)
-    return;
-
-  Context->TotalFramesEncoded++;
-  Context->FramesSinceSpeedChange++;
-
-  if (Context->TotalFramesEncoded < WARMUP_FRAMES)
-    return;
-
-  if (Context->FramesSinceSpeedChange < COOLDOWN_FRAMES) {
-    Context->ConsecutiveSlowFrames = 0;
-    return;
-  }
-
-  if (Context->PendingSpeedReinit)
-    return;
-
-  uint64_t encode_time_ns = Context->EncoderPTR->GetLastEncodeTimeNs();
-  Context->EncoderPTR->ClearLastEncodeTime();
-
-  if (encode_time_ns == 0 || Context->CachedFpsNum == 0)
-    return;
-
-  uint64_t frame_interval_ns =
-      (static_cast<uint64_t>(Context->CachedFpsDen) * 1000000000ULL) /
-      static_cast<uint64_t>(Context->CachedFpsNum);
-
-  if (encode_time_ns > frame_interval_ns * 3 / 2) {
-    Context->ConsecutiveSlowFrames++;
-
-    if (Context->ConsecutiveSlowFrames >= SLOW_FRAME_THRESHOLD &&
-        Context->CurrentTargetUsage < MFX_TARGETUSAGE_7 &&
-        (Context->CurrentTargetUsage - Context->OriginalTargetUsage) < MAX_DOWNGRADE_STEPS) {
-      Context->CurrentTargetUsage++;
-      Context->ConsecutiveSlowFrames = 0;
-      Context->FramesSinceSpeedChange = 0;
-
-      blog(LOG_INFO,
-           "[QSV VPL] Auto speed downgrade: TU%d -> TU%d",
-           Context->CurrentTargetUsage - 1,
-           Context->CurrentTargetUsage);
-
-      Context->PendingSpeedReinit = true;
-      Context->NewTargetUsageForReinit = Context->CurrentTargetUsage;
-    }
-  } else {
-    if (Context->ConsecutiveSlowFrames > 0)
-      Context->ConsecutiveSlowFrames--;
-  }
-}
-
 bool EncodeTexture(void *Data, encoder_texture *Texture, int64_t PTS,
                    uint64_t LockKey, uint64_t *NextKey, encoder_packet *Packet,
                    bool *ReceivedPacketStatus) {
@@ -754,28 +694,6 @@ bool EncodeTexture(void *Data, encoder_texture *Texture, int64_t PTS,
   {
     std::lock_guard<std::mutex> lock(Context->EncoderMutex);
 
-    if (Context->PendingSpeedReinit) {
-      Context->PendingSpeedReinit = false;
-
-      blog(LOG_INFO, "[QSV VPL] Applying speed change to TU%d",
-           Context->NewTargetUsageForReinit);
-
-      mfxStatus sts = Context->EncoderPTR->FastReinitTargetUsage(
-          Context->NewTargetUsageForReinit, &Context->EncoderParams,
-          Context->Codec);
-      if (sts < MFX_ERR_NONE) {
-        error("[QSV VPL] FastReinitTargetUsage failed: %d", sts);
-        return false;
-      }
-
-      Context->EncoderParams.TargetUsage =
-          Context->NewTargetUsageForReinit;
-      Context->CurrentTargetUsage =
-          Context->NewTargetUsageForReinit;
-      Context->FramesSinceSpeedChange = 0;
-      Context->TotalFramesEncoded = 0;
-    }
-
     auto *Bitstream = static_cast<mfxBitstream *>(nullptr);
 
     try {
@@ -794,8 +712,6 @@ bool EncodeTexture(void *Data, encoder_texture *Texture, int64_t PTS,
                        ReceivedPacketStatus);
   }
 
-  CheckAndApplySpeedDowngrade(Context);
-
   return true;
 }
 
@@ -810,28 +726,6 @@ bool EncodeFrame(void *Data, encoder_frame *Frame, encoder_packet *Packet,
 
   {
     std::lock_guard<std::mutex> lock(Context->EncoderMutex);
-
-    if (Context->PendingSpeedReinit) {
-      Context->PendingSpeedReinit = false;
-
-      blog(LOG_INFO, "[QSV VPL] Applying speed change to TU%d",
-           Context->NewTargetUsageForReinit);
-
-      mfxStatus sts = Context->EncoderPTR->FastReinitTargetUsage(
-          Context->NewTargetUsageForReinit, &Context->EncoderParams,
-          Context->Codec);
-      if (sts < MFX_ERR_NONE) {
-        error("[QSV VPL] FastReinitTargetUsage failed: %d", sts);
-        return false;
-      }
-
-      Context->EncoderParams.TargetUsage =
-          Context->NewTargetUsageForReinit;
-      Context->CurrentTargetUsage =
-          Context->NewTargetUsageForReinit;
-      Context->FramesSinceSpeedChange = 0;
-      Context->TotalFramesEncoded = 0;
-    }
 
     auto *Bitstream = static_cast<mfxBitstream *>(nullptr);
 
@@ -853,10 +747,8 @@ bool EncodeFrame(void *Data, encoder_frame *Frame, encoder_packet *Packet,
     }
 
     ParseEncodedPacket(Context, Packet, Bitstream,
-                     ReceivedPacketStatus);
+                       ReceivedPacketStatus);
   }
-
-  CheckAndApplySpeedDowngrade(Context);
 
   return true;
 }
