@@ -145,8 +145,8 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(Settings, "adaptive_i", "AUTO");
   obs_data_set_default_string(Settings, "adaptive_b", "AUTO");
   obs_data_set_default_string(Settings, "adaptive_ref", "AUTO");
-  obs_data_set_default_string(Settings, "adaptive_cqm", "ON");
-  obs_data_set_default_string(Settings, "adaptive_ltr", "OFF");
+  obs_data_set_default_string(Settings, "adaptive_cqm", "AUTO");
+  obs_data_set_default_string(Settings, "adaptive_ltr", "AUTO");
   obs_data_set_default_string(Settings, "use_raw_ref", "AUTO");
   obs_data_set_default_string(Settings, "rdo", "AUTO");
   obs_data_set_default_string(Settings, "hrd_conformance", "AUTO");
