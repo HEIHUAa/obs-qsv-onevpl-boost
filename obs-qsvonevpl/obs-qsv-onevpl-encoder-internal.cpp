@@ -2693,6 +2693,8 @@ mfxStatus QSVEncoder::GetFreeTaskIndex(int *TaskID) {
 
 mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
   mfxStatus SyncStatus;
+  profile_start("qsv_sync_task");
+
   do {
     if (QSVTaskPool[QSVSyncTaskID].SyncPoint == nullptr) {
       break;
@@ -2700,6 +2702,7 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
     SyncStatus = MFXVideoCORE_SyncOperation(
         QSVSession, QSVTaskPool[QSVSyncTaskID].SyncPoint, 100);
     if (SyncStatus < MFX_ERR_NONE) {
+      profile_end("qsv_sync_task");
       return SyncStatus;
     }
   } while (SyncStatus == MFX_WRN_IN_EXECUTION);
@@ -2712,6 +2715,8 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
   QSVTaskPool[QSVSyncTaskID].Bitstream.DataOffset = 0;
   QSVTaskPool[QSVSyncTaskID].SyncPoint = nullptr;
   *Bitstream = &QSVBitstream;
+
+  profile_end("qsv_sync_task");
   return MFX_ERR_NONE;
 }
 
@@ -2762,6 +2767,7 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
 mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
                                     uint64_t LockKey, uint64_t *NextKey,
                                     mfxBitstream **Bitstream) {
+  profile_start("qsv_encode_tex");
   mfxStatus Status = MFX_ERR_NONE, SyncStatus = MFX_ERR_NONE;
   *Bitstream = nullptr;
   int TaskID = 0;
@@ -2865,6 +2871,7 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
     throw;
   }
 
+  profile_end("qsv_encode_tex");
   return Status;
 }
 

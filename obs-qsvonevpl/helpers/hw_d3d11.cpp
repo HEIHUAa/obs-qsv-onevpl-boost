@@ -221,6 +221,8 @@ mfxStatus HWManager::CopyTexture(mfxSurfaceD3D11Tex2D &OuterTexture,
     HWHandledTexturePool[Texture->handle] = {InputTexture, KeyedMutex};
   }
 
+  profile_start("copy_tex");
+
   KeyedMutex->AcquireSync(LockKey, INFINITE);
 
   D3D11_TEXTURE2D_DESC Desc = {0};
@@ -229,6 +231,8 @@ mfxStatus HWManager::CopyTexture(mfxSurfaceD3D11Tex2D &OuterTexture,
   HWContext->CopySubresourceRegion(HWTexturePool[HWTextureCounter], 0, 0, 0, 0,
                                    InputTexture, 0, &SrcBox);
   KeyedMutex->ReleaseSync(*NextKey);
+
+  profile_end("copy_tex");
 
   OuterTexture.texture2D = HWTexturePool[HWTextureCounter];
 
