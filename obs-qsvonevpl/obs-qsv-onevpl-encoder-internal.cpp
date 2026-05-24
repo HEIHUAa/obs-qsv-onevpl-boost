@@ -171,13 +171,6 @@ mfxStatus QSVEncoder::CreateSession([[maybe_unused]] enum codec_enum Codec,
         reinterpret_cast<const mfxU8 *>("mfxImplDescription.VendorID"),
         QSVLoaderVariant[1]);
 
-    QSVLoaderConfig[2] = MFXCreateConfig(Loader);
-    QSVLoaderVariant[2].Type = MFX_VARIANT_TYPE_PTR;
-    QSVLoaderVariant[2].Data.Ptr = mfxHDL("mfx-gen");
-    MFXSetConfigFilterProperty(
-        QSVLoaderConfig[2],
-        reinterpret_cast<const mfxU8 *>("mfxImplDescription.ImplName"),
-        QSVLoaderVariant[2]);
   }
 
 #if defined(_WIN32) || defined(_WIN64)

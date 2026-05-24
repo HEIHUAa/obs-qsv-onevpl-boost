@@ -105,28 +105,13 @@ static mfxU16 QueryPlatformCodeName() {
     }
 
     if (GlobalLoader != nullptr) {
-        if (TryQueryPlatformCodeName(GlobalLoader, "mfx-gen")) {
+        if (TryQueryPlatformCodeName(GlobalLoader, nullptr)) {
             return CachedQSVPlatform.CodeName;
         }
     } else {
-        // Try mfx-gen first (newer hardware)
-        {
-            mfxLoader Loader = MFXLoad();
-            if (Loader != nullptr) {
-                if (TryQueryPlatformCodeName(Loader, "mfx-gen")) {
-                    MFXUnload(Loader);
-                    return CachedQSVPlatform.CodeName;
-                }
-                MFXUnload(Loader);
-            }
-        }
-    }
-
-    // Fallback: try mfx-msdk for legacy hardware
-    {
         mfxLoader Loader = MFXLoad();
         if (Loader != nullptr) {
-            if (TryQueryPlatformCodeName(Loader, "mfx-msdk")) {
+            if (TryQueryPlatformCodeName(Loader, nullptr)) {
                 MFXUnload(Loader);
                 return CachedQSVPlatform.CodeName;
             }
