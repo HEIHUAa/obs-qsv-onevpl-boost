@@ -171,6 +171,9 @@ bool obs_module_load([[maybe_unused]] void) {
   // Register ROI editor in Tools menu (only when frontend API is available)
   RegisterROIEditor();
 
+  // Load persisted ROI config so it's available for RegisterEncoderData
+  LoadPersistentROIConfig();
+
   return true;
 }
 

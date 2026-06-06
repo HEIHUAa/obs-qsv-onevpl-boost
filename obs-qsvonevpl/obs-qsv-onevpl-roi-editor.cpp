@@ -31,11 +31,24 @@ static void ApplyROIToAllActiveEncoders(
     mfxU16 Mode, bool Enabled) {
   std::lock_guard<std::mutex> lock(EncoderDataMapMutex);
   for (auto &pair : EncoderDataMap) {
+    // If using QP Delta mode (Mode=0) but encoder rate control is not CQP,
+    // the hardware ignores QP deltas. Switch to Priority mode instead.
+    mfxU16 effectiveMode = Mode;
+    if (Mode == 0 &&
+        pair.second->EncoderParams.RateControl != MFX_RATECONTROL_CQP) {
+      blog(LOG_INFO,
+           "[QSV VPL] Encoder %s uses non-CQP rate control (%d), "
+           "forcing ROI Priority mode for ROI to take effect",
+           obs_encoder_get_id(pair.second->EncoderData),
+           pair.second->EncoderParams.RateControl);
+      effectiveMode = 1;
+    }
+
     auto pixelRegions = NormalizeROIToPixel(
         NormRegions,
         pair.second->EncoderParams.Width,
         pair.second->EncoderParams.Height);
-    UpdateEncoderROI(pair.second, pixelRegions, Mode, Enabled);
+    UpdateEncoderROI(pair.second, pixelRegions, effectiveMode, Enabled);
   }
 }
 
@@ -59,7 +72,7 @@ ROIDialog::ROIDialog(QWidget *Parent)
   auto *PreviewGroup = new QGroupBox(obs_module_text("ROIPreview"), this);
   auto *PreviewLayout = new QVBoxLayout(PreviewGroup);
   PreviewWidget = new QWidget(this);
-  PreviewWidget->setMinimumSize(320, 240);
+  PreviewWidget->setMinimumSize(1, 1);
   PreviewWidget->setStyleSheet("background-color: black;");
   PreviewLayout->addWidget(PreviewWidget);
   MainLayout->addWidget(PreviewGroup, 1); // give preview majority of vertical space
@@ -518,6 +531,9 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy) {
 // ROI data load / save
 // ---------------------------------------------------------------------------
 void ROIDialog::LoadROIData() {
+  // First reload from persistent storage in case it changed across restarts
+  LoadPersistentROIConfig();
+
   // Load from global ROI config (resolution-independent normalized values)
   std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
   if (GlobalROIConfig.Enabled || !GlobalROIConfig.NormalizedRegions.empty()) {
@@ -592,8 +608,30 @@ void ROIDialog::SaveROIData() {
     GlobalROIConfig.Enabled = enabled;
   }
 
+  // Save to persistent storage (survives OBS restarts)
+  SavePersistentROIConfig();
+
   // If any encoder instances exist, apply immediately with per-encoder conversion
   ApplyROIToAllActiveEncoders(normRegions, mode, enabled);
+
+  // Warn user if QP Delta mode selected but encoders use non-CQP rate control
+  if (mode == 0) {
+    bool hasNonCQP = false;
+    {
+      std::lock_guard<std::mutex> lock(EncoderDataMapMutex);
+      for (auto &pair : EncoderDataMap) {
+        if (pair.second->EncoderParams.RateControl != MFX_RATECONTROL_CQP) {
+          hasNonCQP = true;
+          break;
+        }
+      }
+    }
+    if (hasNonCQP) {
+      blog(LOG_WARNING,
+           "[QSV VPL] QP Delta ROI mode selected but encoder(s) use non-CQP "
+           "rate control. ROI will use Priority mode for those encoders.");
+    }
+  }
 
   // Force preview refresh to show updated ROI regions
   ForceRefreshPreview();
