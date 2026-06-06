@@ -70,6 +70,13 @@ void RegisterEncoderData(obs_encoder_t *Encoder, plugin_context *Context) {
       blog(LOG_INFO,
            "[QSV VPL] Applied global ROI config (normalized) to encoder: %s, dims=%dx%d",
            enc_id, Context->EncoderParams.Width, Context->EncoderParams.Height);
+      for (size_t i = 0; i < pixelRegions.size(); i++) {
+        blog(LOG_INFO,
+             "[QSV VPL]   PixelRegion[%zu]: Left=%u Top=%u Right=%u Bottom=%u DeltaQP=%d",
+             i, pixelRegions[i].Left, pixelRegions[i].Top,
+             pixelRegions[i].Right, pixelRegions[i].Bottom,
+             (int)pixelRegions[i].DeltaQP);
+      }
     }
   }
 }

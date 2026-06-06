@@ -183,6 +183,17 @@ void UpdateEncoderROI(void *Data,
     // Disabled: clear cached regions so no ROI is applied
     Context->EncoderPTR->UpdateROIRegions({}, Mode);
   }
+
+  blog(LOG_INFO,
+       "[QSV VPL] UpdateEncoderROI: enabled=%d, regions=%zu, mode=%d",
+       (int)Enabled, Regions.size(), (int)Mode);
+  for (size_t i = 0; i < Regions.size(); i++) {
+    blog(LOG_INFO,
+         "[QSV VPL]   ROI[%zu]: Left=%u Top=%u Right=%u Bottom=%u DeltaQP=%d",
+         i, Regions[i].Left, Regions[i].Top,
+         Regions[i].Right, Regions[i].Bottom,
+         (int)Regions[i].DeltaQP);
+  }
 }
 
 static int qsv_encoder_reconfig(QSVEncoder *EncoderPTR,

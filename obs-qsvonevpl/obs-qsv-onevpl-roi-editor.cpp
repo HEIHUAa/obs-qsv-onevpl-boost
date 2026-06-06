@@ -601,6 +601,13 @@ void ROIDialog::SaveROIData() {
   blog(LOG_INFO,
        "[QSV VPL] ROI saved: enabled=%d, normalized regions=%zu, mode=%d",
        (int)enabled, normRegions.size(), (int)mode);
+  for (size_t i = 0; i < normRegions.size(); i++) {
+    blog(LOG_INFO,
+         "[QSV VPL]   NormRegion[%zu]: Left=%.4f Top=%.4f Right=%.4f Bottom=%.4f DeltaQP=%d",
+         i, normRegions[i].Left, normRegions[i].Top,
+         normRegions[i].Right, normRegions[i].Bottom,
+         (int)normRegions[i].DeltaQP);
+  }
 
   QMessageBox::information(this, obs_module_text("ROIEditor"),
                            obs_module_text("ROIApplySuccess"));
