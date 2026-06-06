@@ -1945,9 +1945,6 @@ plugin_context *InitPluginContext(enum codec_enum Codec, obs_data_t *Settings,
   Context->EncoderData = std::move(EncoderData);
   Context->Codec = std::move(Codec);
 
-  // Register in the global encoder data map for ROI editor lookup
-  RegisterEncoderData(Context->EncoderData, Context);
-
   auto Video = std::move(obs_encoder_video(Context->EncoderData));
   auto VOI = std::move(video_output_get_info(std::move(Video)));
   switch (VOI->format) {
@@ -1987,6 +1984,12 @@ plugin_context *InitPluginContext(enum codec_enum Codec, obs_data_t *Settings,
     GetEncoderVersion(&VPLVersionMajor, &VPLVersionMinor);
 
     info("\tLibVPL version: %d.%d", VPLVersionMajor, VPLVersionMinor);
+
+    // Register encoder AFTER params are initialized, so ROI global config
+    // can be applied with the correct output resolution (Width/Height).
+    // Must also be after OpenEncoder to avoid SetEncoderParams inside Init()
+    // from clearing CachedROIRegions (which happens when ROIEnabled is false).
+    RegisterEncoderData(Context->EncoderData, Context);
 
     Context->PerformanceToken = os_request_high_performance("qsv encoding");
 

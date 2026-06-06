@@ -2679,7 +2679,12 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
   LoadFrameData(EncodeSurface, FrameData, FrameLinesize);
   QSVTaskPool[TaskID].Bitstream.TimeStamp = TS;
 
-  Status = EncodeFrameRetryLoop(EncodeSurface, nullptr, TaskID, 200);
+  bool roiActive = !CachedROIRegions.empty();
+  if (roiActive)
+    SetupROIEncodeCtrl();
+  Status = EncodeFrameRetryLoop(EncodeSurface,
+                                roiActive ? &QSVEncodeCtrlParams : nullptr,
+                                TaskID, 200);
 
   return Status;
 }
