@@ -2686,8 +2686,6 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
   QSVTaskPool[TaskID].Bitstream.TimeStamp = TS;
 
   bool roiActive = !CachedROIRegions.empty();
-  info("\tEncodeFrameSystemMemory: CachedROIRegions=%zu, roiActive=%d",
-       CachedROIRegions.size(), (int)roiActive);
   if (roiActive)
     SetupROIEncodeCtrl();
   Status = EncodeFrameRetryLoop(EncodeSurface,
@@ -3011,8 +3009,6 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
 
   /*Encode a frame asynchronously (returns immediately)*/
   bool roiActive = !CachedROIRegions.empty();
-  info("\tEncodeFrame: CachedROIRegions=%zu, roiActive=%d",
-       CachedROIRegions.size(), (int)roiActive);
   if (roiActive)
     SetupROIEncodeCtrl();
   EncodeFrameRetryLoop(
@@ -3034,10 +3030,8 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
 }
 
 void QSVEncoder::SetupROIEncodeCtrl() {
-  if (CachedROIRegions.empty()) {
-    info("\tROI Ctrl: CachedROIRegions empty, skipping");
+  if (CachedROIRegions.empty())
     return;
-  }
 
   auto *roiParams = QSVEncodeCtrlParams.GetExtBuffer<mfxExtEncoderROI>();
   if (!roiParams)
@@ -3055,14 +3049,6 @@ void QSVEncoder::SetupROIEncodeCtrl() {
     roiParams->ROI[i].Right = CachedROIRegions[i].Right;
     roiParams->ROI[i].Bottom = CachedROIRegions[i].Bottom;
     roiParams->ROI[i].DeltaQP = CachedROIRegions[i].DeltaQP;
-  }
-
-  info("\tROI Ctrl: %d regions, mode=%d", roiParams->NumROI, roiParams->ROIMode);
-  for (int i = 0; i < roiParams->NumROI; i++) {
-    info("\t  ROI Ctrl[%d]: Left=%u Top=%u Right=%u Bottom=%u DeltaQP=%d",
-         i, roiParams->ROI[i].Left, roiParams->ROI[i].Top,
-         roiParams->ROI[i].Right, roiParams->ROI[i].Bottom,
-         (int)roiParams->ROI[i].DeltaQP);
   }
 }
 
