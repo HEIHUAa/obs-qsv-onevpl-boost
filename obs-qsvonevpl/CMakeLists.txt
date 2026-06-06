@@ -28,7 +28,7 @@ target_sources(
 target_link_libraries(obs-qsvonevpl PRIVATE VPL libvpl-private OBS::libobs obs-frontend-api Qt6::Widgets)
 
 # Enable Qt MOC for ROI dialog
-set(CMAKE_AUTOMOC ON)
+set_target_properties(obs-qsvonevpl PROPERTIES AUTOMOC ON)
 
 # cmake-format: off
 set_target_properties(obs-qsvonevpl PROPERTIES
@@ -129,6 +129,7 @@ if(WIN32)
     set_target_properties(obs-qsvonevpl-uhd600 PROPERTIES
       FOLDER "plugins/obs-qsvonevpl"
       PREFIX ""
+      AUTOMOC ON
     )
 
     target_compile_definitions(
