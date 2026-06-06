@@ -15,7 +15,6 @@
 #include <QShowEvent>
 #include <QCloseEvent>
 #include <obs-module.h>
-#include <obs-display.h>
 #include <obs-frontend-api.h>
 #include "obs-qsv-onevpl-encoder.hpp"
 
