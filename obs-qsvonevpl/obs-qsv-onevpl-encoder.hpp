@@ -28,6 +28,10 @@ int64_t ConvertTSMFXOBS(mfxI64 TS, mfxU32 FpsNum, mfxU32 FpsDen, int64_t Div);
 
 bool GetExtraData(void *Data, uint8_t **ExtraData, size_t *Size);
 
+void UpdateEncoderROI(void *Data,
+                       const std::vector<encoder_params::roi_region> &Regions,
+                       mfxU16 Mode);
+
 void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
                   mfxBitstream *Bitstream, bool *ReceivedPacketStatus);
 

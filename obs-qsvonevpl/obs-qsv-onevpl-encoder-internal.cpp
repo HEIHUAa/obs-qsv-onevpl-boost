@@ -22,7 +22,7 @@ QSVEncoder::QSVEncoder()
       QSVResetParamsChanged(false), QSVEncodeParams(), QSVEncodeCtrlParams(),
       QSVProcessingAuxData(), QSVAllocateRequest(), QSVIsTextureEncoder(),
       QSVMemoryInterface(), HWManager(nullptr), QSVProcessingEnable(),
-      QSVProcessingSyncPoint(nullptr) {}
+      QSVProcessingSyncPoint(nullptr), CachedROIMode(0) {}
 
 QSVEncoder::~QSVEncoder() {
   if (QSVEncode || QSVProcessing) {
@@ -1926,6 +1926,15 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 #else
   QSVEncodeParams.IOPattern = MFX_IOPATTERN_IN_VIDEO_MEMORY;
 
+  // Cache ROI data for per-frame use, only for AVC and HEVC (AV1 not supported)
+  if (Codec != QSV_CODEC_AV1) {
+    CachedROIRegions = InputParams->ROIRegions;
+    CachedROIMode = InputParams->ROIMode;
+  } else {
+    CachedROIRegions.clear();
+    CachedROIMode = 0;
+  }
+
   return MFX_ERR_NONE;
 #endif
 }
@@ -2019,6 +2028,13 @@ mfxStatus QSVEncoder::ReconfigureEncoder() {
   } else {
     return MFX_ERR_NONE;
   }
+}
+
+void QSVEncoder::UpdateROIRegions(
+    const std::vector<encoder_params::roi_region> &Regions, mfxU16 Mode) {
+  CachedROIRegions = Regions;
+  CachedROIMode = Mode;
+  info("\tROI updated: %zu regions, mode=%d", Regions.size(), Mode);
 }
 
 mfxStatus QSVEncoder::InitTexturePool() {
@@ -2838,10 +2854,13 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
       QSVEncodeSurface = nullptr;
     }
 
+    bool roiActive = !CachedROIRegions.empty();
+    if (roiActive)
+      SetupROIEncodeCtrl();
     EncodeFrameRetryLoop(
         (QSVProcessingEnable ? QSVProcessingSurface : QSVEncodeSurface),
-        (QSVProcessingEnable &&
-                 QSVEncodeParams.mfx.CodecId != MFX_CODEC_AV1
+        (roiActive || (QSVProcessingEnable &&
+                       QSVEncodeParams.mfx.CodecId != MFX_CODEC_AV1)
              ? &QSVEncodeCtrlParams
              : nullptr),
         TaskID, 200);
@@ -2976,8 +2995,15 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
   }
 
   /*Encode a frame asynchronously (returns immediately)*/
+  bool roiActive = !CachedROIRegions.empty();
+  if (roiActive)
+    SetupROIEncodeCtrl();
   EncodeFrameRetryLoop(
-      (QSVProcessingEnable ? QSVProcessingSurface : QSVEncodeSurface), nullptr,
+      (QSVProcessingEnable ? QSVProcessingSurface : QSVEncodeSurface),
+      (roiActive || (QSVProcessingEnable &&
+                     QSVEncodeParams.mfx.CodecId != MFX_CODEC_AV1))
+          ? &QSVEncodeCtrlParams
+          : nullptr,
       TaskID, 200);
 
   if (QSVProcessingEnable) {
@@ -2988,6 +3014,31 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
   QSVEncodeSurface = nullptr;
 
   return MFX_ERR_NONE;
+}
+
+void QSVEncoder::SetupROIEncodeCtrl() {
+  if (CachedROIRegions.empty())
+    return;
+
+  auto *roiParams = QSVEncodeCtrlParams.GetExtBuffer<mfxExtEncoderROI>();
+  if (!roiParams)
+    roiParams = QSVEncodeCtrlParams.AddExtBuffer<mfxExtEncoderROI>();
+
+  roiParams->Header.BufferId = MFX_EXTBUFF_ENCODER_ROI;
+  roiParams->Header.BufferSz = sizeof(mfxExtEncoderROI);
+  roiParams->NumROI =
+      static_cast<mfxU16>(std::min(CachedROIRegions.size(), static_cast<size_t>(256)));
+  roiParams->ROIMode = CachedROIMode;
+
+  for (int i = 0; i < roiParams->NumROI; i++) {
+    roiParams->ROI[i].Left = CachedROIRegions[i].Left;
+    roiParams->ROI[i].Top = CachedROIRegions[i].Top;
+    roiParams->ROI[i].Right = CachedROIRegions[i].Right;
+    roiParams->ROI[i].Bottom = CachedROIRegions[i].Bottom;
+    roiParams->ROI[i].DeltaQP = CachedROIRegions[i].DeltaQP;
+  }
+
+  info("\tROI: %d regions, mode=%d", roiParams->NumROI, roiParams->ROIMode);
 }
 
 mfxStatus QSVEncoder::Drain() {

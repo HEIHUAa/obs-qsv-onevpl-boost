@@ -344,3 +344,5 @@ static void SetH264DefaultParams(obs_data_t *Settings);
 static void SetAV1DefaultParams(obs_data_t *Settings);
 
 static void SetHEVCDefaultParams(obs_data_t *Settings);
+
+void RegisterROIEditor();

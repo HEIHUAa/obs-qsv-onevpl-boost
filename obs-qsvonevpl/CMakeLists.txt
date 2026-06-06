@@ -16,6 +16,8 @@ target_sources(
   obs-qsv-onevpl-encoder.hpp
   obs-qsv-onevpl-encoder-internal.cpp
   obs-qsv-onevpl-encoder-internal.hpp
+  obs-qsv-onevpl-roi-editor.cpp
+  obs-qsv-onevpl-roi-editor.hpp
   helpers/common_utils.cpp
   helpers/common_utils.hpp
   helpers/ext_buf_manager.hpp
@@ -23,6 +25,9 @@ target_sources(
 )
 
 target_link_libraries(obs-qsvonevpl PRIVATE VPL libvpl-private OBS::libobs)
+
+# Enable Qt MOC for ROI dialog
+set(CMAKE_AUTOMOC ON)
 
 # cmake-format: off
 set_target_properties(obs-qsvonevpl PROPERTIES
@@ -105,6 +110,8 @@ if(WIN32)
       obs-qsv-onevpl-encoder.hpp
       obs-qsv-onevpl-encoder-internal.cpp
       obs-qsv-onevpl-encoder-internal.hpp
+      obs-qsv-onevpl-roi-editor.cpp
+      obs-qsv-onevpl-roi-editor.hpp
       helpers/common_utils.cpp
       helpers/common_utils.hpp
       helpers/ext_buf_manager.hpp

@@ -163,6 +163,19 @@ bool UpdateEncoderParams(void *Data, obs_data_t *Params) {
   return true;
 }
 
+void UpdateEncoderROI(void *Data,
+                       const std::vector<encoder_params::roi_region> &Regions,
+                       mfxU16 Mode) {
+  plugin_context *Context = static_cast<plugin_context *>(Data);
+  if (!Context || !Context->EncoderPTR)
+    return;
+
+  std::lock_guard<std::mutex> lock(Context->EncoderMutex);
+  Context->EncoderParams.ROIRegions = Regions;
+  Context->EncoderParams.ROIMode = Mode;
+  Context->EncoderPTR->UpdateROIRegions(Regions, Mode);
+}
+
 static int qsv_encoder_reconfig(QSVEncoder *EncoderPTR,
                                 encoder_params *EncoderParams) {
 

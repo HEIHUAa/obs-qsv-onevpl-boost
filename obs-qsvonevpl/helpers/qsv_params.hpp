@@ -126,5 +126,16 @@ struct encoder_params {
   int TemporalLayersNum;
 
   std::string CustomCodingOptions;
+
+  // ROI (Region of Interest) settings
+  struct roi_region {
+    mfxU16 Left;
+    mfxU16 Top;
+    mfxU16 Right;
+    mfxU16 Bottom;
+    mfxI16 DeltaQP;
+  };
+  std::vector<roi_region> ROIRegions;
+  mfxU16 ROIMode; // 0 = MFX_ROI_MODE_QP_DELTA, 1 = MFX_ROI_MODE_PRIORITY
 };
 

@@ -34,6 +34,8 @@ public:
   mfxStatus ClearData();
   mfxStatus ReconfigureEncoder();
   bool UpdateParams(struct encoder_params *InputParams);
+  void UpdateROIRegions(const std::vector<encoder_params::roi_region> &Regions,
+                         mfxU16 Mode);
 
   protected:
   typedef struct Task {
@@ -74,6 +76,8 @@ public:
 
   void LoadFrameData(mfxFrameSurface1 *&Surface, uint8_t **FrameData,
                      uint32_t *FrameLinesize);
+
+  void SetupROIEncodeCtrl();
 
   mfxStatus Drain();
 
@@ -183,4 +187,7 @@ private:
     MFX_FOURCC_RGBP24 = MFX_MAKEFOURCC('R', 'G', 'B', 'P'),
   };
 
-  };
+  // ROI (Region of Interest) data for per-frame encoding control
+  std::vector<encoder_params::roi_region> CachedROIRegions;
+  mfxU16 CachedROIMode;
+};

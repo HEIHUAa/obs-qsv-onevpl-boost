@@ -55,9 +55,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 #include "helpers/common_utils.hpp"
 //#include "obs-qsv-onevpl-encoder.hpp"
+#include "obs-qsv-onevpl-plugin-init.hpp"
 
 #include <obs-module.h>
 #include <obs.h>
+#include <obs-frontend-api.h>
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE("obs-qsvonevpl", "en-US");
@@ -165,6 +167,9 @@ bool obs_module_load([[maybe_unused]] void) {
   if (SupportAVC || SupportAV1 || SupportHEVC) {
     WarmUpVPLSession();
   }
+
+  // Register ROI editor in Tools menu (only when frontend API is available)
+  RegisterROIEditor();
 
   return true;
 }
