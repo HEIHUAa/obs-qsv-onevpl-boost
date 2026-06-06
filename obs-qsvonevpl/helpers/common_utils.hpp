@@ -171,6 +171,16 @@ void RegisterEncoderData(obs_encoder_t *Encoder, plugin_context *Context);
 void UnregisterEncoderData(obs_encoder_t *Encoder);
 plugin_context *LookupEncoderData(obs_encoder_t *Encoder);
 
+// Pending ROI config - applied when an encoder of matching type is created
+// Key: encoder type ID (e.g. "obs_qsv_vpl_h264")
+struct pending_roi_config {
+  std::vector<encoder_params::roi_region> Regions;
+  mfxU16 Mode;
+  bool Enabled = false;
+};
+extern std::map<std::string, pending_roi_config> PendingROIConfig;
+extern std::mutex PendingROIMutex;
+
 #if defined(_WIN32) || defined(_WIN64)
 #include <malloc.h>
 #endif

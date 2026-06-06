@@ -40,14 +40,15 @@ private slots:
 
 private:
   struct EncoderEntry {
-    void *Data; // plugin_context pointer
-    obs_encoder_t *Encoder;
-    std::string Name;
+    std::string TypeID; // encoder type ID (e.g. "obs_qsv_vpl_h264")
+    std::string Name;   // display name
   };
 
   void PopulateEncoderList();
   void LoadROIData();
   void SaveROIData();
+  static std::string GetCurrentTypeID(QComboBox *Combo,
+                                       const std::vector<EncoderEntry> &List);
 
   // Preview
   bool CreatePreview();

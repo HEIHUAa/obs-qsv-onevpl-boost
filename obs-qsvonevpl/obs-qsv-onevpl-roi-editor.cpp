@@ -6,15 +6,27 @@
 #include <sstream>
 #include <cstdio>
 
-// Helper: get plugin_context from current encoder selection
-#define GET_CURRENT_CTX()                                                  \
-  ([&]() -> plugin_context * {                                            \
-    if (EncoderCombo->currentIndex() < 0 ||                                \
-        EncoderCombo->currentIndex() >= (int)EncoderList.size())           \
-      return nullptr;                                                      \
-    return static_cast<plugin_context *>(                                  \
-        EncoderList[EncoderCombo->currentIndex()].Data);                   \
-  })()
+// Helper: get type ID from current encoder selection
+std::string ROIDialog::GetCurrentTypeID(QComboBox *Combo,
+                                         const std::vector<EncoderEntry> &List) {
+  int idx = Combo->currentIndex();
+  if (idx < 0 || idx >= (int)List.size())
+    return {};
+  return List[idx].TypeID;
+}
+
+// Helper: find plugin_context by encoder type ID (nullptr if not encoding)
+static plugin_context *FindCtxByTypeID(const std::string &TypeID) {
+  if (TypeID.empty())
+    return nullptr;
+  std::lock_guard<std::mutex> lock(EncoderDataMapMutex);
+  for (auto &pair : EncoderDataMap) {
+    const char *id = obs_encoder_get_id(pair.first);
+    if (id && TypeID == id)
+      return pair.second;
+  }
+  return nullptr;
+}
 
 ROIDialog::ROIDialog(QWidget *Parent)
     : QDialog(Parent),
@@ -131,7 +143,7 @@ void ROIDialog::closeEvent(QCloseEvent *Event) {
 }
 
 // ---------------------------------------------------------------------------
-// Encoder list population: try multiple methods to find QSV encoder instances
+// Enumerate QSV encoder types registered by this plugin
 // ---------------------------------------------------------------------------
 void ROIDialog::PopulateEncoderList() {
   EncoderList.clear();
@@ -144,66 +156,44 @@ void ROIDialog::PopulateEncoderList() {
       "obs_qsv_vpl_av1",    "obs_qsv_vpl_av1_tex",
       nullptr};
 
-  // Helper lambda: check if encoder is one of ours and add to list
-  auto AddIfOurs = [&](obs_encoder_t *enc) {
-    if (!enc)
-      return;
-    const char *id = obs_encoder_get_id(enc);
-    if (!id)
-      return;
-
-    bool isOurs = false;
-    for (const char **pid = PluginEncoderIDs; *pid; pid++) {
-      if (strcmp(id, *pid) == 0) {
-        isOurs = true;
+  // Enumerate all registered encoder types and filter by plugin IDs
+  for (const char **pid = PluginEncoderIDs; *pid; pid++) {
+    bool found = false;
+    for (size_t idx = 0;; idx++) {
+      const char *type_id = nullptr;
+      if (!obs_enum_encoder_types(idx, &type_id))
+        break;
+      if (type_id && strcmp(type_id, *pid) == 0) {
+        found = true;
         break;
       }
     }
-    if (!isOurs)
-      return;
+    if (!found)
+      continue;
 
-    // Look up plugin_context from our registry
-    void *data = LookupEncoderData(enc);
-    if (!data)
-      return;
-
-    // Avoid duplicates
-    for (auto &existing : EncoderList) {
-      if (existing.Encoder == enc)
-        return;
-    }
+    QString displayName;
+    if (strstr(*pid, "av1"))
+      displayName = "QSV AV1 (VPL)";
+    else if (strstr(*pid, "hevc"))
+      displayName = "QSV HEVC (VPL)";
+    else
+      displayName = "QSV H.264 (VPL)";
+    if (strstr(*pid, "_tex"))
+      displayName += " [tex]";
 
     EncoderEntry entry;
-    entry.Data = data;
-    entry.Encoder = enc;
-    entry.Name = obs_encoder_get_name(enc);
-    if (entry.Name.empty())
-      entry.Name = id;
+    entry.TypeID = *pid;
+    entry.Name = displayName.toStdString();
     EncoderList.push_back(std::move(entry));
-  };
-
-  // Check streaming and recording outputs for encoder instances
-  obs_output_t *stream_output = obs_frontend_get_streaming_output();
-  if (stream_output) {
-    AddIfOurs(obs_output_get_video_encoder(stream_output));
+    EncoderCombo->addItem(displayName);
   }
-
-  obs_output_t *record_output = obs_frontend_get_recording_output();
-  if (record_output) {
-    AddIfOurs(obs_output_get_video_encoder(record_output));
-  }
-
-  // Fill combo box
-  for (auto &entry : EncoderList)
-    EncoderCombo->addItem(QString::fromStdString(entry.Name));
 
   if (EncoderList.empty()) {
     InfoLabel->setText(
         obs_module_text("ROIEditorDesc") +
         QStringLiteral(
-            "\n\nNo active QSV encoders found. "
-            "Configure a QSV encoder in OBS Settings -> Output "
-            "and start streaming/recording."));
+            "\n\nNo QSV encoders available. "
+            "The QSV VPL plugin encoders may not be registered correctly."));
     ApplyButton->setEnabled(false);
   } else {
     LoadROIData();
@@ -284,43 +274,89 @@ void ROIDialog::PreviewDraw(void *param, uint32_t cx, uint32_t cy) {
   if (!dialog)
     return;
 
-  // Render the current scene
+  // Get base video info for aspect-ratio-correct scaling
+  struct obs_video_info ovi;
+  obs_get_video_info(&ovi);
+  if (ovi.base_width < 1 || ovi.base_height < 1)
+    return;
+
+  // Calculate centered, scaled viewport (maintain aspect ratio)
+  float base_w = (float)ovi.base_width;
+  float base_h = (float)ovi.base_height;
+  float scale = std::min((float)cx / base_w, (float)cy / base_h);
+  int vp_w = (int)(base_w * scale);
+  int vp_h = (int)(base_h * scale);
+  int vp_x = (int)((cx - vp_w) / 2);
+  int vp_y = (int)((cy - vp_h) / 2);
+
+  gs_viewport_push();
+  gs_projection_push();
+
+  gs_set_viewport(vp_x, vp_y, vp_w, vp_h);
+  gs_ortho(0.0f, base_w, 0.0f, base_h, -100.0f, 100.0f);
+
   obs_source_t *scene = obs_frontend_get_current_scene();
   if (scene) {
     obs_source_video_render(scene);
     obs_source_release(scene);
   }
 
-  // Overlay ROI rectangles on top
+  gs_projection_pop();
+  gs_viewport_pop();
+
+  // Draw ROI overlay in full widget space (after viewport pop)
   dialog->DrawROIOverlay(cx, cy);
 }
 
 void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy) {
-  auto *ctx = GET_CURRENT_CTX();
-  if (!ctx)
+  std::string typeId = GetCurrentTypeID(EncoderCombo, EncoderList);
+  if (typeId.empty())
     return;
 
-  std::lock_guard<std::mutex> lock(ctx->EncoderMutex);
+  bool enabled = false;
+  mfxU16 mode = 0;
+  std::vector<encoder_params::roi_region> regions;
 
-  // Check if ROI is enabled and has regions
-  if (!ctx->EncoderParams.ROIEnabled)
-    return;
-  auto &regions = ctx->EncoderParams.ROIRegions;
-  if (regions.empty())
+  // Try reading from encoder instance first (already has pending config applied)
+  plugin_context *ctx = FindCtxByTypeID(typeId);
+  if (ctx) {
+    std::lock_guard<std::mutex> lock(ctx->EncoderMutex);
+    enabled = ctx->EncoderParams.ROIEnabled;
+    mode = ctx->EncoderParams.ROIMode;
+    regions = ctx->EncoderParams.ROIRegions;
+  } else {
+    // Fallback to pending config
+    std::lock_guard<std::mutex> lock(PendingROIMutex);
+    auto it = PendingROIConfig.find(typeId);
+    if (it != PendingROIConfig.end()) {
+      enabled = it->second.Enabled;
+      mode = it->second.Mode;
+      regions = it->second.Regions;
+    }
+  }
+
+  if (!enabled || regions.empty())
     return;
 
-  // Get output (scaled) dimensions from the video output
-  video_t *video = obs_encoder_video(ctx->EncoderData);
-  if (!video)
+  // Get output (scaled) and base dimensions from OBS video info
+  struct obs_video_info ovi;
+  obs_get_video_info(&ovi);
+  if (ovi.output_width < 1 || ovi.output_height < 1)
     return;
-  const struct video_output_info *voi = video_output_get_info(video);
-  if (!voi)
+  if (ovi.base_width < 1 || ovi.base_height < 1)
     return;
 
-  uint32_t out_w = voi->width;
-  uint32_t out_h = voi->height;
-  if (out_w == 0 || out_h == 0)
-    return;
+  float out_w = (float)ovi.output_width;
+  float out_h = (float)ovi.output_height;
+  float base_w = (float)ovi.base_width;
+  float base_h = (float)ovi.base_height;
+
+  // Same viewport calculation as PreviewDraw
+  float scale = std::min((float)cx / base_w, (float)cy / base_h);
+  float vp_w = base_w * scale;
+  float vp_h = base_h * scale;
+  float vp_x = ((float)cx - vp_w) * 0.5f;
+  float vp_y = ((float)cy - vp_h) * 0.5f;
 
   // Set up solid color effect from OBS base effects
   gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
@@ -337,13 +373,14 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy) {
   gs_eparam_t *color_param = gs_effect_get_param_by_name(solid, "color");
 
   for (auto &r : regions) {
-    // Scale ROI coordinates from output resolution to preview widget size
-    float x1 = (float)r.Left / (float)out_w * (float)cx;
-    float y1 = (float)r.Top / (float)out_h * (float)cy;
-    float x2 = (float)r.Right / (float)out_w * (float)cx;
-    float y2 = (float)r.Bottom / (float)out_h * (float)cy;
+    // Map ROI from output resolution → preview widget pixel coordinates
+    // Path: output → base → widget (via viewport)
+    float x1 = vp_x + (float)r.Left * (vp_w / out_w);
+    float y1 = vp_y + (float)r.Top * (vp_h / out_h);
+    float x2 = vp_x + (float)r.Right * (vp_w / out_w);
+    float y2 = vp_y + (float)r.Bottom * (vp_h / out_h);
 
-    // Clamp to preview area
+    // Clamp to preview widget area
     x1 = (x1 < 0) ? 0 : (x1 > (float)cx ? (float)cx : x1);
     y1 = (y1 < 0) ? 0 : (y1 > (float)cy ? (float)cy : y1);
     x2 = (x2 < 0) ? 0 : (x2 > (float)cx ? (float)cx : x2);
@@ -406,39 +443,46 @@ void ROIDialog::OnEncoderSelected(int /*Index*/) {
 }
 
 void ROIDialog::LoadROIData() {
-  auto *ctx = GET_CURRENT_CTX();
-  if (!ctx)
+  std::string typeId = GetCurrentTypeID(EncoderCombo, EncoderList);
+  if (typeId.empty())
     return;
 
-  std::lock_guard<std::mutex> lock(ctx->EncoderMutex);
+  // Load from pending config (always the source of truth)
+  std::lock_guard<std::mutex> lock(PendingROIMutex);
+  auto it = PendingROIConfig.find(typeId);
+  if (it != PendingROIConfig.end()) {
+    ROIEnableCheck->setChecked(it->second.Enabled);
+    if (it->second.Mode == 1)
+      PriorityRadio->setChecked(true);
+    else
+      QPDeltaRadio->setChecked(true);
 
-  // Load ROI enable state
-  ROIEnableCheck->setChecked(ctx->EncoderParams.ROIEnabled);
-
-  // Load ROI mode
-  if (ctx->EncoderParams.ROIMode == 1)
-    PriorityRadio->setChecked(true);
-  else
+    std::string text;
+    for (auto &r : it->second.Regions) {
+      if (!text.empty())
+        text += "\n";
+      text += std::to_string(r.Left) + " " +
+              std::to_string(r.Top) + " " +
+              std::to_string(r.Right) + " " +
+              std::to_string(r.Bottom) + " " +
+              std::to_string(r.DeltaQP);
+    }
+    ROITextEdit->setPlainText(QString::fromStdString(text));
+  } else {
+    // No saved config - use defaults
+    ROIEnableCheck->setChecked(false);
     QPDeltaRadio->setChecked(true);
-
-  // Load ROI regions as text
-  std::string text;
-  for (auto &region : ctx->EncoderParams.ROIRegions) {
-    if (!text.empty())
-      text += "\n";
-    text += std::to_string(region.Left) + " " +
-            std::to_string(region.Top) + " " +
-            std::to_string(region.Right) + " " +
-            std::to_string(region.Bottom) + " " +
-            std::to_string(region.DeltaQP);
+    ROITextEdit->clear();
   }
-  ROITextEdit->setPlainText(QString::fromStdString(text));
 }
 
 void ROIDialog::SaveROIData() {
-  auto *ctx = GET_CURRENT_CTX();
-  if (!ctx)
+  std::string typeId = GetCurrentTypeID(EncoderCombo, EncoderList);
+  if (typeId.empty()) {
+    QMessageBox::warning(this, obs_module_text("ROIEditor"),
+                         "No encoder selected.");
     return;
+  }
 
   // Parse text input into ROI regions
   std::vector<encoder_params::roi_region> regions;
@@ -447,7 +491,6 @@ void ROIDialog::SaveROIData() {
   std::string line;
 
   while (std::getline(stream, line)) {
-    // Trim whitespace
     line.erase(0, line.find_first_not_of(" \t\r\n"));
     line.erase(line.find_last_not_of(" \t\r\n") + 1);
     if (line.empty() || line[0] == '#' || line[0] == ';')
@@ -464,15 +507,25 @@ void ROIDialog::SaveROIData() {
   mfxU16 mode = (ModeGroup->checkedId() == 1) ? 1 : 0;
   bool enabled = ROIEnableCheck->isChecked();
 
-  // Update via the thread-safe function
-  UpdateEncoderROI(ctx, regions, mode, enabled);
+  // Always save to pending config (survives encoder restart)
+  {
+    std::lock_guard<std::mutex> lock(PendingROIMutex);
+    PendingROIConfig[typeId].Regions = regions;
+    PendingROIConfig[typeId].Mode = mode;
+    PendingROIConfig[typeId].Enabled = enabled;
+  }
+
+  // If encoder instance exists, apply immediately
+  plugin_context *ctx = FindCtxByTypeID(typeId);
+  if (ctx)
+    UpdateEncoderROI(ctx, regions, mode, enabled);
+
+  QMessageBox::information(this, obs_module_text("ROIEditor"),
+                           obs_module_text("ROIApplySuccess"));
 }
 
 void ROIDialog::OnApplyClicked() {
   SaveROIData();
-
-  QMessageBox::information(this, obs_module_text("ROIEditor"),
-                           obs_module_text("ROIApplySuccess"));
 }
 
 void ROIDialog::OnCancelClicked() {
