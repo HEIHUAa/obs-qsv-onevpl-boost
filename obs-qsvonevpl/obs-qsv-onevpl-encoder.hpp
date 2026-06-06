@@ -32,6 +32,8 @@ void UpdateEncoderROI(void *Data,
                        const std::vector<encoder_params::roi_region> &Regions,
                        mfxU16 Mode);
 
+struct plugin_context;
+
 void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
                   mfxBitstream *Bitstream, bool *ReceivedPacketStatus);
 

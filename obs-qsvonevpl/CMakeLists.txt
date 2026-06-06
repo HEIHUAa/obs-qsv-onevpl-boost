@@ -5,6 +5,7 @@ add_library(obs-qsvonevpl MODULE)
 
 find_package(VPL CONFIG)
 find_package(libobs CONFIG)
+find_package(Qt6 REQUIRED COMPONENTS Widgets)
 
 target_sources(
   obs-qsvonevpl
@@ -24,7 +25,7 @@ target_sources(
   helpers/qsv_params.hpp
 )
 
-target_link_libraries(obs-qsvonevpl PRIVATE VPL libvpl-private OBS::libobs)
+target_link_libraries(obs-qsvonevpl PRIVATE VPL libvpl-private OBS::libobs obs-frontend-api Qt6::Widgets)
 
 # Enable Qt MOC for ROI dialog
 set(CMAKE_AUTOMOC ON)
@@ -123,7 +124,7 @@ if(WIN32)
     )
 
     target_link_libraries(obs-qsvonevpl-uhd600 PRIVATE
-      VPL libvpl-private OBS::libobs d3d11 dxgi dxguid)
+      VPL libvpl-private OBS::libobs obs-frontend-api Qt6::Widgets d3d11 dxgi dxguid)
 
     set_target_properties(obs-qsvonevpl-uhd600 PROPERTIES
       FOLDER "plugins/obs-qsvonevpl"
