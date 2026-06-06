@@ -531,9 +531,6 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy) {
 // ROI data load / save
 // ---------------------------------------------------------------------------
 void ROIDialog::LoadROIData() {
-  // First reload from persistent storage in case it changed across restarts
-  LoadPersistentROIConfig();
-
   // Load from global ROI config (resolution-independent normalized values)
   std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
   if (GlobalROIConfig.Enabled || !GlobalROIConfig.NormalizedRegions.empty()) {
@@ -608,8 +605,13 @@ void ROIDialog::SaveROIData() {
     GlobalROIConfig.Enabled = enabled;
   }
 
-  // Save to persistent storage (survives OBS restarts)
-  SavePersistentROIConfig();
+  // Save to each active encoder's persistent settings (per-profile/scene)
+  {
+    std::lock_guard<std::mutex> lock(EncoderDataMapMutex);
+    for (auto &pair : EncoderDataMap) {
+      SaveROIToEncoderSettings(pair.second);
+    }
+  }
 
   // If any encoder instances exist, apply immediately with per-encoder conversion
   ApplyROIToAllActiveEncoders(normRegions, mode, enabled);

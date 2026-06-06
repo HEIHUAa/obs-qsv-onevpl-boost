@@ -191,10 +191,10 @@ std::vector<encoder_params::roi_region> NormalizeROIToPixel(
     const std::vector<encoder_params::normalized_roi_region> &NormRegions,
     mfxU16 OutWidth, mfxU16 OutHeight);
 
-// Persist GlobalROIConfig to OBS module config (survives OBS restarts)
-void SavePersistentROIConfig();
-// Load persisted config into GlobalROIConfig
-void LoadPersistentROIConfig();
+// Save GlobalROIConfig to a specific encoder's obs_data_t settings
+void SaveROIToEncoderSettings(plugin_context *Context);
+// Load ROI from encoder's obs_data_t settings into GlobalROIConfig and apply
+void LoadROIFromEncoderSettings(plugin_context *Context);
 
 #if defined(_WIN32) || defined(_WIN64)
 #include <malloc.h>
