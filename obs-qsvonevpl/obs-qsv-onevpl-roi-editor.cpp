@@ -101,7 +101,7 @@ ROIDialog::ROIDialog(QWidget *Parent)
   connect(ApplyButton, &QPushButton::clicked, this, &ROIDialog::OnApplyClicked);
   connect(CancelButton, &QPushButton::clicked, this,
           &ROIDialog::OnCancelClicked);
-  connect(AlwaysOnTopCheck, &QCheckBox::stateChanged, this,
+  connect(AlwaysOnTopCheck, &QCheckBox::checkStateChanged, this,
           &ROIDialog::OnToggleAlwaysOnTop);
 
   // Install event filter on preview widget for resize handling
@@ -182,15 +182,7 @@ void ROIDialog::PopulateEncoderList() {
     EncoderList.push_back(std::move(entry));
   };
 
-  // Method 1: obs_frontend_get_encoders() - returns all configured encoder instances
-  obs_encoder_t **encoders = obs_frontend_get_encoders();
-  if (encoders) {
-    for (size_t i = 0; encoders[i]; i++)
-      AddIfOurs(encoders[i]);
-    bfree(encoders);
-  }
-
-  // Method 2: Check streaming and recording outputs
+  // Check streaming and recording outputs for encoder instances
   obs_output_t *stream_output = obs_frontend_get_streaming_output();
   if (stream_output) {
     AddIfOurs(obs_output_get_video_encoder(stream_output));
@@ -209,10 +201,9 @@ void ROIDialog::PopulateEncoderList() {
     InfoLabel->setText(
         obs_module_text("ROIEditorDesc") +
         QStringLiteral(
-            "\n\n" OBS_MODULE_OBFUSCATE("No active QSV encoders found. "
-                                         "Please configure a QSV encoder in "
-                                         "OBS Settings -> Output first "
-                                         "and start streaming/recording.")));
+            "\n\nNo active QSV encoders found. "
+            "Configure a QSV encoder in OBS Settings -> Output "
+            "and start streaming/recording."));
     ApplyButton->setEnabled(false);
   } else {
     LoadROIData();
@@ -236,17 +227,22 @@ bool ROIDialog::CreatePreview() {
   if (!hwnd)
     return false;
 
-  // Get OBS video info for graphics adapter / format
+  // Build gs_init_data for obs_display_create
   struct obs_video_info ovi;
   obs_get_video_info(&ovi);
 
-  // Override size with widget size
-  ovi.base_width = (uint32_t)PreviewWidget->width();
-  ovi.base_height = (uint32_t)PreviewWidget->height();
-  ovi.output_width = ovi.base_width;
-  ovi.output_height = ovi.base_height;
+  gs_init_data init_data = {};
+  gs_window window = {};
+  window.hwnd = hwnd;
+  init_data.window = window;
+  init_data.cx = (uint32_t)PreviewWidget->width();
+  init_data.cy = (uint32_t)PreviewWidget->height();
+  init_data.num_backbuffers = 2;
+  init_data.format = ovi.output_format;
+  init_data.zsformat = GS_ZS_NONE;
+  init_data.adapter = ovi.adapter;
 
-  PreviewDisplay = obs_display_create(&ovi, (uintptr_t)hwnd);
+  PreviewDisplay = obs_display_create(&init_data, 0);
   if (!PreviewDisplay)
     return false;
 
@@ -483,7 +479,7 @@ void ROIDialog::OnCancelClicked() {
   reject();
 }
 
-void ROIDialog::OnToggleAlwaysOnTop(int State) {
+void ROIDialog::OnToggleAlwaysOnTop(Qt::CheckState State) {
   Qt::WindowFlags flags = windowFlags();
   if (State == Qt::Checked) {
     setWindowFlags(flags | Qt::WindowStaysOnTopHint);

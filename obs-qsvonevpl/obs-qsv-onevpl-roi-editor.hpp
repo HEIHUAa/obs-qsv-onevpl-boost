@@ -36,7 +36,7 @@ private slots:
   void OnEncoderSelected(int Index);
   void OnApplyClicked();
   void OnCancelClicked();
-  void OnToggleAlwaysOnTop(int State);
+  void OnToggleAlwaysOnTop(Qt::CheckState State);
 
 private:
   struct EncoderEntry {
