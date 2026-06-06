@@ -6,9 +6,6 @@
 #include <sstream>
 #include <cstdio>
 
-// Well-known key for the single global ROI config (instead of per-type keys)
-static const char *kDefaultROIConfigKey = "";
-
 // Helper: apply ROI config to all active encoder instances
 static void ApplyROIToAllActiveEncoders(
     const std::vector<encoder_params::roi_region> &Regions, mfxU16 Mode,
@@ -256,19 +253,12 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy) {
   std::vector<encoder_params::roi_region> regions;
 
   {
-    std::lock_guard<std::mutex> lock(PendingROIMutex);
-    auto it = PendingROIConfig.find(kDefaultROIConfigKey);
-    if (it != PendingROIConfig.end()) {
-      enabled = it->second.Enabled;
-      regions = it->second.Regions;
-      blog(LOG_DEBUG,
-           "[ROI Editor] DrawROIOverlay: reading global config, enabled=%d, regions=%zu",
-           (int)enabled, regions.size());
-    } else {
-      blog(LOG_DEBUG,
-           "[ROI Editor] DrawROIOverlay: no global ROI config found");
-      return;
-    }
+    std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
+    enabled = GlobalROIConfig.Enabled;
+    regions = GlobalROIConfig.Regions;
+    blog(LOG_DEBUG,
+         "[ROI Editor] DrawROIOverlay: reading global config, enabled=%d, regions=%zu",
+         (int)enabled, regions.size());
   }
 
   if (!enabled) {
@@ -491,18 +481,17 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy) {
 // ROI data load / save
 // ---------------------------------------------------------------------------
 void ROIDialog::LoadROIData() {
-  // Load from global pending config (always the source of truth)
-  std::lock_guard<std::mutex> lock(PendingROIMutex);
-  auto it = PendingROIConfig.find(kDefaultROIConfigKey);
-  if (it != PendingROIConfig.end()) {
-    ROIEnableCheck->setChecked(it->second.Enabled);
-    if (it->second.Mode == 1)
+  // Load from global ROI config (persists for dialog lifetime)
+  std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
+  if (GlobalROIConfig.Enabled || !GlobalROIConfig.Regions.empty()) {
+    ROIEnableCheck->setChecked(GlobalROIConfig.Enabled);
+    if (GlobalROIConfig.Mode == 1)
       PriorityRadio->setChecked(true);
     else
       QPDeltaRadio->setChecked(true);
 
     std::string text;
-    for (auto &r : it->second.Regions) {
+    for (auto &r : GlobalROIConfig.Regions) {
       if (!text.empty())
         text += "\n";
       text += std::to_string(r.Left) + " " +
@@ -514,7 +503,7 @@ void ROIDialog::LoadROIData() {
     ROITextEdit->setPlainText(QString::fromStdString(text));
     blog(LOG_DEBUG,
          "[ROI Editor] LoadROIData: loaded global config, enabled=%d, regions=%zu",
-         (int)it->second.Enabled, it->second.Regions.size());
+         (int)GlobalROIConfig.Enabled, GlobalROIConfig.Regions.size());
   } else {
     // No saved config - use defaults
     ROIEnableCheck->setChecked(false);
@@ -549,13 +538,12 @@ void ROIDialog::SaveROIData() {
   mfxU16 mode = (ModeGroup->checkedId() == 1) ? 1 : 0;
   bool enabled = ROIEnableCheck->isChecked();
 
-  // Always save to global pending config (survives encoder restart)
+  // Always save to global ROI config (survives encoder restart)
   {
-    std::lock_guard<std::mutex> lock(PendingROIMutex);
-    auto &cfg = PendingROIConfig[kDefaultROIConfigKey];
-    cfg.Regions = regions;
-    cfg.Mode = mode;
-    cfg.Enabled = enabled;
+    std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
+    GlobalROIConfig.Regions = regions;
+    GlobalROIConfig.Mode = mode;
+    GlobalROIConfig.Enabled = enabled;
   }
 
   // If any encoder instances exist, apply immediately to ALL active encoders

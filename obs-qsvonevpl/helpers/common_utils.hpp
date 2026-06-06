@@ -181,6 +181,10 @@ struct pending_roi_config {
 extern std::map<std::string, pending_roi_config> PendingROIConfig;
 extern std::mutex PendingROIMutex;
 
+// Single global ROI config (replaces per-type/PendingROIConfig[""] indirection)
+extern pending_roi_config GlobalROIConfig;
+extern std::mutex GlobalROIConfigMutex;
+
 #if defined(_WIN32) || defined(_WIN64)
 #include <malloc.h>
 #endif

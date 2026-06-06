@@ -12,6 +12,10 @@ std::mutex EncoderDataMapMutex;
 std::map<std::string, pending_roi_config> PendingROIConfig;
 std::mutex PendingROIMutex;
 
+// Single global ROI config (used by the ROI Editor dialog)
+pending_roi_config GlobalROIConfig;
+std::mutex GlobalROIConfigMutex;
+
 void RegisterEncoderData(obs_encoder_t *Encoder, plugin_context *Context) {
   {
     std::lock_guard<std::mutex> lock(EncoderDataMapMutex);
@@ -34,14 +38,16 @@ void RegisterEncoderData(obs_encoder_t *Encoder, plugin_context *Context) {
          enc_id);
   }
 
-  auto def = PendingROIConfig.find("");
-  if (def != PendingROIConfig.end() && def->second.Enabled &&
-      !def->second.Regions.empty()) {
-    UpdateEncoderROI(Context, def->second.Regions, def->second.Mode,
-                     def->second.Enabled);
-    blog(LOG_INFO,
-         "[QSV VPL] Applied global default ROI config to encoder: %s",
-         enc_id);
+  // (2) Global ROI config — always applied, never consumed
+  {
+    std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
+    if (GlobalROIConfig.Enabled && !GlobalROIConfig.Regions.empty()) {
+      UpdateEncoderROI(Context, GlobalROIConfig.Regions,
+                       GlobalROIConfig.Mode, GlobalROIConfig.Enabled);
+      blog(LOG_INFO,
+           "[QSV VPL] Applied global ROI config to encoder: %s",
+           enc_id);
+    }
   }
 }
 
