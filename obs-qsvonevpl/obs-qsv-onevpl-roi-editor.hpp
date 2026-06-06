@@ -1,7 +1,6 @@
 #pragma once
 
 #include <QDialog>
-#include <QComboBox>
 #include <QTextEdit>
 #include <QPushButton>
 #include <QLabel>
@@ -11,7 +10,6 @@
 #include <QCheckBox>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
-#include <QGridLayout>
 #include <QShowEvent>
 #include <QCloseEvent>
 #include <QTimer>
@@ -34,22 +32,13 @@ protected:
   bool eventFilter(QObject *Obj, QEvent *Event) override;
 
 private slots:
-  void OnEncoderSelected(int Index);
   void OnApplyClicked();
   void OnCancelClicked();
   void OnToggleAlwaysOnTop(Qt::CheckState State);
 
 private:
-  struct EncoderEntry {
-    std::string TypeID; // encoder type ID (e.g. "obs_qsv_vpl_h264")
-    std::string Name;   // display name
-  };
-
-  void PopulateEncoderList();
   void LoadROIData();
   void SaveROIData();
-  static std::string GetCurrentTypeID(QComboBox *Combo,
-                                       const std::vector<EncoderEntry> &List);
 
   // Preview
   bool CreatePreview();
@@ -60,9 +49,6 @@ private:
   void DrawROIOverlay(uint32_t cx, uint32_t cy);
 
   QLabel *InfoLabel;
-
-  // Encoder selection
-  QComboBox *EncoderCombo;
 
   // ROI enable toggle
   QCheckBox *ROIEnableCheck;
@@ -87,6 +73,4 @@ private:
   QWidget *PreviewWidget;
   obs_display_t *PreviewDisplay;
   QTimer *RefreshTimer;       // periodic preview refresh
-
-  std::vector<EncoderEntry> EncoderList;
 };

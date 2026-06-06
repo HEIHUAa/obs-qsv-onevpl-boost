@@ -26,12 +26,21 @@ void RegisterEncoderData(obs_encoder_t *Encoder, plugin_context *Context) {
   std::lock_guard<std::mutex> lock(PendingROIMutex);
   auto it = PendingROIConfig.find(enc_id);
   if (it != PendingROIConfig.end()) {
-    // Apply pending config
     UpdateEncoderROI(Context, it->second.Regions, it->second.Mode,
                      it->second.Enabled);
     PendingROIConfig.erase(it);
     blog(LOG_INFO,
          "[QSV VPL] Applied pending ROI config for encoder type: %s",
+         enc_id);
+  }
+
+  auto def = PendingROIConfig.find("");
+  if (def != PendingROIConfig.end() && def->second.Enabled &&
+      !def->second.Regions.empty()) {
+    UpdateEncoderROI(Context, def->second.Regions, def->second.Mode,
+                     def->second.Enabled);
+    blog(LOG_INFO,
+         "[QSV VPL] Applied global default ROI config to encoder: %s",
          enc_id);
   }
 }

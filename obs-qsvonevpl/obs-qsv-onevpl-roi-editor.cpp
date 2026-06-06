@@ -6,26 +6,17 @@
 #include <sstream>
 #include <cstdio>
 
-// Helper: get type ID from current encoder selection
-std::string ROIDialog::GetCurrentTypeID(QComboBox *Combo,
-                                         const std::vector<EncoderEntry> &List) {
-  int idx = Combo->currentIndex();
-  if (idx < 0 || idx >= (int)List.size())
-    return {};
-  return List[idx].TypeID;
-}
+// Well-known key for the single global ROI config (instead of per-type keys)
+static const char *kDefaultROIConfigKey = "";
 
-// Helper: find plugin_context by encoder type ID (nullptr if not encoding)
-static plugin_context *FindCtxByTypeID(const std::string &TypeID) {
-  if (TypeID.empty())
-    return nullptr;
+// Helper: apply ROI config to all active encoder instances
+static void ApplyROIToAllActiveEncoders(
+    const std::vector<encoder_params::roi_region> &Regions, mfxU16 Mode,
+    bool Enabled) {
   std::lock_guard<std::mutex> lock(EncoderDataMapMutex);
   for (auto &pair : EncoderDataMap) {
-    const char *id = obs_encoder_get_id(pair.first);
-    if (id && TypeID == id)
-      return pair.second;
+    UpdateEncoderROI(pair.second, Regions, Mode, Enabled);
   }
-  return nullptr;
 }
 
 ROIDialog::ROIDialog(QWidget *Parent)
@@ -53,23 +44,16 @@ ROIDialog::ROIDialog(QWidget *Parent)
   PreviewLayout->addWidget(PreviewWidget);
   MainLayout->addWidget(PreviewGroup);
 
-  // === Encoder selector + enable toggle ===
-  auto *EncoderGroup = new QGroupBox(obs_module_text("ROISelectEncoder"), this);
-  auto *EncoderGrid = new QGridLayout(EncoderGroup);
-
-  EncoderCombo = new QComboBox(this);
-  EncoderGrid->addWidget(new QLabel(obs_module_text("ROIEncoder"), this), 0, 0);
-  EncoderGrid->addWidget(EncoderCombo, 0, 1);
-
+  // === Controls row: enable toggle + always-on-top ===
+  auto *ControlsLayout = new QHBoxLayout();
   ROIEnableCheck = new QCheckBox(obs_module_text("ROIEnabled"), this);
   ROIEnableCheck->setChecked(true);
-  EncoderGrid->addWidget(ROIEnableCheck, 0, 2);
-
+  ControlsLayout->addWidget(ROIEnableCheck);
+  ControlsLayout->addStretch();
   AlwaysOnTopCheck = new QCheckBox(obs_module_text("AlwaysOnTop"), this);
   AlwaysOnTopCheck->setChecked(false);
-  EncoderGrid->addWidget(AlwaysOnTopCheck, 0, 3);
-
-  MainLayout->addWidget(EncoderGroup);
+  ControlsLayout->addWidget(AlwaysOnTopCheck);
+  MainLayout->addLayout(ControlsLayout);
 
   // === ROI Mode selection ===
   auto *ModeGroupBox = new QGroupBox(obs_module_text("ROIMode"), this);
@@ -109,8 +93,6 @@ ROIDialog::ROIDialog(QWidget *Parent)
   MainLayout->addLayout(ButtonLayout);
 
   // Connections
-  connect(EncoderCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-          this, &ROIDialog::OnEncoderSelected);
   connect(ApplyButton, &QPushButton::clicked, this, &ROIDialog::OnApplyClicked);
   connect(CancelButton, &QPushButton::clicked, this,
           &ROIDialog::OnCancelClicked);
@@ -121,14 +103,13 @@ ROIDialog::ROIDialog(QWidget *Parent)
   PreviewWidget->installEventFilter(this);
 
   // Periodic refresh timer: forces obs_display to redraw every ~100ms
-  // This ensures manually set ROI parameters appear on the preview immediately
   RefreshTimer->setInterval(100);
   connect(RefreshTimer, &QTimer::timeout, this, [this]() {
     ForceRefreshPreview();
   });
 
-  // Populate encoder list at construction time
-  PopulateEncoderList();
+  // Load saved ROI data (if any)
+  LoadROIData();
 }
 
 ROIDialog::~ROIDialog() {
@@ -151,64 +132,6 @@ void ROIDialog::closeEvent(QCloseEvent *Event) {
   RefreshTimer->stop();
   DestroyPreview();
   QDialog::closeEvent(Event);
-}
-
-// ---------------------------------------------------------------------------
-// Enumerate QSV encoder types registered by this plugin
-// ---------------------------------------------------------------------------
-void ROIDialog::PopulateEncoderList() {
-  EncoderList.clear();
-  EncoderCombo->clear();
-
-  // Known QSV plugin encoder IDs
-  static const char *PluginEncoderIDs[] = {
-      "obs_qsv_vpl_h264",   "obs_qsv_vpl_h264_tex",
-      "obs_qsv_vpl_hevc",   "obs_qsv_vpl_hevc_tex",
-      "obs_qsv_vpl_av1",    "obs_qsv_vpl_av1_tex",
-      nullptr};
-
-  // Enumerate all registered encoder types and filter by plugin IDs
-  for (const char **pid = PluginEncoderIDs; *pid; pid++) {
-    bool found = false;
-    for (size_t idx = 0;; idx++) {
-      const char *type_id = nullptr;
-      if (!obs_enum_encoder_types(idx, &type_id))
-        break;
-      if (type_id && strcmp(type_id, *pid) == 0) {
-        found = true;
-        break;
-      }
-    }
-    if (!found)
-      continue;
-
-    QString displayName;
-    if (strstr(*pid, "av1"))
-      displayName = "QSV AV1 (VPL)";
-    else if (strstr(*pid, "hevc"))
-      displayName = "QSV HEVC (VPL)";
-    else
-      displayName = "QSV H.264 (VPL)";
-    if (strstr(*pid, "_tex"))
-      displayName += " [tex]";
-
-    EncoderEntry entry;
-    entry.TypeID = *pid;
-    entry.Name = displayName.toStdString();
-    EncoderList.push_back(std::move(entry));
-    EncoderCombo->addItem(displayName);
-  }
-
-  if (EncoderList.empty()) {
-    InfoLabel->setText(
-        obs_module_text("ROIEditorDesc") +
-        QStringLiteral(
-            "\n\nNo QSV encoders available. "
-            "The QSV VPL plugin encoders may not be registered correctly."));
-    ApplyButton->setEnabled(false);
-  } else {
-    LoadROIData();
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -328,37 +251,22 @@ void ROIDialog::PreviewDraw(void *param, uint32_t cx, uint32_t cy) {
 }
 
 void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy) {
-  // --- 1. Read ROI data ---
-  std::string typeId = GetCurrentTypeID(EncoderCombo, EncoderList);
-  if (typeId.empty()) {
-    blog(LOG_DEBUG, "[ROI Editor] DrawROIOverlay: typeId empty, skipping");
-    return;
-  }
-
+  // --- 1. Read ROI data from global config ---
   bool enabled = false;
   std::vector<encoder_params::roi_region> regions;
 
-  plugin_context *ctx = FindCtxByTypeID(typeId);
-  if (ctx) {
-    std::lock_guard<std::mutex> lock(ctx->EncoderMutex);
-    enabled = ctx->EncoderParams.ROIEnabled;
-    regions = ctx->EncoderParams.ROIRegions;
-    blog(LOG_DEBUG,
-         "[ROI Editor] DrawROIOverlay: reading from active ctx, enabled=%d, regions=%zu",
-         (int)enabled, regions.size());
-  } else {
+  {
     std::lock_guard<std::mutex> lock(PendingROIMutex);
-    auto it = PendingROIConfig.find(typeId);
+    auto it = PendingROIConfig.find(kDefaultROIConfigKey);
     if (it != PendingROIConfig.end()) {
       enabled = it->second.Enabled;
       regions = it->second.Regions;
       blog(LOG_DEBUG,
-           "[ROI Editor] DrawROIOverlay: reading from pending config, enabled=%d, regions=%zu",
+           "[ROI Editor] DrawROIOverlay: reading global config, enabled=%d, regions=%zu",
            (int)enabled, regions.size());
     } else {
       blog(LOG_DEBUG,
-           "[ROI Editor] DrawROIOverlay: no config found for typeId=%s",
-           typeId.c_str());
+           "[ROI Editor] DrawROIOverlay: no global ROI config found");
       return;
     }
   }
@@ -582,18 +490,10 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy) {
 // ---------------------------------------------------------------------------
 // ROI data load / save
 // ---------------------------------------------------------------------------
-void ROIDialog::OnEncoderSelected(int /*Index*/) {
-  LoadROIData();
-}
-
 void ROIDialog::LoadROIData() {
-  std::string typeId = GetCurrentTypeID(EncoderCombo, EncoderList);
-  if (typeId.empty())
-    return;
-
-  // Load from pending config (always the source of truth)
+  // Load from global pending config (always the source of truth)
   std::lock_guard<std::mutex> lock(PendingROIMutex);
-  auto it = PendingROIConfig.find(typeId);
+  auto it = PendingROIConfig.find(kDefaultROIConfigKey);
   if (it != PendingROIConfig.end()) {
     ROIEnableCheck->setChecked(it->second.Enabled);
     if (it->second.Mode == 1)
@@ -612,22 +512,20 @@ void ROIDialog::LoadROIData() {
               std::to_string(r.DeltaQP);
     }
     ROITextEdit->setPlainText(QString::fromStdString(text));
+    blog(LOG_DEBUG,
+         "[ROI Editor] LoadROIData: loaded global config, enabled=%d, regions=%zu",
+         (int)it->second.Enabled, it->second.Regions.size());
   } else {
     // No saved config - use defaults
     ROIEnableCheck->setChecked(false);
     QPDeltaRadio->setChecked(true);
     ROITextEdit->clear();
+    blog(LOG_DEBUG,
+         "[ROI Editor] LoadROIData: no global config found, using defaults");
   }
 }
 
 void ROIDialog::SaveROIData() {
-  std::string typeId = GetCurrentTypeID(EncoderCombo, EncoderList);
-  if (typeId.empty()) {
-    QMessageBox::warning(this, obs_module_text("ROIEditor"),
-                         "No encoder selected.");
-    return;
-  }
-
   // Parse text input into ROI regions
   std::vector<encoder_params::roi_region> regions;
   std::string text = ROITextEdit->toPlainText().toStdString();
@@ -651,25 +549,24 @@ void ROIDialog::SaveROIData() {
   mfxU16 mode = (ModeGroup->checkedId() == 1) ? 1 : 0;
   bool enabled = ROIEnableCheck->isChecked();
 
-  // Always save to pending config (survives encoder restart)
+  // Always save to global pending config (survives encoder restart)
   {
     std::lock_guard<std::mutex> lock(PendingROIMutex);
-    PendingROIConfig[typeId].Regions = regions;
-    PendingROIConfig[typeId].Mode = mode;
-    PendingROIConfig[typeId].Enabled = enabled;
+    auto &cfg = PendingROIConfig[kDefaultROIConfigKey];
+    cfg.Regions = regions;
+    cfg.Mode = mode;
+    cfg.Enabled = enabled;
   }
 
-  // If encoder instance exists, apply immediately
-  plugin_context *ctx = FindCtxByTypeID(typeId);
-  if (ctx)
-    UpdateEncoderROI(ctx, regions, mode, enabled);
+  // If any encoder instances exist, apply immediately to ALL active encoders
+  ApplyROIToAllActiveEncoders(regions, mode, enabled);
 
   // Force preview refresh to show updated ROI regions
   ForceRefreshPreview();
 
   blog(LOG_INFO,
-       "[QSV VPL] ROI config applied for type=%s, enabled=%d, regions=%zu, mode=%d",
-       typeId.c_str(), (int)enabled, regions.size(), (int)mode);
+       "[QSV VPL] ROI config saved: enabled=%d, regions=%zu, mode=%d",
+       (int)enabled, regions.size(), (int)mode);
 
   QMessageBox::information(this, obs_module_text("ROIEditor"),
                            obs_module_text("ROIApplySuccess"));
