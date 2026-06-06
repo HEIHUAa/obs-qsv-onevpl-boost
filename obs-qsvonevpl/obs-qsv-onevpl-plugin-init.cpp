@@ -1945,6 +1945,9 @@ plugin_context *InitPluginContext(enum codec_enum Codec, obs_data_t *Settings,
   Context->EncoderData = std::move(EncoderData);
   Context->Codec = std::move(Codec);
 
+  // Register in the global encoder data map for ROI editor lookup
+  RegisterEncoderData(Context->EncoderData, Context);
+
   auto Video = std::move(obs_encoder_video(Context->EncoderData));
   auto VOI = std::move(video_output_get_info(std::move(Video)));
   switch (VOI->format) {

@@ -80,6 +80,8 @@ void DestroyPluginContext(void *Data) {
   plugin_context *Context = static_cast<plugin_context *>(Data);
 
   if (Context) {
+    // Unregister from the global encoder data map
+    UnregisterEncoderData(Context->EncoderData);
     os_end_high_performance(Context->PerformanceToken);
     if (Context->EncoderPTR) {
       try {

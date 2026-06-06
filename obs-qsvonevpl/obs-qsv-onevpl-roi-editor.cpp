@@ -94,7 +94,7 @@ void ROIDialog::PopulateEncoderList() {
     if (!isPluginEncoder)
       return true;
 
-    void *encoderData = obs_encoder_get_data(Encoder);
+    void *encoderData = LookupEncoderData(Encoder);
     if (!encoderData)
       return true;
 

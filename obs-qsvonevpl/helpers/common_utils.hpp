@@ -81,6 +81,9 @@
 #ifndef _MUTEX_
 #include <mutex>
 #endif
+#ifndef _MAP_
+#include <map>
+#endif
 
 #ifndef __MFX_H__
 #include <vpl/mfx.h>
@@ -157,6 +160,16 @@ extern std::mutex GlobalLoaderMutex;
 
 void InitGlobalLoader();
 void ReleaseGlobalLoader();
+
+// Encoder data registry - maps obs_encoder_t* to plugin_context*
+// Used by ROI editor to look up encoder data without using internal OBS APIs
+struct plugin_context;
+extern std::map<obs_encoder_t *, plugin_context *> EncoderDataMap;
+extern std::mutex EncoderDataMapMutex;
+
+void RegisterEncoderData(obs_encoder_t *Encoder, plugin_context *Context);
+void UnregisterEncoderData(obs_encoder_t *Encoder);
+plugin_context *LookupEncoderData(obs_encoder_t *Encoder);
 
 #if defined(_WIN32) || defined(_WIN64)
 #include <malloc.h>
