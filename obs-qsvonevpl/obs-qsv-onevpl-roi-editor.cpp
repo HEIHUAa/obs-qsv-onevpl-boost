@@ -238,7 +238,7 @@ bool ROIDialog::CreatePreview() {
   init_data.cx = (uint32_t)PreviewWidget->width();
   init_data.cy = (uint32_t)PreviewWidget->height();
   init_data.num_backbuffers = 2;
-  init_data.format = ovi.output_format;
+  init_data.format = GS_BGRA;
   init_data.zsformat = GS_ZS_NONE;
   init_data.adapter = ovi.adapter;
 
