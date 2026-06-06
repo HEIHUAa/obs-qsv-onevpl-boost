@@ -14,6 +14,7 @@
 #include <QGridLayout>
 #include <QShowEvent>
 #include <QCloseEvent>
+#include <QTimer>
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 #include "obs-qsv-onevpl-encoder.hpp"
@@ -54,6 +55,7 @@ private:
   bool CreatePreview();
   void DestroyPreview();
   void ResizePreview();
+  void ForceRefreshPreview();
   static void PreviewDraw(void *param, uint32_t cx, uint32_t cy);
   void DrawROIOverlay(uint32_t cx, uint32_t cy);
 
@@ -84,6 +86,7 @@ private:
   // Preview
   QWidget *PreviewWidget;
   obs_display_t *PreviewDisplay;
+  QTimer *RefreshTimer;       // periodic preview refresh
 
   std::vector<EncoderEntry> EncoderList;
 };

@@ -31,7 +31,8 @@ static plugin_context *FindCtxByTypeID(const std::string &TypeID) {
 ROIDialog::ROIDialog(QWidget *Parent)
     : QDialog(Parent),
       PreviewDisplay(nullptr),
-      PreviewWidget(nullptr) {
+      PreviewWidget(nullptr),
+      RefreshTimer(new QTimer(this)) {
   setWindowTitle(obs_module_text("ROIEditor"));
   setMinimumSize(860, 680);
   resize(960, 720);
@@ -119,6 +120,13 @@ ROIDialog::ROIDialog(QWidget *Parent)
   // Install event filter on preview widget for resize handling
   PreviewWidget->installEventFilter(this);
 
+  // Periodic refresh timer: forces obs_display to redraw every ~100ms
+  // This ensures manually set ROI parameters appear on the preview immediately
+  RefreshTimer->setInterval(100);
+  connect(RefreshTimer, &QTimer::timeout, this, [this]() {
+    ForceRefreshPreview();
+  });
+
   // Populate encoder list at construction time
   PopulateEncoderList();
 }
@@ -135,9 +143,12 @@ void ROIDialog::showEvent(QShowEvent *Event) {
     if (!PreviewDisplay)
       CreatePreview();
   });
+  // Start periodic refresh timer
+  RefreshTimer->start();
 }
 
 void ROIDialog::closeEvent(QCloseEvent *Event) {
+  RefreshTimer->stop();
   DestroyPreview();
   QDialog::closeEvent(Event);
 }
@@ -259,6 +270,14 @@ void ROIDialog::ResizePreview() {
   }
 }
 
+void ROIDialog::ForceRefreshPreview() {
+  if (!PreviewDisplay)
+    return;
+  // Toggle enabled state to force obs_display to re-evaluate and redraw
+  obs_display_set_enabled(PreviewDisplay, false);
+  obs_display_set_enabled(PreviewDisplay, true);
+}
+
 bool ROIDialog::eventFilter(QObject *Obj, QEvent *Event) {
   if (Obj == PreviewWidget && Event->type() == QEvent::Resize) {
     ResizePreview();
@@ -309,104 +328,229 @@ void ROIDialog::PreviewDraw(void *param, uint32_t cx, uint32_t cy) {
 }
 
 void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy) {
+  // --- 1. Read ROI data ---
   std::string typeId = GetCurrentTypeID(EncoderCombo, EncoderList);
-  if (typeId.empty())
+  if (typeId.empty()) {
+    blog(LOG_DEBUG, "[ROI Editor] DrawROIOverlay: typeId empty, skipping");
     return;
+  }
 
   bool enabled = false;
-  mfxU16 mode = 0;
   std::vector<encoder_params::roi_region> regions;
 
-  // Try reading from encoder instance first (already has pending config applied)
   plugin_context *ctx = FindCtxByTypeID(typeId);
   if (ctx) {
     std::lock_guard<std::mutex> lock(ctx->EncoderMutex);
     enabled = ctx->EncoderParams.ROIEnabled;
-    mode = ctx->EncoderParams.ROIMode;
     regions = ctx->EncoderParams.ROIRegions;
+    blog(LOG_DEBUG,
+         "[ROI Editor] DrawROIOverlay: reading from active ctx, enabled=%d, regions=%zu",
+         (int)enabled, regions.size());
   } else {
-    // Fallback to pending config
     std::lock_guard<std::mutex> lock(PendingROIMutex);
     auto it = PendingROIConfig.find(typeId);
     if (it != PendingROIConfig.end()) {
       enabled = it->second.Enabled;
-      mode = it->second.Mode;
       regions = it->second.Regions;
+      blog(LOG_DEBUG,
+           "[ROI Editor] DrawROIOverlay: reading from pending config, enabled=%d, regions=%zu",
+           (int)enabled, regions.size());
+    } else {
+      blog(LOG_DEBUG,
+           "[ROI Editor] DrawROIOverlay: no config found for typeId=%s",
+           typeId.c_str());
+      return;
     }
   }
 
-  if (!enabled || regions.empty())
+  if (!enabled) {
+    blog(LOG_DEBUG, "[ROI Editor] DrawROIOverlay: ROI not enabled");
     return;
+  }
+  if (regions.empty()) {
+    blog(LOG_DEBUG, "[ROI Editor] DrawROIOverlay: no regions");
+    return;
+  }
 
-  // Get output (scaled) and base dimensions from OBS video info
+  // --- 2. Get output/base dimensions ---
   struct obs_video_info ovi;
   obs_get_video_info(&ovi);
-  if (ovi.output_width < 1 || ovi.output_height < 1)
+  if (ovi.output_width < 1 || ovi.output_height < 1) {
+    blog(LOG_DEBUG, "[ROI Editor] DrawROIOverlay: invalid output dimensions");
     return;
-  if (ovi.base_width < 1 || ovi.base_height < 1)
+  }
+  if (ovi.base_width < 1 || ovi.base_height < 1) {
+    blog(LOG_DEBUG, "[ROI Editor] DrawROIOverlay: invalid base dimensions");
     return;
+  }
 
   float out_w = (float)ovi.output_width;
   float out_h = (float)ovi.output_height;
   float base_w = (float)ovi.base_width;
   float base_h = (float)ovi.base_height;
 
-  // Same viewport calculation as PreviewDraw
+  blog(LOG_DEBUG,
+       "[ROI Editor] DrawROIOverlay: base=%gx%g output=%gx%g widget=%ux%u",
+       base_w, base_h, out_w, out_h, cx, cy);
+
+  // Viewport (same as PreviewDraw)
   float scale = std::min((float)cx / base_w, (float)cy / base_h);
   float vp_w = base_w * scale;
   float vp_h = base_h * scale;
   float vp_x = ((float)cx - vp_w) * 0.5f;
   float vp_y = ((float)cy - vp_h) * 0.5f;
 
-  // Set up solid color effect from OBS base effects
+  // --- 3. Region segmentation for overlap resolution ---
+  // Collect unique x/y boundaries from all ROI rectangles
+  std::vector<mfxU16> xs, ys;
+  for (auto &r : regions) {
+    xs.push_back(r.Left);
+    xs.push_back(r.Right);
+    ys.push_back(r.Top);
+    ys.push_back(r.Bottom);
+  }
+  std::sort(xs.begin(), xs.end());
+  std::sort(ys.begin(), ys.end());
+  xs.erase(std::unique(xs.begin(), xs.end()), xs.end());
+  ys.erase(std::unique(ys.begin(), ys.end()), ys.end());
+
+  // Build a grid: for each cell (xs[i]..xs[i+1], ys[j]..ys[j+1]),
+  // compute composite DeltaQP = sum of all ROIs covering this cell
+  struct Cell {
+    mfxU16 x1, y1, x2, y2;
+    mfxI16 deltaQP; // composite value
+  };
+  std::vector<Cell> cells;
+  for (size_t yi = 0; yi + 1 < ys.size(); yi++) {
+    for (size_t xi = 0; xi + 1 < xs.size(); xi++) {
+      mfxI16 sumQP = 0;
+      for (auto &r : regions) {
+        if (xs[xi] >= r.Left && xs[xi + 1] <= r.Right &&
+            ys[yi] >= r.Top && ys[yi + 1] <= r.Bottom) {
+          sumQP += r.DeltaQP;
+        }
+      }
+      if (sumQP == 0)
+        continue; // skip cells with no net effect
+      cells.push_back({xs[xi], ys[yi], xs[xi + 1], ys[yi + 1], sumQP});
+    }
+  }
+
+  if (cells.empty()) {
+    blog(LOG_DEBUG, "[ROI Editor] DrawROIOverlay: cells empty after segmentation, drawing raw regions");
+
+    // --- Fallback: draw raw regions if no overlap ---
+    gs_effect_t *solid_raw = obs_get_base_effect(OBS_EFFECT_SOLID);
+    if (!solid_raw)
+      return;
+    gs_technique_t *tech_raw = gs_effect_get_technique(solid_raw, "Solid");
+    if (!tech_raw)
+      return;
+    gs_eparam_t *color_param_raw = gs_effect_get_param_by_name(solid_raw, "color");
+
+    gs_technique_begin(tech_raw);
+    gs_technique_begin_pass(tech_raw, 0);
+
+    for (auto &r : regions) {
+      float x1 = vp_x + (float)r.Left * (vp_w / out_w);
+      float y1 = vp_y + (float)r.Top * (vp_h / out_h);
+      float x2 = vp_x + (float)r.Right * (vp_w / out_w);
+      float y2 = vp_y + (float)r.Bottom * (vp_h / out_h);
+
+      x1 = (x1 < 0) ? 0 : (x1 > (float)cx ? (float)cx : x1);
+      y1 = (y1 < 0) ? 0 : (y1 > (float)cy ? (float)cy : y1);
+      x2 = (x2 < 0) ? 0 : (x2 > (float)cx ? (float)cx : x2);
+      y2 = (y2 < 0) ? 0 : (y2 > (float)cy ? (float)cy : y2);
+      if (x2 <= x1 || y2 <= y1)
+        continue;
+
+      vec4 color;
+      vec4_zero(&color);
+      float intensity = std::min((float)std::abs(r.DeltaQP) / 25.0f, 1.0f);
+      intensity = std::max(intensity, 0.3f);
+      float alpha = 0.35f;
+
+      if (r.DeltaQP < 0) {
+        // Red (减QP = 更高质量)
+        vec4_set(&color, intensity, 0.1f, 0.1f, alpha);
+      } else {
+        // Green (加QP = 更低质量)
+        vec4_set(&color, 0.1f * (1.0f - intensity), intensity, 0.1f, alpha);
+      }
+
+      gs_effect_set_vec4(color_param_raw, &color);
+
+      struct gs_vb_data *vbd = gs_vbdata_create();
+      vbd->num = 4;
+      vbd->points = (struct vec3 *)bzalloc(sizeof(struct vec3) * 4);
+      vbd->points[0].x = x1; vbd->points[0].y = y1; vbd->points[0].z = 0.0f;
+      vbd->points[1].x = x2; vbd->points[1].y = y1; vbd->points[1].z = 0.0f;
+      vbd->points[2].x = x1; vbd->points[2].y = y2; vbd->points[2].z = 0.0f;
+      vbd->points[3].x = x2; vbd->points[3].y = y2; vbd->points[3].z = 0.0f;
+
+      gs_vertbuffer_t *vb = gs_vertexbuffer_create(vbd, GS_DYNAMIC);
+      if (vb) {
+        gs_load_vertexbuffer(vb);
+        gs_draw(GS_TRISTRIP, 0, 4);
+        gs_vertexbuffer_destroy(vb);
+      }
+    }
+
+    gs_technique_end_pass(tech_raw);
+    gs_technique_end(tech_raw);
+    return;
+  }
+
+  blog(LOG_DEBUG,
+       "[ROI Editor] DrawROIOverlay: drawing %zu segmented cells",
+       cells.size());
+
+  // --- 4. Draw with solid effect ---
   gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
   if (!solid)
     return;
-
   gs_technique_t *tech = gs_effect_get_technique(solid, "Solid");
   if (!tech)
     return;
+  gs_eparam_t *color_param = gs_effect_get_param_by_name(solid, "color");
 
   gs_technique_begin(tech);
   gs_technique_begin_pass(tech, 0);
 
-  gs_eparam_t *color_param = gs_effect_get_param_by_name(solid, "color");
+  for (auto &cell : cells) {
+    // Map cell from output resolution → preview widget pixel coords
+    float x1 = vp_x + (float)cell.x1 * (vp_w / out_w);
+    float y1 = vp_y + (float)cell.y1 * (vp_h / out_h);
+    float x2 = vp_x + (float)cell.x2 * (vp_w / out_w);
+    float y2 = vp_y + (float)cell.y2 * (vp_h / out_h);
 
-  for (auto &r : regions) {
-    // Map ROI from output resolution → preview widget pixel coordinates
-    // Path: output → base → widget (via viewport)
-    float x1 = vp_x + (float)r.Left * (vp_w / out_w);
-    float y1 = vp_y + (float)r.Top * (vp_h / out_h);
-    float x2 = vp_x + (float)r.Right * (vp_w / out_w);
-    float y2 = vp_y + (float)r.Bottom * (vp_h / out_h);
-
-    // Clamp to preview widget area
+    // Clamp
     x1 = (x1 < 0) ? 0 : (x1 > (float)cx ? (float)cx : x1);
     y1 = (y1 < 0) ? 0 : (y1 > (float)cy ? (float)cy : y1);
     x2 = (x2 < 0) ? 0 : (x2 > (float)cx ? (float)cx : x2);
     y2 = (y2 < 0) ? 0 : (y2 > (float)cy ? (float)cy : y2);
-
     if (x2 <= x1 || y2 <= y1)
       continue;
 
-    // Color based on DeltaQP value
+    // Color: Red = negative DeltaQP (higher quality/bitrate)
+    //        Green = positive DeltaQP (lower quality/bitrate)
+    //        Intensity scales with |DeltaQP|
     vec4 color;
     vec4_zero(&color);
-    if (r.DeltaQP < 0) {
-      // Red (more bitrate) – semi-transparent
-      vec4_set(&color, 1.0f, 0.2f, 0.2f, 0.35f);
-    } else if (r.DeltaQP > 0) {
-      // Blue (less bitrate) – semi-transparent
-      vec4_set(&color, 0.2f, 0.4f, 1.0f, 0.35f);
+    float intensity = std::min((float)std::abs(cell.deltaQP) / 25.0f, 1.0f);
+    intensity = std::max(intensity, 0.3f); // minimum visibility
+    float alpha = 0.35f;
+
+    if (cell.deltaQP < 0) {
+      // Red (减QP = 更高质量): intensity controls redness
+      vec4_set(&color, intensity, 0.1f, 0.1f, alpha);
     } else {
-      // Green (default) – semi-transparent
-      vec4_set(&color, 0.2f, 1.0f, 0.2f, 0.25f);
+      // Green (加QP = 更低质量): intensity controls greenness
+      vec4_set(&color, 0.1f * (1.0f - intensity), intensity, 0.1f, alpha);
     }
 
     gs_effect_set_vec4(color_param, &color);
 
-    // Draw rectangle using immediate vertex buffer
-    // Use GS_TRISTRIP with 4 vertices
     struct gs_vb_data *vbd = gs_vbdata_create();
     vbd->num = 4;
     vbd->points = (struct vec3 *)bzalloc(sizeof(struct vec3) * 4);
@@ -519,6 +663,13 @@ void ROIDialog::SaveROIData() {
   plugin_context *ctx = FindCtxByTypeID(typeId);
   if (ctx)
     UpdateEncoderROI(ctx, regions, mode, enabled);
+
+  // Force preview refresh to show updated ROI regions
+  ForceRefreshPreview();
+
+  blog(LOG_INFO,
+       "[QSV VPL] ROI config applied for type=%s, enabled=%d, regions=%zu, mode=%d",
+       typeId.c_str(), (int)enabled, regions.size(), (int)mode);
 
   QMessageBox::information(this, obs_module_text("ROIEditor"),
                            obs_module_text("ROIApplySuccess"));
