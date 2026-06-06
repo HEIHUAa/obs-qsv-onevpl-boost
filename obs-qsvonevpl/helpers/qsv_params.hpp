@@ -135,7 +135,15 @@ struct encoder_params {
     mfxU16 Bottom;
     mfxI16 DeltaQP;
   };
+  struct normalized_roi_region {
+    double Left;    // 0.0 ~ 1.0 (fraction of output width)
+    double Top;     // 0.0 ~ 1.0 (fraction of output height)
+    double Right;   // 0.0 ~ 1.0
+    double Bottom;  // 0.0 ~ 1.0
+    mfxI16 DeltaQP;
+  };
   std::vector<roi_region> ROIRegions;
+  std::vector<normalized_roi_region> NormalizedROIRegions;
   mfxU16 ROIMode; // 0 = MFX_ROI_MODE_QP_DELTA, 1 = MFX_ROI_MODE_PRIORITY
   bool ROIEnabled = false;
 };

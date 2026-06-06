@@ -6,13 +6,36 @@
 #include <sstream>
 #include <cstdio>
 
+// Format a double with minimal precision (avoid scientific notation)
+static std::string FormatDouble(double Value) {
+  std::ostringstream ss;
+  ss.precision(6);
+  ss << std::fixed << Value;
+  std::string s = ss.str();
+  // Trim trailing zeros (but keep at least one decimal)
+  auto dot = s.find('.');
+  if (dot != std::string::npos) {
+    auto last = s.find_last_not_of('0');
+    if (last > dot)
+      s = s.substr(0, last + 1);
+    else
+      s = s.substr(0, dot + 2); // keep ".0"
+  }
+  return s;
+}
+
 // Helper: apply ROI config to all active encoder instances
+// Converts 0-1 normalized coordinates to pixel values per-encoder
 static void ApplyROIToAllActiveEncoders(
-    const std::vector<encoder_params::roi_region> &Regions, mfxU16 Mode,
-    bool Enabled) {
+    const std::vector<encoder_params::normalized_roi_region> &NormRegions,
+    mfxU16 Mode, bool Enabled) {
   std::lock_guard<std::mutex> lock(EncoderDataMapMutex);
   for (auto &pair : EncoderDataMap) {
-    UpdateEncoderROI(pair.second, Regions, Mode, Enabled);
+    auto pixelRegions = NormalizeROIToPixel(
+        NormRegions,
+        pair.second->EncoderParams.Width,
+        pair.second->EncoderParams.Height);
+    UpdateEncoderROI(pair.second, pixelRegions, Mode, Enabled);
   }
 }
 
@@ -39,7 +62,7 @@ ROIDialog::ROIDialog(QWidget *Parent)
   PreviewWidget->setMinimumSize(320, 240);
   PreviewWidget->setStyleSheet("background-color: black;");
   PreviewLayout->addWidget(PreviewWidget);
-  MainLayout->addWidget(PreviewGroup);
+  MainLayout->addWidget(PreviewGroup, 1); // give preview majority of vertical space
 
   // === Controls row: enable toggle + always-on-top ===
   auto *ControlsLayout = new QHBoxLayout();
@@ -75,7 +98,7 @@ ROIDialog::ROIDialog(QWidget *Parent)
   ROILayout->addWidget(ExampleLabel);
   ROITextEdit = new QTextEdit(this);
   ROITextEdit->setPlaceholderText(
-      "0 0 320 240 -10\n320 0 640 480 -5\n0 240 320 480 5");
+      "0 0 0.5 0.5 -10\n0.5 0 1 0.5 5\n0 0.5 0.5 1 -3");
   ROITextEdit->setFont(QFont("Consolas", 10));
   ROILayout->addWidget(ROITextEdit);
   MainLayout->addWidget(ROIGroup);
@@ -248,17 +271,31 @@ void ROIDialog::PreviewDraw(void *param, uint32_t cx, uint32_t cy) {
 }
 
 void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy) {
-  // --- 1. Read ROI data from global config ---
+  // --- 1. Read normalized ROI data; convert to pixel for display ---
   bool enabled = false;
-  std::vector<encoder_params::roi_region> regions;
+  std::vector<encoder_params::roi_region> regions; // pixel values for drawing
 
   {
     std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
     enabled = GlobalROIConfig.Enabled;
-    regions = GlobalROIConfig.Regions;
-    blog(LOG_DEBUG,
-         "[ROI Editor] DrawROIOverlay: reading global config, enabled=%d, regions=%zu",
-         (int)enabled, regions.size());
+    if (!GlobalROIConfig.NormalizedRegions.empty()) {
+      // Get output resolution for normalized→pixel conversion
+      struct obs_video_info ovi;
+      obs_get_video_info(&ovi);
+      mfxU16 outW = (mfxU16)ovi.output_width;
+      mfxU16 outH = (mfxU16)ovi.output_height;
+      if (outW > 0 && outH > 0) {
+        regions = NormalizeROIToPixel(GlobalROIConfig.NormalizedRegions,
+                                       outW, outH);
+      }
+      blog(LOG_DEBUG,
+           "[ROI Editor] DrawROIOverlay: reading normalized config, enabled=%d, regions=%zu",
+           (int)enabled, regions.size());
+    } else {
+      blog(LOG_DEBUG,
+           "[ROI Editor] DrawROIOverlay: no normalized regions");
+      return;
+    }
   }
 
   if (!enabled) {
@@ -481,9 +518,9 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy) {
 // ROI data load / save
 // ---------------------------------------------------------------------------
 void ROIDialog::LoadROIData() {
-  // Load from global ROI config (persists for dialog lifetime)
+  // Load from global ROI config (resolution-independent normalized values)
   std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
-  if (GlobalROIConfig.Enabled || !GlobalROIConfig.Regions.empty()) {
+  if (GlobalROIConfig.Enabled || !GlobalROIConfig.NormalizedRegions.empty()) {
     ROIEnableCheck->setChecked(GlobalROIConfig.Enabled);
     if (GlobalROIConfig.Mode == 1)
       PriorityRadio->setChecked(true);
@@ -491,19 +528,20 @@ void ROIDialog::LoadROIData() {
       QPDeltaRadio->setChecked(true);
 
     std::string text;
-    for (auto &r : GlobalROIConfig.Regions) {
+    for (auto &r : GlobalROIConfig.NormalizedRegions) {
       if (!text.empty())
         text += "\n";
-      text += std::to_string(r.Left) + " " +
-              std::to_string(r.Top) + " " +
-              std::to_string(r.Right) + " " +
-              std::to_string(r.Bottom) + " " +
-              std::to_string(r.DeltaQP);
+      text +=
+          FormatDouble(r.Left) + " " +
+          FormatDouble(r.Top) + " " +
+          FormatDouble(r.Right) + " " +
+          FormatDouble(r.Bottom) + " " +
+          std::to_string(r.DeltaQP);
     }
     ROITextEdit->setPlainText(QString::fromStdString(text));
     blog(LOG_DEBUG,
          "[ROI Editor] LoadROIData: loaded global config, enabled=%d, regions=%zu",
-         (int)GlobalROIConfig.Enabled, GlobalROIConfig.Regions.size());
+         (int)GlobalROIConfig.Enabled, GlobalROIConfig.NormalizedRegions.size());
   } else {
     // No saved config - use defaults
     ROIEnableCheck->setChecked(false);
@@ -515,8 +553,8 @@ void ROIDialog::LoadROIData() {
 }
 
 void ROIDialog::SaveROIData() {
-  // Parse text input into ROI regions
-  std::vector<encoder_params::roi_region> regions;
+  // Parse text input into normalized ROI regions (0-1 floats)
+  std::vector<encoder_params::normalized_roi_region> normRegions;
   std::string text = ROITextEdit->toPlainText().toStdString();
   std::istringstream stream(text);
   std::string line;
@@ -527,34 +565,42 @@ void ROIDialog::SaveROIData() {
     if (line.empty() || line[0] == '#' || line[0] == ';')
       continue;
 
-    encoder_params::roi_region region = {};
-    int parsed = std::sscanf(line.c_str(), "%hu %hu %hu %hu %hd",
-                              &region.Left, &region.Top, &region.Right,
-                              &region.Bottom, &region.DeltaQP);
-    if (parsed == 5)
-      regions.push_back(region);
+    encoder_params::normalized_roi_region nr = {};
+    double l = 0, t = 0, r = 0, b = 0;
+    int dqp = 0;
+    // Left Top Right Bottom are 0-1 floats; DeltaQP stays as signed int
+    int parsed = std::sscanf(line.c_str(), "%lf %lf %lf %lf %d",
+                              &l, &t, &r, &b, &dqp);
+    if (parsed == 5) {
+      nr.Left = l;
+      nr.Top = t;
+      nr.Right = r;
+      nr.Bottom = b;
+      nr.DeltaQP = (mfxI16)dqp;
+      normRegions.push_back(nr);
+    }
   }
 
   mfxU16 mode = (ModeGroup->checkedId() == 1) ? 1 : 0;
   bool enabled = ROIEnableCheck->isChecked();
 
-  // Always save to global ROI config (survives encoder restart)
+  // Always save normalized regions to global config (resolution-independent)
   {
     std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
-    GlobalROIConfig.Regions = regions;
+    GlobalROIConfig.NormalizedRegions = normRegions;
     GlobalROIConfig.Mode = mode;
     GlobalROIConfig.Enabled = enabled;
   }
 
-  // If any encoder instances exist, apply immediately to ALL active encoders
-  ApplyROIToAllActiveEncoders(regions, mode, enabled);
+  // If any encoder instances exist, apply immediately with per-encoder conversion
+  ApplyROIToAllActiveEncoders(normRegions, mode, enabled);
 
   // Force preview refresh to show updated ROI regions
   ForceRefreshPreview();
 
   blog(LOG_INFO,
-       "[QSV VPL] ROI config saved: enabled=%d, regions=%zu, mode=%d",
-       (int)enabled, regions.size(), (int)mode);
+       "[QSV VPL] ROI saved: enabled=%d, normalized regions=%zu, mode=%d",
+       (int)enabled, normRegions.size(), (int)mode);
 
   QMessageBox::information(this, obs_module_text("ROIEditor"),
                            obs_module_text("ROIApplySuccess"));

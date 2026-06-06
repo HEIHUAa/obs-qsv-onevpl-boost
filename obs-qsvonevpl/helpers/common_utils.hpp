@@ -174,7 +174,8 @@ plugin_context *LookupEncoderData(obs_encoder_t *Encoder);
 // Pending ROI config - applied when an encoder of matching type is created
 // Key: encoder type ID (e.g. "obs_qsv_vpl_h264")
 struct pending_roi_config {
-  std::vector<encoder_params::roi_region> Regions;
+  std::vector<encoder_params::roi_region> Regions;   // pixel values (legacy / cache)
+  std::vector<encoder_params::normalized_roi_region> NormalizedRegions; // 0-1 fractions
   mfxU16 Mode;
   bool Enabled = false;
 };
@@ -184,6 +185,11 @@ extern std::mutex PendingROIMutex;
 // Single global ROI config (replaces per-type/PendingROIConfig[""] indirection)
 extern pending_roi_config GlobalROIConfig;
 extern std::mutex GlobalROIConfigMutex;
+
+// Convert 0-1 normalized ROI coordinates to pixel values using given output dimensions
+std::vector<encoder_params::roi_region> NormalizeROIToPixel(
+    const std::vector<encoder_params::normalized_roi_region> &NormRegions,
+    mfxU16 OutWidth, mfxU16 OutHeight);
 
 #if defined(_WIN32) || defined(_WIN64)
 #include <malloc.h>
