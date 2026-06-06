@@ -1,28 +1,64 @@
 #include "obs-qsv-onevpl-roi-editor.hpp"
 #include <QMessageBox>
-#include <obs-frontend-api.h>
-#include <obs-module.h>
+#include <QWindow>
+#include <QTimer>
+#include <mutex>
 #include <sstream>
+#include <cstdio>
 
-ROIDialog::ROIDialog(QWidget *Parent) : QDialog(Parent) {
+// Helper: get plugin_context from current encoder selection
+#define GET_CURRENT_CTX()                                                  \
+  ([&]() -> plugin_context * {                                            \
+    if (EncoderCombo->currentIndex() < 0 ||                                \
+        EncoderCombo->currentIndex() >= (int)EncoderList.size())           \
+      return nullptr;                                                      \
+    return static_cast<plugin_context *>(                                  \
+        EncoderList[EncoderCombo->currentIndex()].Data);                   \
+  })()
+
+ROIDialog::ROIDialog(QWidget *Parent)
+    : QDialog(Parent),
+      PreviewDisplay(nullptr),
+      PreviewWidget(nullptr) {
   setWindowTitle(obs_module_text("ROIEditor"));
-  setMinimumSize(600, 500);
+  setMinimumSize(860, 680);
+  resize(960, 720);
 
   auto *MainLayout = new QVBoxLayout(this);
 
-  // Info label
+  // === Info label ===
   InfoLabel = new QLabel(obs_module_text("ROIEditorDesc"), this);
   InfoLabel->setWordWrap(true);
   MainLayout->addWidget(InfoLabel);
 
-  // Encoder selector
+  // === Preview canvas (OBS display) ===
+  auto *PreviewGroup = new QGroupBox(obs_module_text("ROIPreview"), this);
+  auto *PreviewLayout = new QVBoxLayout(PreviewGroup);
+  PreviewWidget = new QWidget(this);
+  PreviewWidget->setMinimumSize(320, 240);
+  PreviewWidget->setStyleSheet("background-color: black;");
+  PreviewLayout->addWidget(PreviewWidget);
+  MainLayout->addWidget(PreviewGroup);
+
+  // === Encoder selector + enable toggle ===
   auto *EncoderGroup = new QGroupBox(obs_module_text("ROISelectEncoder"), this);
-  auto *EncoderLayout = new QVBoxLayout(EncoderGroup);
+  auto *EncoderGrid = new QGridLayout(EncoderGroup);
+
   EncoderCombo = new QComboBox(this);
-  EncoderLayout->addWidget(EncoderCombo);
+  EncoderGrid->addWidget(new QLabel(obs_module_text("ROIEncoder"), this), 0, 0);
+  EncoderGrid->addWidget(EncoderCombo, 0, 1);
+
+  ROIEnableCheck = new QCheckBox(obs_module_text("ROIEnabled"), this);
+  ROIEnableCheck->setChecked(true);
+  EncoderGrid->addWidget(ROIEnableCheck, 0, 2);
+
+  AlwaysOnTopCheck = new QCheckBox(obs_module_text("AlwaysOnTop"), this);
+  AlwaysOnTopCheck->setChecked(false);
+  EncoderGrid->addWidget(AlwaysOnTopCheck, 0, 3);
+
   MainLayout->addWidget(EncoderGroup);
 
-  // ROI Mode selection
+  // === ROI Mode selection ===
   auto *ModeGroupBox = new QGroupBox(obs_module_text("ROIMode"), this);
   auto *ModeLayout = new QVBoxLayout(ModeGroupBox);
   ModeGroup = new QButtonGroup(this);
@@ -35,7 +71,7 @@ ROIDialog::ROIDialog(QWidget *Parent) : QDialog(Parent) {
   ModeLayout->addWidget(PriorityRadio);
   MainLayout->addWidget(ModeGroupBox);
 
-  // ROI text input
+  // === ROI text input ===
   auto *ROIGroup = new QGroupBox(obs_module_text("ROIRegions"), this);
   auto *ROILayout = new QVBoxLayout(ROIGroup);
   FormatLabel = new QLabel(obs_module_text("ROIRegionFormat"), this);
@@ -50,7 +86,7 @@ ROIDialog::ROIDialog(QWidget *Parent) : QDialog(Parent) {
   ROILayout->addWidget(ROITextEdit);
   MainLayout->addWidget(ROIGroup);
 
-  // Buttons
+  // === Buttons ===
   auto *ButtonLayout = new QHBoxLayout();
   ButtonLayout->addStretch();
   ApplyButton = new QPushButton(obs_module_text("ROIApply"), this);
@@ -59,91 +95,335 @@ ROIDialog::ROIDialog(QWidget *Parent) : QDialog(Parent) {
   ButtonLayout->addWidget(CancelButton);
   MainLayout->addLayout(ButtonLayout);
 
+  // Connections
   connect(EncoderCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
           this, &ROIDialog::OnEncoderSelected);
   connect(ApplyButton, &QPushButton::clicked, this, &ROIDialog::OnApplyClicked);
-  connect(CancelButton, &QPushButton::clicked, this, &ROIDialog::OnCancelClicked);
+  connect(CancelButton, &QPushButton::clicked, this,
+          &ROIDialog::OnCancelClicked);
+  connect(AlwaysOnTopCheck, &QCheckBox::stateChanged, this,
+          &ROIDialog::OnToggleAlwaysOnTop);
 
+  // Install event filter on preview widget for resize handling
+  PreviewWidget->installEventFilter(this);
+
+  // Populate encoder list at construction time
   PopulateEncoderList();
 }
 
+ROIDialog::~ROIDialog() {
+  DestroyPreview();
+}
+
+void ROIDialog::showEvent(QShowEvent *Event) {
+  QDialog::showEvent(Event);
+  // Delay preview creation to next event loop iteration so the widget
+  // has a valid native window handle
+  QTimer::singleShot(0, this, [this]() {
+    if (!PreviewDisplay)
+      CreatePreview();
+  });
+}
+
+void ROIDialog::closeEvent(QCloseEvent *Event) {
+  DestroyPreview();
+  QDialog::closeEvent(Event);
+}
+
+// ---------------------------------------------------------------------------
+// Encoder list population: try multiple methods to find QSV encoder instances
+// ---------------------------------------------------------------------------
 void ROIDialog::PopulateEncoderList() {
   EncoderList.clear();
   EncoderCombo->clear();
 
-  // QSV plugin encoder IDs
+  // Known QSV plugin encoder IDs
   static const char *PluginEncoderIDs[] = {
       "obs_qsv_vpl_h264",   "obs_qsv_vpl_h264_tex",
       "obs_qsv_vpl_hevc",   "obs_qsv_vpl_hevc_tex",
       "obs_qsv_vpl_av1",    "obs_qsv_vpl_av1_tex",
       nullptr};
 
-  auto EnumFunc = [](void *Param, obs_encoder_t *Encoder) -> bool {
-    auto *List = static_cast<std::vector<EncoderEntry> *>(Param);
-    const char *id = obs_encoder_get_id(Encoder);
+  // Helper lambda: check if encoder is one of ours and add to list
+  auto AddIfOurs = [&](obs_encoder_t *enc) {
+    if (!enc)
+      return;
+    const char *id = obs_encoder_get_id(enc);
     if (!id)
-      return true;
+      return;
 
-    bool isPluginEncoder = false;
+    bool isOurs = false;
     for (const char **pid = PluginEncoderIDs; *pid; pid++) {
       if (strcmp(id, *pid) == 0) {
-        isPluginEncoder = true;
+        isOurs = true;
         break;
       }
     }
-    if (!isPluginEncoder)
-      return true;
+    if (!isOurs)
+      return;
 
-    void *encoderData = LookupEncoderData(Encoder);
-    if (!encoderData)
-      return true;
+    // Look up plugin_context from our registry
+    void *data = LookupEncoderData(enc);
+    if (!data)
+      return;
+
+    // Avoid duplicates
+    for (auto &existing : EncoderList) {
+      if (existing.Encoder == enc)
+        return;
+    }
 
     EncoderEntry entry;
-    entry.Data = encoderData;
-    entry.Encoder = Encoder;
-    entry.Name = obs_encoder_get_name(Encoder);
+    entry.Data = data;
+    entry.Encoder = enc;
+    entry.Name = obs_encoder_get_name(enc);
     if (entry.Name.empty())
       entry.Name = id;
-    List->push_back(entry);
-    return true;
+    EncoderList.push_back(std::move(entry));
   };
 
-  obs_enum_encoders(EnumFunc, &EncoderList);
-
-  for (auto &entry : EncoderList) {
-    EncoderCombo->addItem(entry.Name.c_str());
+  // Method 1: obs_frontend_get_encoders() - returns all configured encoder instances
+  obs_encoder_t **encoders = obs_frontend_get_encoders();
+  if (encoders) {
+    for (size_t i = 0; encoders[i]; i++)
+      AddIfOurs(encoders[i]);
+    bfree(encoders);
   }
 
+  // Method 2: Check streaming and recording outputs
+  obs_output_t *stream_output = obs_frontend_get_streaming_output();
+  if (stream_output) {
+    AddIfOurs(obs_output_get_video_encoder(stream_output));
+  }
+
+  obs_output_t *record_output = obs_frontend_get_recording_output();
+  if (record_output) {
+    AddIfOurs(obs_output_get_video_encoder(record_output));
+  }
+
+  // Fill combo box
+  for (auto &entry : EncoderList)
+    EncoderCombo->addItem(QString::fromStdString(entry.Name));
+
   if (EncoderList.empty()) {
-    InfoLabel->setText(obs_module_text("ROIEditorDesc") +
-                       QString("\n\nNo active QSV encoders found. "
-                               "Please start encoding with a QSV encoder first."));
+    InfoLabel->setText(
+        obs_module_text("ROIEditorDesc") +
+        QStringLiteral(
+            "\n\n" OBS_MODULE_OBFUSCATE("No active QSV encoders found. "
+                                         "Please configure a QSV encoder in "
+                                         "OBS Settings -> Output first "
+                                         "and start streaming/recording.")));
     ApplyButton->setEnabled(false);
   } else {
     LoadROIData();
   }
 }
 
+// ---------------------------------------------------------------------------
+// Preview (obs_display)
+// ---------------------------------------------------------------------------
+bool ROIDialog::CreatePreview() {
+  DestroyPreview();
+
+  if (!PreviewWidget || !PreviewWidget->isVisible())
+    return false;
+
+  // Force creation of native window handle
+  PreviewWidget->setAttribute(Qt::WA_NativeWindow);
+  PreviewWidget->winId();
+
+  HWND hwnd = (HWND)PreviewWidget->winId();
+  if (!hwnd)
+    return false;
+
+  // Get OBS video info for graphics adapter / format
+  struct obs_video_info ovi;
+  obs_get_video_info(&ovi);
+
+  // Override size with widget size
+  ovi.base_width = (uint32_t)PreviewWidget->width();
+  ovi.base_height = (uint32_t)PreviewWidget->height();
+  ovi.output_width = ovi.base_width;
+  ovi.output_height = ovi.base_height;
+
+  PreviewDisplay = obs_display_create(&ovi, (uintptr_t)hwnd);
+  if (!PreviewDisplay)
+    return false;
+
+  // Add draw callback for the display
+  obs_display_add_draw_callback(PreviewDisplay, PreviewDraw, this);
+  obs_display_set_enabled(PreviewDisplay, true);
+
+  return true;
+}
+
+void ROIDialog::DestroyPreview() {
+  if (PreviewDisplay) {
+    obs_display_remove_draw_callback(PreviewDisplay, PreviewDraw, this);
+    obs_display_destroy(PreviewDisplay);
+    PreviewDisplay = nullptr;
+  }
+}
+
+void ROIDialog::ResizePreview() {
+  if (PreviewDisplay && PreviewWidget) {
+    obs_display_resize(PreviewDisplay,
+                       (uint32_t)PreviewWidget->width(),
+                       (uint32_t)PreviewWidget->height());
+  }
+}
+
+bool ROIDialog::eventFilter(QObject *Obj, QEvent *Event) {
+  if (Obj == PreviewWidget && Event->type() == QEvent::Resize) {
+    ResizePreview();
+  }
+  return QDialog::eventFilter(Obj, Event);
+}
+
+// ---------------------------------------------------------------------------
+// Preview draw callback (called on OBS render thread)
+// ---------------------------------------------------------------------------
+void ROIDialog::PreviewDraw(void *param, uint32_t cx, uint32_t cy) {
+  auto *dialog = static_cast<ROIDialog *>(param);
+  if (!dialog)
+    return;
+
+  // Render the current scene
+  obs_source_t *scene = obs_frontend_get_current_scene();
+  if (scene) {
+    obs_source_video_render(scene);
+    obs_source_release(scene);
+  }
+
+  // Overlay ROI rectangles on top
+  dialog->DrawROIOverlay(cx, cy);
+}
+
+void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy) {
+  auto *ctx = GET_CURRENT_CTX();
+  if (!ctx)
+    return;
+
+  std::lock_guard<std::mutex> lock(ctx->EncoderMutex);
+
+  // Check if ROI is enabled and has regions
+  if (!ctx->EncoderParams.ROIEnabled)
+    return;
+  auto &regions = ctx->EncoderParams.ROIRegions;
+  if (regions.empty())
+    return;
+
+  // Get output (scaled) dimensions from the video output
+  video_t *video = obs_encoder_video(ctx->EncoderData);
+  if (!video)
+    return;
+  const struct video_output_info *voi = video_output_get_info(video);
+  if (!voi)
+    return;
+
+  uint32_t out_w = voi->width;
+  uint32_t out_h = voi->height;
+  if (out_w == 0 || out_h == 0)
+    return;
+
+  // Set up solid color effect from OBS base effects
+  gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
+  if (!solid)
+    return;
+
+  gs_technique_t *tech = gs_effect_get_technique(solid, "Solid");
+  if (!tech)
+    return;
+
+  gs_technique_begin(tech);
+  gs_technique_begin_pass(tech, 0);
+
+  gs_eparam_t *color_param = gs_effect_get_param_by_name(solid, "color");
+
+  for (auto &r : regions) {
+    // Scale ROI coordinates from output resolution to preview widget size
+    float x1 = (float)r.Left / (float)out_w * (float)cx;
+    float y1 = (float)r.Top / (float)out_h * (float)cy;
+    float x2 = (float)r.Right / (float)out_w * (float)cx;
+    float y2 = (float)r.Bottom / (float)out_h * (float)cy;
+
+    // Clamp to preview area
+    x1 = (x1 < 0) ? 0 : (x1 > (float)cx ? (float)cx : x1);
+    y1 = (y1 < 0) ? 0 : (y1 > (float)cy ? (float)cy : y1);
+    x2 = (x2 < 0) ? 0 : (x2 > (float)cx ? (float)cx : x2);
+    y2 = (y2 < 0) ? 0 : (y2 > (float)cy ? (float)cy : y2);
+
+    if (x2 <= x1 || y2 <= y1)
+      continue;
+
+    // Color based on DeltaQP value
+    vec4 color;
+    vec4_zero(&color);
+    if (r.DeltaQP < 0) {
+      // Red (more bitrate) – semi-transparent
+      vec4_set(&color, 1.0f, 0.2f, 0.2f, 0.35f);
+    } else if (r.DeltaQP > 0) {
+      // Blue (less bitrate) – semi-transparent
+      vec4_set(&color, 0.2f, 0.4f, 1.0f, 0.35f);
+    } else {
+      // Green (default) – semi-transparent
+      vec4_set(&color, 0.2f, 1.0f, 0.2f, 0.25f);
+    }
+
+    gs_effect_set_vec4(color_param, &color);
+
+    // Draw rectangle using immediate vertex buffer
+    // Use GS_TRISTRIP with 4 vertices
+    struct gs_vb_data *vbd = gs_vbdata_create();
+    vbd->num = 4;
+    vbd->points = (struct vec3 *)bzalloc(sizeof(struct vec3) * 4);
+    vbd->points[0].x = x1;
+    vbd->points[0].y = y1;
+    vbd->points[0].z = 0.0f;
+    vbd->points[1].x = x2;
+    vbd->points[1].y = y1;
+    vbd->points[1].z = 0.0f;
+    vbd->points[2].x = x1;
+    vbd->points[2].y = y2;
+    vbd->points[2].z = 0.0f;
+    vbd->points[3].x = x2;
+    vbd->points[3].y = y2;
+    vbd->points[3].z = 0.0f;
+
+    gs_vertbuffer_t *vb = gs_vertexbuffer_create(vbd, GS_DYNAMIC);
+    if (vb) {
+      gs_load_vertexbuffer(vb);
+      gs_draw(GS_TRISTRIP, 0, 4);
+      gs_vertexbuffer_destroy(vb);
+    }
+  }
+
+  gs_technique_end_pass(tech);
+  gs_technique_end(tech);
+}
+
+// ---------------------------------------------------------------------------
+// ROI data load / save
+// ---------------------------------------------------------------------------
 void ROIDialog::OnEncoderSelected(int /*Index*/) {
   LoadROIData();
 }
 
 void ROIDialog::LoadROIData() {
-  if (EncoderCombo->currentIndex() < 0 ||
-      EncoderCombo->currentIndex() >= static_cast<int>(EncoderList.size()))
+  auto *ctx = GET_CURRENT_CTX();
+  if (!ctx)
     return;
-
-  auto &entry = EncoderList[EncoderCombo->currentIndex()];
-  auto *ctx = static_cast<plugin_context *>(entry.Data);
 
   std::lock_guard<std::mutex> lock(ctx->EncoderMutex);
 
+  // Load ROI enable state
+  ROIEnableCheck->setChecked(ctx->EncoderParams.ROIEnabled);
+
   // Load ROI mode
-  if (ctx->EncoderParams.ROIMode == 1) {
+  if (ctx->EncoderParams.ROIMode == 1)
     PriorityRadio->setChecked(true);
-  } else {
+  else
     QPDeltaRadio->setChecked(true);
-  }
 
   // Load ROI regions as text
   std::string text;
@@ -160,11 +440,9 @@ void ROIDialog::LoadROIData() {
 }
 
 void ROIDialog::SaveROIData() {
-  if (EncoderCombo->currentIndex() < 0 ||
-      EncoderCombo->currentIndex() >= static_cast<int>(EncoderList.size()))
+  auto *ctx = GET_CURRENT_CTX();
+  if (!ctx)
     return;
-
-  auto &entry = EncoderList[EncoderCombo->currentIndex()];
 
   // Parse text input into ROI regions
   std::vector<encoder_params::roi_region> regions;
@@ -176,40 +454,49 @@ void ROIDialog::SaveROIData() {
     // Trim whitespace
     line.erase(0, line.find_first_not_of(" \t\r\n"));
     line.erase(line.find_last_not_of(" \t\r\n") + 1);
-
     if (line.empty() || line[0] == '#' || line[0] == ';')
       continue;
 
     encoder_params::roi_region region = {};
     int parsed = std::sscanf(line.c_str(), "%hu %hu %hu %hu %hd",
-                              &region.Left, &region.Top,
-                              &region.Right, &region.Bottom,
-                              &region.DeltaQP);
-    if (parsed == 5) {
+                              &region.Left, &region.Top, &region.Right,
+                              &region.Bottom, &region.DeltaQP);
+    if (parsed == 5)
       regions.push_back(region);
-    }
   }
 
   mfxU16 mode = (ModeGroup->checkedId() == 1) ? 1 : 0;
+  bool enabled = ROIEnableCheck->isChecked();
 
   // Update via the thread-safe function
-  UpdateEncoderROI(entry.Data, regions, mode);
+  UpdateEncoderROI(ctx, regions, mode, enabled);
 }
 
 void ROIDialog::OnApplyClicked() {
   SaveROIData();
 
-  QMessageBox::information(
-      this, obs_module_text("ROIEditor"),
-      "ROI settings applied successfully.\n"
-      "Changes will take effect on the next encoded frame.");
+  QMessageBox::information(this, obs_module_text("ROIEditor"),
+                           obs_module_text("ROIApplySuccess"));
 }
 
 void ROIDialog::OnCancelClicked() {
   reject();
 }
 
-// Callback for obs_frontend_add_tools_menu_item
+void ROIDialog::OnToggleAlwaysOnTop(int State) {
+  Qt::WindowFlags flags = windowFlags();
+  if (State == Qt::Checked) {
+    setWindowFlags(flags | Qt::WindowStaysOnTopHint);
+  } else {
+    setWindowFlags(flags & ~Qt::WindowStaysOnTopHint);
+  }
+  // Need to show again after changing window flags
+  setVisible(true);
+}
+
+// ---------------------------------------------------------------------------
+// Frontend menu callback
+// ---------------------------------------------------------------------------
 static void OpenROIEditor(void * /*data*/) {
   auto *dialog = new ROIDialog();
   dialog->setAttribute(Qt::WA_DeleteOnClose);

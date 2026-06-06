@@ -30,7 +30,7 @@ bool GetExtraData(void *Data, uint8_t **ExtraData, size_t *Size);
 
 void UpdateEncoderROI(void *Data,
                        const std::vector<encoder_params::roi_region> &Regions,
-                       mfxU16 Mode);
+                       mfxU16 Mode, bool Enabled);
 
 struct plugin_context;
 

@@ -1927,7 +1927,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   QSVEncodeParams.IOPattern = MFX_IOPATTERN_IN_VIDEO_MEMORY;
 
   // Cache ROI data for per-frame use, only for AVC and HEVC (AV1 not supported)
-  if (Codec != QSV_CODEC_AV1) {
+  if (Codec != QSV_CODEC_AV1 && InputParams->ROIEnabled) {
     CachedROIRegions = InputParams->ROIRegions;
     CachedROIMode = InputParams->ROIMode;
   } else {

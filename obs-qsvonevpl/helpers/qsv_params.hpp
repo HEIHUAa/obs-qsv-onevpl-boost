@@ -137,5 +137,6 @@ struct encoder_params {
   };
   std::vector<roi_region> ROIRegions;
   mfxU16 ROIMode; // 0 = MFX_ROI_MODE_QP_DELTA, 1 = MFX_ROI_MODE_PRIORITY
+  bool ROIEnabled = false;
 };
 
