@@ -2866,16 +2866,11 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
     }
 
     bool roiActive = !CachedROIRegions.empty();
-    info("\tEncodeTexture: CachedROIRegions=%zu, roiActive=%d",
-         CachedROIRegions.size(), (int)roiActive);
     if (roiActive)
       SetupROIEncodeCtrl();
     EncodeFrameRetryLoop(
         (QSVProcessingEnable ? QSVProcessingSurface : QSVEncodeSurface),
-        (roiActive || (QSVProcessingEnable &&
-                       QSVEncodeParams.mfx.CodecId != MFX_CODEC_AV1)
-             ? &QSVEncodeCtrlParams
-             : nullptr),
+        roiActive ? &QSVEncodeCtrlParams : nullptr,
         TaskID, 200);
 
     if (QSVProcessingEnable) {
@@ -3013,10 +3008,7 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
     SetupROIEncodeCtrl();
   EncodeFrameRetryLoop(
       (QSVProcessingEnable ? QSVProcessingSurface : QSVEncodeSurface),
-      (roiActive || (QSVProcessingEnable &&
-                     QSVEncodeParams.mfx.CodecId != MFX_CODEC_AV1))
-          ? &QSVEncodeCtrlParams
-          : nullptr,
+      roiActive ? &QSVEncodeCtrlParams : nullptr,
       TaskID, 200);
 
   if (QSVProcessingEnable) {

@@ -2137,7 +2137,8 @@ obs_encoder_info H264FrameEncoderInfo = {.id = "obs_qsv_vpl_h264",
                                          .get_sei_data = GetSEIData,
                                          .get_video_info = GetVideoInfo,
                                          .caps = OBS_ENCODER_CAP_DYN_BITRATE |
-                                                 OBS_ENCODER_CAP_INTERNAL};
+                                                 OBS_ENCODER_CAP_INTERNAL |
+                                                 OBS_ENCODER_CAP_ROI};
 
 obs_encoder_info H264TextureEncoderInfo = {.id = "obs_qsv_vpl_h264_tex",
                                            .type = OBS_ENCODER_VIDEO,
@@ -2152,7 +2153,8 @@ obs_encoder_info H264TextureEncoderInfo = {.id = "obs_qsv_vpl_h264_tex",
                                            .get_sei_data = GetSEIData,
                                            .get_video_info = GetVideoInfo,
                                            .caps = OBS_ENCODER_CAP_DYN_BITRATE |
-                                                   OBS_ENCODER_CAP_PASS_TEXTURE,
+                                                   OBS_ENCODER_CAP_PASS_TEXTURE |
+                                                   OBS_ENCODER_CAP_ROI,
                                            .encode_texture2 = EncodeTexture};
 
 obs_encoder_info AV1FrameEncoderInfo = {.id = "obs_qsv_vpl_av1",
@@ -2169,7 +2171,8 @@ obs_encoder_info AV1FrameEncoderInfo = {.id = "obs_qsv_vpl_av1",
                                         .get_sei_data = GetSEIData,
                                         .get_video_info = GetVideoInfo,
                                         .caps = OBS_ENCODER_CAP_DYN_BITRATE |
-                                                OBS_ENCODER_CAP_INTERNAL};
+                                                OBS_ENCODER_CAP_INTERNAL |
+                                                OBS_ENCODER_CAP_ROI};
 
 obs_encoder_info AV1TextureEncoderInfo = {.id = "obs_qsv_vpl_av1_tex",
                                           .type = OBS_ENCODER_VIDEO,
@@ -2184,7 +2187,8 @@ obs_encoder_info AV1TextureEncoderInfo = {.id = "obs_qsv_vpl_av1_tex",
                                           .get_sei_data = GetSEIData,
                                           .get_video_info = GetVideoInfo,
                                           .caps = OBS_ENCODER_CAP_DYN_BITRATE |
-                                                  OBS_ENCODER_CAP_PASS_TEXTURE,
+                                                  OBS_ENCODER_CAP_PASS_TEXTURE |
+                                                  OBS_ENCODER_CAP_ROI,
                                           .encode_texture2 = EncodeTexture};
 
 obs_encoder_info HEVCFrameEncoderInfo = {.id = "obs_qsv_vpl_hevc",
@@ -2201,7 +2205,8 @@ obs_encoder_info HEVCFrameEncoderInfo = {.id = "obs_qsv_vpl_hevc",
                                          .get_sei_data = GetSEIData,
                                          .get_video_info = GetVideoInfo,
                                          .caps = OBS_ENCODER_CAP_DYN_BITRATE |
-                                                 OBS_ENCODER_CAP_INTERNAL};
+                                                 OBS_ENCODER_CAP_INTERNAL |
+                                                 OBS_ENCODER_CAP_ROI};
 
 obs_encoder_info HEVCTextureEncoderInfo = {.id = "obs_qsv_vpl_hevc_tex",
                                            .type = OBS_ENCODER_VIDEO,
@@ -2216,5 +2221,6 @@ obs_encoder_info HEVCTextureEncoderInfo = {.id = "obs_qsv_vpl_hevc_tex",
                                            .get_sei_data = GetSEIData,
                                            .get_video_info = GetVideoInfo,
                                            .caps = OBS_ENCODER_CAP_DYN_BITRATE |
-                                                   OBS_ENCODER_CAP_PASS_TEXTURE,
+                                                   OBS_ENCODER_CAP_PASS_TEXTURE |
+                                                   OBS_ENCODER_CAP_ROI,
                                            .encode_texture2 = EncodeTexture};
