@@ -33,7 +33,8 @@ obq-qsvonevpl-boost 是 obq-qsvonevpl 增强版本 —— OBS Studio（30 及以
 
 ### 下载
 
-请前往本仓库的 Actions 页面下载最新构建：https://github.com/HEIHUAa/obs-qsv-onevpl-boost/actions
+前往本仓库的 Releases 最新稳定发布版：https://github.com/HEIHUAa/obs-qsv-onevpl-boost/releases
+或者前往本仓库的 Actions 页面下载最新构建：https://github.com/HEIHUAa/obs-qsv-onevpl-boost/actions
 
 ### 安装方法
 
@@ -70,7 +71,9 @@ Original repository: https://github.com/ma3uk/obs-qsv-onevpl
 
 ### Download
 
-Get the latest builds from the Actions page of this repository: https://github.com/HEIHUAa/obs-qsv-onevpl-boost/actions
+Go to the Releases page of this repository for the latest stable release: https://github.com/HEIHUAa/obs-qsv-onevpl-boost/releases  
+
+Or go to the Actions page of this repository to download the latest build: https://github.com/HEIHUAa/obs-qsv-onevpl-boost/actions
 
 ### Installation
 
