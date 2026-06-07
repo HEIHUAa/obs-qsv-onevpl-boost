@@ -3028,11 +3028,15 @@ void QSVEncoder::SetupROIEncodeCtrl() {
   auto roiCount = static_cast<mfxU16>(
       std::min(CachedROIRegions.size(), static_cast<size_t>(256)));
 
-  // mfxExtEncoderROI ends with mfxROI ROI[1] (flexible array member).
+  // mfxExtEncoderROI ends with ROI[1] (flexible array member).
   // sizeof() only accounts for 1 ROI slot. We must allocate extra space
   // for the remaining ROIs, otherwise writing ROI[1..N] corrupts the heap.
+  // Note: mfxROI may not be a named type in all oneVPL versions (some define
+  // the ROI member as anonymous struct), so derive entry size from the member.
+  constexpr mfxU32 roiEntrySize =
+      sizeof(((mfxExtEncoderROI *)nullptr)->ROI[0]);
   mfxU32 requiredSize = sizeof(mfxExtEncoderROI) +
-                        (roiCount > 1 ? (roiCount - 1) * sizeof(mfxROI) : 0);
+                        (roiCount > 1 ? (roiCount - 1) * roiEntrySize : 0);
 
   // Remove existing ROI buffer so AddExtBuffer re-allocates at the correct size
   auto *existing = QSVEncodeCtrlParams.GetExtBuffer<mfxExtEncoderROI>();
