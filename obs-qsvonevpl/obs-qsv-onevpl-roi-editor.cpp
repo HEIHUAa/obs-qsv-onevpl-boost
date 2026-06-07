@@ -1,4 +1,3 @@
-#include "helpers/common_utils.hpp"
 #include "obs-qsv-onevpl-roi-editor.hpp"
 #include <QMessageBox>
 #include <QWindow>
