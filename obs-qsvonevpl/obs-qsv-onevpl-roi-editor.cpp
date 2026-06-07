@@ -40,11 +40,6 @@ ROIDialog::ROIDialog(QWidget *Parent)
   PreviewWidget->setMinimumSize(1, 1);
   PreviewWidget->setStyleSheet("background-color: black;");
   PreviewLayout->addWidget(PreviewWidget);
-  // ROI info label below preview
-  ROIInfoLabel = new QLabel(this);
-  ROIInfoLabel->setWordWrap(true);
-  ROIInfoLabel->setStyleSheet("color: #cccccc; font-size: 11px; font-family: Consolas, monospace; padding: 4px;");
-  PreviewLayout->addWidget(ROIInfoLabel);
   MainLayout->addWidget(PreviewGroup, 1); // give preview majority of vertical space
 
   // === Controls row: enable toggle + always-on-top ===
@@ -457,7 +452,6 @@ void ROIDialog::SetUIFromGlobalConfig() {
 
   ROITextEdit->setPlainText(
       QString::fromStdString(RegionsToUIFormat(GlobalROIConfig.NormalizedRegions)));
-  UpdateROIInfoLabel();
 }
 
 // ── ROI data load / save
@@ -490,7 +484,6 @@ void ROIDialog::LoadROIData() {
   ROITextEdit->clear();
   blog(LOG_DEBUG,
        "[ROI Editor] LoadROIData: no global config found, using defaults");
-  UpdateROIInfoLabel();
 }
 
 void ROIDialog::SaveROIData() {
@@ -549,9 +542,6 @@ void ROIDialog::SaveROIData() {
 
   // Force preview refresh to show updated ROI regions
   ForceRefreshPreview();
-  // Update the ROI info label below preview
-  UpdateROIInfoLabel();
-
   blog(LOG_INFO,
        "[QSV VPL] ROI saved: enabled=%d, normalized regions=%zu, mode=%d",
        (int)enabled, normRegions.size(), (int)mode);
@@ -565,32 +555,6 @@ void ROIDialog::SaveROIData() {
 
   QMessageBox::information(this, obs_module_text("ROIEditor"),
                            obs_module_text("ROIApplySuccess"));
-}
-
-void ROIDialog::UpdateROIInfoLabel() {
-  std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
-  if (!GlobalROIConfig.Enabled || GlobalROIConfig.NormalizedRegions.empty()) {
-    ROIInfoLabel->setText(obs_module_text("ROIInfoDisabled"));
-    return;
-  }
-
-  std::string text = QString(obs_module_text("ROIInfoHeader"))
-                         .arg(GlobalROIConfig.Mode == 1
-                                  ? obs_module_text("ROIModePriority")
-                                  : obs_module_text("ROIModeQPDelta"))
-                         .arg((int)GlobalROIConfig.NormalizedRegions.size())
-                         .toStdString();
-
-  for (size_t i = 0; i < GlobalROIConfig.NormalizedRegions.size(); i++) {
-    auto &r = GlobalROIConfig.NormalizedRegions[i];
-    text += "\n  ROI[" + std::to_string(i) + "]: " +
-            FormatROIDouble(r.Left) + " " +
-            FormatROIDouble(r.Top) + " " +
-            FormatROIDouble(r.Right) + " " +
-            FormatROIDouble(r.Bottom) + "  DQP=" + std::to_string(r.DeltaQP);
-  }
-
-  ROIInfoLabel->setText(QString::fromStdString(text));
 }
 
 void ROIDialog::OnApplyClicked() {
