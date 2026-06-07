@@ -115,23 +115,59 @@ void RegisterEncoderData(obs_encoder_t *Encoder, plugin_context *Context) {
   // This also updates GlobalROIConfig and applies to the encoder
   LoadROIFromEncoderSettings(Context);
 
-  // (3) Fallback: if encoder settings didn't have ROI, try loading from file
-  // This is more reliable because obs_data_t custom keys may not be persisted.
+  // (3) Apply GlobalROIConfig to this encoder if populated.
+  // This handles the case where ROI was previously set via editor / loaded from
+  // file, but this encoder's obs_data_t does not persist custom keys.  Without
+  // this, a new encoder instance created *after* the editor was used would
+  // never receive the ROI config (see the "GlobalROIConfig already populated,
+  // skipping file fallback" bug - the file fallback is rightfully skipped
+  // because we already have data in memory; we just fail to apply it).
   {
-    // Check if we need the fallback (outside the GlobalROIConfigMutex to avoid
-    // deadlock with LoadROIConfigFromFile which takes its own lock)
-    bool needsFallback = false;
-    {
-      std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
-      needsFallback = (!GlobalROIConfig.Enabled ||
-                       GlobalROIConfig.NormalizedRegions.empty());
-    }
-
-    if (needsFallback) {
+    std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
+    if (GlobalROIConfig.Enabled &&
+        !GlobalROIConfig.NormalizedRegions.empty()) {
+      mfxU16 effectiveMode = GlobalROIConfig.Mode;
+      if (effectiveMode == 0 &&
+          Context->EncoderParams.RateControl != MFX_RATECONTROL_CQP) {
+        effectiveMode = 1;
+        blog(LOG_INFO,
+             "[QSV VPL] Non-CQP rate control (%d), using Priority mode "
+             "for encoder: %s",
+             Context->EncoderParams.RateControl, enc_id ? enc_id : "null");
+      }
+      auto pixelRegions = NormalizeROIToPixel(
+          GlobalROIConfig.NormalizedRegions, Context->EncoderParams.Width,
+          Context->EncoderParams.Height, GetCodecAlignment(Context->Codec));
+      UpdateEncoderROI(Context, pixelRegions, effectiveMode, true);
       blog(LOG_INFO,
-           "[QSV VPL] RegisterEncoderData: GlobalROIConfig empty, trying file fallback for encoder: %s",
+           "[QSV VPL] Applied GlobalROIConfig to encoder: %s "
+           "(enabled=%d, regions=%zu)",
+           enc_id ? enc_id : "null", (int)GlobalROIConfig.Enabled,
+           GlobalROIConfig.NormalizedRegions.size());
+
+    } else {
+      // GlobalROIConfig is empty - try loading from file
+      blog(LOG_INFO,
+           "[QSV VPL] RegisterEncoderData: GlobalROIConfig empty, trying "
+           "file fallback for encoder: %s",
            enc_id ? enc_id : "null");
 
+      // Release the mutex before calling LoadROIConfigFromFile (which takes
+      // its own lock) to avoid deadlock
+    }
+  }
+
+  // (4) File fallback (only reached if GlobalROIConfig was empty above)
+  // We re-check inside the mutex-free zone by calling LoadROIConfigFromFile
+  // which takes GlobalROIConfigMutex internally.
+  {
+    bool stillEmpty = false;
+    {
+      std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
+      stillEmpty = (!GlobalROIConfig.Enabled ||
+                    GlobalROIConfig.NormalizedRegions.empty());
+    }
+    if (stillEmpty) {
       if (LoadROIConfigFromFile()) {
         // File was loaded, now apply to this encoder
         std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
@@ -142,12 +178,13 @@ void RegisterEncoderData(obs_encoder_t *Encoder, plugin_context *Context) {
               Context->EncoderParams.RateControl != MFX_RATECONTROL_CQP) {
             effectiveMode = 1;
             blog(LOG_INFO,
-                 "[QSV VPL] Non-CQP rate control (%d), using Priority mode for encoder: %s",
-                 Context->EncoderParams.RateControl, enc_id ? enc_id : "null");
+                 "[QSV VPL] Non-CQP rate control (%d), using Priority mode "
+                 "for encoder: %s",
+                 Context->EncoderParams.RateControl,
+                 enc_id ? enc_id : "null");
           }
           auto pixelRegions = NormalizeROIToPixel(
-              GlobalROIConfig.NormalizedRegions,
-              Context->EncoderParams.Width,
+              GlobalROIConfig.NormalizedRegions, Context->EncoderParams.Width,
               Context->EncoderParams.Height,
               GetCodecAlignment(Context->Codec));
           UpdateEncoderROI(Context, pixelRegions, effectiveMode, true);
@@ -158,9 +195,7 @@ void RegisterEncoderData(obs_encoder_t *Encoder, plugin_context *Context) {
       }
     } else {
       blog(LOG_INFO,
-           "[QSV VPL] RegisterEncoderData: GlobalROIConfig already populated (enabled=%d, regions=%zu), skipping file fallback for encoder: %s",
-           (int)GlobalROIConfig.Enabled,
-           GlobalROIConfig.NormalizedRegions.size(),
+           "[QSV VPL] RegisterEncoderData: file fallback not needed for encoder: %s",
            enc_id ? enc_id : "null");
     }
   }
