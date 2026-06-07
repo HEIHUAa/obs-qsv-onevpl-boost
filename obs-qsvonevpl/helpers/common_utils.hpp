@@ -211,6 +211,13 @@ void SaveROIToEncoderSettings(plugin_context *Context);
 // Load ROI from encoder's obs_data_t settings into GlobalROIConfig and apply
 void LoadROIFromEncoderSettings(plugin_context *Context);
 
+// Save GlobalROIConfig to a persistent JSON file in plugin config directory.
+// This is more reliable than encoder settings, as OBS may not persist custom keys.
+void SaveROIConfigToFile();
+// Load GlobalROIConfig from the persistent JSON file.
+// Returns true if a config was loaded, false otherwise.
+bool LoadROIConfigFromFile();
+
 #if defined(_WIN32) || defined(_WIN64)
 #include <malloc.h>
 #endif

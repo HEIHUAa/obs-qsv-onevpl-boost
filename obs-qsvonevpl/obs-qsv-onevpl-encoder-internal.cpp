@@ -3025,22 +3025,79 @@ void QSVEncoder::SetupROIEncodeCtrl() {
   if (CachedROIRegions.empty())
     return;
 
-  auto *roiParams = QSVEncodeCtrlParams.GetExtBuffer<mfxExtEncoderROI>();
-  if (!roiParams)
-    roiParams = QSVEncodeCtrlParams.AddExtBuffer<mfxExtEncoderROI>();
+  auto roiCount = static_cast<mfxU16>(
+      std::min(CachedROIRegions.size(), static_cast<size_t>(256)));
 
-  roiParams->Header.BufferId = MFX_EXTBUFF_ENCODER_ROI;
-  roiParams->Header.BufferSz = sizeof(mfxExtEncoderROI);
-  roiParams->NumROI =
-      static_cast<mfxU16>(std::min(CachedROIRegions.size(), static_cast<size_t>(256)));
+  // mfxExtEncoderROI ends with mfxROI ROI[1] (flexible array member).
+  // sizeof() only accounts for 1 ROI slot. We must allocate extra space
+  // for the remaining ROIs, otherwise writing ROI[1..N] corrupts the heap.
+  mfxU32 requiredSize = sizeof(mfxExtEncoderROI) +
+                        (roiCount > 1 ? (roiCount - 1) * sizeof(mfxROI) : 0);
+
+  // Remove existing ROI buffer so AddExtBuffer re-allocates at the correct size
+  auto *existing = QSVEncodeCtrlParams.GetExtBuffer<mfxExtEncoderROI>();
+  if (existing) {
+    // Check if the existing buffer is already large enough
+    if (existing->Header.BufferSz >= requiredSize) {
+      // Reuse — just zero and re-populate
+      memset(existing, 0, existing->Header.BufferSz);
+      existing->Header.BufferId = MFX_EXTBUFF_ENCODER_ROI;
+      existing->Header.BufferSz = requiredSize;
+      goto populate;
+    }
+    QSVEncodeCtrlParams.RemoveExtBuffer<mfxExtEncoderROI>();
+  }
+
+  {
+    auto *raw = QSVEncodeCtrlParams.AddExtBuffer(MFX_EXTBUFF_ENCODER_ROI,
+                                                  requiredSize);
+    if (!raw) {
+      blog(LOG_WARNING, "[QSV VPL] SetupROIEncodeCtrl: AddExtBuffer failed!");
+      return;
+    }
+    // Already zeroed by AddExtBuffer; just set fields:
+    raw->BufferId = MFX_EXTBUFF_ENCODER_ROI;
+    raw->BufferSz = requiredSize;
+  }
+
+populate:
+  auto *roiParams = QSVEncodeCtrlParams.GetExtBuffer<mfxExtEncoderROI>();
+  if (!roiParams) {
+    blog(LOG_WARNING, "[QSV VPL] SetupROIEncodeCtrl: GetExtBuffer returned null after add!");
+    return;
+  }
+
+  roiParams->NumROI = roiCount;
   roiParams->ROIMode = CachedROIMode;
 
-  for (int i = 0; i < roiParams->NumROI; i++) {
-    roiParams->ROI[i].Left = CachedROIRegions[i].Left;
-    roiParams->ROI[i].Top = CachedROIRegions[i].Top;
-    roiParams->ROI[i].Right = CachedROIRegions[i].Right;
+  for (mfxU16 i = 0; i < roiCount; i++) {
+    roiParams->ROI[i].Left   = CachedROIRegions[i].Left;
+    roiParams->ROI[i].Top    = CachedROIRegions[i].Top;
+    roiParams->ROI[i].Right  = CachedROIRegions[i].Right;
     roiParams->ROI[i].Bottom = CachedROIRegions[i].Bottom;
     roiParams->ROI[i].DeltaQP = CachedROIRegions[i].DeltaQP;
+  }
+
+  // 验证：首次调用时记录一次完整信息，后续仅每120帧记录一次摘要
+  {
+    static int frameCounter = 0;
+    if (frameCounter == 0) {
+      blog(LOG_INFO,
+           "[QSV VPL] SetupROIEncodeCtrl: NumROI=%d, ROIMode=%d, "
+           "BufferSz=%u, NumExtParam=%d, regions=%zu",
+           (int)roiParams->NumROI, (int)roiParams->ROIMode,
+           requiredSize,
+           (int)QSVEncodeCtrlParams.NumExtParam,
+           CachedROIRegions.size());
+      for (int i = 0; i < roiParams->NumROI && i < 4; i++) {
+        blog(LOG_INFO,
+             "[QSV VPL]   ROI[%d]: Left=%u Top=%u Right=%u Bottom=%u DeltaQP=%d",
+             i, roiParams->ROI[i].Left, roiParams->ROI[i].Top,
+             roiParams->ROI[i].Right, roiParams->ROI[i].Bottom,
+             (int)roiParams->ROI[i].DeltaQP);
+      }
+    }
+    frameCounter = (frameCounter + 1) % 120;
   }
 }
 

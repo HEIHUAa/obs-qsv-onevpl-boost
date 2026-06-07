@@ -533,8 +533,37 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy) {
 // ---------------------------------------------------------------------------
 void ROIDialog::LoadROIData() {
   // Load from global ROI config (resolution-independent normalized values)
-  std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
-  if (GlobalROIConfig.Enabled || !GlobalROIConfig.NormalizedRegions.empty()) {
+  {
+    std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
+    if (GlobalROIConfig.Enabled || !GlobalROIConfig.NormalizedRegions.empty()) {
+      ROIEnableCheck->setChecked(GlobalROIConfig.Enabled);
+      if (GlobalROIConfig.Mode == 1)
+        PriorityRadio->setChecked(true);
+      else
+        QPDeltaRadio->setChecked(true);
+
+      std::string text;
+      for (auto &r : GlobalROIConfig.NormalizedRegions) {
+        if (!text.empty())
+          text += "\n";
+        text +=
+            FormatDouble(r.Left) + " " +
+            FormatDouble(r.Top) + " " +
+            FormatDouble(r.Right) + " " +
+            FormatDouble(r.Bottom) + " " +
+            std::to_string(r.DeltaQP);
+      }
+      ROITextEdit->setPlainText(QString::fromStdString(text));
+      blog(LOG_DEBUG,
+           "[ROI Editor] LoadROIData: loaded global config, enabled=%d, regions=%zu",
+           (int)GlobalROIConfig.Enabled, GlobalROIConfig.NormalizedRegions.size());
+      return;
+    }
+  }
+
+  // Fallback: try loading from file if no global config
+  if (LoadROIConfigFromFile()) {
+    std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
     ROIEnableCheck->setChecked(GlobalROIConfig.Enabled);
     if (GlobalROIConfig.Mode == 1)
       PriorityRadio->setChecked(true);
@@ -554,16 +583,17 @@ void ROIDialog::LoadROIData() {
     }
     ROITextEdit->setPlainText(QString::fromStdString(text));
     blog(LOG_DEBUG,
-         "[ROI Editor] LoadROIData: loaded global config, enabled=%d, regions=%zu",
+         "[ROI Editor] LoadROIData: loaded from file fallback, enabled=%d, regions=%zu",
          (int)GlobalROIConfig.Enabled, GlobalROIConfig.NormalizedRegions.size());
-  } else {
-    // No saved config - use defaults
-    ROIEnableCheck->setChecked(false);
-    QPDeltaRadio->setChecked(true);
-    ROITextEdit->clear();
-    blog(LOG_DEBUG,
-         "[ROI Editor] LoadROIData: no global config found, using defaults");
+    return;
   }
+
+  // No saved config - use defaults
+  ROIEnableCheck->setChecked(false);
+  QPDeltaRadio->setChecked(true);
+  ROITextEdit->clear();
+  blog(LOG_DEBUG,
+       "[ROI Editor] LoadROIData: no global config found, using defaults");
 }
 
 void ROIDialog::SaveROIData() {
@@ -613,6 +643,9 @@ void ROIDialog::SaveROIData() {
       SaveROIToEncoderSettings(pair.second);
     }
   }
+
+  // ALSO save to file for reliable persistence across OBS restarts
+  SaveROIConfigToFile();
 
   // If any encoder instances exist, apply immediately with per-encoder conversion
   ApplyROIToAllActiveEncoders(normRegions, mode, enabled);
