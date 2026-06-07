@@ -36,8 +36,12 @@ private slots:
   void OnCancelClicked();
   void OnToggleAlwaysOnTop(Qt::CheckState State);
 
-private:
+public:
+  // Called from static frontend event callback; make public for access
   void LoadROIData();
+  void ForceRefreshPreview();
+
+private:
   void SaveROIData();
   void SetUIFromGlobalConfig();
   void UpdateROIInfoLabel();
@@ -46,7 +50,6 @@ private:
   bool CreatePreview();
   void DestroyPreview();
   void ResizePreview();
-  void ForceRefreshPreview();
   static void PreviewDraw(void *param, uint32_t cx, uint32_t cy);
   void DrawROIOverlay(uint32_t cx, uint32_t cy);
 
