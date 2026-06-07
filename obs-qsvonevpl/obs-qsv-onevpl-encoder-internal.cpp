@@ -3082,10 +3082,11 @@ populate:
     roiParams->ROI[i].DeltaQP = CachedROIRegions[i].DeltaQP;
   }
 
-  // 验证：首次调用时记录一次完整信息，后续仅每120帧记录一次摘要
+  // 只在首次调用时输出一次，不重复记录（避免日志刷屏）
   {
-    static int frameCounter = 0;
-    if (frameCounter == 0) {
+    static bool firstLogDone = false;
+    if (!firstLogDone) {
+      firstLogDone = true;
       blog(LOG_INFO,
            "[QSV VPL] SetupROIEncodeCtrl: NumROI=%d, ROIMode=%d, "
            "BufferSz=%u, NumExtParam=%d, regions=%zu",
@@ -3101,7 +3102,6 @@ populate:
              (int)roiParams->ROI[i].DeltaQP);
       }
     }
-    frameCounter = (frameCounter + 1) % 120;
   }
 }
 

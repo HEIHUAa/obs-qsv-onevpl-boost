@@ -39,6 +39,8 @@ private slots:
 private:
   void LoadROIData();
   void SaveROIData();
+  void SetUIFromGlobalConfig();
+  void UpdateROIInfoLabel();
 
   // Preview
   bool CreatePreview();
@@ -73,4 +75,5 @@ private:
   QWidget *PreviewWidget;
   obs_display_t *PreviewDisplay;
   QTimer *RefreshTimer;       // periodic preview refresh
+  QLabel *ROIInfoLabel;       // displays ROI params overlay text
 };

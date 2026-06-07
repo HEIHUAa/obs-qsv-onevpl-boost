@@ -126,19 +126,8 @@ void RegisterEncoderData(obs_encoder_t *Encoder, plugin_context *Context) {
     std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
     if (GlobalROIConfig.Enabled &&
         !GlobalROIConfig.NormalizedRegions.empty()) {
-      mfxU16 effectiveMode = GlobalROIConfig.Mode;
-      if (effectiveMode == 0 &&
-          Context->EncoderParams.RateControl != MFX_RATECONTROL_CQP) {
-        effectiveMode = 1;
-        blog(LOG_INFO,
-             "[QSV VPL] Non-CQP rate control (%d), using Priority mode "
-             "for encoder: %s",
-             Context->EncoderParams.RateControl, enc_id ? enc_id : "null");
-      }
-      auto pixelRegions = NormalizeROIToPixel(
-          GlobalROIConfig.NormalizedRegions, Context->EncoderParams.Width,
-          Context->EncoderParams.Height, GetCodecAlignment(Context->Codec));
-      UpdateEncoderROI(Context, pixelRegions, effectiveMode, true);
+      ApplyROIConfigToEncoder(Context, GlobalROIConfig.NormalizedRegions,
+                              GlobalROIConfig.Mode, true);
       blog(LOG_INFO,
            "[QSV VPL] Applied GlobalROIConfig to encoder: %s "
            "(enabled=%d, regions=%zu)",
@@ -173,21 +162,8 @@ void RegisterEncoderData(obs_encoder_t *Encoder, plugin_context *Context) {
         std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
         if (GlobalROIConfig.Enabled &&
             !GlobalROIConfig.NormalizedRegions.empty()) {
-          mfxU16 effectiveMode = GlobalROIConfig.Mode;
-          if (effectiveMode == 0 &&
-              Context->EncoderParams.RateControl != MFX_RATECONTROL_CQP) {
-            effectiveMode = 1;
-            blog(LOG_INFO,
-                 "[QSV VPL] Non-CQP rate control (%d), using Priority mode "
-                 "for encoder: %s",
-                 Context->EncoderParams.RateControl,
-                 enc_id ? enc_id : "null");
-          }
-          auto pixelRegions = NormalizeROIToPixel(
-              GlobalROIConfig.NormalizedRegions, Context->EncoderParams.Width,
-              Context->EncoderParams.Height,
-              GetCodecAlignment(Context->Codec));
-          UpdateEncoderROI(Context, pixelRegions, effectiveMode, true);
+          ApplyROIConfigToEncoder(Context, GlobalROIConfig.NormalizedRegions,
+                                  GlobalROIConfig.Mode, true);
           blog(LOG_INFO,
                "[QSV VPL] Fallback: applied ROI from file to encoder: %s",
                enc_id ? enc_id : "null");
@@ -208,7 +184,7 @@ void RegisterEncoderData(obs_encoder_t *Encoder, plugin_context *Context) {
 }
 
 // Serialize helper: format a double without scientific notation and with minimal precision
-static std::string FormatROIDouble(double Value) {
+std::string FormatROIDouble(double Value) {
   std::ostringstream ss;
   ss.precision(6);
   ss << std::fixed << Value;
@@ -224,6 +200,72 @@ static std::string FormatROIDouble(double Value) {
   return s;
 }
 
+// ── ROI serialization helpers ────────────────────────────────────────
+
+std::string SerializeROIRegions(
+    const std::vector<encoder_params::normalized_roi_region> &Regions) {
+  std::string result;
+  for (auto &r : Regions) {
+    if (!result.empty())
+      result += "|";
+    result += FormatROIDouble(r.Left) + "," +
+              FormatROIDouble(r.Top) + "," +
+              FormatROIDouble(r.Right) + "," +
+              FormatROIDouble(r.Bottom) + "," +
+              std::to_string(r.DeltaQP);
+  }
+  return result;
+}
+
+std::vector<encoder_params::normalized_roi_region> DeserializeROIRegions(
+    const std::string &Str) {
+  std::vector<encoder_params::normalized_roi_region> result;
+  std::istringstream stream(Str);
+  std::string segment;
+  while (std::getline(stream, segment, '|')) {
+    if (segment.empty())
+      continue;
+    double l = 0, t = 0, r = 0, b = 0;
+    int dqp = 0;
+    if (std::sscanf(segment.c_str(), "%lf,%lf,%lf,%lf,%d",
+                     &l, &t, &r, &b, &dqp) == 5) {
+      encoder_params::normalized_roi_region nr = {};
+      nr.Left = l;
+      nr.Top = t;
+      nr.Right = r;
+      nr.Bottom = b;
+      nr.DeltaQP = (mfxI16)dqp;
+      result.push_back(nr);
+    }
+  }
+  return result;
+}
+
+// ── Apply ROI to a single encoder ────────────────────────────────────
+
+void ApplyROIConfigToEncoder(
+    plugin_context *Context,
+    const std::vector<encoder_params::normalized_roi_region> &NormRegions,
+    mfxU16 Mode, bool Enabled) {
+  // QP Delta mode requires CQP rate control; fall back to Priority if not
+  mfxU16 effectiveMode = Mode;
+  if (Mode == 0 &&
+      Context->EncoderParams.RateControl != MFX_RATECONTROL_CQP) {
+    effectiveMode = 1;
+    blog(LOG_INFO,
+         "[QSV VPL] Encoder uses non-CQP rate control (%d), "
+         "forcing ROI Priority mode for ROI to take effect",
+         Context->EncoderParams.RateControl);
+  }
+
+  auto pixelRegions = NormalizeROIToPixel(
+      NormRegions,
+      Context->EncoderParams.Width,
+      Context->EncoderParams.Height,
+      GetCodecAlignment(Context->Codec));
+  UpdateEncoderROI(Context, pixelRegions, effectiveMode, Enabled);
+}
+
 void SaveROIToEncoderSettings(plugin_context *Context) {
   obs_data_t *settings = obs_encoder_get_settings(Context->EncoderData);
   if (!settings) {
@@ -236,17 +278,8 @@ void SaveROIToEncoderSettings(plugin_context *Context) {
   obs_data_set_bool(settings, "roi_enabled", GlobalROIConfig.Enabled);
   obs_data_set_int(settings, "roi_mode", GlobalROIConfig.Mode);
 
-  // Serialize normalized regions: pipe-separated, each is "left,top,right,bottom,deltaqp"
-  std::string regionStr;
-  for (auto &r : GlobalROIConfig.NormalizedRegions) {
-    if (!regionStr.empty())
-      regionStr += "|";
-    regionStr += FormatROIDouble(r.Left) + "," +
-                 FormatROIDouble(r.Top) + "," +
-                 FormatROIDouble(r.Right) + "," +
-                 FormatROIDouble(r.Bottom) + "," +
-                 std::to_string(r.DeltaQP);
-  }
+  // Serialize normalized regions using the common helper
+  std::string regionStr = SerializeROIRegions(GlobalROIConfig.NormalizedRegions);
   obs_data_set_string(settings, "roi_regions", regionStr.c_str());
 
   blog(LOG_INFO,
@@ -282,29 +315,11 @@ void LoadROIFromEncoderSettings(plugin_context *Context) {
     GlobalROIConfig.Enabled = obs_data_get_bool(settings, "roi_enabled");
     GlobalROIConfig.Mode = (mfxU16)obs_data_get_int(settings, "roi_mode");
 
-    // Deserialize regions
-    GlobalROIConfig.NormalizedRegions.clear();
+    // Deserialize regions using the common helper
     const char *regionStr = obs_data_get_string(settings, "roi_regions");
-    if (regionStr && regionStr[0]) {
-      std::istringstream stream(regionStr);
-      std::string segment;
-      while (std::getline(stream, segment, '|')) {
-        if (segment.empty())
-          continue;
-        double l = 0, t = 0, r = 0, b = 0;
-        int dqp = 0;
-        if (std::sscanf(segment.c_str(), "%lf,%lf,%lf,%lf,%d",
-                         &l, &t, &r, &b, &dqp) == 5) {
-          encoder_params::normalized_roi_region nr = {};
-          nr.Left = l;
-          nr.Top = t;
-          nr.Right = r;
-          nr.Bottom = b;
-          nr.DeltaQP = (mfxI16)dqp;
-          GlobalROIConfig.NormalizedRegions.push_back(nr);
-        }
-      }
-    }
+    GlobalROIConfig.NormalizedRegions =
+        regionStr ? DeserializeROIRegions(regionStr)
+                  : std::vector<encoder_params::normalized_roi_region>();
   }
 
   blog(LOG_INFO,
@@ -316,21 +331,8 @@ void LoadROIFromEncoderSettings(plugin_context *Context) {
 
   // Apply to this encoder if enabled and there are active regions
   if (GlobalROIConfig.Enabled && !GlobalROIConfig.NormalizedRegions.empty()) {
-    mfxU16 effectiveMode = GlobalROIConfig.Mode;
-    if (effectiveMode == 0 &&
-        Context->EncoderParams.RateControl != MFX_RATECONTROL_CQP) {
-      effectiveMode = 1;
-      blog(LOG_INFO,
-           "[QSV VPL] Non-CQP rate control (%d), using Priority mode for encoder: %s",
-           Context->EncoderParams.RateControl,
-           enc_id ? enc_id : "null");
-    }
-    auto pixelRegions = NormalizeROIToPixel(
-        GlobalROIConfig.NormalizedRegions,
-        Context->EncoderParams.Width,
-        Context->EncoderParams.Height,
-        GetCodecAlignment(Context->Codec));
-    UpdateEncoderROI(Context, pixelRegions, effectiveMode, true);
+    ApplyROIConfigToEncoder(Context, GlobalROIConfig.NormalizedRegions,
+                            GlobalROIConfig.Mode, true);
   }
 
   obs_data_release(settings);
@@ -355,44 +357,72 @@ plugin_context *LookupEncoderData(obs_encoder_t *Encoder) {
 
 static const char *kROIConfigFile = "obs-qsv-onevpl-roi.ini";
 
-static config_t *OpenProfileConfig(bool ForWrite) {
+static config_t *OpenROIConfig(bool ForWrite) {
+  // First try per-profile path
   char *profile_path = obs_frontend_get_current_profile_path();
-  if (!profile_path) {
+  if (profile_path) {
+    struct dstr config_path = {0};
+    dstr_copy(&config_path, profile_path);
+    dstr_cat(&config_path, "/");
+    dstr_cat(&config_path, kROIConfigFile);
+
+    if (ForWrite) {
+      os_mkdirs(profile_path);
+    } else {
+      if (!os_file_exists(config_path.array)) {
+        blog(LOG_INFO,
+             "[QSV VPL] OpenROIConfig: profile file not found '%s'",
+             config_path.array);
+        bfree(profile_path);
+        dstr_free(&config_path);
+        goto try_module_path;
+      }
+    }
+
+    config_t *config = nullptr;
+    int ret = config_open(&config, config_path.array, CONFIG_OPEN_ALWAYS);
+    bfree(profile_path);
+    dstr_free(&config_path);
+
+    if (ret == CONFIG_SUCCESS)
+      return config;
+
     blog(LOG_WARNING,
-         "[QSV VPL] OpenProfileConfig: obs_frontend_get_current_profile_path "
-         "returned NULL (frontend not loaded?), cannot %s per-profile config.",
-         ForWrite ? "save" : "load");
+         "[QSV VPL] OpenROIConfig: profile config_open failed, ret=%d", ret);
+  }
+
+try_module_path:
+  // Fallback to module config path
+  char *config_path = obs_module_config_path(kROIConfigFile);
+  if (!config_path) {
+    blog(LOG_WARNING,
+         "[QSV VPL] OpenROIConfig: obs_module_config_path returned null!");
     return nullptr;
   }
 
-  struct dstr config_path = {0};
-  dstr_copy(&config_path, profile_path);
-  dstr_cat(&config_path, "/");
-  dstr_cat(&config_path, kROIConfigFile);
+  if (!ForWrite && !os_file_exists(config_path)) {
+    blog(LOG_INFO,
+         "[QSV VPL] OpenROIConfig: no module config file at '%s'",
+         config_path);
+    bfree(config_path);
+    return nullptr;
+  }
 
   if (ForWrite) {
-    // Ensure parent directory exists (should always be there for a profile)
-    os_mkdirs(profile_path);
-  } else {
-    // For reading, just check existence
-    if (!os_file_exists(config_path.array)) {
-      blog(LOG_INFO,
-           "[QSV VPL] OpenProfileConfig: file not found '%s'",
-           config_path.array);
-      bfree(profile_path);
-      dstr_free(&config_path);
-      return nullptr;
+    char *config_dir = obs_module_config_path("");
+    if (config_dir) {
+      os_mkdirs(config_dir);
+      bfree(config_dir);
     }
   }
 
   config_t *config = nullptr;
-  int ret = config_open(&config, config_path.array, CONFIG_OPEN_ALWAYS);
-  bfree(profile_path);
-  dstr_free(&config_path);
+  int ret = config_open(&config, config_path, CONFIG_OPEN_ALWAYS);
+  bfree(config_path);
 
   if (ret != CONFIG_SUCCESS) {
     blog(LOG_WARNING,
-         "[QSV VPL] OpenProfileConfig: config_open failed, ret=%d", ret);
+         "[QSV VPL] OpenROIConfig: module config_open failed, ret=%d", ret);
     return nullptr;
   }
 
@@ -400,34 +430,11 @@ static config_t *OpenProfileConfig(bool ForWrite) {
 }
 
 void SaveROIConfigToFile() {
-  config_t *config = OpenProfileConfig(true);
+  config_t *config = OpenROIConfig(true);
   if (!config) {
-    // If we can't open per-profile config, try the old module path as fallback
-    blog(LOG_INFO,
-         "[QSV VPL] SaveROIConfigToFile: per-profile config failed, "
-         "trying module path fallback");
-
-    char *config_path = obs_module_config_path(kROIConfigFile);
-    if (!config_path) {
-      blog(LOG_WARNING,
-           "[QSV VPL] SaveROIConfigToFile: obs_module_config_path returned null!");
-      return;
-    }
-
-    char *config_dir = obs_module_config_path("");
-    if (config_dir) {
-      os_mkdirs(config_dir);
-      bfree(config_dir);
-    }
-
-    int ret = config_open(&config, config_path, CONFIG_OPEN_ALWAYS);
-    bfree(config_path);
-    if (ret != CONFIG_SUCCESS) {
-      blog(LOG_WARNING,
-           "[QSV VPL] SaveROIConfigToFile: fallback config_open failed, ret=%d",
-           ret);
-      return;
-    }
+    blog(LOG_WARNING,
+         "[QSV VPL] SaveROIConfigToFile: could not open config for writing");
+    return;
   }
 
   std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
@@ -435,22 +442,12 @@ void SaveROIConfigToFile() {
   config_set_bool(config, "roi", "enabled", GlobalROIConfig.Enabled);
   config_set_int(config, "roi", "mode", GlobalROIConfig.Mode);
 
-  // Serialize normalized regions: pipe-separated, each is "left,top,right,bottom,deltaqp"
-  std::string regionStr;
-  for (auto &r : GlobalROIConfig.NormalizedRegions) {
-    if (!regionStr.empty())
-      regionStr += "|";
-    regionStr += FormatROIDouble(r.Left) + "," +
-                 FormatROIDouble(r.Top) + "," +
-                 FormatROIDouble(r.Right) + "," +
-                 FormatROIDouble(r.Bottom) + "," +
-                 std::to_string(r.DeltaQP);
-  }
+  std::string regionStr = SerializeROIRegions(GlobalROIConfig.NormalizedRegions);
   config_set_string(config, "roi", "regions", regionStr.c_str());
 
   int saved = config_save(config);
   blog(LOG_INFO,
-       "[QSV VPL] ROI config saved to profile: enabled=%d, mode=%d, regions=%zu, "
+       "[QSV VPL] ROI config saved: enabled=%d, mode=%d, regions=%zu, "
        "success=%d",
        (int)GlobalROIConfig.Enabled, (int)GlobalROIConfig.Mode,
        GlobalROIConfig.NormalizedRegions.size(), saved);
@@ -464,26 +461,9 @@ void SaveROIConfigToFile() {
 }
 
 bool LoadROIConfigFromFile() {
-  config_t *config = OpenProfileConfig(false);
-  if (!config) {
-    // Try module path fallback (old location)
-    char *config_path = obs_module_config_path(kROIConfigFile);
-    if (!config_path) {
-      return false;
-    }
-    if (!os_file_exists(config_path)) {
-      blog(LOG_INFO,
-           "[QSV VPL] LoadROIConfigFromFile: no config file found at '%s'",
-           config_path);
-      bfree(config_path);
-      return false;
-    }
-    int ret = config_open(&config, config_path, CONFIG_OPEN_ALWAYS);
-    bfree(config_path);
-    if (ret != CONFIG_SUCCESS) {
-      return false;
-    }
-  }
+  config_t *config = OpenROIConfig(false);
+  if (!config)
+    return false;
 
   if (!config_get_string(config, "roi", "enabled")) {
     blog(LOG_INFO,
@@ -497,32 +477,14 @@ bool LoadROIConfigFromFile() {
     GlobalROIConfig.Enabled = config_get_bool(config, "roi", "enabled");
     GlobalROIConfig.Mode = (mfxU16)config_get_int(config, "roi", "mode");
 
-    GlobalROIConfig.NormalizedRegions.clear();
     const char *regionStr = config_get_string(config, "roi", "regions");
-    if (regionStr && regionStr[0]) {
-      std::istringstream stream(regionStr);
-      std::string segment;
-      while (std::getline(stream, segment, '|')) {
-        if (segment.empty())
-          continue;
-        double l = 0, t = 0, r = 0, b = 0;
-        int dqp = 0;
-        if (std::sscanf(segment.c_str(), "%lf,%lf,%lf,%lf,%d",
-                         &l, &t, &r, &b, &dqp) == 5) {
-          encoder_params::normalized_roi_region nr = {};
-          nr.Left = l;
-          nr.Top = t;
-          nr.Right = r;
-          nr.Bottom = b;
-          nr.DeltaQP = (mfxI16)dqp;
-          GlobalROIConfig.NormalizedRegions.push_back(nr);
-        }
-      }
-    }
+    GlobalROIConfig.NormalizedRegions =
+        regionStr ? DeserializeROIRegions(regionStr)
+                  : std::vector<encoder_params::normalized_roi_region>();
   }
 
   blog(LOG_INFO,
-       "[QSV VPL] ROI config loaded from profile: enabled=%d, mode=%d, regions=%zu",
+       "[QSV VPL] ROI config loaded from file: enabled=%d, mode=%d, regions=%zu",
        (int)GlobalROIConfig.Enabled, (int)GlobalROIConfig.Mode,
        GlobalROIConfig.NormalizedRegions.size());
 

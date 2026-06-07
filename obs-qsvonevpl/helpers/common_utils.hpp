@@ -186,6 +186,25 @@ extern std::mutex PendingROIMutex;
 extern pending_roi_config GlobalROIConfig;
 extern std::mutex GlobalROIConfigMutex;
 
+// Format a double with minimal precision (no scientific notation, trimmed trailing zeros)
+std::string FormatROIDouble(double Value);
+
+// Serialize normalized ROI regions to pipe+comma format: "l,t,r,b,dqp|l,t,r,b,dqp"
+// This is the format used for persistent storage (file & encoder settings).
+std::string SerializeROIRegions(
+    const std::vector<encoder_params::normalized_roi_region> &Regions);
+
+// Deserialize normalized ROI regions from pipe+comma format.
+std::vector<encoder_params::normalized_roi_region> DeserializeROIRegions(
+    const std::string &Str);
+
+// Apply normalized ROI config to a single encoder instance.
+// Handles QP Delta→Priority mode fallback for non-CQP rate control internally.
+void ApplyROIConfigToEncoder(
+    plugin_context *Context,
+    const std::vector<encoder_params::normalized_roi_region> &NormRegions,
+    mfxU16 Mode, bool Enabled);
+
 // Convert 0-1 normalized ROI coordinates to pixel values using given output dimensions.
 // If Alignment > 0, coordinates are rounded to the nearest Alignment boundary.
 std::vector<encoder_params::roi_region> NormalizeROIToPixel(

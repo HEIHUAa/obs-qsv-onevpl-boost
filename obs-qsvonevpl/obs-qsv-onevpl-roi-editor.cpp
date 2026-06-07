@@ -1,3 +1,4 @@
+#include "helpers/common_utils.hpp"
 #include "obs-qsv-onevpl-roi-editor.hpp"
 #include <QMessageBox>
 #include <QWindow>
@@ -7,49 +8,13 @@
 #include <cstdio>
 
 // Format a double with minimal precision (avoid scientific notation)
-static std::string FormatDouble(double Value) {
-  std::ostringstream ss;
-  ss.precision(6);
-  ss << std::fixed << Value;
-  std::string s = ss.str();
-  // Trim trailing zeros (but keep at least one decimal)
-  auto dot = s.find('.');
-  if (dot != std::string::npos) {
-    auto last = s.find_last_not_of('0');
-    if (last > dot)
-      s = s.substr(0, last + 1);
-    else
-      s = s.substr(0, dot + 2); // keep ".0"
-  }
-  return s;
-}
-
-// Helper: apply ROI config to all active encoder instances
 // Converts 0-1 normalized coordinates to pixel values per-encoder
 static void ApplyROIToAllActiveEncoders(
     const std::vector<encoder_params::normalized_roi_region> &NormRegions,
     mfxU16 Mode, bool Enabled) {
   std::lock_guard<std::mutex> lock(EncoderDataMapMutex);
   for (auto &pair : EncoderDataMap) {
-    // If using QP Delta mode (Mode=0) but encoder rate control is not CQP,
-    // the hardware ignores QP deltas. Switch to Priority mode instead.
-    mfxU16 effectiveMode = Mode;
-    if (Mode == 0 &&
-        pair.second->EncoderParams.RateControl != MFX_RATECONTROL_CQP) {
-      blog(LOG_INFO,
-           "[QSV VPL] Encoder %s uses non-CQP rate control (%d), "
-           "forcing ROI Priority mode for ROI to take effect",
-           obs_encoder_get_id(pair.second->EncoderData),
-           pair.second->EncoderParams.RateControl);
-      effectiveMode = 1;
-    }
-
-    auto pixelRegions = NormalizeROIToPixel(
-        NormRegions,
-        pair.second->EncoderParams.Width,
-        pair.second->EncoderParams.Height,
-        GetCodecAlignment(pair.second->Codec));
-    UpdateEncoderROI(pair.second, pixelRegions, effectiveMode, Enabled);
+    ApplyROIConfigToEncoder(pair.second, NormRegions, Mode, Enabled);
   }
 }
 
@@ -76,6 +41,11 @@ ROIDialog::ROIDialog(QWidget *Parent)
   PreviewWidget->setMinimumSize(1, 1);
   PreviewWidget->setStyleSheet("background-color: black;");
   PreviewLayout->addWidget(PreviewWidget);
+  // ROI info label below preview
+  ROIInfoLabel = new QLabel(this);
+  ROIInfoLabel->setWordWrap(true);
+  ROIInfoLabel->setStyleSheet("color: #cccccc; font-size: 11px; font-family: Consolas, monospace; padding: 4px;");
+  PreviewLayout->addWidget(ROIInfoLabel);
   MainLayout->addWidget(PreviewGroup, 1); // give preview majority of vertical space
 
   // === Controls row: enable toggle + always-on-top ===
@@ -284,6 +254,72 @@ void ROIDialog::PreviewDraw(void *param, uint32_t cx, uint32_t cy) {
   dialog->DrawROIOverlay(cx, cy);
 }
 
+// ── Draw a list of ROI rects (all share the same viewport mapping) ──
+static void DrawROIRects(
+    const std::vector<encoder_params::roi_region> &Rects,
+    float vp_x, float vp_y, float vp_w, float vp_h,
+    float out_w, float out_h, float cx, float cy) {
+  gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
+  if (!solid)
+    return;
+  gs_technique_t *tech = gs_effect_get_technique(solid, "Solid");
+  if (!tech)
+    return;
+  gs_eparam_t *color_param = gs_effect_get_param_by_name(solid, "color");
+
+  gs_technique_begin(tech);
+  gs_technique_begin_pass(tech, 0);
+
+  for (auto &r : Rects) {
+    // Map from output resolution → preview widget pixel coords
+    float x1 = vp_x + (float)r.Left * (vp_w / out_w);
+    float y1 = vp_y + (float)r.Top * (vp_h / out_h);
+    float x2 = vp_x + (float)r.Right * (vp_w / out_w);
+    float y2 = vp_y + (float)r.Bottom * (vp_h / out_h);
+
+    // Clamp
+    auto clamp = [](float v, float lo, float hi) {
+      return v < lo ? lo : (v > hi ? hi : v);
+    };
+    x1 = clamp(x1, 0.0f, (float)cx);
+    y1 = clamp(y1, 0.0f, (float)cy);
+    x2 = clamp(x2, 0.0f, (float)cx);
+    y2 = clamp(y2, 0.0f, (float)cy);
+    if (x2 <= x1 || y2 <= y1)
+      continue;
+
+    // Color: Red = negative DeltaQP (higher quality), Green = positive (lower quality)
+    float intensity = std::min((float)std::abs(r.DeltaQP) / 25.0f, 1.0f);
+    intensity = std::max(intensity, 0.3f); // minimum visibility
+    vec4 color;
+    vec4_zero(&color);
+    if (r.DeltaQP < 0)
+      vec4_set(&color, intensity, 0.1f, 0.1f, 0.35f);
+    else
+      vec4_set(&color, 0.1f * (1.0f - intensity), intensity, 0.1f, 0.35f);
+
+    gs_effect_set_vec4(color_param, &color);
+
+    struct gs_vb_data *vbd = gs_vbdata_create();
+    vbd->num = 4;
+    vbd->points = (struct vec3 *)bzalloc(sizeof(struct vec3) * 4);
+    vbd->points[0].x = x1; vbd->points[0].y = y1; vbd->points[0].z = 0.0f;
+    vbd->points[1].x = x2; vbd->points[1].y = y1; vbd->points[1].z = 0.0f;
+    vbd->points[2].x = x1; vbd->points[2].y = y2; vbd->points[2].z = 0.0f;
+    vbd->points[3].x = x2; vbd->points[3].y = y2; vbd->points[3].z = 0.0f;
+
+    gs_vertbuffer_t *vb = gs_vertexbuffer_create(vbd, GS_DYNAMIC);
+    if (vb) {
+      gs_load_vertexbuffer(vb);
+      gs_draw(GS_TRISTRIP, 0, 4);
+      gs_vertexbuffer_destroy(vb);
+    }
+  }
+
+  gs_technique_end_pass(tech);
+  gs_technique_end(tech);
+}
+
 void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy) {
   // --- 1. Read normalized ROI data; convert to pixel for display ---
   bool enabled = false;
@@ -338,10 +374,6 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy) {
   float base_w = (float)ovi.base_width;
   float base_h = (float)ovi.base_height;
 
-  blog(LOG_DEBUG,
-       "[ROI Editor] DrawROIOverlay: base=%gx%g output=%gx%g widget=%ux%u",
-       base_w, base_h, out_w, out_h, cx, cy);
-
   // Viewport (same as PreviewDraw)
   float scale = std::min((float)cx / base_w, (float)cy / base_h);
   float vp_w = base_w * scale;
@@ -363,13 +395,12 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy) {
   xs.erase(std::unique(xs.begin(), xs.end()), xs.end());
   ys.erase(std::unique(ys.begin(), ys.end()), ys.end());
 
-  // Build a grid: for each cell (xs[i]..xs[i+1], ys[j]..ys[j+1]),
-  // compute composite DeltaQP = sum of all ROIs covering this cell
-  struct Cell {
-    mfxU16 x1, y1, x2, y2;
-    mfxI16 deltaQP; // composite value
-  };
-  std::vector<Cell> cells;
+  // Build a grid of cells; each cell gets the composite DeltaQP of
+  // all ROIs covering it.  Cells with sumQP == 0 are skipped.
+  // If no cells have net effect, fall back to drawing raw regions.
+  std::vector<encoder_params::roi_region> drawRects;
+  bool useSegmented = false;
+
   for (size_t yi = 0; yi + 1 < ys.size(); yi++) {
     for (size_t xi = 0; xi + 1 < xs.size(); xi++) {
       mfxI16 sumQP = 0;
@@ -380,180 +411,64 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy) {
         }
       }
       if (sumQP == 0)
-        continue; // skip cells with no net effect
-      cells.push_back({xs[xi], ys[yi], xs[xi + 1], ys[yi + 1], sumQP});
-    }
-  }
-
-  if (cells.empty()) {
-    blog(LOG_DEBUG, "[ROI Editor] DrawROIOverlay: cells empty after segmentation, drawing raw regions");
-
-    // --- Fallback: draw raw regions if no overlap ---
-    gs_effect_t *solid_raw = obs_get_base_effect(OBS_EFFECT_SOLID);
-    if (!solid_raw)
-      return;
-    gs_technique_t *tech_raw = gs_effect_get_technique(solid_raw, "Solid");
-    if (!tech_raw)
-      return;
-    gs_eparam_t *color_param_raw = gs_effect_get_param_by_name(solid_raw, "color");
-
-    gs_technique_begin(tech_raw);
-    gs_technique_begin_pass(tech_raw, 0);
-
-    for (auto &r : regions) {
-      float x1 = vp_x + (float)r.Left * (vp_w / out_w);
-      float y1 = vp_y + (float)r.Top * (vp_h / out_h);
-      float x2 = vp_x + (float)r.Right * (vp_w / out_w);
-      float y2 = vp_y + (float)r.Bottom * (vp_h / out_h);
-
-      x1 = (x1 < 0) ? 0 : (x1 > (float)cx ? (float)cx : x1);
-      y1 = (y1 < 0) ? 0 : (y1 > (float)cy ? (float)cy : y1);
-      x2 = (x2 < 0) ? 0 : (x2 > (float)cx ? (float)cx : x2);
-      y2 = (y2 < 0) ? 0 : (y2 > (float)cy ? (float)cy : y2);
-      if (x2 <= x1 || y2 <= y1)
         continue;
-
-      vec4 color;
-      vec4_zero(&color);
-      float intensity = std::min((float)std::abs(r.DeltaQP) / 25.0f, 1.0f);
-      intensity = std::max(intensity, 0.3f);
-      float alpha = 0.35f;
-
-      if (r.DeltaQP < 0) {
-        // Red (减QP = 更高质量)
-        vec4_set(&color, intensity, 0.1f, 0.1f, alpha);
-      } else {
-        // Green (加QP = 更低质量)
-        vec4_set(&color, 0.1f * (1.0f - intensity), intensity, 0.1f, alpha);
-      }
-
-      gs_effect_set_vec4(color_param_raw, &color);
-
-      struct gs_vb_data *vbd = gs_vbdata_create();
-      vbd->num = 4;
-      vbd->points = (struct vec3 *)bzalloc(sizeof(struct vec3) * 4);
-      vbd->points[0].x = x1; vbd->points[0].y = y1; vbd->points[0].z = 0.0f;
-      vbd->points[1].x = x2; vbd->points[1].y = y1; vbd->points[1].z = 0.0f;
-      vbd->points[2].x = x1; vbd->points[2].y = y2; vbd->points[2].z = 0.0f;
-      vbd->points[3].x = x2; vbd->points[3].y = y2; vbd->points[3].z = 0.0f;
-
-      gs_vertbuffer_t *vb = gs_vertexbuffer_create(vbd, GS_DYNAMIC);
-      if (vb) {
-        gs_load_vertexbuffer(vb);
-        gs_draw(GS_TRISTRIP, 0, 4);
-        gs_vertexbuffer_destroy(vb);
-      }
-    }
-
-    gs_technique_end_pass(tech_raw);
-    gs_technique_end(tech_raw);
-    return;
-  }
-
-  blog(LOG_DEBUG,
-       "[ROI Editor] DrawROIOverlay: drawing %zu segmented cells",
-       cells.size());
-
-  // --- 4. Draw with solid effect ---
-  gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
-  if (!solid)
-    return;
-  gs_technique_t *tech = gs_effect_get_technique(solid, "Solid");
-  if (!tech)
-    return;
-  gs_eparam_t *color_param = gs_effect_get_param_by_name(solid, "color");
-
-  gs_technique_begin(tech);
-  gs_technique_begin_pass(tech, 0);
-
-  for (auto &cell : cells) {
-    // Map cell from output resolution → preview widget pixel coords
-    float x1 = vp_x + (float)cell.x1 * (vp_w / out_w);
-    float y1 = vp_y + (float)cell.y1 * (vp_h / out_h);
-    float x2 = vp_x + (float)cell.x2 * (vp_w / out_w);
-    float y2 = vp_y + (float)cell.y2 * (vp_h / out_h);
-
-    // Clamp
-    x1 = (x1 < 0) ? 0 : (x1 > (float)cx ? (float)cx : x1);
-    y1 = (y1 < 0) ? 0 : (y1 > (float)cy ? (float)cy : y1);
-    x2 = (x2 < 0) ? 0 : (x2 > (float)cx ? (float)cx : x2);
-    y2 = (y2 < 0) ? 0 : (y2 > (float)cy ? (float)cy : y2);
-    if (x2 <= x1 || y2 <= y1)
-      continue;
-
-    // Color: Red = negative DeltaQP (higher quality/bitrate)
-    //        Green = positive DeltaQP (lower quality/bitrate)
-    //        Intensity scales with |DeltaQP|
-    vec4 color;
-    vec4_zero(&color);
-    float intensity = std::min((float)std::abs(cell.deltaQP) / 25.0f, 1.0f);
-    intensity = std::max(intensity, 0.3f); // minimum visibility
-    float alpha = 0.35f;
-
-    if (cell.deltaQP < 0) {
-      // Red (减QP = 更高质量): intensity controls redness
-      vec4_set(&color, intensity, 0.1f, 0.1f, alpha);
-    } else {
-      // Green (加QP = 更低质量): intensity controls greenness
-      vec4_set(&color, 0.1f * (1.0f - intensity), intensity, 0.1f, alpha);
-    }
-
-    gs_effect_set_vec4(color_param, &color);
-
-    struct gs_vb_data *vbd = gs_vbdata_create();
-    vbd->num = 4;
-    vbd->points = (struct vec3 *)bzalloc(sizeof(struct vec3) * 4);
-    vbd->points[0].x = x1;
-    vbd->points[0].y = y1;
-    vbd->points[0].z = 0.0f;
-    vbd->points[1].x = x2;
-    vbd->points[1].y = y1;
-    vbd->points[1].z = 0.0f;
-    vbd->points[2].x = x1;
-    vbd->points[2].y = y2;
-    vbd->points[2].z = 0.0f;
-    vbd->points[3].x = x2;
-    vbd->points[3].y = y2;
-    vbd->points[3].z = 0.0f;
-
-    gs_vertbuffer_t *vb = gs_vertexbuffer_create(vbd, GS_DYNAMIC);
-    if (vb) {
-      gs_load_vertexbuffer(vb);
-      gs_draw(GS_TRISTRIP, 0, 4);
-      gs_vertexbuffer_destroy(vb);
+      useSegmented = true;
+      drawRects.push_back({xs[xi], ys[yi], xs[xi + 1], ys[yi + 1], sumQP});
     }
   }
 
-  gs_technique_end_pass(tech);
-  gs_technique_end(tech);
+  if (!useSegmented) {
+    blog(LOG_DEBUG,
+         "[ROI Editor] DrawROIOverlay: no overlap, drawing raw regions");
+    drawRects = regions;
+  } else {
+    blog(LOG_DEBUG,
+         "[ROI Editor] DrawROIOverlay: drawing %zu segmented cells",
+         drawRects.size());
+  }
+
+  // --- 4. Draw all rects through the shared helper ---
+  DrawROIRects(drawRects, vp_x, vp_y, vp_w, vp_h, out_w, out_h, cx, cy);
 }
 
-// ---------------------------------------------------------------------------
-// ROI data load / save
-// ---------------------------------------------------------------------------
+// ── Helper: convert normalized regions → space-separated UI text ─────
+static std::string RegionsToUIFormat(
+    const std::vector<encoder_params::normalized_roi_region> &Regions) {
+  std::string text;
+  for (auto &r : Regions) {
+    if (!text.empty())
+      text += "\n";
+    text += FormatROIDouble(r.Left) + " " +
+            FormatROIDouble(r.Top) + " " +
+            FormatROIDouble(r.Right) + " " +
+            FormatROIDouble(r.Bottom) + " " +
+            std::to_string(r.DeltaQP);
+  }
+  return text;
+}
+
+// ── Helper: populate UI controls from GlobalROIConfig ────────────────
+void ROIDialog::SetUIFromGlobalConfig() {
+  std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
+  ROIEnableCheck->setChecked(GlobalROIConfig.Enabled);
+  if (GlobalROIConfig.Mode == 1)
+    PriorityRadio->setChecked(true);
+  else
+    QPDeltaRadio->setChecked(true);
+
+  ROITextEdit->setPlainText(
+      QString::fromStdString(RegionsToUIFormat(GlobalROIConfig.NormalizedRegions)));
+  UpdateROIInfoLabel();
+}
+
+// ── ROI data load / save
+// ----------------------------------------------------------------------
 void ROIDialog::LoadROIData() {
   // Load from global ROI config (resolution-independent normalized values)
   {
     std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
     if (GlobalROIConfig.Enabled || !GlobalROIConfig.NormalizedRegions.empty()) {
-      ROIEnableCheck->setChecked(GlobalROIConfig.Enabled);
-      if (GlobalROIConfig.Mode == 1)
-        PriorityRadio->setChecked(true);
-      else
-        QPDeltaRadio->setChecked(true);
-
-      std::string text;
-      for (auto &r : GlobalROIConfig.NormalizedRegions) {
-        if (!text.empty())
-          text += "\n";
-        text +=
-            FormatDouble(r.Left) + " " +
-            FormatDouble(r.Top) + " " +
-            FormatDouble(r.Right) + " " +
-            FormatDouble(r.Bottom) + " " +
-            std::to_string(r.DeltaQP);
-      }
-      ROITextEdit->setPlainText(QString::fromStdString(text));
+      SetUIFromGlobalConfig(); // reads GlobalROIConfig internally
       blog(LOG_DEBUG,
            "[ROI Editor] LoadROIData: loaded global config, enabled=%d, regions=%zu",
            (int)GlobalROIConfig.Enabled, GlobalROIConfig.NormalizedRegions.size());
@@ -563,25 +478,7 @@ void ROIDialog::LoadROIData() {
 
   // Fallback: try loading from file if no global config
   if (LoadROIConfigFromFile()) {
-    std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
-    ROIEnableCheck->setChecked(GlobalROIConfig.Enabled);
-    if (GlobalROIConfig.Mode == 1)
-      PriorityRadio->setChecked(true);
-    else
-      QPDeltaRadio->setChecked(true);
-
-    std::string text;
-    for (auto &r : GlobalROIConfig.NormalizedRegions) {
-      if (!text.empty())
-        text += "\n";
-      text +=
-          FormatDouble(r.Left) + " " +
-          FormatDouble(r.Top) + " " +
-          FormatDouble(r.Right) + " " +
-          FormatDouble(r.Bottom) + " " +
-          std::to_string(r.DeltaQP);
-    }
-    ROITextEdit->setPlainText(QString::fromStdString(text));
+    SetUIFromGlobalConfig();
     blog(LOG_DEBUG,
          "[ROI Editor] LoadROIData: loaded from file fallback, enabled=%d, regions=%zu",
          (int)GlobalROIConfig.Enabled, GlobalROIConfig.NormalizedRegions.size());
@@ -594,6 +491,7 @@ void ROIDialog::LoadROIData() {
   ROITextEdit->clear();
   blog(LOG_DEBUG,
        "[ROI Editor] LoadROIData: no global config found, using defaults");
+  UpdateROIInfoLabel();
 }
 
 void ROIDialog::SaveROIData() {
@@ -650,27 +548,10 @@ void ROIDialog::SaveROIData() {
   // If any encoder instances exist, apply immediately with per-encoder conversion
   ApplyROIToAllActiveEncoders(normRegions, mode, enabled);
 
-  // Warn user if QP Delta mode selected but encoders use non-CQP rate control
-  if (mode == 0) {
-    bool hasNonCQP = false;
-    {
-      std::lock_guard<std::mutex> lock(EncoderDataMapMutex);
-      for (auto &pair : EncoderDataMap) {
-        if (pair.second->EncoderParams.RateControl != MFX_RATECONTROL_CQP) {
-          hasNonCQP = true;
-          break;
-        }
-      }
-    }
-    if (hasNonCQP) {
-      blog(LOG_WARNING,
-           "[QSV VPL] QP Delta ROI mode selected but encoder(s) use non-CQP "
-           "rate control. ROI will use Priority mode for those encoders.");
-    }
-  }
-
   // Force preview refresh to show updated ROI regions
   ForceRefreshPreview();
+  // Update the ROI info label below preview
+  UpdateROIInfoLabel();
 
   blog(LOG_INFO,
        "[QSV VPL] ROI saved: enabled=%d, normalized regions=%zu, mode=%d",
@@ -685,6 +566,32 @@ void ROIDialog::SaveROIData() {
 
   QMessageBox::information(this, obs_module_text("ROIEditor"),
                            obs_module_text("ROIApplySuccess"));
+}
+
+void ROIDialog::UpdateROIInfoLabel() {
+  std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
+  if (!GlobalROIConfig.Enabled || GlobalROIConfig.NormalizedRegions.empty()) {
+    ROIInfoLabel->setText(obs_module_text("ROIInfoDisabled"));
+    return;
+  }
+
+  std::string text = QString(obs_module_text("ROIInfoHeader"))
+                         .arg(GlobalROIConfig.Mode == 1
+                                  ? obs_module_text("ROIModePriority")
+                                  : obs_module_text("ROIModeQPDelta"))
+                         .arg((int)GlobalROIConfig.NormalizedRegions.size())
+                         .toStdString();
+
+  for (size_t i = 0; i < GlobalROIConfig.NormalizedRegions.size(); i++) {
+    auto &r = GlobalROIConfig.NormalizedRegions[i];
+    text += "\n  ROI[" + std::to_string(i) + "]: " +
+            FormatROIDouble(r.Left) + " " +
+            FormatROIDouble(r.Top) + " " +
+            FormatROIDouble(r.Right) + " " +
+            FormatROIDouble(r.Bottom) + "  DQP=" + std::to_string(r.DeltaQP);
+  }
+
+  ROIInfoLabel->setText(QString::fromStdString(text));
 }
 
 void ROIDialog::OnApplyClicked() {
@@ -709,13 +616,55 @@ void ROIDialog::OnToggleAlwaysOnTop(Qt::CheckState State) {
 // ---------------------------------------------------------------------------
 // Frontend menu callback
 // ---------------------------------------------------------------------------
+
+// Track the active ROI dialog instance so we can refresh it on profile change
+static ROIDialog *ActiveDialog = nullptr;
+
+// Frontend event callback: reload ROI config when OBS profile changes
+static void OnFrontendEvent(obs_frontend_event Event, void *) {
+  if (Event != OBS_FRONTEND_EVENT_PROFILE_CHANGED)
+    return;
+
+  blog(LOG_INFO, "[QSV VPL] Profile changed, reloading ROI config...");
+
+  // 1. Reload GlobalROIConfig from new profile's INI file
+  LoadROIConfigFromFile();
+
+  // 2. Re-apply to all active encoders
+  {
+    std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
+    if (GlobalROIConfig.Enabled &&
+        !GlobalROIConfig.NormalizedRegions.empty()) {
+      ApplyROIToAllActiveEncoders(GlobalROIConfig.NormalizedRegions,
+                                   GlobalROIConfig.Mode,
+                                   GlobalROIConfig.Enabled);
+    }
+  }
+
+  // 3. If ROI editor dialog is open, refresh its display
+  if (ActiveDialog) {
+    QMetaObject::invokeMethod(ActiveDialog, [dialog = ActiveDialog]() {
+      dialog->LoadROIData();
+      dialog->ForceRefreshPreview();
+    }, Qt::QueuedConnection);
+  }
+}
+
 static void OpenROIEditor(void * /*data*/) {
   auto *dialog = new ROIDialog();
   dialog->setAttribute(Qt::WA_DeleteOnClose);
+
+  // Track active dialog for profile-change refresh
+  ActiveDialog = dialog;
+  QObject::connect(dialog, &QObject::destroyed, []() {
+    ActiveDialog = nullptr;
+  });
+
   dialog->show();
 }
 
 void RegisterROIEditor() {
   obs_frontend_add_tools_menu_item(obs_module_text("ROIEditor"),
                                     OpenROIEditor, nullptr);
+  obs_frontend_add_event_callback(OnFrontendEvent, nullptr);
 }
