@@ -3,6 +3,8 @@
 
 #include <sstream>
 #include <obs-module.h>
+#include <obs-frontend-api.h>
+#include <util/dstr.h>
 
 struct adapter_info AdaptersInfo[MAX_ADAPTERS] = {};
 size_t AdaptersCount = 0;
@@ -310,32 +312,93 @@ plugin_context *LookupEncoderData(obs_encoder_t *Encoder) {
   return (it != EncoderDataMap.end()) ? it->second : nullptr;
 }
 
-// ── File-based ROI config persistence ────────────────────────────────────
-// Uses obs_module_config_path to get a writable path in the OBS plugin config
-// directory (e.g. %APPDATA%\obs-studio\plugin_config\obs-qsvonevpl\roi_config.json).
-// This is more reliable than obs_encoder_get_settings() because OBS always
-// persists module config files, but may not persist custom encoder keys.
+// ── Per-profile ROI config persistence ─────────────────────────────────
+// Uses obs_frontend_get_current_profile_path() to store ROI settings
+// in each OBS profile's own config file, so different profiles can have
+// different ROI configurations.
+// Location: <profile_path>/obs-qsv-onevpl-roi.ini
 
-void SaveROIConfigToFile() {
-  char *config_path = obs_module_config_path("roi_config.json");
-  if (!config_path) {
+static const char *kROIConfigFile = "obs-qsv-onevpl-roi.ini";
+
+static config_t *OpenProfileConfig(bool ForWrite) {
+  char *profile_path = obs_frontend_get_current_profile_path();
+  if (!profile_path) {
     blog(LOG_WARNING,
-         "[QSV VPL] SaveROIConfigToFile: obs_module_config_path returned null!");
-    return;
+         "[QSV VPL] OpenProfileConfig: obs_frontend_get_current_profile_path "
+         "returned NULL (frontend not loaded?), cannot %s per-profile config.",
+         ForWrite ? "save" : "load");
+    return nullptr;
   }
 
-  // Ensure parent directory exists
-  char *config_dir = obs_module_config_path("");
-  if (config_dir) {
-    os_mkdirs(config_dir);
-    bfree(config_dir);
+  struct dstr config_path = {0};
+  dstr_copy(&config_path, profile_path);
+  dstr_cat(&config_path, "/");
+  dstr_cat(&config_path, kROIConfigFile);
+
+  if (ForWrite) {
+    // Ensure parent directory exists (should always be there for a profile)
+    os_mkdirs(profile_path);
+  } else {
+    // For reading, just check existence
+    if (!os_file_exists(config_path.array)) {
+      blog(LOG_INFO,
+           "[QSV VPL] OpenProfileConfig: file not found '%s'",
+           config_path.array);
+      bfree(profile_path);
+      dstr_free(&config_path);
+      return nullptr;
+    }
+  }
+
+  config_t *config = nullptr;
+  int ret = config_open(&config, config_path.array, CONFIG_OPEN_ALWAYS);
+  bfree(profile_path);
+  dstr_free(&config_path);
+
+  if (ret != CONFIG_SUCCESS) {
+    blog(LOG_WARNING,
+         "[QSV VPL] OpenProfileConfig: config_open failed, ret=%d", ret);
+    return nullptr;
+  }
+
+  return config;
+}
+
+void SaveROIConfigToFile() {
+  config_t *config = OpenProfileConfig(true);
+  if (!config) {
+    // If we can't open per-profile config, try the old module path as fallback
+    blog(LOG_INFO,
+         "[QSV VPL] SaveROIConfigToFile: per-profile config failed, "
+         "trying module path fallback");
+
+    char *config_path = obs_module_config_path(kROIConfigFile);
+    if (!config_path) {
+      blog(LOG_WARNING,
+           "[QSV VPL] SaveROIConfigToFile: obs_module_config_path returned null!");
+      return;
+    }
+
+    char *config_dir = obs_module_config_path("");
+    if (config_dir) {
+      os_mkdirs(config_dir);
+      bfree(config_dir);
+    }
+
+    int ret = config_open(&config, config_path, CONFIG_OPEN_ALWAYS);
+    bfree(config_path);
+    if (ret != CONFIG_SUCCESS) {
+      blog(LOG_WARNING,
+           "[QSV VPL] SaveROIConfigToFile: fallback config_open failed, ret=%d",
+           ret);
+      return;
+    }
   }
 
   std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
 
-  obs_data_t *data = obs_data_create();
-  obs_data_set_bool(data, "roi_enabled", GlobalROIConfig.Enabled);
-  obs_data_set_int(data, "roi_mode", GlobalROIConfig.Mode);
+  config_set_bool(config, "roi", "enabled", GlobalROIConfig.Enabled);
+  config_set_int(config, "roi", "mode", GlobalROIConfig.Mode);
 
   // Serialize normalized regions: pipe-separated, each is "left,top,right,bottom,deltaqp"
   std::string regionStr;
@@ -348,69 +411,59 @@ void SaveROIConfigToFile() {
                  FormatROIDouble(r.Bottom) + "," +
                  std::to_string(r.DeltaQP);
   }
-  obs_data_set_string(data, "roi_regions", regionStr.c_str());
+  config_set_string(config, "roi", "regions", regionStr.c_str());
 
-  bool saved = obs_data_save_json(data, config_path);
+  int saved = config_save(config);
   blog(LOG_INFO,
-       "[QSV VPL] ROI config saved to file: enabled=%d, mode=%d, regions=%zu, "
-       "file='%s', success=%d",
+       "[QSV VPL] ROI config saved to profile: enabled=%d, mode=%d, regions=%zu, "
+       "success=%d",
        (int)GlobalROIConfig.Enabled, (int)GlobalROIConfig.Mode,
-       GlobalROIConfig.NormalizedRegions.size(), config_path, (int)saved);
+       GlobalROIConfig.NormalizedRegions.size(), saved);
 
   if (!saved) {
     blog(LOG_WARNING,
-         "[QSV VPL] SaveROIConfigToFile: FAILED to save to '%s'!"
-         " Check if the directory exists and is writable.",
-         config_path);
+         "[QSV VPL] SaveROIConfigToFile: config_save FAILED!");
   }
 
-  obs_data_release(data);
-  bfree(config_path);
+  config_close(config);
 }
 
 bool LoadROIConfigFromFile() {
-  char *config_path = obs_module_config_path("roi_config.json");
-  if (!config_path) {
-    blog(LOG_WARNING,
-         "[QSV VPL] LoadROIConfigFromFile: obs_module_config_path returned null!");
-    return false;
+  config_t *config = OpenProfileConfig(false);
+  if (!config) {
+    // Try module path fallback (old location)
+    char *config_path = obs_module_config_path(kROIConfigFile);
+    if (!config_path) {
+      return false;
+    }
+    if (!os_file_exists(config_path)) {
+      blog(LOG_INFO,
+           "[QSV VPL] LoadROIConfigFromFile: no config file found at '%s'",
+           config_path);
+      bfree(config_path);
+      return false;
+    }
+    int ret = config_open(&config, config_path, CONFIG_OPEN_ALWAYS);
+    bfree(config_path);
+    if (ret != CONFIG_SUCCESS) {
+      return false;
+    }
   }
 
-  // Check if the file exists first
-  if (!os_file_exists(config_path)) {
+  if (!config_get_string(config, "roi", "enabled")) {
     blog(LOG_INFO,
-         "[QSV VPL] LoadROIConfigFromFile: file not found at '%s'",
-         config_path);
-    bfree(config_path);
-    return false;
-  }
-
-  // Use OBS's built-in JSON file reader (more reliable than manual os_fread)
-  obs_data_t *data = obs_data_create_from_json_file(config_path);
-  if (!data) {
-    blog(LOG_WARNING,
-         "[QSV VPL] LoadROIConfigFromFile: failed to read/parse JSON from '%s'",
-         config_path);
-    bfree(config_path);
-    return false;
-  }
-
-  if (!obs_data_has_user_value(data, "roi_enabled")) {
-    blog(LOG_INFO,
-         "[QSV VPL] LoadROIConfigFromFile: no roi_enabled in file '%s'",
-         config_path);
-    obs_data_release(data);
-    bfree(config_path);
+         "[QSV VPL] LoadROIConfigFromFile: no roi.enabled in config");
+    config_close(config);
     return false;
   }
 
   {
     std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
-    GlobalROIConfig.Enabled = obs_data_get_bool(data, "roi_enabled");
-    GlobalROIConfig.Mode = (mfxU16)obs_data_get_int(data, "roi_mode");
+    GlobalROIConfig.Enabled = config_get_bool(config, "roi", "enabled");
+    GlobalROIConfig.Mode = (mfxU16)config_get_int(config, "roi", "mode");
 
     GlobalROIConfig.NormalizedRegions.clear();
-    const char *regionStr = obs_data_get_string(data, "roi_regions");
+    const char *regionStr = config_get_string(config, "roi", "regions");
     if (regionStr && regionStr[0]) {
       std::istringstream stream(regionStr);
       std::string segment;
@@ -434,13 +487,11 @@ bool LoadROIConfigFromFile() {
   }
 
   blog(LOG_INFO,
-       "[QSV VPL] ROI config loaded from file: enabled=%d, mode=%d, regions=%zu, "
-       "file='%s'",
+       "[QSV VPL] ROI config loaded from profile: enabled=%d, mode=%d, regions=%zu",
        (int)GlobalROIConfig.Enabled, (int)GlobalROIConfig.Mode,
-       GlobalROIConfig.NormalizedRegions.size(), config_path);
+       GlobalROIConfig.NormalizedRegions.size());
 
-  obs_data_release(data);
-  bfree(config_path);
+  config_close(config);
   return true;
 }
 

@@ -211,10 +211,11 @@ void SaveROIToEncoderSettings(plugin_context *Context);
 // Load ROI from encoder's obs_data_t settings into GlobalROIConfig and apply
 void LoadROIFromEncoderSettings(plugin_context *Context);
 
-// Save GlobalROIConfig to a persistent JSON file in plugin config directory.
-// This is more reliable than encoder settings, as OBS may not persist custom keys.
+// Save GlobalROIConfig to per-profile INI config file in the current
+// OBS profile directory (<profile>/obs-qsv-onevpl-roi.ini).
+// Falls back to obs_module_config_path if frontend API is unavailable.
 void SaveROIConfigToFile();
-// Load GlobalROIConfig from the persistent JSON file.
+// Load GlobalROIConfig from the per-profile INI config file.
 // Returns true if a config was loaded, false otherwise.
 bool LoadROIConfigFromFile();
 
