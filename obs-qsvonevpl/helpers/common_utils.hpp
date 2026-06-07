@@ -186,10 +186,25 @@ extern std::mutex PendingROIMutex;
 extern pending_roi_config GlobalROIConfig;
 extern std::mutex GlobalROIConfigMutex;
 
-// Convert 0-1 normalized ROI coordinates to pixel values using given output dimensions
+// Convert 0-1 normalized ROI coordinates to pixel values using given output dimensions.
+// If Alignment > 0, coordinates are rounded to the nearest Alignment boundary.
 std::vector<encoder_params::roi_region> NormalizeROIToPixel(
     const std::vector<encoder_params::normalized_roi_region> &NormRegions,
-    mfxU16 OutWidth, mfxU16 OutHeight);
+    mfxU16 OutWidth, mfxU16 OutHeight,
+    mfxU16 Alignment = 0);
+
+// Return the ROI coordinate alignment requirement for the given codec.
+// AVC/H.264 requires 16-pixel (macroblock) alignment; HEVC requires 32-pixel alignment.
+inline mfxU16 GetCodecAlignment(enum codec_enum Codec) {
+  switch (Codec) {
+  case QSV_CODEC_HEVC:
+    return 32;
+  case QSV_CODEC_AVC:
+  case QSV_CODEC_AV1:
+  default:
+    return 16;
+  }
+}
 
 // Save GlobalROIConfig to a specific encoder's obs_data_t settings
 void SaveROIToEncoderSettings(plugin_context *Context);

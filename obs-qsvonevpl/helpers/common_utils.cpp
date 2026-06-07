@@ -21,7 +21,8 @@ std::mutex GlobalROIConfigMutex;
 // Convert 0-1 normalized ROI coords → pixel values
 std::vector<encoder_params::roi_region> NormalizeROIToPixel(
     const std::vector<encoder_params::normalized_roi_region> &NormRegions,
-    mfxU16 OutWidth, mfxU16 OutHeight) {
+    mfxU16 OutWidth, mfxU16 OutHeight,
+    mfxU16 Alignment) {
   std::vector<encoder_params::roi_region> result;
   result.reserve(NormRegions.size());
   for (auto &nr : NormRegions) {
@@ -31,6 +32,31 @@ std::vector<encoder_params::roi_region> NormalizeROIToPixel(
     pr.Right  = (mfxU16)(nr.Right  * OutWidth);
     pr.Bottom = (mfxU16)(nr.Bottom * OutHeight);
     pr.DeltaQP = nr.DeltaQP;
+
+    // Round to nearest codec-specific block boundary so oneVPL does not
+    // silently ignore the ROI (the SDK requires alignment for valid ROI).
+    // See: https://intel.github.io/libvpl/latest/API_ref/VPL_structs_encode.html#mfxextencoderroi
+    if (Alignment > 0) {
+      auto RoundAlign = [Alignment](mfxU16 Val) -> mfxU16 {
+        return static_cast<mfxU16>(
+            (Val + Alignment / 2) / Alignment) * Alignment;
+      };
+      pr.Left   = RoundAlign(pr.Left);
+      pr.Top    = RoundAlign(pr.Top);
+      pr.Right  = RoundAlign(pr.Right);
+      pr.Bottom = RoundAlign(pr.Bottom);
+
+      // Clamp to frame boundaries (Right/Bottom are exclusive)
+      if (pr.Left >= OutWidth)
+        pr.Left = (mfxU16)(OutWidth / Alignment * Alignment);
+      if (pr.Top >= OutHeight)
+        pr.Top = (mfxU16)(OutHeight / Alignment * Alignment);
+      if (pr.Right > OutWidth)
+        pr.Right = OutWidth;
+      if (pr.Bottom > OutHeight)
+        pr.Bottom = OutHeight;
+    }
+
     result.push_back(pr);
   }
   return result;
@@ -164,7 +190,8 @@ void LoadROIFromEncoderSettings(plugin_context *Context) {
     auto pixelRegions = NormalizeROIToPixel(
         GlobalROIConfig.NormalizedRegions,
         Context->EncoderParams.Width,
-        Context->EncoderParams.Height);
+        Context->EncoderParams.Height,
+        GetCodecAlignment(Context->Codec));
     UpdateEncoderROI(Context, pixelRegions, effectiveMode, true);
   }
 }

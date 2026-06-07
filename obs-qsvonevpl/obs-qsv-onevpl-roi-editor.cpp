@@ -47,7 +47,8 @@ static void ApplyROIToAllActiveEncoders(
     auto pixelRegions = NormalizeROIToPixel(
         NormRegions,
         pair.second->EncoderParams.Width,
-        pair.second->EncoderParams.Height);
+        pair.second->EncoderParams.Height,
+        GetCodecAlignment(pair.second->Codec));
     UpdateEncoderROI(pair.second, pixelRegions, effectiveMode, Enabled);
   }
 }
