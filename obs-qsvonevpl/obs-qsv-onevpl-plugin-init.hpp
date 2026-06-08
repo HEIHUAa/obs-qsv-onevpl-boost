@@ -31,6 +31,7 @@ struct plugin_context {
   int64_t CachedTSDiv;
 
   std::mutex EncoderMutex;
+  std::atomic<int> EncodingCount{0};
 };
 
 #define TEXT_SPEED obs_module_text("TargetUsage")

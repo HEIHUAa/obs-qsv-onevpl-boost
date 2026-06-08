@@ -2787,7 +2787,6 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
 
   try {
     if (QSVProcessingEnable) {
-      mfxSyncPoint VPPSyncPoint = nullptr;
       Status = QSVProcessing->GetSurfaceOut(&QSVProcessingSurface);
 
       for (;;) {
@@ -2802,18 +2801,8 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
         }
       }
 
-      {
-        mfxStatus SyncSts;
-        do {
-          SyncSts = MFXVideoCORE_SyncOperation(
-              QSVSession, QSVProcessingSyncPoint, 100);
-        } while (SyncSts == MFX_WRN_IN_EXECUTION);
-        if (SyncSts < MFX_ERR_NONE) {
-          error("VPP sync error: %d", SyncSts);
-          throw std::runtime_error("Encode(): VPP sync failed");
-        }
-      }
-
+      // Release VPP input surface immediately – RunFrameVPPAsync holds
+      // its own internal reference.
       QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
       QSVEncodeSurface = nullptr;
     }
@@ -2826,7 +2815,20 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
         roiActive ? &QSVEncodeCtrlParams : nullptr,
         TaskID, 200);
 
+    // Defer VPP sync until after encode submission so VPP and Encode
+    // overlap in the GPU pipeline. The GPU natively orders VPP → Encode
+    // when both use the same session.
     if (QSVProcessingEnable) {
+      mfxStatus SyncSts;
+      do {
+        SyncSts = MFXVideoCORE_SyncOperation(
+            QSVSession, QSVProcessingSyncPoint, 100);
+      } while (SyncSts == MFX_WRN_IN_EXECUTION);
+      if (SyncSts < MFX_ERR_NONE) {
+        error("VPP sync error: %d", SyncSts);
+        throw std::runtime_error("Encode(): VPP sync failed");
+      }
+
       QSVProcessingSurface->FrameInterface->Release(QSVProcessingSurface);
     } else {
       QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
@@ -2905,15 +2907,6 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
 
   if (QSVProcessingEnable) {
     do {
-      // if (QSVProcessingSurface != nullptr) {
-      //   QSVProcessingSurface->FrameInterface->GetRefCounter(
-      //       QSVProcessingSurface, &QSVProcessingCurRefCount);
-      // }
-
-      // if (/*QSVProcessingSurface == nullptr ||*/
-      // QSVProcessingCurRefCount == 0 ||
-      // Status == MFX_ERR_MORE_SURFACE) {
-
       Status = QSVProcessing->GetSurfaceOut(&QSVProcessingSurface);
 
       if (Status < MFX_ERR_NONE) {
@@ -2922,11 +2915,6 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
         QSVEncodeSurface = nullptr;
         throw std::runtime_error("Encode(): Get processing surface error");
       }
-
-      // QSVProcessingSurface->FrameInterface->GetRefCounter(
-      //     QSVProcessingSurface, &QSVProcessingRefCount);
-      // error("ProcessingRefCount: %d", QSVProcessingRefCount);
-      // }
 
       Status = QSVProcessing->RunFrameVPPAsync(QSVEncodeSurface,
                                                QSVProcessingSurface, nullptr,
@@ -2941,18 +2929,9 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
       }
     } while (Status == MFX_ERR_MORE_SURFACE);
 
-    do {
-      SyncStatus = MFXVideoCORE_SyncOperation(
-          QSVSession, QSVProcessingSyncPoint, 100);
-    } while (SyncStatus == MFX_WRN_IN_EXECUTION);
-    if (SyncStatus < MFX_ERR_NONE) {
-      error("VPP sync error: %d", SyncStatus);
-      QSVProcessingSurface->FrameInterface->Release(QSVProcessingSurface);
-      QSVProcessingSurface = nullptr;
-      QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
-      QSVEncodeSurface = nullptr;
-      throw std::runtime_error("Encode(): VPP sync failed");
-    }
+    // Release VPP input surface immediately – VPP holds its own reference.
+    QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
+    QSVEncodeSurface = nullptr;
   }
 
   /*Encode a frame asynchronously (returns immediately)*/
@@ -2964,12 +2943,25 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
       roiActive ? &QSVEncodeCtrlParams : nullptr,
       TaskID, 200);
 
+  // Defer VPP sync until after encode submission so VPP and Encode
+  // overlap in the GPU pipeline.
   if (QSVProcessingEnable) {
-    QSVProcessingSurface->FrameInterface->Release(QSVProcessingSurface);
-  }
+    do {
+      SyncStatus = MFXVideoCORE_SyncOperation(
+          QSVSession, QSVProcessingSyncPoint, 100);
+    } while (SyncStatus == MFX_WRN_IN_EXECUTION);
+    if (SyncStatus < MFX_ERR_NONE) {
+      error("VPP sync error: %d", SyncStatus);
+      QSVProcessingSurface->FrameInterface->Release(QSVProcessingSurface);
+      QSVProcessingSurface = nullptr;
+      throw std::runtime_error("Encode(): VPP sync failed");
+    }
 
-  QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
-  QSVEncodeSurface = nullptr;
+    QSVProcessingSurface->FrameInterface->Release(QSVProcessingSurface);
+  } else {
+    QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
+    QSVEncodeSurface = nullptr;
+  }
 
   return MFX_ERR_NONE;
 }

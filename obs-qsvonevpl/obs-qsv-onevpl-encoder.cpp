@@ -83,6 +83,12 @@ void DestroyPluginContext(void *Data) {
     // Unregister from the global encoder data map
     UnregisterEncoderData(Context->EncoderData);
     os_end_high_performance(Context->PerformanceToken);
+
+    // Wait for any in-progress encode calls to finish before tear-down.
+    while (Context->EncodingCount.load(std::memory_order_acquire) > 0) {
+      Sleep(1);
+    }
+
     if (Context->EncoderPTR) {
       try {
 
@@ -105,7 +111,6 @@ void DestroyPluginContext(void *Data) {
     }
 
     delete Context;
-    // bfree(Context);
   }
 }
 
@@ -713,28 +718,39 @@ bool EncodeTexture(void *Data, encoder_texture *Texture, int64_t PTS,
   if (!Packet || !ReceivedPacketStatus)
     return false;
 
+  // Quick snapshot under mutex, then release so encode does not block
+  // concurrent parameter/ROI updates or plugin destruction.
+  mfxU32 fpsNum;
   {
     std::lock_guard<std::mutex> lock(Context->EncoderMutex);
-
-    auto *Bitstream = static_cast<mfxBitstream *>(nullptr);
-
-    try {
-      Context->EncoderPTR->EncodeTexture(
-          ConvertTSOBSMFX(PTS, Context->CachedFpsNum),
-          static_cast<void *>(Texture), LockKey, NextKey,
-          &Bitstream);
-    } catch (const std::exception &e) {
-      error("%s", e.what());
-      error("encode failed");
-
+    if (!Context->EncoderPTR)
       return false;
-    }
+    fpsNum = Context->CachedFpsNum;
+  }
 
+  Context->EncodingCount.fetch_add(1, std::memory_order_acquire);
+
+  auto *Bitstream = static_cast<mfxBitstream *>(nullptr);
+  bool success = true;
+
+  try {
+    Context->EncoderPTR->EncodeTexture(
+        ConvertTSOBSMFX(PTS, fpsNum), static_cast<void *>(Texture), LockKey,
+        NextKey, &Bitstream);
+  } catch (const std::exception &e) {
+    error("%s", e.what());
+    error("encode failed");
+    success = false;
+  }
+
+  if (success) {
+    std::lock_guard<std::mutex> lock(Context->EncoderMutex);
     ParseEncodedPacket(Context, Packet, Bitstream,
                        ReceivedPacketStatus);
   }
 
-  return true;
+  Context->EncodingCount.fetch_sub(1, std::memory_order_release);
+  return success;
 }
 
 bool EncodeFrame(void *Data, encoder_frame *Frame, encoder_packet *Packet,
@@ -746,31 +762,42 @@ bool EncodeFrame(void *Data, encoder_frame *Frame, encoder_packet *Packet,
     return false;
   }
 
+  // Quick snapshot under mutex, then release for the actual encode.
+  mfxU32 fpsNum;
   {
     std::lock_guard<std::mutex> lock(Context->EncoderMutex);
-
-    auto *Bitstream = static_cast<mfxBitstream *>(nullptr);
-
-    try {
-      if (Frame->data[0]) {
-        Context->EncoderPTR->EncodeFrame(
-            ConvertTSOBSMFX(Frame->pts, Context->CachedFpsNum), Frame->data,
-            Frame->linesize, &Bitstream);
-      } else {
-        Context->EncoderPTR->EncodeFrame(
-            ConvertTSOBSMFX(Frame->pts, Context->CachedFpsNum), nullptr, 0,
-            &Bitstream);
-      }
-    } catch (const std::exception &e) {
-      error("%s", e.what());
-      error("encode failed");
-
+    if (!Context->EncoderPTR)
       return false;
-    }
+    fpsNum = Context->CachedFpsNum;
+  }
 
+  Context->EncodingCount.fetch_add(1, std::memory_order_acquire);
+
+  auto *Bitstream = static_cast<mfxBitstream *>(nullptr);
+  bool success = true;
+
+  try {
+    if (Frame->data[0]) {
+      Context->EncoderPTR->EncodeFrame(
+          ConvertTSOBSMFX(Frame->pts, fpsNum), Frame->data,
+          Frame->linesize, &Bitstream);
+    } else {
+      Context->EncoderPTR->EncodeFrame(
+          ConvertTSOBSMFX(Frame->pts, fpsNum), nullptr, 0,
+          &Bitstream);
+    }
+  } catch (const std::exception &e) {
+    error("%s", e.what());
+    error("encode failed");
+    success = false;
+  }
+
+  if (success) {
+    std::lock_guard<std::mutex> lock(Context->EncoderMutex);
     ParseEncodedPacket(Context, Packet, Bitstream,
                        ReceivedPacketStatus);
   }
 
-  return true;
+  Context->EncodingCount.fetch_sub(1, std::memory_order_release);
+  return success;
 }
