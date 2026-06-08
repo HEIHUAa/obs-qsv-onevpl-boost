@@ -1978,12 +1978,6 @@ void QSVEncoder::UpdateROIRegions(
   CachedROIRegions = Regions;
   CachedROIMode = Mode;
   info("\tROI updated: %zu regions, mode=%d", Regions.size(), Mode);
-  for (size_t i = 0; i < Regions.size(); i++) {
-    info("\t  Cached[%zu]: Left=%u Top=%u Right=%u Bottom=%u DeltaQP=%d",
-         i, Regions[i].Left, Regions[i].Top,
-         Regions[i].Right, Regions[i].Bottom,
-         (int)Regions[i].DeltaQP);
-  }
 }
 
 mfxStatus QSVEncoder::InitTexturePool() {
@@ -2773,7 +2767,7 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
   }
 
   try {
-    HWManager->CopyTexture(Texture, std::move(TextureHandle), LockKey,
+    HWManager->CopyTexture(Texture, TextureHandle, LockKey,
                            static_cast<mfxU64 *>(NextKey));
   } catch (const std::exception &e) {
     error("Error code: %d. %s", Status, e.what());

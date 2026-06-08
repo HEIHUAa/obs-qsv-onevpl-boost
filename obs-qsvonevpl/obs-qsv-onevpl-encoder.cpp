@@ -187,13 +187,6 @@ void UpdateEncoderROI(void *Data,
   blog(LOG_INFO,
        "[QSV VPL] UpdateEncoderROI: enabled=%d, regions=%zu, mode=%d",
        (int)Enabled, Regions.size(), (int)Mode);
-  for (size_t i = 0; i < Regions.size(); i++) {
-    blog(LOG_INFO,
-         "[QSV VPL]   ROI[%zu]: Left=%u Top=%u Right=%u Bottom=%u DeltaQP=%d",
-         i, Regions[i].Left, Regions[i].Top,
-         Regions[i].Right, Regions[i].Bottom,
-         (int)Regions[i].DeltaQP);
-  }
 }
 
 static int qsv_encoder_reconfig(QSVEncoder *EncoderPTR,
@@ -545,7 +538,7 @@ static void StripHEVCExtraDataTemporalLayer(uint8_t *data, size_t *size) {
     return;
 
   size_t tmp_alloc = *size + *size / 2 + 256;
-  uint8_t *tmp = new uint8_t[tmp_alloc]();
+  std::vector<uint8_t> tmp(tmp_alloc, 0);
   size_t tmp_pos = 0;
 
   size_t offset = 0;
@@ -580,11 +573,11 @@ static void StripHEVCExtraDataTemporalLayer(uint8_t *data, size_t *size) {
     size_t nal_size = nal_end - nal_start;
 
     // Copy start code
-    memcpy(tmp + tmp_pos, data + offset, sc_len);
+    memcpy(tmp.data() + tmp_pos, data + offset, sc_len);
     tmp_pos += sc_len;
 
     if (nal_size > 0) {
-      size_t processed = StripHEVCNALTemporalLayer(tmp + tmp_pos, data + nal_start, nal_size);
+      size_t processed = StripHEVCNALTemporalLayer(tmp.data() + tmp_pos, data + nal_start, nal_size);
       tmp_pos += processed;
     }
 
@@ -593,11 +586,9 @@ static void StripHEVCExtraDataTemporalLayer(uint8_t *data, size_t *size) {
 
   // Replace original with processed extradata
   if (tmp_pos <= *size) {
-    memcpy(data, tmp, tmp_pos);
+    memcpy(data, tmp.data(), tmp_pos);
     *size = tmp_pos;
   }
-
-  delete[] tmp;
 }
 
 void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
@@ -624,17 +615,15 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
       // when VPS contains vps_max_sub_layers_minus1 > 0 (temporal layers 2-4)
       size_t bitstream_size = Bitstream->DataLength;
       size_t tmp_alloc = bitstream_size + bitstream_size / 2 + 256;
-      uint8_t *tmp_bitstream = new uint8_t[tmp_alloc]();
-      memcpy(tmp_bitstream, Bitstream->Data + Bitstream->DataOffset,
+      std::vector<uint8_t> tmp_bitstream(tmp_alloc, 0);
+      memcpy(tmp_bitstream.data(), Bitstream->Data + Bitstream->DataOffset,
              bitstream_size);
-      StripHEVCExtraDataTemporalLayer(tmp_bitstream, &bitstream_size);
+      StripHEVCExtraDataTemporalLayer(tmp_bitstream.data(), &bitstream_size);
 
-      obs_extract_hevc_headers(tmp_bitstream, bitstream_size, &NewPacket,
+      obs_extract_hevc_headers(tmp_bitstream.data(), bitstream_size, &NewPacket,
                                &NewPacketSize, &Context->ExtraData.first,
                                &Context->ExtraData.second, &Context->SEI.first,
                                &Context->SEI.second);
-
-      delete[] tmp_bitstream;
 
       // Also strip temporal sub-layer info from extradata as a safety net
       if (Context->ExtraData.first && Context->ExtraData.second > 0) {
