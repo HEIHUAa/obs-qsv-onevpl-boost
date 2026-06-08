@@ -305,7 +305,7 @@ static size_t hevc_add_emulation_prevention(uint8_t *dst, const uint8_t *src,
   return dst_pos;
 }
 
-static uint32_t hevc_read_bits(const uint8_t *data, size_t max_size,
+uint32_t hevc_read_bits(const uint8_t *data, size_t max_size,
                                 size_t &byte_pos, int &bit_pos, int n) {
   uint32_t val = 0;
   for (int i = 0; i < n && byte_pos < max_size; i++) {
@@ -319,7 +319,7 @@ static uint32_t hevc_read_bits(const uint8_t *data, size_t max_size,
   return val;
 }
 
-static uint32_t hevc_read_uev(const uint8_t *data, size_t max_size,
+uint32_t hevc_read_uev(const uint8_t *data, size_t max_size,
                                size_t &byte_pos, int &bit_pos) {
   int leading_zeros = 0;
   while (byte_pos < max_size) {

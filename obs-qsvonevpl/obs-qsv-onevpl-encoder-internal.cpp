@@ -980,6 +980,19 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     return v > limit ? limit : v;
   };
 
+  // Common buffer/init-delay/info boilerplate shared across RC modes
+  auto ApplyBufferSettings = [&]() {
+    if (InputParams->CustomBufferSize == true && InputParams->BufferSize > 0) {
+      QSVEncodeParams.mfx.BufferSizeInKB =
+          static_cast<mfxU16>(brcClamp(InputParams->BufferSize) / brcMultiplier);
+      info("\tCustomBufferSize set: ON");
+    }
+    QSVEncodeParams.mfx.InitialDelayInKB =
+        static_cast<mfxU16>(QSVEncodeParams.mfx.BufferSizeInKB / 2);
+    info("\tBufferSize set to: %d KB",
+         QSVEncodeParams.mfx.BufferSizeInKB * brcMultiplier);
+  };
+
   switch (InputParams->RateControl) {
   case MFX_RATECONTROL_CBR:
     QSVEncodeParams.mfx.TargetKbps =
@@ -1000,15 +1013,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
               : static_cast<mfxU16>((QSVEncodeParams.mfx.TargetKbps / 8) * 1);
     }
 
-    if (InputParams->CustomBufferSize == true && InputParams->BufferSize > 0) {
-      QSVEncodeParams.mfx.BufferSizeInKB =
-          static_cast<mfxU16>(brcClamp(InputParams->BufferSize) / brcMultiplier);
-      info("\tCustomBufferSize set: ON");
-    }
-    QSVEncodeParams.mfx.InitialDelayInKB =
-        static_cast<mfxU16>(QSVEncodeParams.mfx.BufferSizeInKB / 2);
-    info("\tBufferSize set to: %d KB",
-         QSVEncodeParams.mfx.BufferSizeInKB * brcMultiplier);
+    ApplyBufferSettings();
     break;
   case MFX_RATECONTROL_VBR:
     QSVEncodeParams.mfx.TargetKbps =
@@ -1027,15 +1032,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
                         QSVEncodeParams.mfx.FrameInfo.FrameRateExtN) /
                     QSVEncodeParams.mfx.FrameInfo.FrameRateExtD)))
             : static_cast<mfxU16>((QSVEncodeParams.mfx.TargetKbps / 8) * 1);
-    if (InputParams->CustomBufferSize == true && InputParams->BufferSize > 0) {
-      QSVEncodeParams.mfx.BufferSizeInKB =
-          static_cast<mfxU16>(brcClamp(InputParams->BufferSize) / brcMultiplier);
-      info("\tCustomBufferSize set: ON");
-    }
-    QSVEncodeParams.mfx.InitialDelayInKB =
-        static_cast<mfxU16>(QSVEncodeParams.mfx.BufferSizeInKB / 2);
-    info("\tBufferSize set to: %d KB",
-         QSVEncodeParams.mfx.BufferSizeInKB * brcMultiplier);
+    ApplyBufferSettings();
     break;
   case MFX_RATECONTROL_CQP:
     QSVEncodeParams.mfx.QPI = static_cast<mfxU16>(InputParams->QPI);
@@ -1051,15 +1048,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
         static_cast<mfxU16>(brcClamp(InputParams->TargetBitRate) / brcMultiplier);
     QSVEncodeParams.mfx.BufferSizeInKB =
         static_cast<mfxU16>((QSVEncodeParams.mfx.TargetKbps / 8) * 1);
-    if (InputParams->CustomBufferSize == true && InputParams->BufferSize > 0) {
-      QSVEncodeParams.mfx.BufferSizeInKB =
-          static_cast<mfxU16>(brcClamp(InputParams->BufferSize) / brcMultiplier);
-      info("\tCustomBufferSize set: ON");
-    }
-    QSVEncodeParams.mfx.InitialDelayInKB =
-        static_cast<mfxU16>(QSVEncodeParams.mfx.BufferSizeInKB / 2);
-    info("\tBufferSize set to: %d KB",
-         QSVEncodeParams.mfx.BufferSizeInKB * brcMultiplier);
+    ApplyBufferSettings();
     break;
   case MFX_RATECONTROL_VCM:
     QSVEncodeParams.mfx.TargetKbps =
@@ -1068,15 +1057,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
         static_cast<mfxU16>(brcClamp(InputParams->MaxBitRate) / brcMultiplier);
     QSVEncodeParams.mfx.BufferSizeInKB =
         static_cast<mfxU16>((QSVEncodeParams.mfx.TargetKbps / 8) * 2);
-    if (InputParams->CustomBufferSize == true && InputParams->BufferSize > 0) {
-      QSVEncodeParams.mfx.BufferSizeInKB =
-          static_cast<mfxU16>(brcClamp(InputParams->BufferSize) / brcMultiplier);
-      info("\tCustomBufferSize set: ON");
-    }
-    QSVEncodeParams.mfx.InitialDelayInKB =
-        static_cast<mfxU16>(QSVEncodeParams.mfx.BufferSizeInKB / 2);
-    info("\tBufferSize set to: %d KB",
-         QSVEncodeParams.mfx.BufferSizeInKB * brcMultiplier);
+    ApplyBufferSettings();
     break;
   case MFX_RATECONTROL_QVBR:
     QSVEncodeParams.mfx.TargetKbps =
@@ -1085,15 +1066,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
         static_cast<mfxU16>(brcClamp(InputParams->MaxBitRate) / brcMultiplier);
     QSVEncodeParams.mfx.BufferSizeInKB =
         static_cast<mfxU16>((QSVEncodeParams.mfx.TargetKbps / 8) * 1);
-    if (InputParams->CustomBufferSize == true && InputParams->BufferSize > 0) {
-      QSVEncodeParams.mfx.BufferSizeInKB =
-          static_cast<mfxU16>(brcClamp(InputParams->BufferSize) / brcMultiplier);
-      info("\tCustomBufferSize set: ON");
-    }
-    QSVEncodeParams.mfx.InitialDelayInKB =
-        static_cast<mfxU16>(QSVEncodeParams.mfx.BufferSizeInKB / 2);
-    info("\tBufferSize set to: %d KB",
-         QSVEncodeParams.mfx.BufferSizeInKB * brcMultiplier);
+    ApplyBufferSettings();
     break;
   }
 
@@ -2204,38 +2177,6 @@ mfxStatus QSVEncoder::GetVideoParam([[maybe_unused]] enum codec_enum Codec) {
 
 /* ── HEVC SPS parser: extract actual CTU size from driver-generated SPS ── */
 
-static mfxU16 hevc_parse_ctb_read_bits(const mfxU8 *data, mfxU16 max_size,
-                                        size_t &byte_pos, int &bit_pos,
-                                        int n) {
-  mfxU16 val = 0;
-  for (int i = 0; i < n && byte_pos < max_size; i++) {
-    val = static_cast<mfxU16>((val << 1) |
-                              ((data[byte_pos] >> bit_pos) & 1));
-    bit_pos--;
-    if (bit_pos < 0) {
-      byte_pos++;
-      bit_pos = 7;
-    }
-  }
-  return val;
-}
-
-static mfxU16 hevc_parse_ctb_read_uev(const mfxU8 *data, mfxU16 max_size,
-                                       size_t &byte_pos, int &bit_pos) {
-  int leading_zeros = 0;
-  while (byte_pos < max_size) {
-    if (hevc_parse_ctb_read_bits(data, max_size, byte_pos, bit_pos, 1) != 0)
-      break;
-    leading_zeros++;
-  }
-  if (leading_zeros == 0)
-    return 0;
-  return static_cast<mfxU16>(
-      (1u << leading_zeros) - 1 +
-      hevc_parse_ctb_read_bits(data, max_size, byte_pos, bit_pos,
-                                leading_zeros));
-}
-
 static mfxU16 parse_hevc_sps_ctb_size(const mfxU8 *sps_data,
                                        mfxU16 sps_size) {
   if (!sps_data || sps_size < 2)
@@ -2245,71 +2186,71 @@ static mfxU16 parse_hevc_sps_ctb_size(const mfxU8 *sps_data,
   int bit_pos = 7;
 
   mfxU16 sps_vps_id =
-      hevc_parse_ctb_read_bits(sps_data, sps_size, byte_pos, bit_pos, 4);
+      hevc_read_bits(sps_data, sps_size, byte_pos, bit_pos, 4);
   (void)sps_vps_id;
 
   mfxU16 max_sub_layers =
-      hevc_parse_ctb_read_bits(sps_data, sps_size, byte_pos, bit_pos, 3);
+      hevc_read_bits(sps_data, sps_size, byte_pos, bit_pos, 3);
 
-  hevc_parse_ctb_read_bits(sps_data, sps_size, byte_pos, bit_pos, 1);
+  hevc_read_bits(sps_data, sps_size, byte_pos, bit_pos, 1);
 
-  hevc_parse_ctb_read_bits(sps_data, sps_size, byte_pos, bit_pos, 96);
+  hevc_read_bits(sps_data, sps_size, byte_pos, bit_pos, 96);
 
   if (max_sub_layers > 0) {
     bool sub_layer_profile_present[7] = {false};
     bool sub_layer_level_present[7] = {false};
     for (int j = max_sub_layers - 1; j >= 0; j--) {
       sub_layer_profile_present[j] =
-          hevc_parse_ctb_read_bits(sps_data, sps_size, byte_pos, bit_pos, 1) != 0;
+          hevc_read_bits(sps_data, sps_size, byte_pos, bit_pos, 1) != 0;
       sub_layer_level_present[j] =
-          hevc_parse_ctb_read_bits(sps_data, sps_size, byte_pos, bit_pos, 1) != 0;
+          hevc_read_bits(sps_data, sps_size, byte_pos, bit_pos, 1) != 0;
     }
     for (int j = max_sub_layers - 1; j >= 0; j--) {
       if (sub_layer_profile_present[j])
-        hevc_parse_ctb_read_bits(sps_data, sps_size, byte_pos, bit_pos, 96);
+        hevc_read_bits(sps_data, sps_size, byte_pos, bit_pos, 96);
       if (sub_layer_level_present[j])
-        hevc_parse_ctb_read_bits(sps_data, sps_size, byte_pos, bit_pos, 8);
+        hevc_read_bits(sps_data, sps_size, byte_pos, bit_pos, 8);
     }
   }
 
-  hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+  hevc_read_uev(sps_data, sps_size, byte_pos, bit_pos);
 
   mfxU16 chroma_format_idc =
-      hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+      hevc_read_uev(sps_data, sps_size, byte_pos, bit_pos);
 
   if (chroma_format_idc == 3)
-    hevc_parse_ctb_read_bits(sps_data, sps_size, byte_pos, bit_pos, 1);
+    hevc_read_bits(sps_data, sps_size, byte_pos, bit_pos, 1);
 
-  hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
-  hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+  hevc_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+  hevc_read_uev(sps_data, sps_size, byte_pos, bit_pos);
 
-  if (hevc_parse_ctb_read_bits(sps_data, sps_size, byte_pos, bit_pos, 1)) {
-    hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
-    hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
-    hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
-    hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+  if (hevc_read_bits(sps_data, sps_size, byte_pos, bit_pos, 1)) {
+    hevc_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+    hevc_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+    hevc_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+    hevc_read_uev(sps_data, sps_size, byte_pos, bit_pos);
   }
 
-  hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
-  hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+  hevc_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+  hevc_read_uev(sps_data, sps_size, byte_pos, bit_pos);
 
-  hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+  hevc_read_uev(sps_data, sps_size, byte_pos, bit_pos);
 
   bool sub_layer_ordering =
-      hevc_parse_ctb_read_bits(sps_data, sps_size, byte_pos, bit_pos, 1) != 0;
+      hevc_read_bits(sps_data, sps_size, byte_pos, bit_pos, 1) != 0;
 
   mfxU16 num_ordering = sub_layer_ordering ? max_sub_layers + 1 : 1;
   for (mfxU16 i = 0; i < num_ordering; i++) {
-    hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
-    hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
-    hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+    hevc_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+    hevc_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+    hevc_read_uev(sps_data, sps_size, byte_pos, bit_pos);
   }
 
   mfxU16 log2_min_cb =
-      hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+      hevc_read_uev(sps_data, sps_size, byte_pos, bit_pos);
 
   mfxU16 log2_diff =
-      hevc_parse_ctb_read_uev(sps_data, sps_size, byte_pos, bit_pos);
+      hevc_read_uev(sps_data, sps_size, byte_pos, bit_pos);
 
   mfxU16 min_cb_log2 = log2_min_cb + 3;
   mfxU16 ctb_log2 = min_cb_log2 + log2_diff;

@@ -183,7 +183,6 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(Settings, "hevc_sao", "AUTO");
   obs_data_set_default_string(Settings, "hevc_gpb", "AUTO");
 
-  obs_data_set_default_string(Settings, "intra_ref_encoding", "OFF");
   obs_data_set_default_string(Settings, "intra_ref_type", "VERTICAL");
   obs_data_set_default_int(Settings, "intra_ref_cycle_size", 2);
   obs_data_set_default_int(Settings, "intra_ref_qp_delta", 0);
@@ -500,7 +499,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 
   if (Codec == QSV_CODEC_AVC) {
-    mfxU16 platformCode = QueryPlatformCodeName();
     const char *const *profileEntryH264 = qsv_profile_names_h264;
     while (*profileEntryH264) {
       bool showProfileH264 = true;
@@ -519,7 +517,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   } else if (Codec == QSV_CODEC_AV1) {
     AddStrings(Prop, qsv_profile_names_av1);
   } else if (Codec == QSV_CODEC_HEVC) {
-    mfxU16 platformCode = QueryPlatformCodeName();
     const char *const *profileEntryHEVC = qsv_profile_names_hevc;
     while (*profileEntryHEVC) {
       bool showProfileHEVC = true;
@@ -544,7 +541,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
         obs_properties_add_list(Props, "hevc_tier", TEXT_HEVC_TIER,
                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 
-    mfxU16 platformCode = QueryPlatformCodeName();
     bool hasHighTier = platformCode == 0 ||
                        platformCode >= MFX_PLATFORM_TIGERLAKE;
     const char *const *tierEntry = qsv_profile_tiers_hevc;
@@ -705,14 +701,12 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
       Prop, TEXT_EXT_BRC_DESC);
   AddStrings(Prop, qsv_params_condition_extbrc);
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
-  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
   Prop = obs_properties_add_list(Props, "enctools", TEXT_ENC_TOOLS,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   obs_property_set_long_description(Prop, TEXT_ENC_TOOLS_DESC);
   AddStrings(Prop, qsv_params_condition);
   obs_property_set_visible(Prop, IsFeatureSupported("enc_tools"));
-  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
   // ── EncTools sub-options ────────────────────────────────────
@@ -1082,8 +1076,83 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(
       Prop, TEXT_CUSTOM_CODING_OPTIONS_DESC);
 
-  return Props;
+  return config;
 }
+
+// Helper: parse AV1 ON/OFF/auto three-state string to 1/0/2
+static inline mfxU16 ParseAV1Ternary(const char *Data) {
+  if (std::strcmp(Data, "ON") == 0)
+    return 1;
+  else if (std::strcmp(Data, "OFF") == 0)
+    return 0;
+  else
+    return 2;
+}
+
+// Helper: parse WeightedPred/BiPred four-state string to 0/1/2/3
+static inline mfxU16 ParseWeightedPredMode(const char *Data) {
+  if (std::strcmp(Data, "OFF") == 0)
+    return 0;
+  else if (std::strcmp(Data, "DEFAULT") == 0)
+    return 1;
+  else if (std::strcmp(Data, "EXPLICIT") == 0)
+    return 2;
+  else // IMPLICIT
+    return 3;
+}
+
+// ── Codec level lookup tables ──────────────────────────────────
+// Replace large if-else chains with data-driven lookup.
+
+struct LevelEntry {
+  const char *name;
+  mfxU16 value;
+};
+
+static mfxU16 ParseCodecLevel(const char *LevelStr,
+                               const LevelEntry *Table, size_t Count) {
+  for (size_t i = 0; i < Count; i++) {
+    if (std::strcmp(LevelStr, Table[i].name) == 0)
+      return Table[i].value;
+  }
+  return 0; // default to "auto" (0)
+}
+
+static const LevelEntry kAVCLevels[] = {
+    {"auto", 0},   {"1", MFX_LEVEL_AVC_1},      {"1b", MFX_LEVEL_AVC_1b},
+    {"1.1", MFX_LEVEL_AVC_11}, {"1.2", MFX_LEVEL_AVC_12},
+    {"1.3", MFX_LEVEL_AVC_13}, {"2", MFX_LEVEL_AVC_2},
+    {"2.1", MFX_LEVEL_AVC_21}, {"2.2", MFX_LEVEL_AVC_22},
+    {"3", MFX_LEVEL_AVC_3},    {"3.1", MFX_LEVEL_AVC_31},
+    {"3.2", MFX_LEVEL_AVC_32}, {"4", MFX_LEVEL_AVC_4},
+    {"4.1", MFX_LEVEL_AVC_41}, {"4.2", MFX_LEVEL_AVC_42},
+    {"5", MFX_LEVEL_AVC_5},    {"5.1", MFX_LEVEL_AVC_51},
+    {"5.2", MFX_LEVEL_AVC_52}, {"6", MFX_LEVEL_AVC_6},
+    {"6.1", MFX_LEVEL_AVC_61}, {"6.2", MFX_LEVEL_AVC_62},
+};
+
+static const LevelEntry kHEVLevels[] = {
+    {"auto", 0},   {"1", MFX_LEVEL_HEVC_1},     {"2", MFX_LEVEL_HEVC_2},
+    {"2.1", MFX_LEVEL_HEVC_21}, {"3", MFX_LEVEL_HEVC_3},
+    {"3.1", MFX_LEVEL_HEVC_31}, {"4", MFX_LEVEL_HEVC_4},
+    {"4.1", MFX_LEVEL_HEVC_41}, {"5", MFX_LEVEL_HEVC_5},
+    {"5.1", MFX_LEVEL_HEVC_51}, {"5.2", MFX_LEVEL_HEVC_52},
+    {"6", MFX_LEVEL_HEVC_6},    {"6.1", MFX_LEVEL_HEVC_61},
+    {"6.2", MFX_LEVEL_HEVC_62},
+};
+
+static const LevelEntry kAV1Levels[] = {
+    {"auto", 0},   {"2.0", MFX_LEVEL_AV1_2},    {"2.1", MFX_LEVEL_AV1_21},
+    {"2.2", MFX_LEVEL_AV1_22}, {"2.3", MFX_LEVEL_AV1_23},
+    {"3.0", MFX_LEVEL_AV1_3},  {"3.1", MFX_LEVEL_AV1_31},
+    {"3.2", MFX_LEVEL_AV1_32}, {"3.3", MFX_LEVEL_AV1_33},
+    {"4.0", MFX_LEVEL_AV1_4},  {"4.1", MFX_LEVEL_AV1_41},
+    {"4.2", MFX_LEVEL_AV1_42}, {"4.3", MFX_LEVEL_AV1_43},
+    {"5.0", MFX_LEVEL_AV1_5},  {"5.1", MFX_LEVEL_AV1_51},
+    {"5.2", MFX_LEVEL_AV1_52}, {"5.3", MFX_LEVEL_AV1_53},
+    {"6.0", MFX_LEVEL_AV1_6},  {"6.1", MFX_LEVEL_AV1_61},
+    {"6.2", MFX_LEVEL_AV1_62}, {"6.3", MFX_LEVEL_AV1_63},
+};
 
 static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   video_t *Video = obs_encoder_video(Context->EncoderData);
@@ -1250,33 +1319,11 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.TuneQualityMode = 0;
   }
 
-  if (strcmp(AV1CDEFData, "ON") == 0)
-    Context->EncoderParams.AV1CDEF = 1;
-  else if (strcmp(AV1CDEFData, "OFF") == 0)
-    Context->EncoderParams.AV1CDEF = 0;
-  else
-    Context->EncoderParams.AV1CDEF = 2;
-
-  if (strcmp(AV1RestorationData, "ON") == 0)
-    Context->EncoderParams.AV1Restoration = 1;
-  else if (strcmp(AV1RestorationData, "OFF") == 0)
-    Context->EncoderParams.AV1Restoration = 0;
-  else
-    Context->EncoderParams.AV1Restoration = 2;
-
-  if (strcmp(AV1LoopFilterData, "ON") == 0)
-    Context->EncoderParams.AV1LoopFilter = 1;
-  else if (strcmp(AV1LoopFilterData, "OFF") == 0)
-    Context->EncoderParams.AV1LoopFilter = 0;
-  else
-    Context->EncoderParams.AV1LoopFilter = 2;
-
-  if (strcmp(AV1SuperResData, "ON") == 0)
-    Context->EncoderParams.AV1SuperRes = 1;
-  else if (strcmp(AV1SuperResData, "OFF") == 0)
-    Context->EncoderParams.AV1SuperRes = 0;
-  else
-    Context->EncoderParams.AV1SuperRes = 2;
+  Context->EncoderParams.AV1CDEF = ParseAV1Ternary(AV1CDEFData);
+  Context->EncoderParams.AV1Restoration = ParseAV1Ternary(AV1RestorationData);
+  Context->EncoderParams.AV1LoopFilter = ParseAV1Ternary(AV1LoopFilterData);
+  Context->EncoderParams.AV1SuperRes = ParseAV1Ternary(AV1SuperResData);
+  Context->EncoderParams.AV1ErrorResilient = ParseAV1Ternary(AV1ErrorResilientData);
 
   if (strcmp(AV1InterpFilterData, "DEFAULT") == 0)
     Context->EncoderParams.AV1InterpFilter = 0;
@@ -1291,30 +1338,8 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   else if (strcmp(AV1InterpFilterData, "SWITCHABLE") == 0)
     Context->EncoderParams.AV1InterpFilter = 5;
 
-  if (strcmp(AV1ErrorResilientData, "ON") == 0)
-    Context->EncoderParams.AV1ErrorResilient = 1;
-  else if (strcmp(AV1ErrorResilientData, "OFF") == 0)
-    Context->EncoderParams.AV1ErrorResilient = 0;
-  else
-    Context->EncoderParams.AV1ErrorResilient = 2;
-
-  if (strcmp(WeightedPredData, "OFF") == 0)
-    Context->EncoderParams.WeightedPred = 0;
-  else if (strcmp(WeightedPredData, "DEFAULT") == 0)
-    Context->EncoderParams.WeightedPred = 1;
-  else if (strcmp(WeightedPredData, "EXPLICIT") == 0)
-    Context->EncoderParams.WeightedPred = 2;
-  else if (strcmp(WeightedPredData, "IMPLICIT") == 0)
-    Context->EncoderParams.WeightedPred = 3;
-
-  if (strcmp(WeightedBiPredData, "OFF") == 0)
-    Context->EncoderParams.WeightedBiPred = 0;
-  else if (strcmp(WeightedBiPredData, "DEFAULT") == 0)
-    Context->EncoderParams.WeightedBiPred = 1;
-  else if (strcmp(WeightedBiPredData, "EXPLICIT") == 0)
-    Context->EncoderParams.WeightedBiPred = 2;
-  else if (strcmp(WeightedBiPredData, "IMPLICIT") == 0)
-    Context->EncoderParams.WeightedBiPred = 3;
+  Context->EncoderParams.WeightedPred = ParseWeightedPredMode(WeightedPredData);
+  Context->EncoderParams.WeightedBiPred = ParseWeightedPredMode(WeightedBiPredData);
 
   Context->EncoderParams.AdaptiveMaxFrameSize = AdaptiveMaxFrameSizeData;
 
@@ -1350,49 +1375,9 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       Context->EncoderParams.CodecProfile = MFX_PROFILE_AVC_CONSTRAINED_HIGH;
     }
 
-    if (std::strcmp(CodecLevelDataAVC, "auto") == 0) {
-      Context->EncoderParams.CodecLevel = 0;
-    } else if (std::strcmp(CodecLevelDataAVC, "1") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_1;
-    } else if (std::strcmp(CodecLevelDataAVC, "1b") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_1b;
-    } else if (std::strcmp(CodecLevelDataAVC, "1.1") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_11;
-    } else if (std::strcmp(CodecLevelDataAVC, "1.2") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_12;
-    } else if (std::strcmp(CodecLevelDataAVC, "1.3") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_13;
-    } else if (std::strcmp(CodecLevelDataAVC, "2") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_2;
-    } else if (std::strcmp(CodecLevelDataAVC, "2.1") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_21;
-    } else if (std::strcmp(CodecLevelDataAVC, "2.2") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_22;
-    } else if (std::strcmp(CodecLevelDataAVC, "3") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_3;
-    } else if (std::strcmp(CodecLevelDataAVC, "3.1") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_31;
-    } else if (std::strcmp(CodecLevelDataAVC, "3.2") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_32;
-    } else if (std::strcmp(CodecLevelDataAVC, "4") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_4;
-    } else if (std::strcmp(CodecLevelDataAVC, "4.1") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_41;
-    } else if (std::strcmp(CodecLevelDataAVC, "4.2") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_42;
-    } else if (std::strcmp(CodecLevelDataAVC, "5") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_5;
-    } else if (std::strcmp(CodecLevelDataAVC, "5.1") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_51;
-    } else if (std::strcmp(CodecLevelDataAVC, "5.2") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_52;
-    } else if (std::strcmp(CodecLevelDataAVC, "6") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_6;
-    } else if (std::strcmp(CodecLevelDataAVC, "6.1") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_61;
-    } else if (std::strcmp(CodecLevelDataAVC, "6.2") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AVC_62;
-    }
+    Context->EncoderParams.CodecLevel =
+        ParseCodecLevel(CodecLevelDataAVC, kAVCLevels,
+                        sizeof(kAVCLevels) / sizeof(kAVCLevels[0]));
     break;
   case QSV_CODEC_HEVC:
     Codec = "HEVC";
@@ -1424,35 +1409,9 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       }
     }
 
-    if (std::strcmp(CodecLevelData, "auto") == 0) {
-      Context->EncoderParams.CodecLevel = 0;
-    } else if (std::strcmp(CodecLevelData, "1") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_HEVC_1;
-    } else if (std::strcmp(CodecLevelData, "2") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_HEVC_2;
-    } else if (std::strcmp(CodecLevelData, "2.1") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_HEVC_21;
-    } else if (std::strcmp(CodecLevelData, "3") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_HEVC_3;
-    } else if (std::strcmp(CodecLevelData, "3.1") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_HEVC_31;
-    } else if (std::strcmp(CodecLevelData, "4") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_HEVC_4;
-    } else if (std::strcmp(CodecLevelData, "4.1") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_HEVC_41;
-    } else if (std::strcmp(CodecLevelData, "5") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_HEVC_5;
-    } else if (std::strcmp(CodecLevelData, "5.1") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_HEVC_51;
-    } else if (std::strcmp(CodecLevelData, "5.2") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_HEVC_52;
-    } else if (std::strcmp(CodecLevelData, "6") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_HEVC_6;
-    } else if (std::strcmp(CodecLevelData, "6.1") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_HEVC_61;
-    } else if (std::strcmp(CodecLevelData, "6.2") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_HEVC_62;
-    }
+    Context->EncoderParams.CodecLevel =
+        ParseCodecLevel(CodecLevelData, kHEVLevels,
+                        sizeof(kHEVLevels) / sizeof(kHEVLevels[0]));
     break;
   case QSV_CODEC_AV1:
     Codec = "AV1";
@@ -1464,49 +1423,9 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       Context->EncoderParams.CodecProfile = MFX_PROFILE_AV1_PRO;
     }
 
-    if (std::strcmp(CodecLevelDataAV1, "auto") == 0) {
-      Context->EncoderParams.CodecLevel = 0;
-    } else if (std::strcmp(CodecLevelDataAV1, "2.0") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_2;
-    } else if (std::strcmp(CodecLevelDataAV1, "2.1") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_21;
-    } else if (std::strcmp(CodecLevelDataAV1, "2.2") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_22;
-    } else if (std::strcmp(CodecLevelDataAV1, "2.3") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_23;
-    } else if (std::strcmp(CodecLevelDataAV1, "3.0") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_3;
-    } else if (std::strcmp(CodecLevelDataAV1, "3.1") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_31;
-    } else if (std::strcmp(CodecLevelDataAV1, "3.2") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_32;
-    } else if (std::strcmp(CodecLevelDataAV1, "3.3") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_33;
-    } else if (std::strcmp(CodecLevelDataAV1, "4.0") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_4;
-    } else if (std::strcmp(CodecLevelDataAV1, "4.1") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_41;
-    } else if (std::strcmp(CodecLevelDataAV1, "4.2") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_42;
-    } else if (std::strcmp(CodecLevelDataAV1, "4.3") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_43;
-    } else if (std::strcmp(CodecLevelDataAV1, "5.0") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_5;
-    } else if (std::strcmp(CodecLevelDataAV1, "5.1") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_51;
-    } else if (std::strcmp(CodecLevelDataAV1, "5.2") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_52;
-    } else if (std::strcmp(CodecLevelDataAV1, "5.3") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_53;
-    } else if (std::strcmp(CodecLevelDataAV1, "6.0") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_6;
-    } else if (std::strcmp(CodecLevelDataAV1, "6.1") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_61;
-    } else if (std::strcmp(CodecLevelDataAV1, "6.2") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_62;
-    } else if (std::strcmp(CodecLevelDataAV1, "6.3") == 0) {
-      Context->EncoderParams.CodecLevel = MFX_LEVEL_AV1_63;
-    }
+    Context->EncoderParams.CodecLevel =
+        ParseCodecLevel(CodecLevelDataAV1, kAV1Levels,
+                        sizeof(kAV1Levels) / sizeof(kAV1Levels[0]));
     break;
   }
   Context->EncoderParams.VideoFormat = 5;
@@ -2000,18 +1919,56 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   info("\tOutput height: %d", VideoHeight);
 }
 
-static obs_properties_t *GetH264ParamProps([[maybe_unused]] void *) {
-  return GetParamProps(QSV_CODEC_AVC);
-}
+// ── Forwarding function macros ────────────────────────────────
+// Reduce boilerplate for encoder-info function pointers that merely
+// forward a codec enum to the shared implementation.
 
-static obs_properties_t *GetAV1ParamProps([[maybe_unused]] void *) {
+#define FORWARD_PARAM_PROPS(name, codec)                                        \
+  static obs_properties_t *Get##name##ParamProps([[maybe_unused]] void *) {     \
+    return GetParamProps(codec);                                                \
+  }
 
-  return GetParamProps(QSV_CODEC_AV1);
-}
+#define FORWARD_FRAME_ENCODER(name, codec)                                      \
+  static void *Init##name##FrameEncoder(obs_data_t *Settings,                   \
+                                        obs_encoder_t *EncoderData) {           \
+    return InitPluginContext(codec, Settings, EncoderData, false);               \
+  }
 
-static obs_properties_t *GetHEVCParamProps([[maybe_unused]] void *) {
-  return GetParamProps(QSV_CODEC_HEVC);
-}
+#define FORWARD_TEXTURE_ENCODER(name, codec, fallback_id)                       \
+  static void *Init##name##TextureEncoder(obs_data_t *Settings,                 \
+                                          obs_encoder_t *EncoderData) {         \
+    return InitTextureEncoder(codec, Settings, EncoderData, fallback_id);       \
+  }
+
+#define FORWARD_ENCODER_NAME(name, display)                                     \
+  static const char *Get##name##EncoderName([[maybe_unused]] void *) {          \
+    return display;                                                             \
+  }
+
+#define FORWARD_DEFAULT_PARAMS(name, codec)                                     \
+  static void Set##name##DefaultParams(obs_data_t *Settings) {                  \
+    SetDefaultEncoderParams(Settings, codec);                                   \
+  }
+
+FORWARD_PARAM_PROPS(H264, QSV_CODEC_AVC)
+FORWARD_PARAM_PROPS(AV1, QSV_CODEC_AV1)
+FORWARD_PARAM_PROPS(HEVC, QSV_CODEC_HEVC)
+
+FORWARD_FRAME_ENCODER(H264, QSV_CODEC_AVC)
+FORWARD_FRAME_ENCODER(AV1, QSV_CODEC_AV1)
+FORWARD_FRAME_ENCODER(HEVC, QSV_CODEC_HEVC)
+
+FORWARD_TEXTURE_ENCODER(H264, QSV_CODEC_AVC, "obs_qsv_vpl_h264")
+FORWARD_TEXTURE_ENCODER(AV1, QSV_CODEC_AV1, "obs_qsv_vpl_av1")
+FORWARD_TEXTURE_ENCODER(HEVC, QSV_CODEC_HEVC, "obs_qsv_vpl_hevc")
+
+FORWARD_ENCODER_NAME(H264, "QuickSync oneVPL H.264")
+FORWARD_ENCODER_NAME(AV1, "QuickSync oneVPL AV1")
+FORWARD_ENCODER_NAME(HEVC, "QuickSync oneVPL HEVC")
+
+FORWARD_DEFAULT_PARAMS(H264, QSV_CODEC_AVC)
+FORWARD_DEFAULT_PARAMS(AV1, QSV_CODEC_AV1)
+FORWARD_DEFAULT_PARAMS(HEVC, QSV_CODEC_HEVC)
 
 plugin_context *InitPluginContext(enum codec_enum Codec, obs_data_t *Settings,
                                   obs_encoder_t *EncoderData,
@@ -2090,21 +2047,6 @@ plugin_context *InitPluginContext(enum codec_enum Codec, obs_data_t *Settings,
   }
 }
 
-static void *InitH264FrameEncoder(obs_data_t *Settings,
-                                  obs_encoder_t *EncoderData) {
-  return InitPluginContext(QSV_CODEC_AVC, Settings, EncoderData, false);
-}
-
-static void *InitAV1FrameEncoder(obs_data_t *Settings,
-                                 obs_encoder_t *EncoderData) {
-  return InitPluginContext(QSV_CODEC_AV1, Settings, EncoderData, false);
-}
-
-static void *InitHEVCFrameEncoder(obs_data_t *Settings,
-                                  obs_encoder_t *EncoderData) {
-  return InitPluginContext(QSV_CODEC_HEVC, Settings, EncoderData, false);
-}
-
 static void *InitTextureEncoder(enum codec_enum Codec, obs_data_t *Settings,
                                 obs_encoder_t *EncoderData,
                                 const char *FallbackID) {
@@ -2166,48 +2108,6 @@ static void *InitTextureEncoder(enum codec_enum Codec, obs_data_t *Settings,
                                        static_cast<const char *>(FallbackID));
   }
   return Context;
-}
-
-static void *InitH264TextureEncoder(obs_data_t *Settings,
-                                    obs_encoder_t *EncoderData) {
-  return InitTextureEncoder(QSV_CODEC_AVC, Settings, EncoderData,
-                            "obs_qsv_vpl_h264");
-}
-
-static void *InitAV1TextureEncoder(obs_data_t *Settings,
-                                   obs_encoder_t *EncoderData) {
-  return InitTextureEncoder(QSV_CODEC_AV1, Settings, EncoderData,
-                            "obs_qsv_vpl_av1");
-}
-
-static void *InitHEVCTextureEncoder(obs_data_t *Settings,
-                                    obs_encoder_t *EncoderData) {
-  return InitTextureEncoder(QSV_CODEC_HEVC, Settings, EncoderData,
-                            "obs_qsv_vpl_hevc");
-}
-
-static const char *GetH264EncoderName([[maybe_unused]] void *) {
-  return "QuickSync oneVPL H.264";
-}
-
-static const char *GetAV1EncoderName([[maybe_unused]] void *) {
-  return "QuickSync oneVPL AV1";
-}
-
-static const char *GetHEVCEncoderName([[maybe_unused]] void *) {
-  return "QuickSync oneVPL HEVC";
-}
-
-static void SetH264DefaultParams(obs_data_t *Settings) {
-  SetDefaultEncoderParams(Settings, QSV_CODEC_AVC);
-}
-
-static void SetAV1DefaultParams(obs_data_t *Settings) {
-  SetDefaultEncoderParams(Settings, QSV_CODEC_AV1);
-}
-
-static void SetHEVCDefaultParams(obs_data_t *Settings) {
-  SetDefaultEncoderParams(Settings, QSV_CODEC_HEVC);
 }
 
 obs_encoder_info H264FrameEncoderInfo = {.id = "obs_qsv_vpl_h264",
