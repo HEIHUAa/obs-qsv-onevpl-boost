@@ -63,21 +63,6 @@ std::vector<encoder_params::roi_region> NormalizeROIToPixel(
     result.push_back(pr);
   }
 
-  // Log the conversion result for debugging
-  if (!NormRegions.empty()) {
-    blog(LOG_INFO,
-         "[QSV VPL] NormalizeROIToPixel: aligned %zu regions to %d-pixel boundaries"
-         " (output %dx%d)",
-         NormRegions.size(), Alignment, OutWidth, OutHeight);
-    for (size_t i = 0; i < result.size(); i++) {
-      blog(LOG_INFO,
-           "[QSV VPL]   Pixel[%zu]: Left=%u Top=%u Right=%u Bottom=%u DeltaQP=%d",
-           i, result[i].Left, result[i].Top,
-           result[i].Right, result[i].Bottom,
-           (int)result[i].DeltaQP);
-    }
-  }
-
   return result;
 }
 
