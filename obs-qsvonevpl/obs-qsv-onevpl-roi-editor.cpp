@@ -107,7 +107,9 @@ ROIDialog::ROIDialog(QWidget *Parent)
   });
 
   // Load saved ROI data (if any)
+  blog(LOG_INFO, "[ROI Editor] constructor: calling LoadROIData");
   LoadROIData();
+  blog(LOG_INFO, "[ROI Editor] constructor: LoadROIData done");
 }
 
 ROIDialog::~ROIDialog() {
@@ -115,15 +117,18 @@ ROIDialog::~ROIDialog() {
 }
 
 void ROIDialog::showEvent(QShowEvent *Event) {
+  blog(LOG_INFO, "[ROI Editor] showEvent: entering");
   QDialog::showEvent(Event);
   // Delay preview creation to next event loop iteration so the widget
   // has a valid native window handle
   QTimer::singleShot(0, this, [this]() {
+    blog(LOG_INFO, "[ROI Editor] showEvent: singleShot firing, PreviewDisplay=%p", (void*)PreviewDisplay);
     if (!PreviewDisplay)
       CreatePreview();
   });
   // Start periodic refresh timer
   RefreshTimer->start();
+  blog(LOG_INFO, "[ROI Editor] showEvent: done");
 }
 
 void ROIDialog::closeEvent(QCloseEvent *Event) {
@@ -443,47 +448,53 @@ static std::string RegionsToUIFormat(
 
 // ── Helper: populate UI controls from GlobalROIConfig ────────────────
 void ROIDialog::SetUIFromGlobalConfig() {
+  blog(LOG_INFO, "[ROI Editor] SetUIFromGlobalConfig: entering");
   std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
+  blog(LOG_INFO, "[ROI Editor] SetUIFromGlobalConfig: setting checkboxes");
   ROIEnableCheck->setChecked(GlobalROIConfig.Enabled);
   if (GlobalROIConfig.Mode == 1)
     PriorityRadio->setChecked(true);
   else
     QPDeltaRadio->setChecked(true);
 
+  blog(LOG_INFO, "[ROI Editor] SetUIFromGlobalConfig: setting text");
   ROITextEdit->setPlainText(
       QString::fromStdString(RegionsToUIFormat(GlobalROIConfig.NormalizedRegions)));
+  blog(LOG_INFO, "[ROI Editor] SetUIFromGlobalConfig: done");
 }
 
 // ── ROI data load / save
 // ----------------------------------------------------------------------
 void ROIDialog::LoadROIData() {
+  blog(LOG_INFO, "[ROI Editor] LoadROIData: entering");
   // Load from global ROI config (resolution-independent normalized values)
   {
     std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
+    blog(LOG_INFO, "[ROI Editor] LoadROIData: checking GlobalROIConfig (enabled=%d, regions=%zu)",
+         (int)GlobalROIConfig.Enabled, GlobalROIConfig.NormalizedRegions.size());
     if (GlobalROIConfig.Enabled || !GlobalROIConfig.NormalizedRegions.empty()) {
-      SetUIFromGlobalConfig(); // reads GlobalROIConfig internally
-      blog(LOG_DEBUG,
-           "[ROI Editor] LoadROIData: loaded global config, enabled=%d, regions=%zu",
-           (int)GlobalROIConfig.Enabled, GlobalROIConfig.NormalizedRegions.size());
+      blog(LOG_INFO, "[ROI Editor] LoadROIData: using GlobalROIConfig");
+      SetUIFromGlobalConfig();
+      blog(LOG_INFO, "[ROI Editor] LoadROIData: GlobalROIConfig path done");
       return;
     }
   }
 
   // Fallback: try loading from file if no global config
+  blog(LOG_INFO, "[ROI Editor] LoadROIData: trying file fallback");
   if (LoadROIConfigFromFile()) {
+    blog(LOG_INFO, "[ROI Editor] LoadROIData: file loaded, calling SetUIFromGlobalConfig");
     SetUIFromGlobalConfig();
-    blog(LOG_DEBUG,
-         "[ROI Editor] LoadROIData: loaded from file fallback, enabled=%d, regions=%zu",
-         (int)GlobalROIConfig.Enabled, GlobalROIConfig.NormalizedRegions.size());
+    blog(LOG_INFO, "[ROI Editor] LoadROIData: file path done");
     return;
   }
 
   // No saved config - use defaults
+  blog(LOG_INFO, "[ROI Editor] LoadROIData: no config found, using defaults");
   ROIEnableCheck->setChecked(false);
   QPDeltaRadio->setChecked(true);
   ROITextEdit->clear();
-  blog(LOG_DEBUG,
-       "[ROI Editor] LoadROIData: no global config found, using defaults");
+  blog(LOG_INFO, "[ROI Editor] LoadROIData: defaults set, returning");
 }
 
 void ROIDialog::SaveROIData() {
@@ -614,16 +625,21 @@ static void OnFrontendEvent(obs_frontend_event Event, void *) {
 }
 
 static void OpenROIEditor(void * /*data*/) {
+  blog(LOG_INFO, "[ROI Editor] OpenROIEditor: creating new dialog");
   auto *dialog = new ROIDialog();
+  blog(LOG_INFO, "[ROI Editor] OpenROIEditor: dialog constructed, setting attributes");
   dialog->setAttribute(Qt::WA_DeleteOnClose);
 
   // Track active dialog for profile-change refresh
   ActiveDialog = dialog;
   QObject::connect(dialog, &QObject::destroyed, []() {
+    blog(LOG_INFO, "[ROI Editor] ActiveDialog destroyed, clearing pointer");
     ActiveDialog = nullptr;
   });
 
+  blog(LOG_INFO, "[ROI Editor] OpenROIEditor: calling show()");
   dialog->show();
+  blog(LOG_INFO, "[ROI Editor] OpenROIEditor: show() returned");
 }
 
 void RegisterROIEditor() {
