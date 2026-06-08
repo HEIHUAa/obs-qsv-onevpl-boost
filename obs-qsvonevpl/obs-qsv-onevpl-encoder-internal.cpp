@@ -2424,11 +2424,6 @@ void QSVEncoder::LogActualParams() {
          QSVEncodeParams.mfx.CodecLevel);
   }
 
-  if (QSVEncodeParams.mfx.BRCParamMultiplier) {
-    info("\tBRCParamMultiplier set: %d",
-         QSVEncodeParams.mfx.BRCParamMultiplier);
-  }
-
   if (QSVEncodeParams.mfx.GopOptFlag & MFX_GOP_STRICT) {
     info("\tGopOptFlag set: STRICT");
   } else if (QSVEncodeParams.mfx.GopOptFlag & MFX_GOP_CLOSED) {
@@ -2458,6 +2453,17 @@ void QSVEncoder::LogActualParams() {
     } else {
       info("\tAdaptiveMaxFrameSize set: AUTO");
     }
+    if (CO2->LookAheadDS != MFX_LOOKAHEAD_DS_OFF) {
+      info("\tLookAheadDS set: %d", CO2->LookAheadDS);
+    }
+  }
+
+  auto *CO = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
+  if (CO) {
+    info("\tRDO set: %s",
+         GetCodingOptStatus(CO->RateDistortionOpt).c_str());
+    info("\tHRDConformance set: %s",
+         GetCodingOptStatus(CO->VuiVclHrdParameters).c_str());
   }
 
   if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
@@ -2528,6 +2534,17 @@ void QSVEncoder::LogActualParams() {
          GetWeightedPredStatus(CO3->WeightedPred).c_str());
     info("\tWeightedBiPred set: %s",
          GetWeightedPredStatus(CO3->WeightedBiPred).c_str());
+    info("\tTransformSkip set: %s",
+         GetCodingOptStatus(CO3->TransformSkip).c_str());
+    if (CO3->ScenarioInfo) {
+      info("\tScenarioInfo set: %d", CO3->ScenarioInfo);
+    }
+    if (CO3->WinBRCMaxAvgKbps) {
+      info("\tWinBRCMaxAvgKbps set: %d", CO3->WinBRCMaxAvgKbps);
+    }
+    if (CO3->WinBRCSize) {
+      info("\tWinBRCSize set: %d frames", CO3->WinBRCSize);
+    }
   }
 
   auto *EncTools = QSVEncodeParams.GetExtBuffer<mfxExtEncToolsConfig>();
