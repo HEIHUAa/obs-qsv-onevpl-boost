@@ -48,29 +48,30 @@ CODDI.DDI.InterPredBlockSize=64
 
 | 字段 | 类型 | 默认值 | 描述 |
 |------|------|--------|------|
-| `MECostType` | — | — | **保留字段，必须为 0。** 如需 DDI 级别控制请用 `CODDI.IntraPredCostType`。 |
-| `MESearchType` | — | — | **保留字段，必须为 0。** 如需 DDI 级别控制请用 `CODDI` 相关字段。 |
-| `MVSearchWindow.x` | — | — | **保留字段，必须为 (0, 0)。** |
-| `MVSearchWindow.y` | — | — | **保留字段，必须为 (0, 0)。** |
+| `CAVLC` | 三态 | OFF | 熵编码。OFF = 使用 CABAC（推荐），ON = 使用 CAVLC。 |
+| `MECostType` | 数值 | 8 | 运动估计代价类型。1=SAD, 2=SSD, 4=SATD_HADAMARD, 8=SATD_HARR。也可通过 `CODDI.IntraPredCostType` 调整。 |
+| `MESearchType` | 数值 | 16 | 运动估计算法。1=FULL, 2=HALF, 4=SQUARE, 8=HQ, 16=DIAMOND。 |
+| `MVSearchWindow.x` | 数值 | AVC=16 / HEVC=32 | 运动估计搜索窗口宽度（像素）。 |
+| `MVSearchWindow.y` | 数值 | AVC=16 / HEVC=32 | 运动估计搜索窗口高度（像素）。 |
 | `EndOfSequence` | 三态 | — | 已废弃。插入序列结束 NAL 单元。 |
-| `FramePicture` | 三态 | — | 将隔行场编码为隔行帧。不影响逐行输入。 |
-| `CAVLC` | 三态 | OFF | CAVLC 熵编码。OFF = 使用 CABAC（推荐）。 |
-| `RecoveryPointSEI` | 三态 | （仅 IntraRef 开启时） | 在每个帧内刷新周期开头插入恢复点 SEI。帧内刷新未启用时忽略。 |
-| `ViewOutput` | 三态 | — | MVC 编码器：将每个视图输出到单独的码流缓冲区。 |
-| `NalHrdConformance` | 三态 | （用户设置） | ON 强制 AVC 编码器生成 HRD 合规码流。OFF 不保证不合规。 |
-| `SingleSeiNalUnit` | 三态 | — | ON 将所有 SEI 消息放入同一个 NAL 单元。OFF/UNKNOWN 则将每个 SEI 放入独立的 NAL 单元。 |
-| `VuiVclHrdParameters` | 三态 | （用户设置） | 在 VUI 中写入 VCL HRD 参数，值与 NAL HRD 参数相同（VBR 模式下）。 |
-| `RefPicListReordering` | — | — | **保留字段，必须为 0。** |
+| `FramePicture` | 三态 | UNKNOWN | 将隔行场编码为隔行帧。不影响逐行输入。 |
+| `RecoveryPointSEI` | 三态 | ON（IntraRef 开启时） | 在每个帧内刷新周期开头插入恢复点 SEI。帧内刷新未启用时忽略。 |
+| `ViewOutput` | 三态 | UNKNOWN | MVC 编码器：将每个视图输出到单独的码流缓冲区。 |
+| `NalHrdConformance` | 三态 | （HRD 设置） | ON 强制 AVC 编码器生成 HRD 合规码流。OFF 不保证不合规。 |
+| `SingleSeiNalUnit` | 三态 | UNKNOWN | ON 将所有 SEI 消息放入同一个 NAL 单元。OFF/UNKNOWN 则将每个 SEI 放入独立的 NAL 单元。 |
+| `VuiVclHrdParameters` | 三态 | （HRD 设置） | 在 VUI 中写入 VCL HRD 参数，值与 NAL HRD 参数相同（VBR 模式下）。 |
+| `VuiNalHrdParameters` | 三态 | （HRD 设置） | 在 VUI 头中插入 NAL HRD 参数。 |
+| `RefPicListReordering` | 三态 | ON | 保留字段，但插件实际设为 ON。 |
 | `ResetRefList` | 三态 | ON | 在 GOP 序列的 **非 IDR I 帧**上重置参考列表。 |
 | `RefPicMarkRep` | 三态 | ON | 在输出码流中写入参考图像标记重复 SEI 消息。 |
-| `FieldOutput` | 三态 | OFF（低功耗模式关闭时） | 在场编码模式下编码完一个场后立即输出码流。 |
-| `IntraPredBlockSize` | — | — | **保留字段，必须为 0。** 如需 DDI 级别控制请用 `CODDI.DDI.IntraPredBlockSize`。 |
-| `InterPredBlockSize` | — | — | **保留字段，必须为 0。** 如需 DDI 级别控制请用 `CODDI.DDI.InterPredBlockSize`。 |
-| `MVPrecision` | — | — | **保留字段，必须为 0。** |
+| `FieldOutput` | 三态 | LP=ON / 无LP=OFF | 在场编码模式下编码完一个场后立即输出码流。低功耗模式下为 ON。 |
+| `IntraPredBlockSize` | 数值 | 3 (MIN_4X4) | 最小帧内预测块大小。0=UNKNOWN, 1=16x16, 2=8x8, 3=4x4。DDI 级别控制请用 `CODDI.DDI.IntraPredBlockSize`。 |
+| `InterPredBlockSize` | 数值 | 3 (MIN_4X4) | 最小帧间预测块大小。0=UNKNOWN, 1=16x16, 2=8x8, 3=4x4。DDI 级别控制请用 `CODDI.DDI.InterPredBlockSize`。 |
+| `MVPrecision` | 数值 | 4 (QUARTERPEL) | 运动估计精度。0=UNKNOWN, 1=INTEGER, 2=HALFPEL, 4=QUARTERPEL。 |
 | `MaxDecFrameBuffering` | 数值 | NumRefFrame | DPB 中缓存的最大帧数。0 = 不指定。 |
-| `AUDelimiter` | 三态 | （默认不设置） | 插入访问单元分隔符 NAL 单元。 |
+| `AUDelimiter` | 三态 | UNKNOWN | 插入访问单元分隔符 NAL 单元。 |
 | `EndOfStream` | 三态 | — | 已废弃。插入流结束 NAL 单元。 |
-| `PicTimingSEI` | 三态 | ON | 插入带有 pic_struct 语法元素的图像时序 SEI。默认值为 ON。 |
+| `PicTimingSEI` | 三态 | ON | 插入带有 pic_struct 语法元素的图像时序 SEI。API 规范默认值为 ON。 |
 
 ---
 

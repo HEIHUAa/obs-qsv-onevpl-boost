@@ -20,6 +20,8 @@ ROIDialog::ROIDialog(QWidget *Parent)
       PreviewDisplay(nullptr),
       PreviewWidget(nullptr),
       RefreshTimer(new QTimer(this)) {
+  blog(LOG_DEBUG, "[QSV VPL] ROIDialog constructor started");
+
   setWindowTitle(obs_module_text("ROIEditor"));
   setMinimumSize(860, 680);
   resize(960, 720);
@@ -109,6 +111,8 @@ ROIDialog::ROIDialog(QWidget *Parent)
 
   // Load saved ROI data (if any)
   LoadROIData();
+
+  blog(LOG_DEBUG, "[QSV VPL] ROIDialog constructor finished");
 }
 
 ROIDialog::~ROIDialog() {
@@ -120,8 +124,11 @@ void ROIDialog::showEvent(QShowEvent *Event) {
   // Delay preview creation to next event loop iteration so the widget
   // has a valid native window handle
   QTimer::singleShot(0, this, [this]() {
-    if (!PreviewDisplay)
-      CreatePreview();
+    if (!PreviewDisplay) {
+      if (!CreatePreview()) {
+        blog(LOG_WARNING, "[QSV VPL] ROI dialog: CreatePreview failed on show");
+      }
+    }
   });
   // Start periodic refresh timer
   RefreshTimer->start();
@@ -142,62 +149,101 @@ bool ROIDialog::CreatePreview() {
   if (!PreviewWidget || !PreviewWidget->isVisible())
     return false;
 
-  // Force creation of native window handle
-  PreviewWidget->setAttribute(Qt::WA_NativeWindow);
-  PreviewWidget->winId();
+  try {
+    // Force creation of native window handle
+    PreviewWidget->setAttribute(Qt::WA_NativeWindow);
+    PreviewWidget->winId();
 
-  HWND hwnd = (HWND)PreviewWidget->winId();
-  if (!hwnd)
+    HWND hwnd = (HWND)PreviewWidget->winId();
+    if (!hwnd)
+      return false;
+
+    // Build gs_init_data for obs_display_create
+    struct obs_video_info ovi;
+    obs_get_video_info(&ovi);
+
+    gs_init_data init_data = {};
+    gs_window window = {};
+    window.hwnd = hwnd;
+    init_data.window = window;
+    init_data.cx = (uint32_t)PreviewWidget->width();
+    init_data.cy = (uint32_t)PreviewWidget->height();
+    init_data.num_backbuffers = 2;
+    init_data.format = GS_BGRA;
+    init_data.zsformat = GS_ZS_NONE;
+    init_data.adapter = ovi.adapter;
+
+    PreviewDisplay = obs_display_create(&init_data, 0);
+    if (!PreviewDisplay) {
+      blog(LOG_WARNING, "[QSV VPL] ROI CreatePreview: obs_display_create returned NULL");
+      return false;
+    }
+
+    // Add draw callback for the display
+    obs_display_add_draw_callback(PreviewDisplay, PreviewDraw, this);
+    obs_display_set_enabled(PreviewDisplay, true);
+
+    return true;
+
+  } catch (const std::exception &e) {
+    blog(LOG_ERROR,
+         "[QSV VPL] ROI CreatePreview: std::exception caught: %s", e.what());
+    DestroyPreview();
     return false;
-
-  // Build gs_init_data for obs_display_create
-  struct obs_video_info ovi;
-  obs_get_video_info(&ovi);
-
-  gs_init_data init_data = {};
-  gs_window window = {};
-  window.hwnd = hwnd;
-  init_data.window = window;
-  init_data.cx = (uint32_t)PreviewWidget->width();
-  init_data.cy = (uint32_t)PreviewWidget->height();
-  init_data.num_backbuffers = 2;
-  init_data.format = GS_BGRA;
-  init_data.zsformat = GS_ZS_NONE;
-  init_data.adapter = ovi.adapter;
-
-  PreviewDisplay = obs_display_create(&init_data, 0);
-  if (!PreviewDisplay)
+  } catch (...) {
+    blog(LOG_ERROR,
+         "[QSV VPL] ROI CreatePreview: unknown exception caught");
+    DestroyPreview();
     return false;
-
-  // Add draw callback for the display
-  obs_display_add_draw_callback(PreviewDisplay, PreviewDraw, this);
-  obs_display_set_enabled(PreviewDisplay, true);
-
-  return true;
+  }
 }
 
 void ROIDialog::DestroyPreview() {
   if (PreviewDisplay) {
-    obs_display_remove_draw_callback(PreviewDisplay, PreviewDraw, this);
-    obs_display_destroy(PreviewDisplay);
+    try {
+      obs_display_remove_draw_callback(PreviewDisplay, PreviewDraw, this);
+      obs_display_destroy(PreviewDisplay);
+    } catch (const std::exception &e) {
+      blog(LOG_ERROR,
+           "[QSV VPL] DestroyPreview: std::exception: %s", e.what());
+    } catch (...) {
+      blog(LOG_ERROR,
+           "[QSV VPL] DestroyPreview: unknown exception");
+    }
     PreviewDisplay = nullptr;
   }
 }
 
 void ROIDialog::ResizePreview() {
   if (PreviewDisplay && PreviewWidget) {
-    obs_display_resize(PreviewDisplay,
-                       (uint32_t)PreviewWidget->width(),
-                       (uint32_t)PreviewWidget->height());
+    try {
+      obs_display_resize(PreviewDisplay,
+                         (uint32_t)PreviewWidget->width(),
+                         (uint32_t)PreviewWidget->height());
+    } catch (const std::exception &e) {
+      blog(LOG_ERROR,
+           "[QSV VPL] ResizePreview: std::exception: %s", e.what());
+    } catch (...) {
+      blog(LOG_ERROR,
+           "[QSV VPL] ResizePreview: unknown exception");
+    }
   }
 }
 
 void ROIDialog::ForceRefreshPreview() {
   if (!PreviewDisplay)
     return;
-  // Toggle enabled state to force obs_display to re-evaluate and redraw
-  obs_display_set_enabled(PreviewDisplay, false);
-  obs_display_set_enabled(PreviewDisplay, true);
+  try {
+    // Toggle enabled state to force obs_display to re-evaluate and redraw
+    obs_display_set_enabled(PreviewDisplay, false);
+    obs_display_set_enabled(PreviewDisplay, true);
+  } catch (const std::exception &e) {
+    blog(LOG_ERROR,
+         "[QSV VPL] ForceRefreshPreview: std::exception: %s", e.what());
+  } catch (...) {
+    blog(LOG_ERROR,
+         "[QSV VPL] ForceRefreshPreview: unknown exception");
+  }
 }
 
 bool ROIDialog::eventFilter(QObject *Obj, QEvent *Event) {
@@ -426,8 +472,14 @@ void ROIDialog::SetUIFromGlobalConfig() {
   else
     QPDeltaRadio->setChecked(true);
 
+  // Guard against re-entrant locking: setPlainText triggers textChanged,
+  // which calls UpdatePreviewFromText, which also locks GlobalROIConfigMutex.
+  // On MSVC std::mutex (= SRWLOCK), recursive locking causes a deadlock;
+  // on other implementations it can throw std::system_error.
+  m_IsSettingText = true;
   ROITextEdit->setPlainText(
       QString::fromStdString(RegionsToUIFormat(GlobalROIConfig.NormalizedRegions)));
+  m_IsSettingText = false;
 }
 
 // ── Parse text input into normalized ROI regions ────────────────────
@@ -461,6 +513,12 @@ static std::vector<encoder_params::normalized_roi_region> ParseROIText(
 // ── ROI data load / save
 // ----------------------------------------------------------------------
 void ROIDialog::UpdatePreviewFromText() {
+  // Suppress re-entrant calls triggered by SetUIFromGlobalConfig →
+  // setPlainText → textChanged. The mutex is already held by SetUIFromGlobalConfig,
+  // so attempting to lock it again would deadlock or throw.
+  if (m_IsSettingText)
+    return;
+
   auto normRegions = ParseROIText(ROITextEdit->toPlainText().toStdString());
   mfxU16 mode = (ModeGroup->checkedId() == 1) ? 1 : 0;
   bool enabled = ROIEnableCheck->isChecked();
@@ -477,12 +535,16 @@ void ROIDialog::UpdatePreviewFromText() {
 }
 
 void ROIDialog::LoadROIData() {
+  blog(LOG_DEBUG, "[QSV VPL] ROIDialog::LoadROIData: loading from file...");
+
   // Always load from file to avoid stale GlobalROIConfig cache issues
   if (LoadROIConfigFromFile()) {
+    blog(LOG_DEBUG, "[QSV VPL] ROIDialog::LoadROIData: config loaded from file, applying UI");
     SetUIFromGlobalConfig();
     return;
   }
 
+  blog(LOG_DEBUG, "[QSV VPL] ROIDialog::LoadROIData: no saved config, using defaults");
   // No saved config - use defaults
   ROIEnableCheck->setChecked(false);
   QPDeltaRadio->setChecked(true);
@@ -588,16 +650,26 @@ static void OnFrontendEvent(obs_frontend_event Event, void *) {
 }
 
 static void OpenROIEditor(void * /*data*/) {
-  auto *dialog = new ROIDialog();
-  dialog->setAttribute(Qt::WA_DeleteOnClose);
+  try {
+    auto *dialog = new ROIDialog();
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
 
-  // Track active dialog for profile-change refresh
-  ActiveDialog = dialog;
-  QObject::connect(dialog, &QObject::destroyed, []() {
-    ActiveDialog = nullptr;
-  });
+    // Track active dialog for profile-change refresh
+    ActiveDialog = dialog;
+    QObject::connect(dialog, &QObject::destroyed, []() {
+      ActiveDialog = nullptr;
+    });
 
-  dialog->show();
+    dialog->show();
+    blog(LOG_INFO, "[QSV VPL] ROI editor dialog opened successfully");
+
+  } catch (const std::exception &e) {
+    blog(LOG_ERROR,
+         "[QSV VPL] OpenROIEditor: std::exception caught: %s", e.what());
+  } catch (...) {
+    blog(LOG_ERROR,
+         "[QSV VPL] OpenROIEditor: unknown exception caught");
+  }
 }
 
 void RegisterROIEditor() {

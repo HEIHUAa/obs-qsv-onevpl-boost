@@ -78,4 +78,8 @@ private:
   QWidget *PreviewWidget;
   obs_display_t *PreviewDisplay;
   QTimer *RefreshTimer;       // periodic preview refresh
+
+  // Prevents re-entrant textChanged → UpdatePreviewFromText while
+  // SetUIFromGlobalConfig is holding GlobalROIConfigMutex
+  bool m_IsSettingText = false;
 };
