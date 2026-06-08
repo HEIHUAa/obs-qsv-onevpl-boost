@@ -22,7 +22,8 @@ QSVEncoder::QSVEncoder()
       QSVResetParamsChanged(false), QSVEncodeParams(), QSVEncodeCtrlParams(),
       QSVProcessingAuxData(), QSVAllocateRequest(), QSVIsTextureEncoder(),
       QSVMemoryInterface(), HWManager(nullptr), QSVProcessingEnable(),
-      QSVProcessingSyncPoint(nullptr), CachedROIMode(0) {}
+      QSVProcessingSyncPoint(nullptr), QSVLayerArray(nullptr),
+      CachedROIMode(0) {}
 
 QSVEncoder::~QSVEncoder() {
   if (QSVEncode || QSVProcessing) {

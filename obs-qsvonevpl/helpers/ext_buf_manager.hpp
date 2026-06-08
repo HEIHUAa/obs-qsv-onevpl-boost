@@ -1,7 +1,4 @@
 #pragma once
-#ifndef __QSV_VPL_EXT_BUF_MANAGER_H__
-#define __QSV_VPL_EXT_BUF_MANAGER_H__
-#endif
 
 #if defined(_WIN32) || defined(_WIN64)
 #ifndef NOMINMAX
@@ -45,9 +42,6 @@
 #endif
 #ifndef __MFXSURFACE_POOL_H__
 #include <vpl/mfxsurfacepool.h>
-#endif
-#ifndef __QSV_VPL_COMMON_UTILS_H__
-#include "helpers/common_utils.hpp"
 #endif
 #ifndef __MFXAV1_H__
 #include <vpl/private/mfxav1.h>

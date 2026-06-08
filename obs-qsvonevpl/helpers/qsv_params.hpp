@@ -1,9 +1,5 @@
 #pragma once
 
-#ifndef __QSV_VPL_ENCODER_PARAMS_H__
-#define __QSV_VPL_ENCODER_PARAMS_H__
-#endif
-
 struct encoder_params {
   mfxU16 TargetUsage; /* 1 through 7, 1 being best quality and 7
                                   being the best speed */

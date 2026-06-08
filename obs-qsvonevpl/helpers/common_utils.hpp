@@ -1,10 +1,6 @@
 #pragma once
 #pragma warning(disable : 4201)
 
-#ifndef __QSV_VPL_COMMON_UTILS_H__
-#define __QSV_VPL_COMMON_UTILS_H__
-#endif
-
 #ifndef __QSV_VPL_WINDOWS_DEFS_H__
 #include "../bits/windows_defs.hpp"
 #endif
@@ -242,23 +238,8 @@ bool LoadROIConfigFromFile();
 #include <malloc.h>
 #endif
 
-static inline void *AlignedMalloc(size_t Size, size_t Alignment = 32) {
-#if defined(_WIN32) || defined(_WIN64)
-  return _aligned_malloc(Size, Alignment);
-#elif defined(__linux__)
-  return aligned_alloc(Alignment, Size);
-#else
-  return malloc(Size);
-#endif
-}
-
-static inline void AlignedFree(void *Ptr) {
-#if defined(_WIN32) || defined(_WIN64)
-  _aligned_free(Ptr);
-#else
-  free(Ptr);
-#endif
-}
+void *AlignedMalloc(size_t Size, size_t Alignment = 32);
+void AlignedFree(void *Ptr);
 
 static inline void ParseOptionalBool(const char *Data,
                                      std::optional<bool> &Param) {
@@ -271,58 +252,5 @@ static inline void ParseOptionalBool(const char *Data,
   }
 }
 
-inline static void avx2_memcpy(uint8_t *Dst, const uint8_t *Src,
-                               unsigned long long Size) {
-  static const bool HasAVX2 = [] {
-#if defined(_WIN32) || defined(_WIN64)
-    int cpuInfo[4] = {};
-    __cpuidex(cpuInfo, 7, 0);
-    return (cpuInfo[1] >> 5) & 1;
-#elif defined(__x86_64__) || defined(__i386__)
-    unsigned int eax = 7, ecx = 0;
-    unsigned int cpuInfo[4] = {};
-    __get_cpuid_count(eax, ecx, &cpuInfo[0], &cpuInfo[1], &cpuInfo[2], &cpuInfo[3]);
-    return (cpuInfo[1] >> 5) & 1;
-#else
-    return false;
-#endif
-  }();
-
-  if (!HasAVX2 || Size < 128) {
-    memcpy(Dst, Src, Size);
-    return;
-  }
-  uint8_t *DstFin = Dst + Size;
-  const uint8_t *DstAlignedFin = reinterpret_cast<uint8_t *>(
-      (reinterpret_cast<size_t>(DstFin + 31) & ~31) - 128);
-  __m256i Y0, Y1, Y2, Y3;
-  const int StartAlignDiff =
-      static_cast<int>(reinterpret_cast<size_t>(Dst) & 31);
-  if (StartAlignDiff) {
-    Y0 = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(Src));
-    _mm256_storeu_si256(reinterpret_cast<__m256i *>(Dst), Y0);
-    Dst += 32 - StartAlignDiff;
-    Src += 32 - StartAlignDiff;
-  }
-  for (; Dst < DstAlignedFin; Dst += 128, Src += 128) {
-    Y0 = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(Src + 0));
-    Y1 = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(Src + 32));
-    Y2 = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(Src + 64));
-    Y3 = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(Src + 96));
-    _mm256_stream_si256(reinterpret_cast<__m256i *>(Dst + 0), Y0);
-    _mm256_stream_si256(reinterpret_cast<__m256i *>(Dst + 32), Y1);
-    _mm256_stream_si256(reinterpret_cast<__m256i *>(Dst + 64), Y2);
-    _mm256_stream_si256(reinterpret_cast<__m256i *>(Dst + 96), Y3);
-  }
-  uint8_t *DstTmpl = DstFin - 128;
-  Src -= (Dst - DstTmpl);
-  Y0 = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(Src + 0));
-  Y1 = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(Src + 32));
-  Y2 = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(Src + 64));
-  Y3 = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(Src + 96));
-  _mm256_storeu_si256(reinterpret_cast<__m256i *>(DstTmpl + 0), Y0);
-  _mm256_storeu_si256(reinterpret_cast<__m256i *>(DstTmpl + 32), Y1);
-  _mm256_storeu_si256(reinterpret_cast<__m256i *>(DstTmpl + 64), Y2);
-  _mm256_storeu_si256(reinterpret_cast<__m256i *>(DstTmpl + 96), Y3);
-  _mm256_zeroupper();
-}
+void avx2_memcpy(uint8_t *Dst, const uint8_t *Src,
+                 unsigned long long Size);
