@@ -228,8 +228,6 @@ static void LogCO2CO3Corrections(
       info("\t  AdaptiveB: %d -> %d", CO2Before->AdaptiveB, CO2After->AdaptiveB);
     if (CO2Before->UseRawRef != CO2After->UseRawRef)
       info("\t  UseRawRef: %d -> %d", CO2Before->UseRawRef, CO2After->UseRawRef);
-    if (CO2Before->BitrateLimit != CO2After->BitrateLimit)
-      info("\t  BitrateLimit: %d -> %d", CO2Before->BitrateLimit, CO2After->BitrateLimit);
     if (CO2Before->MaxFrameSize != CO2After->MaxFrameSize)
       info("\t  MaxFrameSize: %d -> %d", CO2Before->MaxFrameSize, CO2After->MaxFrameSize);
   }
@@ -689,8 +687,6 @@ static const FieldEntry CO2_FIELDS[] = {
   {"IntRefCycleSize", offsetof(mfxExtCodingOption2, IntRefCycleSize), FT_U16},
   {"IntRefQPDelta", offsetof(mfxExtCodingOption2, IntRefQPDelta), FT_U16},
   {"MaxFrameSize", offsetof(mfxExtCodingOption2, MaxFrameSize), FT_U16},
-  {"MaxSliceSize", offsetof(mfxExtCodingOption2, MaxSliceSize), FT_U16},
-  {"BitrateLimit", offsetof(mfxExtCodingOption2, BitrateLimit), FT_U16},
   {"MBBRC", offsetof(mfxExtCodingOption2, MBBRC), FT_U16},
   {"ExtBRC", offsetof(mfxExtCodingOption2, ExtBRC), FT_U16},
   {"LookAheadDepth", offsetof(mfxExtCodingOption2, LookAheadDepth), FT_U16},
@@ -1321,8 +1317,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     }
 
     CO2Params->UseRawRef = GetCodingOpt(InputParams->RawRef);
-
-    CO2Params->BitrateLimit = GetCodingOpt(InputParams->BitrateLimit);
 
     CO2Params->MaxFrameSize = InputParams->AdaptiveMaxFrameSize;
   }
@@ -2446,8 +2440,6 @@ void QSVEncoder::LogActualParams() {
          GetCodingOptStatus(CO2->AdaptiveB).c_str());
     info("\tUseRawRef set: %s",
          GetCodingOptStatus(CO2->UseRawRef).c_str());
-    info("\tBitrateLimit set: %s",
-         GetCodingOptStatus(CO2->BitrateLimit).c_str());
     if (CO2->MaxFrameSize > 0) {
       info("\tAdaptiveMaxFrameSize set: %d bytes", CO2->MaxFrameSize);
     } else {

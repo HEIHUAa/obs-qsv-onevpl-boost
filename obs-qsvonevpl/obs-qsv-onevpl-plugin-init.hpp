@@ -86,7 +86,6 @@ struct plugin_context {
 #define TEXT_CONTENT_INFO obs_module_text("ContentInfo")
 #define TEXT_TRANSFORM_SKIP obs_module_text("TransformSkip")
 #define TEXT_FADE_DETECTION obs_module_text("FadeDetection")
-#define TEXT_BITRATE_LIMIT obs_module_text("BitrateLimit")
 
 #define TEXT_VPP obs_module_text("VideoProcessing_Filters")
 #define TEXT_VPP_MODE obs_module_text("VideoProcessing_Mode")
@@ -146,7 +145,6 @@ struct plugin_context {
 #define TEXT_CONTENT_INFO_DESC obs_module_text("ContentInfoDesc")
 #define TEXT_TRANSFORM_SKIP_DESC obs_module_text("TransformSkipDesc")
 #define TEXT_FADE_DETECTION_DESC obs_module_text("FadeDetectionDesc")
-#define TEXT_BITRATE_LIMIT_DESC obs_module_text("BitrateLimitDesc")
 
 #define TEXT_EXT_BRC_DESC obs_module_text("ExtBRCDesc")
 #define TEXT_GPU_NUMBER_DESC obs_module_text("GPUNumberDesc")

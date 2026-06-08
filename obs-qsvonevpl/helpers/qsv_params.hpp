@@ -71,7 +71,6 @@ struct encoder_params {
   std::optional<bool> LowDelayHRD;
   std::optional<bool> FadeDetection;
   std::optional<bool> TransformSkip;
-  std::optional<bool> BitrateLimit;
   std::optional<int> ScenarioInfo;
 
   std::optional<int> ContentInfo;
