@@ -27,7 +27,7 @@ struct qsv_feature_info {
 };
 
 static const struct qsv_feature_info qsv_feature_info_list[] = {
-    {"enc_tools", MFX_PLATFORM_DG2},
+    {"enc_tools", MFX_PLATFORM_TIGERLAKE},
     {"tune_quality", MFX_PLATFORM_TIGERLAKE},
     {"transform_skip", MFX_PLATFORM_TIGERLAKE},
     {"win_brc", MFX_PLATFORM_TIGERLAKE},
