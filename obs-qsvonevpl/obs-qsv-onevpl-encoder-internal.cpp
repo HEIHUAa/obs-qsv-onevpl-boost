@@ -251,7 +251,7 @@ static void LogCO2CO3Corrections(
     if (CO3Before->GPB != CO3After->GPB)
       info("\t  GPB: %d -> %d", CO3Before->GPB, CO3After->GPB);
     if (CO3Before->PRefType != CO3After->PRefType)
-      info("\t  PPyramid: %d -> %d", CO3Before->PRefType, CO3After->PRefType);
+      info("\t  PRefType: %d -> %d", CO3Before->PRefType, CO3After->PRefType);
     if (CO3Before->AdaptiveCQM != CO3After->AdaptiveCQM)
       info("\t  AdaptiveCQM: %d -> %d", CO3Before->AdaptiveCQM, CO3After->AdaptiveCQM);
     if (CO3Before->FadeDetection != CO3After->FadeDetection)
@@ -1256,12 +1256,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
     CO2Params->MBBRC = GetCodingOpt(InputParams->MBBRC);
 
-    if (InputParams->BFrames > 0) {
-      CO2Params->BRefType = MFX_B_REF_PYRAMID;
-    } else {
-      CO2Params->BRefType = MFX_B_REF_UNKNOWN;
-    }
-
     if (InputParams->Trellis.has_value()) {
       switch (InputParams->Trellis.value()) {
       case 0:
@@ -1421,8 +1415,10 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
     if (InputParams->PPyramid == true) {
       CO3Params->PRefType = MFX_P_REF_PYRAMID;
+      CO2Params->BRefType = MFX_B_REF_PYRAMID;
     } else {
       CO3Params->PRefType = MFX_P_REF_SIMPLE;
+      CO2Params->BRefType = MFX_B_REF_UNKNOWN;
     }
 
     CO3Params->AdaptiveCQM = GetCodingOpt(InputParams->AdaptiveCQM);
@@ -2438,8 +2434,6 @@ void QSVEncoder::LogActualParams() {
          CO2->LookAheadDepth);
     info("\tMBBRC set: %s",
          GetCodingOptStatus(CO2->MBBRC).c_str());
-    info("\tBPyramid set: %s",
-         GetCodingOptStatus(CO2->BRefType).c_str());
     info("\tTrellis set: %s",
          GetTrellisStatus(CO2->Trellis).c_str());
     info("\tAdaptiveI set: %s",
@@ -2479,10 +2473,6 @@ void QSVEncoder::LogActualParams() {
     } else {
       info("\tCTU Size: not available from SPS");
     }
-  } else if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1) {
-    info("\tCTU Size: N/A (AV1 uses superblocks)");
-  } else {
-    info("\tCTU Size: N/A (AVC uses 16x16 macroblocks)");
   }
 
   auto *CO3 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
@@ -2511,8 +2501,20 @@ void QSVEncoder::LogActualParams() {
     }
     info("\tGPB set: %s",
          GetCodingOptStatus(CO3->GPB).c_str());
-    info("\tPPyramid set: %s",
-         CO3->PRefType == MFX_P_REF_PYRAMID ? "PYRAMID" : "SIMPLE");
+    {
+      auto *CO2Pyramid =
+          QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
+      info("\tPyramid: P: %s | B: %s",
+           CO3->PRefType == MFX_P_REF_PYRAMID
+               ? "PYRAMID"
+           : CO3->PRefType == MFX_P_REF_SIMPLE ? "SIMPLE"
+                                               : "AUTO",
+           CO2Pyramid && CO2Pyramid->BRefType == MFX_B_REF_PYRAMID
+               ? "PYRAMID"
+           : CO2Pyramid && CO2Pyramid->BRefType == MFX_B_REF_OFF
+               ? "OFF"
+               : "AUTO");
+    }
     info("\tAdaptiveCQM set: %s",
          GetCodingOptStatus(CO3->AdaptiveCQM).c_str());
     info("\tAdaptiveRef set: %s",

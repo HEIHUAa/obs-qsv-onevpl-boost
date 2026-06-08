@@ -58,7 +58,7 @@ struct plugin_context {
 #define TEXT_ADAPTIVE_B obs_module_text("AdaptiveB")
 #define TEXT_ADAPTIVE_REF obs_module_text("AdaptiveRef")
 #define TEXT_ADAPTIVE_CQM obs_module_text("AdaptiveCQM")
-#define TEXT_P_PYRAMID obs_module_text("PPyramid")
+#define TEXT_PYRAMID obs_module_text("Pyramid")
 #define TEXT_TRELLIS obs_module_text("Trellis")
 #define TEXT_LA obs_module_text("Lookahead_Mode")
 #define TEXT_LA_DEPTH obs_module_text("LookaheadDepth")
@@ -136,7 +136,7 @@ struct plugin_context {
 #define TEXT_ADAPTIVE_REF_DESC obs_module_text("AdaptiveRefDesc")
 #define TEXT_ADAPTIVE_LTR_DESC obs_module_text("AdaptiveLTRDesc")
 #define TEXT_ADAPTIVE_CQM_DESC obs_module_text("AdaptiveCQMDesc")
-#define TEXT_P_PYRAMID_DESC obs_module_text("PPyramidDesc")
+#define TEXT_PYRAMID_DESC obs_module_text("PyramidDesc")
 #define TEXT_USE_RAW_REF_DESC obs_module_text("UseRawRefDesc")
 #define TEXT_GLOBAL_MOTION_BIAS_DESC obs_module_text("GlobalMotionBiasDesc")
 #define TEXT_DIRECT_BIAS_DESC obs_module_text("DirectBiasDesc")
@@ -228,9 +228,6 @@ static const char *const qsv_params_condition_tristate[] = {"ON", "OFF", "AUTO",
 
 static const char *const qsv_params_weighted_pred_options[] = {"AUTO", "OFF",
     "DEFAULT", "EXPLICIT", "IMPLICIT", 0};
-
-static const char *const qsv_params_condition_p_pyramid[] = {"SIMPLE",
-                                                             "PYRAMID", 0};
 
 static const char *const qsv_params_condition_vpp[] = {"PRE ENC", "POST ENC",
                                                        "PRE ENC | POST ENC", 0};

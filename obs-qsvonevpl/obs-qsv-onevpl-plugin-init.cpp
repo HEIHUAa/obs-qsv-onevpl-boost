@@ -819,11 +819,11 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(
       Prop, TEXT_ADAPTIVE_LTR_DESC);
 
-  Prop = obs_properties_add_list(Props, "p_pyramid", TEXT_P_PYRAMID,
+  Prop = obs_properties_add_list(Props, "p_pyramid", TEXT_PYRAMID,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition_p_pyramid);
+  AddStrings(Prop, qsv_params_condition);
   obs_property_set_long_description(
-      Prop, TEXT_P_PYRAMID_DESC);
+      Prop, TEXT_PYRAMID_DESC);
 
   Prop = obs_properties_add_list(Props, "use_raw_ref", TEXT_USE_RAW_REF,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -915,13 +915,14 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(
       Prop, TEXT_NUM_REF_ACTIVE_BL1_DESC);
 
-  Prop = obs_properties_add_list(Props, "ctu", TEXT_CTU,
-                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition_ctu_size);
-  obs_property_set_long_description(Prop, TEXT_CTU_DESC);
-
   // ── Codec-specific ──────────────────────────────────────────
   if (Codec == QSV_CODEC_HEVC) {
+    Prop = obs_properties_add_list(Props, "ctu", TEXT_CTU,
+                                   OBS_COMBO_TYPE_LIST,
+                                   OBS_COMBO_FORMAT_STRING);
+    AddStrings(Prop, qsv_params_condition_ctu_size);
+    obs_property_set_long_description(Prop, TEXT_CTU_DESC);
+
     Prop =
         obs_properties_add_list(Props, "hevc_gpb", TEXT_HEVC_GPB,
                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -1632,11 +1633,7 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
 
   ParseOptionalBool(UseRawRefData, Context->EncoderParams.RawRef);
 
-  if (std::strcmp(PPyramidData, "PYRAMID") == 0) {
-    Context->EncoderParams.PPyramid = 1;
-  } else if (std::strcmp(PPyramidData, "SIMPLE") == 0) {
-    Context->EncoderParams.PPyramid = 0;
-  }
+  ParseOptionalBool(PPyramidData, Context->EncoderParams.PPyramid);
 
   ParseOptionalBool(GlobalMotionBiasAdjustmentData,
                     Context->EncoderParams.GlobalMotionBiasAdjustment);
