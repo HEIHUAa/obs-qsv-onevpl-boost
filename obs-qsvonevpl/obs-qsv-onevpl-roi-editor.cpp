@@ -6,7 +6,6 @@
 #include <sstream>
 #include <cstdio>
 
-// Format a double with minimal precision (avoid scientific notation)
 // Converts 0-1 normalized coordinates to pixel values per-encoder
 static void ApplyROIToAllActiveEncoders(
     const std::vector<encoder_params::normalized_roi_region> &NormRegions,
@@ -107,9 +106,7 @@ ROIDialog::ROIDialog(QWidget *Parent)
   });
 
   // Load saved ROI data (if any)
-  blog(LOG_INFO, "[ROI Editor] constructor: calling LoadROIData");
   LoadROIData();
-  blog(LOG_INFO, "[ROI Editor] constructor: LoadROIData done");
 }
 
 ROIDialog::~ROIDialog() {
@@ -117,18 +114,15 @@ ROIDialog::~ROIDialog() {
 }
 
 void ROIDialog::showEvent(QShowEvent *Event) {
-  blog(LOG_INFO, "[ROI Editor] showEvent: entering");
   QDialog::showEvent(Event);
   // Delay preview creation to next event loop iteration so the widget
   // has a valid native window handle
   QTimer::singleShot(0, this, [this]() {
-    blog(LOG_INFO, "[ROI Editor] showEvent: singleShot firing, PreviewDisplay=%p", (void*)PreviewDisplay);
     if (!PreviewDisplay)
       CreatePreview();
   });
   // Start periodic refresh timer
   RefreshTimer->start();
-  blog(LOG_INFO, "[ROI Editor] showEvent: done");
 }
 
 void ROIDialog::closeEvent(QCloseEvent *Event) {
@@ -337,36 +331,18 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy) {
         regions = NormalizeROIToPixel(GlobalROIConfig.NormalizedRegions,
                                        outW, outH);
       }
-      blog(LOG_DEBUG,
-           "[ROI Editor] DrawROIOverlay: reading normalized config, enabled=%d, regions=%zu",
-           (int)enabled, regions.size());
-    } else {
-      blog(LOG_DEBUG,
-           "[ROI Editor] DrawROIOverlay: no normalized regions");
-      return;
     }
   }
 
-  if (!enabled) {
-    blog(LOG_DEBUG, "[ROI Editor] DrawROIOverlay: ROI not enabled");
+  if (!enabled || regions.empty())
     return;
-  }
-  if (regions.empty()) {
-    blog(LOG_DEBUG, "[ROI Editor] DrawROIOverlay: no regions");
-    return;
-  }
 
   // --- 2. Get output/base dimensions ---
   struct obs_video_info ovi;
   obs_get_video_info(&ovi);
-  if (ovi.output_width < 1 || ovi.output_height < 1) {
-    blog(LOG_DEBUG, "[ROI Editor] DrawROIOverlay: invalid output dimensions");
+  if (ovi.output_width < 1 || ovi.output_height < 1 ||
+      ovi.base_width < 1 || ovi.base_height < 1)
     return;
-  }
-  if (ovi.base_width < 1 || ovi.base_height < 1) {
-    blog(LOG_DEBUG, "[ROI Editor] DrawROIOverlay: invalid base dimensions");
-    return;
-  }
 
   float out_w = (float)ovi.output_width;
   float out_h = (float)ovi.output_height;
@@ -416,15 +392,8 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy) {
     }
   }
 
-  if (!useSegmented) {
-    blog(LOG_DEBUG,
-         "[ROI Editor] DrawROIOverlay: no overlap, drawing raw regions");
+  if (!useSegmented)
     drawRects = regions;
-  } else {
-    blog(LOG_DEBUG,
-         "[ROI Editor] DrawROIOverlay: drawing %zu segmented cells",
-         drawRects.size());
-  }
 
   // --- 4. Draw all rects through the shared helper ---
   DrawROIRects(drawRects, vp_x, vp_y, vp_w, vp_h, out_w, out_h, cx, cy);
@@ -448,53 +417,30 @@ static std::string RegionsToUIFormat(
 
 // ── Helper: populate UI controls from GlobalROIConfig ────────────────
 void ROIDialog::SetUIFromGlobalConfig() {
-  blog(LOG_INFO, "[ROI Editor] SetUIFromGlobalConfig: entering");
   std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
-  blog(LOG_INFO, "[ROI Editor] SetUIFromGlobalConfig: setting checkboxes");
   ROIEnableCheck->setChecked(GlobalROIConfig.Enabled);
   if (GlobalROIConfig.Mode == 1)
     PriorityRadio->setChecked(true);
   else
     QPDeltaRadio->setChecked(true);
 
-  blog(LOG_INFO, "[ROI Editor] SetUIFromGlobalConfig: setting text");
   ROITextEdit->setPlainText(
       QString::fromStdString(RegionsToUIFormat(GlobalROIConfig.NormalizedRegions)));
-  blog(LOG_INFO, "[ROI Editor] SetUIFromGlobalConfig: done");
 }
 
 // ── ROI data load / save
 // ----------------------------------------------------------------------
 void ROIDialog::LoadROIData() {
-  blog(LOG_INFO, "[ROI Editor] LoadROIData: entering");
-  // Load from global ROI config (resolution-independent normalized values)
-  {
-    std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
-    blog(LOG_INFO, "[ROI Editor] LoadROIData: checking GlobalROIConfig (enabled=%d, regions=%zu)",
-         (int)GlobalROIConfig.Enabled, GlobalROIConfig.NormalizedRegions.size());
-    if (GlobalROIConfig.Enabled || !GlobalROIConfig.NormalizedRegions.empty()) {
-      blog(LOG_INFO, "[ROI Editor] LoadROIData: using GlobalROIConfig");
-      SetUIFromGlobalConfig();
-      blog(LOG_INFO, "[ROI Editor] LoadROIData: GlobalROIConfig path done");
-      return;
-    }
-  }
-
-  // Fallback: try loading from file if no global config
-  blog(LOG_INFO, "[ROI Editor] LoadROIData: trying file fallback");
+  // Always load from file to avoid stale GlobalROIConfig cache issues
   if (LoadROIConfigFromFile()) {
-    blog(LOG_INFO, "[ROI Editor] LoadROIData: file loaded, calling SetUIFromGlobalConfig");
     SetUIFromGlobalConfig();
-    blog(LOG_INFO, "[ROI Editor] LoadROIData: file path done");
     return;
   }
 
   // No saved config - use defaults
-  blog(LOG_INFO, "[ROI Editor] LoadROIData: no config found, using defaults");
   ROIEnableCheck->setChecked(false);
   QPDeltaRadio->setChecked(true);
   ROITextEdit->clear();
-  blog(LOG_INFO, "[ROI Editor] LoadROIData: defaults set, returning");
 }
 
 void ROIDialog::SaveROIData() {
@@ -625,21 +571,16 @@ static void OnFrontendEvent(obs_frontend_event Event, void *) {
 }
 
 static void OpenROIEditor(void * /*data*/) {
-  blog(LOG_INFO, "[ROI Editor] OpenROIEditor: creating new dialog");
   auto *dialog = new ROIDialog();
-  blog(LOG_INFO, "[ROI Editor] OpenROIEditor: dialog constructed, setting attributes");
   dialog->setAttribute(Qt::WA_DeleteOnClose);
 
   // Track active dialog for profile-change refresh
   ActiveDialog = dialog;
   QObject::connect(dialog, &QObject::destroyed, []() {
-    blog(LOG_INFO, "[ROI Editor] ActiveDialog destroyed, clearing pointer");
     ActiveDialog = nullptr;
   });
 
-  blog(LOG_INFO, "[ROI Editor] OpenROIEditor: calling show()");
   dialog->show();
-  blog(LOG_INFO, "[ROI Editor] OpenROIEditor: show() returned");
 }
 
 void RegisterROIEditor() {
