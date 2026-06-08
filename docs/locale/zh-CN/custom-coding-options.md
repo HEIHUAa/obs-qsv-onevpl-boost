@@ -22,7 +22,6 @@
 
 ```
 # CodingOption
-CO.RateDistortionOpt=ON
 CO.CAVLC=OFF
 
 # CodingOption2
@@ -30,7 +29,7 @@ CO2.FixedFrameRate=ON
 CO2.RepeatPPS=OFF
 
 # CodingOption3
-CO3.FadeDetection=ON
+CO3.LowDelayBRC=ON
 
 # CodingOptionDDI
 CODDI.Hme=ON
@@ -49,7 +48,6 @@ CODDI.DDI.InterPredBlockSize=64
 
 | 字段 | 类型 | 默认值 | 描述 |
 |------|------|--------|------|
-| `RateDistortionOpt` | 三态 | （用户设置） | 启用码率-失真优化。通过评估多种编码模式来提升编码质量。 |
 | `MECostType` | — | — | **保留字段，必须为 0。** 如需 DDI 级别控制请用 `CODDI.IntraPredCostType`。 |
 | `MESearchType` | — | — | **保留字段，必须为 0。** 如需 DDI 级别控制请用 `CODDI` 相关字段。 |
 | `MVSearchWindow.x` | — | — | **保留字段，必须为 (0, 0)。** |
@@ -73,31 +71,17 @@ CODDI.DDI.InterPredBlockSize=64
 | `AUDelimiter` | 三态 | （默认不设置） | 插入访问单元分隔符 NAL 单元。 |
 | `EndOfStream` | 三态 | — | 已废弃。插入流结束 NAL 单元。 |
 | `PicTimingSEI` | 三态 | ON | 插入带有 pic_struct 语法元素的图像时序 SEI。默认值为 ON。 |
-| `VuiNalHrdParameters` | 三态 | （用户设置） | 在 VUI 头中插入 NAL HRD 参数。 |
 
 ---
 
 ### 2. `CO2` — mfxExtCodingOption2（第二代编码选项）
 
-增强编码选项，涵盖码率控制、前瞻、自适应特性和质量控制。
+增强编码选项，涵盖码率控制和质量控制。
 
 | 字段 | 类型 | 默认值 | 描述 |
 |------|------|--------|------|
-| `IntRefType` | 数值 | 2（IntraRef 开启时） | 帧内刷新类型。0=MFX_REFRESH_NO, 1=MFX_REFRESH_VERTICAL, 2=MFX_REFRESH_HORIZONTAL, 3=MFX_REFRESH_SLICE。 |
-| `IntRefCycleSize` | 数值 | （根据 GOP 计算） | 刷新周期内的图像数量（2 或以上）。0 和 1 为无效值。 |
-| `IntRefQPDelta` | mfxI16 | （用户设置，IntraRef 开启时） | 插入帧内 MB 的 QP 差值。范围：-51 到 51。仅在 IntraRefEncoding 启用时生效。 |
-| `MaxFrameSize` | 数值 | （来自自适应最大帧大小） | 最大编码帧大小，单位**字节**。仅 VBR 系列码控模式生效。I 帧建议 5-10 倍目标帧大小。 |
-| `MaxSliceSize` | 数值 | — | 最大 slice 大小（字节）。指定后覆盖其他 slice 数量设置。使用 Query 检查支持。 |
-| `BitrateLimit` | 三态 | ON（API 2.9 已弃用） | 将码率限制在编码器范围内。非 CQP 模式下若 TargetKbps 超出范围则自动调整。仅 AVC 有效。**API 2.9 已弃用。** |
-| `MBBRC` | 三态 | （用户/目标用途） | 宏块级码率控制。提升主观画质，但有一定性能开销。默认值取决于目标用途。 |
-| `ExtBRC` | 三态 | （用户设置） | 启用外部码率控制。使用 Query API 检查支持。 |
-| `LookAheadDepth` | 数值 | （启用前瞻时） | 前瞻深度。范围：10 到 100 帧。0 = 编码器默认值。值越大画质越好但延迟越高。 |
-| `Trellis` | 数值（掩码） | （用户设置） | AVC Trellis 量化。位掩码：MFX_TRELLIS_OFF=1, MFX_TRELLIS_I=2, MFX_TRELLIS_P=4, MFX_TRELLIS_B=8。通过位或组合。 |
 | `RepeatPPS` | 三态 | ON | 每帧重复 PPS NAL 单元。默认值为 ON。 |
 | `BRefType` | 数值 | PYRAMID | B 帧参考类型。0=MFX_B_REF_UNKNOWN, 1=MFX_B_REF_OFF, 2=MFX_B_REF_PYRAMID。 |
-| `AdaptiveI` | 三态 | （用户设置） | 允许将 P/B 帧类型改为 I 帧。GopOptFlag=MFX_GOP_STRICT 时忽略。 |
-| `AdaptiveB` | 三态 | （用户设置） | 允许将 B 帧类型改为 P 帧。GopOptFlag=MFX_GOP_STRICT 时忽略。 |
-| `LookAheadDS` | 数值 | OFF | 前瞻下采样。0=MFX_LOOKAHEAD_DS_UNKNOWN, 1=MFX_LOOKAHEAD_DS_OFF, 2=MFX_LOOKAHEAD_DS_2x, 3=MFX_LOOKAHEAD_DS_4x。 |
 | `NumMbPerSlice` | 数值 | 0（使用 NumSlice） | 建议的 slice 大小（宏块数）。非零时覆盖 mfxInfoMFX::NumSlice。 |
 | `SkipFrame` | 三态 | — | 启用 mfxEncodeCtrl::SkipFrame 参数。使用 Query 检查支持。 |
 | `MinQPI` | 数值 (U8) | （未设置） | I 帧最小 QP。0 = 无限制（由驱动决定）。 |
@@ -106,54 +90,35 @@ CODDI.DDI.InterPredBlockSize=64
 | `MaxQPP` | 数值 (U8) | （未设置） | P 帧最大 QP。0 = 无限制。HEVC 下调整为 51+6*(BitDepth-8)。 |
 | `MinQPB` | 数值 (U8) | （未设置） | B 帧最小 QP。0 = 无限制（由驱动决定）。 |
 | `MaxQPB` | 数值 (U8) | （未设置） | B 帧最大 QP。0 = 无限制。HEVC 下调整为 51+6*(BitDepth-8)。 |
-| `FixedFrameRate` | 三态 | ON | 设置 VUI 中的 fixed_frame_rate_flag。 |
 | `DisableDeblockingIdc` | 数值 | 0 | 禁用去块滤波器。0=完全启用。使用 Query 检查支持。 |
 | `DisableVUI` | 三态 | — | 完全禁用输出码流中的 VUI。使用 Query 检查支持。 |
-| `BufferingPeriodSEI` | 数值 | IFRAME | 何时插入缓冲周期 SEI。0=MFX_BPSEI_DEFAULT（编码器决定）, 1=MFX_BPSEI_IFRAME（每个 I 帧）。 |
 | `EnableMAD` | 三态 | ON | 启用每帧 MAD（平均绝对差）上报（亮度分量），**非**死区量化。 |
-| `UseRawRef` | 三态 | （用户设置） | 使用原始（输入）帧作为参考帧，而非重建帧。初始化时设为 ON 才能在运行时更改。 |
+| `BufferingPeriodSEI` | 数值 | IFRAME | 何时插入缓冲周期 SEI。0=MFX_BPSEI_DEFAULT（编码器决定）, 1=MFX_BPSEI_IFRAME（每个 I 帧）。 |
+| `FixedFrameRate` | 三态 | ON | 设置 VUI 中的 fixed_frame_rate_flag。 |
 
 ---
 
 ### 3. `CO3` — mfxExtCodingOption3（第三代编码选项）
 
-高级编码选项：slice 控制、BRC 滑动窗口、加权预测、帧大小限制、编解码器特定功能。
+高级编码选项：slice 控制、帧大小限制、编解码器特定功能。
 
 | 字段 | 类型 | 默认值 | 描述 |
 |------|------|--------|------|
 | `NumSliceI` | 数值 | — | I 帧的 slice 数量。使用 Query 检查支持。 |
 | `NumSliceP` | 数值 | — | P 帧的 slice 数量。使用 Query 检查支持。 |
 | `NumSliceB` | 数值 | — | B 帧的 slice 数量。使用 Query 检查支持。 |
-| `WinBRCMaxAvgKbps` | 数值 | — | 在 WinBRCSize 滑动窗口内的最大平均码率。两者均设为 0 可禁用。 |
-| `WinBRCSize` | 数值 | — | WinBRCMaxAvgKbps 的滑动窗口大小（帧数）。 |
-| `QVBRQuality` | 数值 | （用户设置，仅 QVBR） | QVBR 码控模式的质量因子。范围：1-51，其中 1 = 最高质量。仅在 QVBR 码控激活时生效。 |
 | `EnableMBQP` | 三态 | ON（CQP 模式） | 启用逐宏块 QP 控制。码控方法必须为 CQP。 |
 | `IntRefCycleDist` | 数值 | 0（IntraRef 开启时） | 帧内刷新周期间距（帧数）。0 = 无间隔。 |
-| `DirectBiasAdjustment` | 三态 | — | 降低 B Direct/Skip 模式的选择偏向。仅对 B 帧生效。 |
-| `GlobalMotionBiasAdjustment` | 三态 | — | 启用全局运动偏向。 |
-| `MVCostScalingFactor` | 数值 | — | 缩放 MV 代价。0=MV代价=0, 1=默认的1/2, 2=默认的1/4, 3=默认的1/8。 |
 | `MBDisableSkipMap` | 三态 | — | 启用 mfxExtMBDisableSkipMap 的使用。 |
-| `WeightedPred` | 三态 | DEFAULT / （用户） | 加权预测模式。见 WeightedPred 枚举：0=UNKNOWN, 1=DEFAULT, 2=EXPLICIT, 3=IMPLICIT。 |
-| `WeightedBiPred` | 三态 | DEFAULT / （用户） | 加权双向预测模式。见 WeightedPred 枚举。 |
 | `AspectRatioInfoPresent` | 三态 | ON | 在 VUI 中写入宽高比信息。 |
 | `OverscanInfoPresent` | 三态 | ON | 在 VUI 中写入过扫描信息。 |
 | `OverscanAppropriate` | 三态 | — | ON = 裁剪后画面适合过扫描显示。OFF = 整个区域包含重要视觉信息。 |
 | `TimingInfoPresent` | 三态 | ON | 在 VUI 中写入帧率信息。 |
 | `BitstreamRestriction` | 三态 | ON | 在 VUI 中写入码流限制信息。 |
 | `LowDelayHrd` | 三态 | （用户设置） | AVC 语法元素 low_delay_hrd_flag（VUI）。低延迟直播场景必需。 |
-| `MotionVectorsOverPicBoundaries` | 三态 | — | OFF = 帧间预测不使用图像边界外的采样点。 |
-| `ScenarioInfo` | 数值 | （用户设置） | 使用场景提示。0=UNKNOWN, 1=DISPLAY_REMOTING, 2=VIDEO_CONFERENCE, 3=ARCHIVE, 4=LIVE_STREAMING, 5=CAMERA_CAPTURE, 6=VIDEO_SURVEILLANCE, 7=GAME_STREAMING, 8=REMOTE_GAMING。 |
-| `ContentInfo` | 数值 | （用户设置） | 内容类型提示。0=UNKNOWN, 1=FULL_SCREEN_VIDEO, 2=NON_VIDEO_SCREEN。 |
-| `PRefType` | 数值 | SIMPLE / PYRAMID | P 帧参考类型。0=MFX_P_REF_DEFAULT, 1=MFX_P_REF_SIMPLE, 2=MFX_P_REF_PYRAMID。 |
-| `FadeDetection` | 三态 | （用户设置） | 启用内部渐变检测算法来计算 pred_weight_table 的值。 |
-| `GPB` | 三态 | （用户设置，仅 HEVC） | OFF 使 HEVC 编码器使用常规 P 帧而非广义 P/B 帧。 |
 | `MaxFrameSizeI` | 数值 | — | 与 CO2.MaxFrameSize 相同，但仅对 I 帧生效。MaxFrameSizeP 设置时必须同时设置此项。 |
 | `MaxFrameSizeP` | 数值 | — | 与 CO2.MaxFrameSize 相同，但仅对 P/B 帧生效。0 = 与 MaxFrameSizeI 相同。 |
 | `EnableQPOffset` | 三态 | ON | 启用基于金字塔层的 QPOffset QP 控制（CQP 模式下）。 |
-| `QPOffset[8]` | — | — | **不支持通过文本解析器设置。** 每金字塔层的 QP 偏移数组。需在 C++ 代码中配置。 |
-| `NumRefActiveP[8]` | — | — | **不支持通过文本解析器设置。** P 帧每层的活动参考帧数。需在 C++ 代码中配置。 |
-| `NumRefActiveBL0[8]` | — | — | **不支持通过文本解析器设置。** B 帧（L0）每层的活动参考帧数。需在 C++ 代码中配置。 |
-| `NumRefActiveBL1[8]` | — | — | **不支持通过文本解析器设置。** B 帧（L1）每层的活动参考帧数。需在 C++ 代码中配置。 |
 | `TransformSkip` | 三态 | （用户设置） | HEVC: ON 在 PPS 中设置 transform_skip_enabled_flag=1。对屏幕内容编码有用。 |
 | `TargetChromaFormatPlus1` | 数值 | （色度+1） | 目标色度格式减 1。0=自动（与源相同）, 1=单色, 2=YUV420, 3=YUV422, 4=YUV444。 |
 | `TargetBitDepthLuma` | 数值 | 0（自动）/ 10 | 目标亮度位深。0 = 与源相同。可与源不同。 |
@@ -241,5 +206,4 @@ CODDI.DDI.InterPredBlockSize=64
 - 对于当前未启用的缓冲区（例如 AV1 编码时的 CODDI），其字段将被静默忽略并记录警告日志。
 - 设置不正确可能导致编码器失败或画质下降，请谨慎使用。
 - 插件会在 `info` 级别日志中记录所有已应用的自定义选项。请在 OBS 日志中查看以验证你的设置。
-- CO3 中的数组字段（`QPOffset[8]`、`NumRefActiveP[8]`、`NumRefActiveBL0[8]`、`NumRefActiveBL1[8]`）仅作为参考列出，**无法**通过此文本解析器设置。如需使用请在 C++ 代码中配置。
 - CO 中标有 **"保留字段，必须为 0"** 的字段仅为向后兼容而存在，不应设置。请改用对应的 CODDI 版本。
