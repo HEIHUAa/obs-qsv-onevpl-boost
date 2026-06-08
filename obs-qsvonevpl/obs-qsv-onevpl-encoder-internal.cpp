@@ -206,7 +206,6 @@ mfxStatus QSVEncoder::CreateSession([[maybe_unused]] enum codec_enum Codec,
                                                           : "Integrate");
 
   MFXQueryVersion(QSVSession, &QSVVersion);
-  info("\toneVPL version: %d.%d", QSVVersion.Major, QSVVersion.Minor);
 
   return Status;
 }
