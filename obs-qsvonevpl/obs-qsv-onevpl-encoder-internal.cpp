@@ -1497,6 +1497,19 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     auto EncToolsParams = QSVEncodeParams.AddExtBuffer<mfxExtEncToolsConfig>();
     EncToolsParams->Header.BufferId = MFX_EXTBUFF_ENCTOOLS_CONFIG;
     EncToolsParams->Header.BufferSz = sizeof(mfxExtEncToolsConfig);
+    EncToolsParams->AdaptiveI = GetCodingOpt(InputParams->AdaptiveI);
+    EncToolsParams->AdaptiveB = GetCodingOpt(InputParams->AdaptiveB);
+    EncToolsParams->SceneChange = GetCodingOpt(InputParams->EncToolsSceneChange);
+    EncToolsParams->AdaptiveRefP = GetCodingOpt(InputParams->EncToolsAdaptiveRefP);
+    EncToolsParams->AdaptiveRefB = GetCodingOpt(InputParams->EncToolsAdaptiveRefB);
+    EncToolsParams->AdaptiveLTR = GetCodingOpt(InputParams->AdaptiveLTR);
+    EncToolsParams->AdaptivePyramidQuantP = GetCodingOpt(InputParams->EncToolsAdaptivePyramidQuantP);
+    EncToolsParams->AdaptivePyramidQuantB = GetCodingOpt(InputParams->EncToolsAdaptivePyramidQuantB);
+    EncToolsParams->AdaptiveQuantMatrices = GetCodingOpt(InputParams->AdaptiveCQM);
+    EncToolsParams->AdaptiveMBQP = GetCodingOpt(InputParams->EncToolsAdaptiveMBQP);
+    EncToolsParams->BRCBufferHints = GetCodingOpt(InputParams->EncToolsBRCBufferHints);
+    EncToolsParams->BRC = GetCodingOpt(InputParams->EncToolsBRC);
+    EncToolsParams->SaliencyMapHint = GetCodingOpt(InputParams->EncToolsSaliencyMapHint);
   }
 
   /*Don't touch it! Magic beyond the control of mere mortals takes place
@@ -2515,6 +2528,29 @@ void QSVEncoder::LogActualParams() {
          GetWeightedPredStatus(CO3->WeightedPred).c_str());
     info("\tWeightedBiPred set: %s",
          GetWeightedPredStatus(CO3->WeightedBiPred).c_str());
+  }
+
+  auto *EncTools = QSVEncodeParams.GetExtBuffer<mfxExtEncToolsConfig>();
+  if (EncTools) {
+    info("\tEncTools sub-options:");
+    info("\t  SceneChange: %s",
+         GetCodingOptStatus(EncTools->SceneChange).c_str());
+    info("\t  AdaptiveRefP: %s",
+         GetCodingOptStatus(EncTools->AdaptiveRefP).c_str());
+    info("\t  AdaptiveRefB: %s",
+         GetCodingOptStatus(EncTools->AdaptiveRefB).c_str());
+    info("\t  AdaptivePyramidQuantP: %s",
+         GetCodingOptStatus(EncTools->AdaptivePyramidQuantP).c_str());
+    info("\t  AdaptivePyramidQuantB: %s",
+         GetCodingOptStatus(EncTools->AdaptivePyramidQuantB).c_str());
+    info("\t  AdaptiveMBQP: %s",
+         GetCodingOptStatus(EncTools->AdaptiveMBQP).c_str());
+    info("\t  BRCBufferHints: %s",
+         GetCodingOptStatus(EncTools->BRCBufferHints).c_str());
+    info("\t  BRC: %s",
+         GetCodingOptStatus(EncTools->BRC).c_str());
+    info("\t  SaliencyMapHint: %s",
+         GetCodingOptStatus(EncTools->SaliencyMapHint).c_str());
   }
 
   if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1) {

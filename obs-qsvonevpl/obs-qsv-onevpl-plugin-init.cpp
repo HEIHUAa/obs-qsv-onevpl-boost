@@ -171,6 +171,15 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(Settings, "lookahead_ds", "MEDIUM");
   obs_data_set_default_string(Settings, "extbrc", "OFF");
   obs_data_set_default_string(Settings, "enctools", "OFF");
+  obs_data_set_default_string(Settings, "enc_tools_scene_change", "ON");
+  obs_data_set_default_string(Settings, "enc_tools_adaptive_ref_p", "ON");
+  obs_data_set_default_string(Settings, "enc_tools_adaptive_ref_b", "ON");
+  obs_data_set_default_string(Settings, "enc_tools_adaptive_pyramid_quant_p", "ON");
+  obs_data_set_default_string(Settings, "enc_tools_adaptive_pyramid_quant_b", "ON");
+  obs_data_set_default_string(Settings, "enc_tools_adaptive_mbqp", "ON");
+  obs_data_set_default_string(Settings, "enc_tools_brc_buffer_hints", "ON");
+  obs_data_set_default_string(Settings, "enc_tools_brc", "ON");
+  obs_data_set_default_string(Settings, "enc_tools_saliency_map_hint", "ON");
   obs_data_set_default_string(Settings, "hevc_sao", "AUTO");
   obs_data_set_default_string(Settings, "hevc_gpb", "AUTO");
 
@@ -277,6 +286,22 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   bVisible = bExtBRCVisible;
   if (bVisible) bVisible = IsFeatureSupported("enc_tools");
   obs_property_set_visible(Prop, bVisible);
+
+  const char *enctools = obs_data_get_string(Settings, "enctools");
+  bool bVisibleEnctools = (std::strcmp(enctools, "ON") == 0) && bVisible;
+
+  // EncTools sub-options visibility (only when enc_tools is ON)
+  const char *enc_tools_sub_opts[] = {
+    "enc_tools_scene_change", "enc_tools_adaptive_ref_p", "enc_tools_adaptive_ref_b",
+    "enc_tools_adaptive_pyramid_quant_p", "enc_tools_adaptive_pyramid_quant_b",
+    "enc_tools_adaptive_mbqp", "enc_tools_brc_buffer_hints", "enc_tools_brc",
+    "enc_tools_saliency_map_hint", nullptr
+  };
+  for (const char **opt = enc_tools_sub_opts; *opt; opt++) {
+    Prop = obs_properties_get(Properties, *opt);
+    if (Prop) obs_property_set_visible(Prop, bVisibleEnctools);
+  }
+
   Prop = obs_properties_get(Properties, "extbrc");
   obs_property_set_visible(Prop, bExtBRCVisible);
   if (!bExtBRCVisible) {
@@ -689,6 +714,61 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_visible(Prop, IsFeatureSupported("enc_tools"));
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
+
+  // ── EncTools sub-options ────────────────────────────────────
+  Prop =
+      obs_properties_add_list(Props, "enc_tools_scene_change",
+                              TEXT_ENC_TOOLS_SCENE_CHANGE,
+                              OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition);
+
+  Prop =
+      obs_properties_add_list(Props, "enc_tools_adaptive_ref_p",
+                              TEXT_ENC_TOOLS_ADAPTIVE_REF_P,
+                              OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition);
+
+  Prop =
+      obs_properties_add_list(Props, "enc_tools_adaptive_ref_b",
+                              TEXT_ENC_TOOLS_ADAPTIVE_REF_B,
+                              OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition);
+
+  Prop =
+      obs_properties_add_list(Props, "enc_tools_adaptive_pyramid_quant_p",
+                              TEXT_ENC_TOOLS_ADAPTIVE_PYRAMID_QUANT_P,
+                              OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition);
+
+  Prop =
+      obs_properties_add_list(Props, "enc_tools_adaptive_pyramid_quant_b",
+                              TEXT_ENC_TOOLS_ADAPTIVE_PYRAMID_QUANT_B,
+                              OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition);
+
+  Prop =
+      obs_properties_add_list(Props, "enc_tools_adaptive_mbqp",
+                              TEXT_ENC_TOOLS_ADAPTIVE_MBQP,
+                              OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition);
+
+  Prop =
+      obs_properties_add_list(Props, "enc_tools_brc_buffer_hints",
+                              TEXT_ENC_TOOLS_BRC_BUFFER_HINTS,
+                              OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition);
+
+  Prop =
+      obs_properties_add_list(Props, "enc_tools_brc",
+                              TEXT_ENC_TOOLS_BRC,
+                              OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition);
+
+  Prop =
+      obs_properties_add_list(Props, "enc_tools_saliency_map_hint",
+                              TEXT_ENC_TOOLS_SALIENCY_MAP_HINT,
+                              OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition);
 
   Prop =
       obs_properties_add_list(Props, "tune_quality", TEXT_TUNE_QUALITY_MODE,
@@ -1517,6 +1597,25 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   } else {
     Context->EncoderParams.EncTools = false;
   }
+
+  ParseOptionalBool(obs_data_get_string(Settings, "enc_tools_scene_change"),
+                    Context->EncoderParams.EncToolsSceneChange);
+  ParseOptionalBool(obs_data_get_string(Settings, "enc_tools_adaptive_ref_p"),
+                    Context->EncoderParams.EncToolsAdaptiveRefP);
+  ParseOptionalBool(obs_data_get_string(Settings, "enc_tools_adaptive_ref_b"),
+                    Context->EncoderParams.EncToolsAdaptiveRefB);
+  ParseOptionalBool(obs_data_get_string(Settings, "enc_tools_adaptive_pyramid_quant_p"),
+                    Context->EncoderParams.EncToolsAdaptivePyramidQuantP);
+  ParseOptionalBool(obs_data_get_string(Settings, "enc_tools_adaptive_pyramid_quant_b"),
+                    Context->EncoderParams.EncToolsAdaptivePyramidQuantB);
+  ParseOptionalBool(obs_data_get_string(Settings, "enc_tools_adaptive_mbqp"),
+                    Context->EncoderParams.EncToolsAdaptiveMBQP);
+  ParseOptionalBool(obs_data_get_string(Settings, "enc_tools_brc_buffer_hints"),
+                    Context->EncoderParams.EncToolsBRCBufferHints);
+  ParseOptionalBool(obs_data_get_string(Settings, "enc_tools_brc"),
+                    Context->EncoderParams.EncToolsBRC);
+  ParseOptionalBool(obs_data_get_string(Settings, "enc_tools_saliency_map_hint"),
+                    Context->EncoderParams.EncToolsSaliencyMapHint);
 
   ParseOptionalBool(DirectBiasAdjustmentData,
                     Context->EncoderParams.DirectBiasAdjustment);

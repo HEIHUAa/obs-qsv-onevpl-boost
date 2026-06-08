@@ -83,6 +83,15 @@ struct encoder_params {
   bool IntraRefEncoding;
   bool CustomBufferSize;
   bool EncTools;
+  std::optional<bool> EncToolsSceneChange;
+  std::optional<bool> EncToolsAdaptiveRefP;
+  std::optional<bool> EncToolsAdaptiveRefB;
+  std::optional<bool> EncToolsAdaptivePyramidQuantP;
+  std::optional<bool> EncToolsAdaptivePyramidQuantB;
+  std::optional<bool> EncToolsAdaptiveMBQP;
+  std::optional<bool> EncToolsBRCBufferHints;
+  std::optional<bool> EncToolsBRC;
+  std::optional<bool> EncToolsSaliencyMapHint;
   bool VideoFormat10bit = false;
   bool ResetAllowed;
   bool Lowpower;
