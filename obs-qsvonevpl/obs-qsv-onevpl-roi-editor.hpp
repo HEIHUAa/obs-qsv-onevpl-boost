@@ -44,6 +44,7 @@ public:
 private:
   void SaveROIData();
   void SetUIFromGlobalConfig();
+  void UpdatePreviewFromText();
 
   // Preview
   bool CreatePreview();

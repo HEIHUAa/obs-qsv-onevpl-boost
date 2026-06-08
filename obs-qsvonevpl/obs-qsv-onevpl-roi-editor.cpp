@@ -1,5 +1,4 @@
 #include "obs-qsv-onevpl-roi-editor.hpp"
-#include <QMessageBox>
 #include <QWindow>
 #include <QTimer>
 #include <mutex>
@@ -95,6 +94,9 @@ ROIDialog::ROIDialog(QWidget *Parent)
           &ROIDialog::OnCancelClicked);
   connect(AlwaysOnTopCheck, &QCheckBox::checkStateChanged, this,
           &ROIDialog::OnToggleAlwaysOnTop);
+  connect(ROITextEdit, &QTextEdit::textChanged, this, [this]() {
+    UpdatePreviewFromText();
+  });
 
   // Install event filter on preview widget for resize handling
   PreviewWidget->installEventFilter(this);
@@ -430,6 +432,47 @@ void ROIDialog::SetUIFromGlobalConfig() {
 
 // ── ROI data load / save
 // ----------------------------------------------------------------------
+void ROIDialog::UpdatePreviewFromText() {
+  // Parse text input into normalized ROI regions (0-1 floats)
+  std::vector<encoder_params::normalized_roi_region> normRegions;
+  std::string text = ROITextEdit->toPlainText().toStdString();
+  std::istringstream stream(text);
+  std::string line;
+
+  while (std::getline(stream, line)) {
+    line.erase(0, line.find_first_not_of(" \t\r\n"));
+    line.erase(line.find_last_not_of(" \t\r\n") + 1);
+    if (line.empty() || line[0] == '#' || line[0] == ';')
+      continue;
+
+    encoder_params::normalized_roi_region nr = {};
+    double l = 0, t = 0, r = 0, b = 0;
+    int dqp = 0;
+    if (std::sscanf(line.c_str(), "%lf %lf %lf %lf %d",
+                     &l, &t, &r, &b, &dqp) == 5) {
+      nr.Left = l;
+      nr.Top = t;
+      nr.Right = r;
+      nr.Bottom = b;
+      nr.DeltaQP = (mfxI16)dqp;
+      normRegions.push_back(nr);
+    }
+  }
+
+  mfxU16 mode = (ModeGroup->checkedId() == 1) ? 1 : 0;
+  bool enabled = ROIEnableCheck->isChecked();
+
+  // Update GlobalROIConfig for DrawROIOverlay to pick up
+  {
+    std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
+    GlobalROIConfig.NormalizedRegions = normRegions;
+    GlobalROIConfig.Mode = mode;
+    GlobalROIConfig.Enabled = enabled;
+  }
+
+  ForceRefreshPreview();
+}
+
 void ROIDialog::LoadROIData() {
   // Always load from file to avoid stale GlobalROIConfig cache issues
   if (LoadROIConfigFromFile()) {
@@ -509,13 +552,11 @@ void ROIDialog::SaveROIData() {
          normRegions[i].Right, normRegions[i].Bottom,
          (int)normRegions[i].DeltaQP);
   }
-
-  QMessageBox::information(this, obs_module_text("ROIEditor"),
-                           obs_module_text("ROIApplySuccess"));
 }
 
 void ROIDialog::OnApplyClicked() {
   SaveROIData();
+  accept();
 }
 
 void ROIDialog::OnCancelClicked() {
