@@ -1633,7 +1633,7 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
 
   ParseOptionalBool(UseRawRefData, Context->EncoderParams.RawRef);
 
-  ParseOptionalBool(PPyramidData, Context->EncoderParams.PPyramid);
+  Context->EncoderParams.PPyramid = (std::strcmp(PPyramidData, "ON") == 0);
 
   ParseOptionalBool(GlobalMotionBiasAdjustmentData,
                     Context->EncoderParams.GlobalMotionBiasAdjustment);

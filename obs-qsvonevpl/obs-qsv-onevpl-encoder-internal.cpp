@@ -1413,12 +1413,14 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       CO3Params->GPB = GetCodingOpt(InputParams->GPB);
     }
 
+    auto *CO2Pyramid =
+        QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
     if (InputParams->PPyramid == true) {
       CO3Params->PRefType = MFX_P_REF_PYRAMID;
-      CO2Params->BRefType = MFX_B_REF_PYRAMID;
+      if (CO2Pyramid) CO2Pyramid->BRefType = MFX_B_REF_PYRAMID;
     } else {
       CO3Params->PRefType = MFX_P_REF_SIMPLE;
-      CO2Params->BRefType = MFX_B_REF_UNKNOWN;
+      if (CO2Pyramid) CO2Pyramid->BRefType = MFX_B_REF_UNKNOWN;
     }
 
     CO3Params->AdaptiveCQM = GetCodingOpt(InputParams->AdaptiveCQM);
