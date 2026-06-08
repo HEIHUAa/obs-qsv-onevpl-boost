@@ -1076,7 +1076,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(
       Prop, TEXT_CUSTOM_CODING_OPTIONS_DESC);
 
-  return config;
+  return Props;
 }
 
 // Helper: parse AV1 ON/OFF/auto three-state string to 1/0/2
