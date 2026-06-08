@@ -430,15 +430,12 @@ void ROIDialog::SetUIFromGlobalConfig() {
       QString::fromStdString(RegionsToUIFormat(GlobalROIConfig.NormalizedRegions)));
 }
 
-// ── ROI data load / save
-// ----------------------------------------------------------------------
-void ROIDialog::UpdatePreviewFromText() {
-  // Parse text input into normalized ROI regions (0-1 floats)
-  std::vector<encoder_params::normalized_roi_region> normRegions;
-  std::string text = ROITextEdit->toPlainText().toStdString();
-  std::istringstream stream(text);
+// ── Parse text input into normalized ROI regions ────────────────────
+static std::vector<encoder_params::normalized_roi_region> ParseROIText(
+    const std::string &Text) {
+  std::vector<encoder_params::normalized_roi_region> result;
+  std::istringstream stream(Text);
   std::string line;
-
   while (std::getline(stream, line)) {
     line.erase(0, line.find_first_not_of(" \t\r\n"));
     line.erase(line.find_last_not_of(" \t\r\n") + 1);
@@ -455,10 +452,16 @@ void ROIDialog::UpdatePreviewFromText() {
       nr.Right = r;
       nr.Bottom = b;
       nr.DeltaQP = (mfxI16)dqp;
-      normRegions.push_back(nr);
+      result.push_back(nr);
     }
   }
+  return result;
+}
 
+// ── ROI data load / save
+// ----------------------------------------------------------------------
+void ROIDialog::UpdatePreviewFromText() {
+  auto normRegions = ParseROIText(ROITextEdit->toPlainText().toStdString());
   mfxU16 mode = (ModeGroup->checkedId() == 1) ? 1 : 0;
   bool enabled = ROIEnableCheck->isChecked();
 
@@ -487,34 +490,7 @@ void ROIDialog::LoadROIData() {
 }
 
 void ROIDialog::SaveROIData() {
-  // Parse text input into normalized ROI regions (0-1 floats)
-  std::vector<encoder_params::normalized_roi_region> normRegions;
-  std::string text = ROITextEdit->toPlainText().toStdString();
-  std::istringstream stream(text);
-  std::string line;
-
-  while (std::getline(stream, line)) {
-    line.erase(0, line.find_first_not_of(" \t\r\n"));
-    line.erase(line.find_last_not_of(" \t\r\n") + 1);
-    if (line.empty() || line[0] == '#' || line[0] == ';')
-      continue;
-
-    encoder_params::normalized_roi_region nr = {};
-    double l = 0, t = 0, r = 0, b = 0;
-    int dqp = 0;
-    // Left Top Right Bottom are 0-1 floats; DeltaQP stays as signed int
-    int parsed = std::sscanf(line.c_str(), "%lf %lf %lf %lf %d",
-                              &l, &t, &r, &b, &dqp);
-    if (parsed == 5) {
-      nr.Left = l;
-      nr.Top = t;
-      nr.Right = r;
-      nr.Bottom = b;
-      nr.DeltaQP = (mfxI16)dqp;
-      normRegions.push_back(nr);
-    }
-  }
-
+  auto normRegions = ParseROIText(ROITextEdit->toPlainText().toStdString());
   mfxU16 mode = (ModeGroup->checkedId() == 1) ? 1 : 0;
   bool enabled = ROIEnableCheck->isChecked();
 
