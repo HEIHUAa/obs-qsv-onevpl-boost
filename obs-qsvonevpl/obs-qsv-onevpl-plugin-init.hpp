@@ -219,6 +219,9 @@ static const char *const qsv_params_condition[] = {"ON", "OFF", 0};
 static const char *const qsv_params_condition_tristate[] = {"ON", "OFF", "AUTO",
                                                             0};
 
+static const char *const qsv_params_weighted_pred_options[] = {"AUTO", "OFF",
+    "DEFAULT", "EXPLICIT", "IMPLICIT", 0};
+
 static const char *const qsv_params_condition_p_pyramid[] = {"SIMPLE",
                                                              "PYRAMID", 0};
 

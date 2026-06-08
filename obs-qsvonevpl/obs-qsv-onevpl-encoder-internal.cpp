@@ -1374,17 +1374,13 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CO3Params->LowDelayHrd = GetCodingOpt(InputParams->LowDelayHRD);
 
     if (InputParams->WeightedPred.has_value()) {
-      CO3Params->WeightedPred = InputParams->WeightedPred.value()
-                                     ? MFX_CODINGOPTION_ON
-                                     : MFX_CODINGOPTION_OFF;
+      CO3Params->WeightedPred = InputParams->WeightedPred.value();
     } else {
       CO3Params->WeightedPred = MFX_WEIGHTED_PRED_DEFAULT;
     }
 
     if (InputParams->WeightedBiPred.has_value()) {
-      CO3Params->WeightedBiPred = InputParams->WeightedBiPred.value()
-                                       ? MFX_CODINGOPTION_ON
-                                       : MFX_CODINGOPTION_OFF;
+      CO3Params->WeightedBiPred = InputParams->WeightedBiPred.value();
     } else {
       CO3Params->WeightedBiPred = MFX_WEIGHTED_PRED_DEFAULT;
     }
@@ -2388,11 +2384,15 @@ void QSVEncoder::LogActualParams() {
   };
 
   auto GetWeightedPredStatus = [](const mfxU16 &Value) -> std::string {
-    if (Value == MFX_CODINGOPTION_ON || Value == 16)
-      return "ON";
-    if (Value == MFX_CODINGOPTION_OFF || Value == 32)
-      return "OFF";
-    return "DEFAULT";
+    switch (Value) {
+    case 0:  return "OFF";
+    case 1:  return "DEFAULT";
+    case 2:  return "EXPLICIT";
+    case 3:  return "IMPLICIT";
+    case 16: return "ON (ddi)";
+    case 32: return "OFF (ddi)";
+    default: return "UNKNOWN";
+    }
   };
 
   info("\tLowpower set: %s",

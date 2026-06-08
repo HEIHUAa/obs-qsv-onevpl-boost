@@ -781,12 +781,12 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 
   Prop = obs_properties_add_list(Props, "weighted_pred", TEXT_WEIGHTED_PRED,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition_tristate);
+  AddStrings(Prop, qsv_params_weighted_pred_options);
   obs_property_set_long_description(Prop, TEXT_WEIGHTED_PRED_DESC);
 
   Prop = obs_properties_add_list(Props, "weighted_bi_pred", TEXT_WEIGHTED_BI_PRED,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition_tristate);
+  AddStrings(Prop, qsv_params_weighted_pred_options);
   obs_property_set_long_description(Prop, TEXT_WEIGHTED_BI_PRED_DESC);
 
   Prop = obs_properties_add_list(Props, "trellis", TEXT_TRELLIS,
@@ -1226,15 +1226,23 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   else
     Context->EncoderParams.AV1ErrorResilient = 2;
 
-  if (strcmp(WeightedPredData, "ON") == 0)
-    Context->EncoderParams.WeightedPred = true;
-  else if (strcmp(WeightedPredData, "OFF") == 0)
-    Context->EncoderParams.WeightedPred = false;
+  if (strcmp(WeightedPredData, "OFF") == 0)
+    Context->EncoderParams.WeightedPred = 0;
+  else if (strcmp(WeightedPredData, "DEFAULT") == 0)
+    Context->EncoderParams.WeightedPred = 1;
+  else if (strcmp(WeightedPredData, "EXPLICIT") == 0)
+    Context->EncoderParams.WeightedPred = 2;
+  else if (strcmp(WeightedPredData, "IMPLICIT") == 0)
+    Context->EncoderParams.WeightedPred = 3;
 
-  if (strcmp(WeightedBiPredData, "ON") == 0)
-    Context->EncoderParams.WeightedBiPred = true;
-  else if (strcmp(WeightedBiPredData, "OFF") == 0)
-    Context->EncoderParams.WeightedBiPred = false;
+  if (strcmp(WeightedBiPredData, "OFF") == 0)
+    Context->EncoderParams.WeightedBiPred = 0;
+  else if (strcmp(WeightedBiPredData, "DEFAULT") == 0)
+    Context->EncoderParams.WeightedBiPred = 1;
+  else if (strcmp(WeightedBiPredData, "EXPLICIT") == 0)
+    Context->EncoderParams.WeightedBiPred = 2;
+  else if (strcmp(WeightedBiPredData, "IMPLICIT") == 0)
+    Context->EncoderParams.WeightedBiPred = 3;
 
   Context->EncoderParams.AdaptiveMaxFrameSize = AdaptiveMaxFrameSizeData;
 

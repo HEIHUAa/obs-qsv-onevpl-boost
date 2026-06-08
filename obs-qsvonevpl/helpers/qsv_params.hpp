@@ -64,8 +64,8 @@ struct encoder_params {
   std::optional<bool> GPB;
   std::optional<bool> DirectBiasAdjustment;
   std::optional<bool> GopOptFlag;
-  std::optional<bool> WeightedPred;
-  std::optional<bool> WeightedBiPred;
+  std::optional<mfxU16> WeightedPred;
+  std::optional<mfxU16> WeightedBiPred;
   std::optional<bool> GlobalMotionBiasAdjustment;
   std::optional<bool> HRDConformance;
   std::optional<bool> LowDelayHRD;
