@@ -3086,22 +3086,22 @@ mfxStatus QSVEncoder::Drain() {
   return Status;
 }
 
-// Submit a dummy encode frame during initialization so the GPU driver
+// Submit a dummy frame surface during initialization so the GPU driver
 // allocates internal resources (shaders, command buffers, HW state) now
 // rather than on the first real frame — eliminating the visible stutter.
+//
+// IMPORTANT: this must NOT call EncodeFrameAsync.  Doing so would consume
+// the first IDR slot (with SPS/PPS), causing the first real frame to be
+// a P/B-frame without headers — the decoder sees a green screen.
 void QSVEncoder::WarmUpEncoder() {
-  mfxFrameSurface1 *WarmSurface = nullptr;
-
   // ── Texture-encoder path ─────────────────────────────────────
   if (QSVIsTextureEncoder && HWManager) {
     const auto &Pool = HWManager->GetTexturePool();
     if (Pool.empty() || Pool[0] == nullptr)
       return;
 
-    // Build a minimal D3D11 surface descriptor from the pool texture so
-    // VPL can import it as a frame surface without going through the
-    // full CopyTexture / OpenSharedResource path (which needs an OBS
-    // texture handle we don't have yet).
+    // Import one pool texture into VPL's surface manager so it
+    // pre-allocates its internal tracking structures.
     mfxSurfaceD3D11Tex2D DummyTex = {};
     DummyTex.SurfaceInterface.Header.SurfaceType =
         MFX_SURFACE_TYPE_D3D11_TEX2D;
@@ -3111,100 +3111,47 @@ void QSVEncoder::WarmUpEncoder() {
         sizeof(mfxSurfaceD3D11Tex2D);
     DummyTex.texture2D = Pool[0];
 
+    mfxFrameSurface1 *Surf = nullptr;
     mfxStatus sts = QSVMemoryInterface->ImportFrameSurface(
         QSVMemoryInterface, MFX_SURFACE_COMPONENT_ENCODE,
-        reinterpret_cast<mfxSurfaceHeader *>(&DummyTex), &WarmSurface);
-    if (sts < MFX_ERR_NONE) {
-      warn("WarmUpEncoder: ImportFrameSurface failed (sts=%d)", sts);
-      return;
-    }
-  }
-  // ── Frame-encoder path (system / video memory) ────────────────
-  else {
-    mfxStatus sts = QSVEncode->GetSurface(&WarmSurface);
-    if (sts < MFX_ERR_NONE) {
-      warn("WarmUpEncoder: GetSurface failed (sts=%d)", sts);
-      return;
-    }
-    // Fill with black (Y=16, UV=128 for NV12 / Y=64, UV=512 for P010)
-    // so the dummy frame is visually clean. Mapping also forces the
-    // driver to set up internal page-table entries lazily.
-    const mfxFrameInfo &fi = WarmSurface->Info;
-    if (fi.FourCC == MFX_FOURCC_NV12 || fi.FourCC == MFX_FOURCC_P010) {
-      sts = WarmSurface->FrameInterface->Map(WarmSurface, MFX_MAP_WRITE);
-      if (sts >= MFX_ERR_NONE) {
-        mfxU16 h = fi.CropH > 0 ? fi.CropH : fi.Height;
-        mfxU32 pitch = WarmSurface->Data.Pitch;
-        bool is10bit = (fi.FourCC == MFX_FOURCC_P010);
-        memset(WarmSurface->Data.Y, is10bit ? 64 : 16,
-               static_cast<size_t>(h) * pitch);
-        memset(WarmSurface->Data.UV, is10bit ? 512 : 128,
-               static_cast<size_t>(h / 2) * pitch);
-        WarmSurface->FrameInterface->Unmap(WarmSurface);
-      }
-    }
-  }
-
-  // ── Optional VPP pass ─────────────────────────────────────────
-  mfxFrameSurface1 *EncodeSrc = WarmSurface;
-  mfxFrameSurface1 *VppOutSurface = nullptr;
-  mfxSyncPoint VppSyncPoint = nullptr;
-  if (QSVProcessingEnable && QSVProcessing) {
-    mfxStatus sts = QSVProcessing->GetSurfaceOut(&VppOutSurface);
+        reinterpret_cast<mfxSurfaceHeader *>(&DummyTex), &Surf);
     if (sts >= MFX_ERR_NONE) {
-      sts = QSVProcessing->RunFrameVPPAsync(
-          WarmSurface, VppOutSurface, QSVProcessingAuxData, &VppSyncPoint);
-      if (sts >= MFX_ERR_NONE) {
-        // Release VPP input immediately — RunFrameVPPAsync holds a ref.
-        WarmSurface->FrameInterface->Release(WarmSurface);
-        WarmSurface = nullptr;
-        EncodeSrc = VppOutSurface;
-      } else {
-        VppOutSurface->FrameInterface->Release(VppOutSurface);
-        VppOutSurface = nullptr;
-        warn("WarmUpEncoder: RunFrameVPPAsync failed (sts=%d)", sts);
-      }
+      Surf->FrameInterface->Release(Surf);
+      info("Encoder warm-up (texture) — ImportFrameSurface done");
     } else {
-      warn("WarmUpEncoder: GetSurfaceOut(VPP) failed (sts=%d)", sts);
+      warn("WarmUpEncoder: ImportFrameSurface failed (sts=%d)", sts);
+    }
+    return;
+  }
+
+  // ── Frame-encoder path (video / system memory) ───────────────
+  mfxFrameSurface1 *Surf = nullptr;
+  mfxStatus sts = QSVEncode->GetSurface(&Surf);
+  if (sts < MFX_ERR_NONE) {
+    warn("WarmUpEncoder: GetSurface failed (sts=%d)", sts);
+    return;
+  }
+
+  // Map + write + unmap forces the driver to set up internal
+  // page-table entries / DMA mappings that are otherwise lazily
+  // deferred until the very first Map call in the encode loop.
+  const mfxFrameInfo &fi = Surf->Info;
+  if (fi.FourCC == MFX_FOURCC_NV12 || fi.FourCC == MFX_FOURCC_P010) {
+    sts = Surf->FrameInterface->Map(Surf, MFX_MAP_WRITE);
+    if (sts >= MFX_ERR_NONE) {
+      mfxU16 h = fi.CropH > 0 ? fi.CropH : fi.Height;
+      mfxU32 pitch = Surf->Data.Pitch;
+      bool is10bit = (fi.FourCC == MFX_FOURCC_P010);
+      memset(Surf->Data.Y, is10bit ? 64 : 16,
+             static_cast<size_t>(h) * pitch);
+      memset(Surf->Data.UV, is10bit ? 512 : 128,
+             static_cast<size_t>(h / 2) * pitch);
+      Surf->FrameInterface->Unmap(Surf);
     }
   }
 
-  // ── Submit dummy encode & sync ────────────────────────────────
-  mfxSyncPoint EncSyncPoint = nullptr;
-  mfxBitstream DummyBS = {};
-  DummyBS.MaxLength = QSVBitstream.MaxLength;
-  DummyBS.Data = QSVBitstream.Data;
-  DummyBS.DataOffset = 0;
-  DummyBS.DataLength = 0;
-
-  mfxStatus sts = QSVEncode->EncodeFrameAsync(
-      nullptr, EncodeSrc, &DummyBS, &EncSyncPoint);
-  if (sts >= MFX_ERR_NONE && EncSyncPoint) {
-    MFXVideoCORE_SyncOperation(QSVSession, EncSyncPoint, 5000);
-  } else if (sts < MFX_ERR_NONE) {
-    warn("WarmUpEncoder: EncodeFrameAsync failed (sts=%d)", sts);
-  }
-
-  // ── Sync VPP output if it was used ────────────────────────────
-  if (VppSyncPoint) {
-    MFXVideoCORE_SyncOperation(QSVSession, VppSyncPoint, 5000);
-  }
-
-  // ── Clean-up ──────────────────────────────────────────────────
-  DummyBS.Data = nullptr; // avoid double-free (shared with QSVBitstream)
-  QSVBitstream.DataLength = 0;
-  QSVBitstream.DataOffset = 0;
-
-  if (VppOutSurface) {
-    VppOutSurface->FrameInterface->Release(VppOutSurface);
-    VppOutSurface = nullptr;
-  }
-  if (WarmSurface) {
-    WarmSurface->FrameInterface->Release(WarmSurface);
-    WarmSurface = nullptr;
-  }
-
-  info("Encoder warm-up completed");
+  Surf->FrameInterface->Release(Surf);
+  info("Encoder warm-up (frame) — GetSurface+Map done");
 }
 
 mfxStatus QSVEncoder::ClearData() {
