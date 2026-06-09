@@ -29,7 +29,7 @@ struct qsv_feature_info {
 static const struct qsv_feature_info qsv_feature_info_list[] = {
     {"enc_tools", MFX_PLATFORM_TIGERLAKE},
     {"tune_quality", MFX_PLATFORM_TIGERLAKE},
-    {"transform_skip", MFX_PLATFORM_TIGERLAKE},
+    {"transform_skip", MFX_PLATFORM_ICELAKE},
     {"win_brc", MFX_PLATFORM_TIGERLAKE},
     {nullptr, 0}};
 
