@@ -81,6 +81,11 @@ public:
 
   mfxStatus Drain();
 
+  // Submit a dummy frame during Init to force the driver to allocate internal
+  // GPU resources (shaders, command buffers, hardware state) ahead of time.
+  // Eliminates the visible stutter on first encode.
+  void WarmUpEncoder();
+
   template <typename T>
   static inline T GetTriState(const std::optional<bool> &Value,
                               const T DefaultValue, const T OnValue,

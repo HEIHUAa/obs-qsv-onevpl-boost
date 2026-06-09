@@ -31,6 +31,10 @@ public:
 
   mfxStatus AllocateTexturePool(MFXVideoParam &EncodeParams);
 
+  const std::vector<ID3D11Texture2D *> &GetTexturePool() const {
+    return HWTexturePool;
+  }
+
   static inline int HWEncoderCounter = 0;
   static inline mfxHDL HWDeviceHandle = nullptr;
 
