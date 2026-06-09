@@ -418,7 +418,7 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
             warn("\tVPP processing disabled: system memory path does not support VPP");
             QSVProcessing->Close();
             QSVProcessing = nullptr;
-            QSVProcessingParams.RemoveAllExtBuffers();
+            QSVProcessingParams.ClearAllBuffers();
             QSVProcessingEnable = false;
           }
           QSVUseSystemMemoryPath = true;
@@ -433,7 +433,7 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
           warn("\tVPP processing disabled: system memory path does not support VPP");
           QSVProcessing->Close();
           QSVProcessing = nullptr;
-          QSVProcessingParams.RemoveAllExtBuffers();
+          QSVProcessingParams.ClearAllBuffers();
           QSVProcessingEnable = false;
         }
         QSVUseSystemMemoryPath = true;
