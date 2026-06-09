@@ -327,6 +327,45 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
     }
   }
 
+  // Retry without Temporal Layers if Init still failed
+  if (Status < MFX_ERR_NONE) {
+    auto TemporalLayers =
+        QSVEncodeParams.GetExtBuffer<mfxExtTemporalLayers>();
+    if (TemporalLayers && TemporalLayers->NumLayers > 0) {
+      warn("MFXVideoENCODE_Init%s failed with temporal layers (err=%d, "
+           "NumLayers=%d, B-frames=%d, NumRefFrame=%d), "
+           "retrying without temporal layers",
+           log_prefix, Status, TemporalLayers->NumLayers,
+           QSVEncodeParams.mfx.GopRefDist - 1,
+           QSVEncodeParams.mfx.NumRefFrame);
+      QSVEncode->Close();
+      delete[] QSVLayerArray;
+      QSVLayerArray = nullptr;
+      QSVEncodeParams.RemoveExtBuffer<mfxExtTemporalLayers>();
+
+      Status = QSVEncode->Init(&QSVEncodeParams);
+      info("\tMFXVideoENCODE_Init%s retry (TemporalLayers removed) status: %d",
+           log_prefix, Status);
+    }
+  }
+
+  // Retry with simplified CO params if still failed
+  if (Status < MFX_ERR_NONE) {
+    auto COParams =
+        QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
+    if (COParams) {
+      warn("MFXVideoENCODE_Init%s failed, retrying with CO basic", log_prefix);
+      QSVEncode->Close();
+      COParams->IntraPredBlockSize = MFX_BLOCKSIZE_UNKNOWN;
+      COParams->InterPredBlockSize = MFX_BLOCKSIZE_UNKNOWN;
+      COParams->MECostType = 0;
+      COParams->MESearchType = 0;
+      Status = QSVEncode->Init(&QSVEncodeParams);
+      info("\tMFXVideoENCODE_Init%s retry (CO basic) status: %d", log_prefix,
+           Status);
+    }
+  }
+
   if (Status < MFX_ERR_NONE) {
     QSVEncode->Close();
   }
@@ -375,6 +414,13 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
           info("\tGetSurface() not supported (%d), switch to system memory path",
                GetSts);
           QSVEncode->Close();
+          if (QSVProcessingEnable) {
+            warn("\tVPP processing disabled: system memory path does not support VPP");
+            QSVProcessing->Close();
+            QSVProcessing = nullptr;
+            QSVProcessingParams.RemoveAllExtBuffers();
+            QSVProcessingEnable = false;
+          }
           QSVUseSystemMemoryPath = true;
           Status = InitEncoderInternal(InputParams, Codec, " (sysmem)");
         } else {
@@ -383,6 +429,13 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
         }
       } else {
         info("\tOriginal Init failed (%d), switch to system memory path", Status);
+        if (QSVProcessingEnable) {
+          warn("\tVPP processing disabled: system memory path does not support VPP");
+          QSVProcessing->Close();
+          QSVProcessing = nullptr;
+          QSVProcessingParams.RemoveAllExtBuffers();
+          QSVProcessingEnable = false;
+        }
         QSVUseSystemMemoryPath = true;
         Status = InitEncoderInternal(InputParams, Codec, " (sysmem)");
       }
@@ -407,41 +460,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
 #else
     Status = InitEncoderInternal(InputParams, Codec, "");
 
-    if (Status < MFX_ERR_NONE) {
-      auto TemporalLayers =
-          QSVEncodeParams.GetExtBuffer<mfxExtTemporalLayers>();
-      if (TemporalLayers && TemporalLayers->NumLayers > 0) {
-        warn("MFXVideoENCODE_Init failed with temporal layers (err=%d, "
-             "NumLayers=%d, B-frames=%d, NumRefFrame=%d), "
-             "retrying without temporal layers",
-             Status, TemporalLayers->NumLayers,
-             QSVEncodeParams.mfx.GopRefDist - 1,
-             QSVEncodeParams.mfx.NumRefFrame);
-        QSVEncode->Close();
-        delete[] QSVLayerArray;
-        QSVLayerArray = nullptr;
-        QSVEncodeParams.RemoveExtBuffer<mfxExtTemporalLayers>();
-
-        Status = QSVEncode->Init(&QSVEncodeParams);
-        info("\tMFXVideoENCODE_Init retry (TemporalLayers removed) status: %d",
-             Status);
-      }
-    }
-
-    if (Status < MFX_ERR_NONE) {
-      auto COParams =
-          QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
-      if (COParams) {
-        warn("MFXVideoENCODE_Init failed, retrying with CO basic");
-        QSVEncode->Close();
-        COParams->IntraPredBlockSize = MFX_BLOCKSIZE_UNKNOWN;
-        COParams->InterPredBlockSize = MFX_BLOCKSIZE_UNKNOWN;
-        COParams->MECostType = 0;
-        COParams->MESearchType = 0;
-        Status = QSVEncode->Init(&QSVEncodeParams);
-        info("\tMFXVideoENCODE_Init retry (CO basic) status: %d", Status);
-      }
-    }
     if (Status < MFX_ERR_NONE) {
       error("MFXVideoENCODE_Init failed (Status=%d)", Status);
       return Status;
@@ -1874,6 +1892,15 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
                                  ? MFX_IOPATTERN_IN_SYSTEM_MEMORY
                                  : MFX_IOPATTERN_IN_VIDEO_MEMORY;
 
+  // Cache ROI data for per-frame use, only for AVC and HEVC (AV1 not supported)
+  if (Codec != QSV_CODEC_AV1 && InputParams->ROIEnabled) {
+    CachedROIRegions = InputParams->ROIRegions;
+    CachedROIMode = InputParams->ROIMode;
+  } else {
+    CachedROIRegions.clear();
+    CachedROIMode = 0;
+  }
+
   return MFX_ERR_NONE;
 #else
   QSVEncodeParams.IOPattern = MFX_IOPATTERN_IN_VIDEO_MEMORY;
@@ -2054,7 +2081,8 @@ mfxStatus QSVEncoder::InitTaskPool([[maybe_unused]] enum codec_enum Codec) {
     QSVTaskPool.push_back(NewTask);
 
 #ifdef QSV_UHD600_SUPPORT
-    if (!QSVIsTextureEncoder && i < static_cast<int>(QSVSystemMemPool.size())) {
+    if (QSVUseSystemMemoryPath && !QSVIsTextureEncoder &&
+        i < static_cast<int>(QSVSystemMemPool.size())) {
       QSVTaskPool[i].Surface = &QSVSystemMemPool[i].Surface;
     }
 #endif
