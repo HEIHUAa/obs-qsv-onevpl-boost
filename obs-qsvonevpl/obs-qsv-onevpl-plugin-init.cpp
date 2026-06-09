@@ -911,12 +911,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 
   // ── Codec-specific ──────────────────────────────────────────
   if (Codec == QSV_CODEC_HEVC) {
-    Prop = obs_properties_add_list(Props, "ctu", TEXT_CTU,
-                                   OBS_COMBO_TYPE_LIST,
-                                   OBS_COMBO_FORMAT_STRING);
-    AddStrings(Prop, qsv_params_condition_ctu_size);
-    obs_property_set_long_description(Prop, TEXT_CTU_DESC);
-
     Prop =
         obs_properties_add_list(Props, "hevc_gpb", TEXT_HEVC_GPB,
                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -1237,7 +1231,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   const char *WeightedPredData = obs_data_get_string(Settings, "weighted_pred");
   const char *WeightedBiPredData = obs_data_get_string(Settings, "weighted_bi_pred");
   int AdaptiveMaxFrameSizeData = static_cast<int>(obs_data_get_int(Settings, "adaptive_max_frame_size"));
-  const char *CTUData = obs_data_get_string(Settings, "ctu");
   const char *VPPMCTFData = obs_data_get_string(Settings, "vpp_mctf");
   int VPPMCTFStrengthData = static_cast<int>(obs_data_get_int(Settings, "vpp_mctf_strength"));
   const char *PPyramidData = obs_data_get_string(Settings, "p_pyramid");
@@ -1342,11 +1335,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   Context->EncoderParams.WeightedBiPred = ParseWeightedPredMode(WeightedBiPredData);
 
   Context->EncoderParams.AdaptiveMaxFrameSize = AdaptiveMaxFrameSizeData;
-
-  if (strcmp(CTUData, "AUTO") == 0)
-    Context->EncoderParams.CTU = 0;
-  else
-    Context->EncoderParams.CTU = static_cast<mfxU16>(atoi(CTUData));
 
   if (strcmp(VPPMCTFData, "ON") == 0)
     Context->EncoderParams.VPPMCTFMode = 1;

@@ -38,7 +38,6 @@ struct encoder_params {
   mfxU16 MaxContentLightLevel{};
   mfxU16 MaxPicAverageLightLevel{};
   mfxU16 IntraRefCycleSize;
-  mfxU16 CTU;
   mfxU16 NumRefFrame;
   mfxU16 DenoiseStrength;
   mfxU16 WinBRCMaxAvgKbps;

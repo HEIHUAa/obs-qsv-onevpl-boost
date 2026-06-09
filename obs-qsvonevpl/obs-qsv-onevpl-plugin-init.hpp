@@ -188,8 +188,7 @@ struct plugin_context {
 #define TEXT_CUSTOM_CODING_OPTIONS obs_module_text("CustomCodingOptions")
 #define TEXT_CUSTOM_CODING_OPTIONS_DESC obs_module_text("CustomCodingOptionsDesc")
 
-#define TEXT_CTU obs_module_text("CTU")
-#define TEXT_CTU_DESC obs_module_text("CTUDesc")
+
 
 static const char *const qsv_profile_names_av1[] = {"main", "high", "pro", 0};
 
@@ -297,9 +296,6 @@ static const char *const qsv_params_condition_denoise_mode[] = {
 static const char *const qsv_params_condition_av1_interp_filter[] = {
     "DEFAULT", "EIGHTTAP", "EIGHTTAP_SMOOTH", "EIGHTTAP_SHARP", "BILINEAR",
     "SWITCHABLE", 0};
-
-static const char *const qsv_params_condition_ctu_size[] = {
-    "AUTO", "16", "32", "64", "128", 0};
 
 static void SetDefaultEncoderParams(obs_data_t *, enum codec_enum);
 
