@@ -3153,6 +3153,10 @@ void QSVEncoder::WarmUpEncoder() {
   }
 
   // ── Frame-encoder path (video / system memory) ───────────────
+#ifdef QSV_UHD600_SUPPORT
+  if (QSVUseSystemMemoryPath)
+    return;
+#endif
   mfxFrameSurface1 *Surf = nullptr;
   mfxStatus sts = QSVEncode->GetSurface(&Surf);
   if (sts < MFX_ERR_NONE) {
@@ -3200,6 +3204,10 @@ mfxStatus QSVEncoder::ClearData() {
 
     ReleaseTaskPool();
     ReleaseBitstream();
+
+#ifdef QSV_UHD600_SUPPORT
+    ReleaseSystemMemorySurfacePool();
+#endif
 
     if (Status >= MFX_ERR_NONE) {
       HWManager::HWEncoderCounter--;
