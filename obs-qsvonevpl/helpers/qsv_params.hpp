@@ -137,6 +137,11 @@ struct encoder_params {
     mfxU16 Right;
     mfxU16 Bottom;
     mfxI16 DeltaQP;
+    bool HasGradient = false;
+    mfxI16 GradLeft   = 0; // pixel values (positive = outward, negative = inward)
+    mfxI16 GradTop    = 0;
+    mfxI16 GradRight  = 0;
+    mfxI16 GradBottom = 0;
   };
   struct normalized_roi_region {
     double Left;    // 0.0 ~ 1.0 (fraction of output width)
@@ -144,6 +149,12 @@ struct encoder_params {
     double Right;   // 0.0 ~ 1.0
     double Bottom;  // 0.0 ~ 1.0
     mfxI16 DeltaQP;
+    // Optional gradient / falloff
+    bool HasGradient = false;
+    double GradLeft   = 0; // expansion outward (+), inward (-)
+    double GradTop    = 0;
+    double GradRight  = 0;
+    double GradBottom = 0;
   };
   std::vector<roi_region> ROIRegions;
   std::vector<normalized_roi_region> NormalizedROIRegions;

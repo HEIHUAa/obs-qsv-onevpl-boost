@@ -1,4 +1,5 @@
 #include "obs-qsv-onevpl-roi-editor.hpp"
+#include "helpers/common_utils.hpp"
 #include <QWindow>
 #include <QTimer>
 #include <mutex>
@@ -76,7 +77,7 @@ ROIDialog::ROIDialog(QWidget *Parent)
   ROILayout->addWidget(ExampleLabel);
   ROITextEdit = new QTextEdit(this);
   ROITextEdit->setPlaceholderText(
-      "0 0 0.5 0.5 -10\n0.5 0 1 0.5 5\n0 0.5 0.5 1 -3");
+      "0 0 0.5 0.5 -10\n0.5 0 1 0.5 5\n0.1 0.1 0.9 0.9 6 0.1 0.1 0.1 0.1 0.1");
   ROITextEdit->setFont(QFont("Consolas", 10));
   ROILayout->addWidget(ROITextEdit);
   MainLayout->addWidget(ROIGroup);
@@ -391,7 +392,16 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy) {
   if (!enabled || regions.empty())
     return;
 
-  // --- 2. Get output/base dimensions ---
+  // --- 2a. Expand gradient regions for preview ---
+  {
+    struct obs_video_info ovi2;
+    obs_get_video_info(&ovi2);
+    regions = ExpandGradientRegions(regions,
+                                    (mfxU16)ovi2.output_width,
+                                    (mfxU16)ovi2.output_height);
+  }
+
+  // --- 2b. Get output/base dimensions ---
   struct obs_video_info ovi;
   obs_get_video_info(&ovi);
   if (ovi.output_width < 1 || ovi.output_height < 1 ||
@@ -465,6 +475,7 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy) {
 }
 
 // ── Helper: convert normalized regions → space-separated UI text ─────
+// Includes 4 extra gradient values if HasGradient is true.
 static std::string RegionsToUIFormat(
     const std::vector<encoder_params::normalized_roi_region> &Regions) {
   std::string text;
@@ -476,6 +487,12 @@ static std::string RegionsToUIFormat(
             FormatROIDouble(r.Right) + " " +
             FormatROIDouble(r.Bottom) + " " +
             std::to_string(r.DeltaQP);
+    if (r.HasGradient) {
+      text += " " + FormatROIDouble(r.GradLeft) +
+              " " + FormatROIDouble(r.GradTop) +
+              " " + FormatROIDouble(r.GradRight) +
+              " " + FormatROIDouble(r.GradBottom);
+    }
   }
   return text;
 }
@@ -500,6 +517,9 @@ void ROIDialog::SetUIFromGlobalConfig() {
 }
 
 // ── Parse text input into normalized ROI regions ────────────────────
+// Format: "Left Top Right Bottom DeltaQP" (no gradient)
+//      or: "Left Top Right Bottom DeltaQP GradL GradT GradR GradB" (with gradient)
+// Values in 0.0 ~ 1.0, Gradients: positive = outward, negative = inward
 static std::vector<encoder_params::normalized_roi_region> ParseROIText(
     const std::string &Text) {
   std::vector<encoder_params::normalized_roi_region> result;
@@ -514,13 +534,27 @@ static std::vector<encoder_params::normalized_roi_region> ParseROIText(
     encoder_params::normalized_roi_region nr = {};
     double l = 0, t = 0, r = 0, b = 0;
     int dqp = 0;
-    if (std::sscanf(line.c_str(), "%lf %lf %lf %lf %d",
-                     &l, &t, &r, &b, &dqp) == 5) {
+    double gl = 0, gt = 0, gr = 0, gb = 0;
+    int parsed = std::sscanf(line.c_str(), "%lf %lf %lf %lf %d %lf %lf %lf %lf",
+                              &l, &t, &r, &b, &dqp, &gl, &gt, &gr, &gb);
+    if (parsed == 5) {
       nr.Left = l;
       nr.Top = t;
       nr.Right = r;
       nr.Bottom = b;
       nr.DeltaQP = (mfxI16)dqp;
+      result.push_back(nr);
+    } else if (parsed == 9) {
+      nr.Left = l;
+      nr.Top = t;
+      nr.Right = r;
+      nr.Bottom = b;
+      nr.DeltaQP = (mfxI16)dqp;
+      nr.HasGradient = true;
+      nr.GradLeft   = gl;
+      nr.GradTop    = gt;
+      nr.GradRight  = gr;
+      nr.GradBottom = gb;
       result.push_back(nr);
     }
   }

@@ -45,6 +45,13 @@ std::vector<encoder_params::roi_region> NormalizeROIToPixel(
     pr.Right  = (mfxU16)(nr.Right  * OutWidth);
     pr.Bottom = (mfxU16)(nr.Bottom * OutHeight);
     pr.DeltaQP = nr.DeltaQP;
+    pr.HasGradient = nr.HasGradient;
+    if (nr.HasGradient) {
+      pr.GradLeft   = (mfxI16)(nr.GradLeft   * OutWidth);
+      pr.GradTop    = (mfxI16)(nr.GradTop    * OutHeight);
+      pr.GradRight  = (mfxI16)(nr.GradRight  * OutWidth);
+      pr.GradBottom = (mfxI16)(nr.GradBottom * OutHeight);
+    }
 
     // Round to nearest codec-specific block boundary so oneVPL does not
     // silently ignore the ROI (the SDK requires alignment for valid ROI).
@@ -71,6 +78,127 @@ std::vector<encoder_params::roi_region> NormalizeROIToPixel(
     }
 
     result.push_back(pr);
+  }
+
+  return result;
+}
+
+// ── Expand gradient regions into sub-rectangles ────────────────────
+// Each gradient region is subdivided into a (2*N+1)×(2*N+1) grid.
+// The core cell at (L,T,R,B) keeps the original DeltaQP; surrounding
+// cells get interpolated QP that fades to 0 at the gradient boundary.
+std::vector<encoder_params::roi_region> ExpandGradientRegions(
+    const std::vector<encoder_params::roi_region> &Input,
+    mfxU16 OutWidth, mfxU16 OutHeight,
+    int GradientSteps) {
+  std::vector<encoder_params::roi_region> result;
+  result.reserve(Input.size() * (2 * GradientSteps + 1) * (2 * GradientSteps + 1));
+
+  for (auto &reg : Input) {
+    if (!reg.HasGradient) {
+      result.push_back(reg);
+      continue;
+    }
+
+    // Calculate outer bounds (may extend beyond frame)
+    int outerL = (int)reg.Left   - reg.GradLeft;
+    int outerT = (int)reg.Top    - reg.GradTop;
+    int outerR = (int)reg.Right  + reg.GradRight;
+    int outerB = (int)reg.Bottom + reg.GradBottom;
+    // Clamp to frame
+    outerL = std::max(outerL, 0);
+    outerT = std::max(outerT, 0);
+    outerR = std::min(outerR, (int)OutWidth);
+    outerB = std::min(outerB, (int)OutHeight);
+
+    // Collect x boundary lines from outer → core → outer
+    // Left side: from outerL toward reg.Left (or reverse for inward gradient)
+    auto genSteps = [](int from, int to, int steps,
+                       std::vector<int> &out) {
+      if (from == to) return;
+      int dir = (to > from) ? 1 : -1;
+      for (int i = 0; i <= steps; i++) {
+        int v = from + dir * (int)((long long)(to - from) * i / steps);
+        // deduplicate with last
+        if (out.empty() || out.back() != v)
+          out.push_back(v);
+      }
+    };
+
+    std::vector<int> xBounds, yBounds;
+    genSteps(outerL, reg.Left, GradientSteps, xBounds);
+    // Add core boundaries
+    if (xBounds.empty() || xBounds.back() != reg.Left)
+      xBounds.push_back(reg.Left);
+    xBounds.push_back(reg.Right);
+    genSteps(reg.Right, outerR, GradientSteps, xBounds);
+    // Remove duplicates between core Right and first right step
+    std::vector<int> xUnique, yUnique;
+    for (auto v : xBounds)
+      if (xUnique.empty() || xUnique.back() != v)
+        xUnique.push_back(v);
+
+    genSteps(outerT, reg.Top, GradientSteps, yBounds);
+    if (yBounds.empty() || yBounds.back() != reg.Top)
+      yBounds.push_back(reg.Top);
+    yBounds.push_back(reg.Bottom);
+    genSteps(reg.Bottom, outerB, GradientSteps, yBounds);
+    for (auto v : yBounds)
+      if (yUnique.empty() || yUnique.back() != v)
+        yUnique.push_back(v);
+
+    // Generate grid cells
+    for (size_t yi = 0; yi + 1 < yUnique.size(); yi++) {
+      int y0 = yUnique[yi];
+      int y1 = yUnique[yi + 1];
+      if (y1 <= y0) continue;
+      for (size_t xi = 0; xi + 1 < xUnique.size(); xi++) {
+        int x0 = xUnique[xi];
+        int x1 = xUnique[xi + 1];
+        if (x1 <= x0) continue;
+
+        // Skip the core cell — the original region handles it
+        if (x0 >= (int)reg.Left && x1 <= (int)reg.Right &&
+            y0 >= (int)reg.Top  && y1 <= (int)reg.Bottom)
+          continue;
+
+        // Interpolate QP based on distance to core
+        int cx = (x0 + x1) / 2;
+        int cy = (y0 + y1) / 2;
+        double t = 0.0;
+
+        auto falloff = [&](int pos, int coreEdge, int gradExtent) -> double {
+          if (gradExtent == coreEdge) return 0.0; // no gradient on this side
+          double dist = (double)std::abs(pos - coreEdge);
+          double total = (double)std::abs(gradExtent - coreEdge);
+          return std::min(dist / total, 1.0);
+        };
+
+        if (cx < (int)reg.Left)
+          t = std::max(t, falloff(cx, reg.Left, outerL));
+        else if (cx > (int)reg.Right)
+          t = std::max(t, falloff(cx, reg.Right, outerR));
+
+        if (cy < (int)reg.Top)
+          t = std::max(t, falloff(cy, reg.Top, outerT));
+        else if (cy > (int)reg.Bottom)
+          t = std::max(t, falloff(cy, reg.Bottom, outerB));
+
+        // t=0 → full QP, t=1 → zero QP
+        mfxI16 qp = (mfxI16)(reg.DeltaQP * (1.0 - t));
+
+        encoder_params::roi_region cell;
+        cell.Left   = (mfxU16)x0;
+        cell.Top    = (mfxU16)y0;
+        cell.Right  = (mfxU16)x1;
+        cell.Bottom = (mfxU16)y1;
+        cell.DeltaQP = qp;
+        result.push_back(cell);
+      }
+    }
+
+    // Always add the core region with original QP
+    result.push_back(reg);
   }
 
   return result;
@@ -208,6 +336,12 @@ std::string SerializeROIRegions(
               FormatROIDouble(r.Right) + "," +
               FormatROIDouble(r.Bottom) + "," +
               std::to_string(r.DeltaQP);
+    if (r.HasGradient) {
+      result += "," + FormatROIDouble(r.GradLeft) +
+                "," + FormatROIDouble(r.GradTop) +
+                "," + FormatROIDouble(r.GradRight) +
+                "," + FormatROIDouble(r.GradBottom);
+    }
   }
   return result;
 }
@@ -222,14 +356,29 @@ std::vector<encoder_params::normalized_roi_region> DeserializeROIRegions(
       continue;
     double l = 0, t = 0, r = 0, b = 0;
     int dqp = 0;
-    if (std::sscanf(segment.c_str(), "%lf,%lf,%lf,%lf,%d",
-                     &l, &t, &r, &b, &dqp) == 5) {
+    double gl = 0, gt = 0, gr = 0, gb = 0;
+    int parsed = std::sscanf(segment.c_str(), "%lf,%lf,%lf,%lf,%d,%lf,%lf,%lf,%lf",
+                             &l, &t, &r, &b, &dqp, &gl, &gt, &gr, &gb);
+    if (parsed == 5) {
       encoder_params::normalized_roi_region nr = {};
       nr.Left = l;
       nr.Top = t;
       nr.Right = r;
       nr.Bottom = b;
       nr.DeltaQP = (mfxI16)dqp;
+      result.push_back(nr);
+    } else if (parsed == 9) {
+      encoder_params::normalized_roi_region nr = {};
+      nr.Left = l;
+      nr.Top = t;
+      nr.Right = r;
+      nr.Bottom = b;
+      nr.DeltaQP = (mfxI16)dqp;
+      nr.HasGradient = true;
+      nr.GradLeft   = gl;
+      nr.GradTop    = gt;
+      nr.GradRight  = gr;
+      nr.GradBottom = gb;
       result.push_back(nr);
     }
   }
@@ -258,7 +407,19 @@ void ApplyROIConfigToEncoder(
       Context->EncoderParams.Width,
       Context->EncoderParams.Height,
       GetCodecAlignment(Context->Codec));
-  UpdateEncoderROI(Context, pixelRegions, effectiveMode, Enabled);
+  // Expand gradient regions into sub-rectangles, cap total at 256
+  auto expanded = ExpandGradientRegions(
+      pixelRegions,
+      Context->EncoderParams.Width,
+      Context->EncoderParams.Height);
+  if (expanded.size() > 256) {
+    blog(LOG_WARNING,
+         "[QSV VPL] Expanded ROI count (%zu) exceeds VPL limit (256), "
+         "increasing GradientSteps may help; truncating to 256.",
+         expanded.size());
+    expanded.resize(256);
+  }
+  UpdateEncoderROI(Context, expanded, effectiveMode, Enabled);
 }
 
 void SaveROIToEncoderSettings(plugin_context *Context) {
