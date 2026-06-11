@@ -205,6 +205,14 @@ std::vector<encoder_params::roi_region> ExpandGradientRegions(
         bool inwardGrad =
             (reg.GradLeft < 0 || reg.GradTop < 0 ||
              reg.GradRight < 0 || reg.GradBottom < 0);
+
+        // For inward gradients, skip cells entirely inside the gradient
+        // boundary (t == 0) — they will be covered by the original core
+        // region appended below.  This avoids gaps in the preview overlay
+        // caused by boundary misalignment between expanded sub-rectangles.
+        if (inwardGrad && t == 0.0)
+          continue;
+
         mfxI16 qp;
         if (inwardGrad) {
           // Inward: band cells fade from DQP at core edge (t→0)
