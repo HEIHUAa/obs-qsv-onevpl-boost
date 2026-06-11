@@ -200,8 +200,24 @@ std::vector<encoder_params::roi_region> ExpandGradientRegions(
         if (inBand(cy, reg.Bottom, outerB))
           t = std::max(t, falloff(cy, reg.Bottom, outerB));
 
-        // t=0 → full QP, t=1 → zero QP
-        mfxI16 qp = (mfxI16)(reg.DeltaQP * (1.0 - t));
+        // Detect gradient direction: inward if any extension is negative
+        // (the gradient boundary lies inside the core rectangle).
+        bool inwardGrad =
+            (reg.GradLeft < 0 || reg.GradTop < 0 ||
+             reg.GradRight < 0 || reg.GradBottom < 0);
+        mfxI16 qp;
+        if (inwardGrad) {
+          // Inward: band cells fade from DQP at gradient boundary (t=1)
+          // to zero at core edge (t→0).  Cells outside any gradient band
+          // (t=0, i.e. the core center) keep the full DeltaQP.
+          if (t > 0.0)
+            qp = (mfxI16)(reg.DeltaQP * t);
+          else
+            qp = reg.DeltaQP;
+        } else {
+          // Outward: full QP at core edge (t=0), zero at gradient boundary (t=1).
+          qp = (mfxI16)(reg.DeltaQP * (1.0 - t));
+        }
 
         encoder_params::roi_region cell;
         cell.Left   = (mfxU16)x0;
@@ -407,32 +423,8 @@ void ApplyROIConfigToEncoder(
     plugin_context *Context,
     const std::vector<encoder_params::normalized_roi_region> &NormRegions,
     mfxU16 Mode, bool Enabled) {
-  // QP Delta mode (1) requires CQP rate control; fall back to Priority (0) if not
-  mfxU16 effectiveMode = Mode;
-  if (Mode == 1 && // MFX_ROI_MODE_QP_DELTA
-      Context->EncoderParams.RateControl != MFX_RATECONTROL_CQP) {
-    effectiveMode = 0; // fall back to MFX_ROI_MODE_PRIORITY
-    blog(LOG_INFO,
-         "[QSV VPL] Encoder uses non-CQP rate control (%d), "
-         "forcing ROI Priority mode for ROI to take effect",
-         Context->EncoderParams.RateControl);
-  }
-
-  // When falling back from DeltaQP → Priority mode, negate the values
-  // because:
-  //   DeltaQP mode:  negative = better quality (QP decreases)
-  //   Priority mode: positive = better quality
-  auto adjustedRegions = NormRegions;
-  if (effectiveMode != Mode) {
-    for (auto &r : adjustedRegions) {
-      int v = -(int)r.DeltaQP;
-      // Clamp to valid Priority range [-3, 3] per VPL spec
-      r.DeltaQP = (mfxI16)(v < -3 ? -3 : (v > 3 ? 3 : v));
-    }
-  }
-
   auto pixelRegions = NormalizeROIToPixel(
-      adjustedRegions,
+      NormRegions,
       Context->EncoderParams.Width,
       Context->EncoderParams.Height,
       GetCodecAlignment(Context->Codec));
@@ -448,7 +440,7 @@ void ApplyROIConfigToEncoder(
          expanded.size());
     expanded.resize(256);
   }
-  UpdateEncoderROI(Context, expanded, effectiveMode, Enabled);
+  UpdateEncoderROI(Context, expanded, Mode, Enabled);
 }
 
 void SaveROIToEncoderSettings(plugin_context *Context) {
