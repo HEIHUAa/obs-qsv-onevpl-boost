@@ -59,8 +59,8 @@ ROIDialog::ROIDialog(QWidget *Parent)
   ModeGroup = new QButtonGroup(this);
   QPDeltaRadio = new QRadioButton(obs_module_text("ROIModeQPDelta"), this);
   PriorityRadio = new QRadioButton(obs_module_text("ROIModePriority"), this);
-  ModeGroup->addButton(QPDeltaRadio, 0);
-  ModeGroup->addButton(PriorityRadio, 1);
+  ModeGroup->addButton(PriorityRadio, 0);   // id=0 → MFX_ROI_MODE_PRIORITY
+  ModeGroup->addButton(QPDeltaRadio, 1);    // id=1 → MFX_ROI_MODE_QP_DELTA
   QPDeltaRadio->setChecked(true);
   ModeLayout->addWidget(QPDeltaRadio);
   ModeLayout->addWidget(PriorityRadio);
@@ -299,7 +299,8 @@ void ROIDialog::PreviewDraw(void *param, uint32_t cx, uint32_t cy) {
 static void DrawROIRects(
     const std::vector<encoder_params::roi_region> &Rects,
     float vp_x, float vp_y, float vp_w, float vp_h,
-    float out_w, float out_h, float cx, float cy) {
+    float out_w, float out_h, float cx, float cy,
+    mfxU16 mode = 1) {
   gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
   if (!solid)
     return;
@@ -329,15 +330,20 @@ static void DrawROIRects(
     if (x2 <= x1 || y2 <= y1)
       continue;
 
-    // Color: Red = negative DeltaQP (higher quality), Green = positive (lower quality)
-    float intensity = std::min((float)std::abs(r.DeltaQP) / 25.0f, 1.0f);
+    // Color depends on mode:
+    //   Priority mode (0): bigger value = better quality → positive = green
+    //   DeltaQP mode  (1): lesser value = better quality → negative = green
+    bool isBetter = (mode == 0) ? (r.DeltaQP > 0) : (r.DeltaQP < 0);
+    float absVal = (float)std::abs(r.DeltaQP);
+    float maxAbs = (mode == 0) ? 3.0f : 51.0f;
+    float intensity = std::min(absVal / maxAbs, 1.0f);
     intensity = std::max(intensity, 0.3f); // minimum visibility
     vec4 color;
     vec4_zero(&color);
-    if (r.DeltaQP < 0)
-      vec4_set(&color, intensity, 0.1f, 0.1f, 0.35f);
+    if (isBetter)
+      vec4_set(&color, 0.1f * (1.0f - intensity), intensity, 0.1f, 0.35f); // Green = better
     else
-      vec4_set(&color, 0.1f * (1.0f - intensity), intensity, 0.1f, 0.35f);
+      vec4_set(&color, intensity, 0.1f, 0.1f, 0.35f); // Red = worse
 
     gs_effect_set_vec4(color_param, &color);
 
@@ -418,25 +424,30 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy) {
   xs.erase(std::unique(xs.begin(), xs.end()), xs.end());
   ys.erase(std::unique(ys.begin(), ys.end()), ys.end());
 
-  // Build a grid of cells; each cell gets the composite DeltaQP of
-  // all ROIs covering it.  Cells with sumQP == 0 are skipped.
+  // Build a grid of cells; each cell gets the DeltaQP from the
+  // lowest-index ROI covering it (matching VPL driver behavior).
+  // Cells with QP == 0 are skipped.
   // If no cells have net effect, fall back to drawing raw regions.
   std::vector<encoder_params::roi_region> drawRects;
   bool useSegmented = false;
 
   for (size_t yi = 0; yi + 1 < ys.size(); yi++) {
     for (size_t xi = 0; xi + 1 < xs.size(); xi++) {
-      mfxI16 sumQP = 0;
-      for (auto &r : regions) {
+      mfxI16 cellQP = 0;
+      bool covered = false;
+      for (size_t ri = 0; ri < regions.size(); ri++) {
+        auto &r = regions[ri];
         if (xs[xi] >= r.Left && xs[xi + 1] <= r.Right &&
             ys[yi] >= r.Top && ys[yi + 1] <= r.Bottom) {
-          sumQP += r.DeltaQP;
+          cellQP = r.DeltaQP;
+          covered = true;
+          break; // lowest index wins
         }
       }
-      if (sumQP == 0)
+      if (!covered || cellQP == 0)
         continue;
       useSegmented = true;
-      drawRects.push_back({xs[xi], ys[yi], xs[xi + 1], ys[yi + 1], sumQP});
+      drawRects.push_back({xs[xi], ys[yi], xs[xi + 1], ys[yi + 1], cellQP});
     }
   }
 
@@ -444,7 +455,13 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy) {
     drawRects = regions;
 
   // --- 4. Draw all rects through the shared helper ---
-  DrawROIRects(drawRects, vp_x, vp_y, vp_w, vp_h, out_w, out_h, cx, cy);
+  mfxU16 previewMode = 1; // default DeltaQP
+  {
+    std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
+    previewMode = GlobalROIConfig.Mode;
+  }
+  DrawROIRects(drawRects, vp_x, vp_y, vp_w, vp_h, out_w, out_h, cx, cy,
+               previewMode);
 }
 
 // ── Helper: convert normalized regions → space-separated UI text ─────
@@ -467,7 +484,7 @@ static std::string RegionsToUIFormat(
 void ROIDialog::SetUIFromGlobalConfig() {
   std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
   ROIEnableCheck->setChecked(GlobalROIConfig.Enabled);
-  if (GlobalROIConfig.Mode == 1)
+  if (GlobalROIConfig.Mode == 0) // MFX_ROI_MODE_PRIORITY
     PriorityRadio->setChecked(true);
   else
     QPDeltaRadio->setChecked(true);
@@ -520,7 +537,7 @@ void ROIDialog::UpdatePreviewFromText() {
     return;
 
   auto normRegions = ParseROIText(ROITextEdit->toPlainText().toStdString());
-  mfxU16 mode = (ModeGroup->checkedId() == 1) ? 1 : 0;
+  mfxU16 mode = (mfxU16)ModeGroup->checkedId(); // 0=Priority, 1=DeltaQP, matches VPL API
   bool enabled = ROIEnableCheck->isChecked();
 
   // Update GlobalROIConfig for DrawROIOverlay to pick up
@@ -553,7 +570,7 @@ void ROIDialog::LoadROIData() {
 
 void ROIDialog::SaveROIData() {
   auto normRegions = ParseROIText(ROITextEdit->toPlainText().toStdString());
-  mfxU16 mode = (ModeGroup->checkedId() == 1) ? 1 : 0;
+  mfxU16 mode = (mfxU16)ModeGroup->checkedId(); // 0=Priority, 1=DeltaQP, matches VPL API
   bool enabled = ROIEnableCheck->isChecked();
 
   // Always save normalized regions to global config (resolution-independent)

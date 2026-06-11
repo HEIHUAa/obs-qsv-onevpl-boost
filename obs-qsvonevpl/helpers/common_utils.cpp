@@ -242,11 +242,11 @@ void ApplyROIConfigToEncoder(
     plugin_context *Context,
     const std::vector<encoder_params::normalized_roi_region> &NormRegions,
     mfxU16 Mode, bool Enabled) {
-  // QP Delta mode requires CQP rate control; fall back to Priority if not
+  // QP Delta mode (1) requires CQP rate control; fall back to Priority (0) if not
   mfxU16 effectiveMode = Mode;
-  if (Mode == 0 &&
+  if (Mode == 1 && // MFX_ROI_MODE_QP_DELTA
       Context->EncoderParams.RateControl != MFX_RATECONTROL_CQP) {
-    effectiveMode = 1;
+    effectiveMode = 0; // fall back to MFX_ROI_MODE_PRIORITY
     blog(LOG_INFO,
          "[QSV VPL] Encoder uses non-CQP rate control (%d), "
          "forcing ROI Priority mode for ROI to take effect",
