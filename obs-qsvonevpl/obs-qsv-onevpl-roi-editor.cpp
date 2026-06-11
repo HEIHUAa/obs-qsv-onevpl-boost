@@ -313,6 +313,13 @@ static void DrawROIRects(
   gs_technique_begin(tech);
   gs_technique_begin_pass(tech, 0);
 
+  // Compute dynamic intensity range from actual DeltaQP values
+  float dynMaxAbs = 0.0f;
+  for (auto &r : Rects)
+    dynMaxAbs = std::max(dynMaxAbs, (float)std::abs(r.DeltaQP));
+  if (dynMaxAbs < 1.0f)
+    dynMaxAbs = (mode == 0) ? 3.0f : 51.0f; // fallback when all QP are 0
+
   for (auto &r : Rects) {
     // Map from output resolution → preview widget pixel coords
     float x1 = vp_x + (float)r.Left * (vp_w / out_w);
@@ -336,8 +343,8 @@ static void DrawROIRects(
     //   DeltaQP mode  (1): lesser value = better quality → negative = green
     bool isBetter = (mode == 0) ? (r.DeltaQP > 0) : (r.DeltaQP < 0);
     float absVal = (float)std::abs(r.DeltaQP);
-    float maxAbs = (mode == 0) ? 3.0f : 51.0f;
-    float intensity = std::min(absVal / maxAbs, 1.0f);
+    // Use dynamic range so gradient cells get proportional intensity
+    float intensity = std::min(absVal / dynMaxAbs, 1.0f);
     intensity = std::max(intensity, 0.3f); // minimum visibility
     vec4 color;
     vec4_zero(&color);
@@ -531,32 +538,33 @@ static std::vector<encoder_params::normalized_roi_region> ParseROIText(
     if (line.empty() || line[0] == '#' || line[0] == ';')
       continue;
 
+    // Parse all tokens; must have at least 5 (l t r b dqp)
+    std::istringstream ls(line);
+    std::vector<double> tokens;
+    double val;
+    while (ls >> val)
+      tokens.push_back(val);
+    if (tokens.size() < 5)
+      continue;
+
     encoder_params::normalized_roi_region nr = {};
-    double l = 0, t = 0, r = 0, b = 0;
-    int dqp = 0;
-    double gl = 0, gt = 0, gr = 0, gb = 0;
-    int parsed = std::sscanf(line.c_str(), "%lf %lf %lf %lf %d %lf %lf %lf %lf",
-                              &l, &t, &r, &b, &dqp, &gl, &gt, &gr, &gb);
-    if (parsed == 5) {
-      nr.Left = l;
-      nr.Top = t;
-      nr.Right = r;
-      nr.Bottom = b;
-      nr.DeltaQP = (mfxI16)dqp;
-      result.push_back(nr);
-    } else if (parsed == 9) {
-      nr.Left = l;
-      nr.Top = t;
-      nr.Right = r;
-      nr.Bottom = b;
-      nr.DeltaQP = (mfxI16)dqp;
+    nr.Left   = tokens[0];
+    nr.Top    = tokens[1];
+    nr.Right  = tokens[2];
+    nr.Bottom = tokens[3];
+    nr.DeltaQP = (mfxI16)tokens[4];
+
+    // If a 6th token (GradLeft) is present, enable gradient
+    // (tokens 7-9: GradTop, GradRight, GradBottom are optional, default 0)
+    if (tokens.size() >= 6) {
       nr.HasGradient = true;
-      nr.GradLeft   = gl;
-      nr.GradTop    = gt;
-      nr.GradRight  = gr;
-      nr.GradBottom = gb;
-      result.push_back(nr);
+      nr.GradLeft   = tokens[5];
+      if (tokens.size() >= 7) nr.GradTop    = tokens[6];
+      if (tokens.size() >= 8) nr.GradRight  = tokens[7];
+      if (tokens.size() >= 9) nr.GradBottom = tokens[8];
     }
+
+    result.push_back(nr);
   }
   return result;
 }

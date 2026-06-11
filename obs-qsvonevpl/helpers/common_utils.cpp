@@ -402,8 +402,21 @@ void ApplyROIConfigToEncoder(
          Context->EncoderParams.RateControl);
   }
 
+  // When falling back from DeltaQP → Priority mode, negate the values
+  // because:
+  //   DeltaQP mode:  negative = better quality (QP decreases)
+  //   Priority mode: positive = better quality
+  auto adjustedRegions = NormRegions;
+  if (effectiveMode != Mode) {
+    for (auto &r : adjustedRegions) {
+      int v = -(int)r.DeltaQP;
+      // Clamp to valid Priority range [-3, 3] per VPL spec
+      r.DeltaQP = (mfxI16)(v < -3 ? -3 : (v > 3 ? 3 : v));
+    }
+  }
+
   auto pixelRegions = NormalizeROIToPixel(
-      NormRegions,
+      adjustedRegions,
       Context->EncoderParams.Width,
       Context->EncoderParams.Height,
       GetCodecAlignment(Context->Codec));
