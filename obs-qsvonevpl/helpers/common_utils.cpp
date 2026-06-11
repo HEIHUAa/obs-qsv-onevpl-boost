@@ -2,6 +2,7 @@
 #include "../obs-qsv-onevpl-encoder.hpp"
 
 #include <sstream>
+#include <algorithm>
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 #include <util/dstr.h>
@@ -116,9 +117,8 @@ std::vector<encoder_params::roi_region> ExpandGradientRegions(
     auto genSteps = [](int from, int to, int steps,
                        std::vector<int> &out) {
       if (from == to) return;
-      int dir = (to > from) ? 1 : -1;
       for (int i = 0; i <= steps; i++) {
-        int v = from + dir * (int)((long long)(to - from) * i / steps);
+        int v = from + (int)((long long)(to - from) * i / steps);
         // deduplicate with last
         if (out.empty() || out.back() != v)
           out.push_back(v);
@@ -132,11 +132,14 @@ std::vector<encoder_params::roi_region> ExpandGradientRegions(
       xBounds.push_back(reg.Left);
     xBounds.push_back(reg.Right);
     genSteps(reg.Right, outerR, GradientSteps, xBounds);
-    // Remove duplicates between core Right and first right step
+    // Remove duplicates between core Right and first right step,
+    // then sort so cells are in ascending order regardless of
+    // inward/outward gradient direction.
     std::vector<int> xUnique, yUnique;
     for (auto v : xBounds)
       if (xUnique.empty() || xUnique.back() != v)
         xUnique.push_back(v);
+    std::sort(xUnique.begin(), xUnique.end());
 
     genSteps(outerT, reg.Top, GradientSteps, yBounds);
     if (yBounds.empty() || yBounds.back() != reg.Top)
@@ -146,6 +149,7 @@ std::vector<encoder_params::roi_region> ExpandGradientRegions(
     for (auto v : yBounds)
       if (yUnique.empty() || yUnique.back() != v)
         yUnique.push_back(v);
+    std::sort(yUnique.begin(), yUnique.end());
 
     // Generate grid cells
     for (size_t yi = 0; yi + 1 < yUnique.size(); yi++) {
@@ -157,9 +161,11 @@ std::vector<encoder_params::roi_region> ExpandGradientRegions(
         int x1 = xUnique[xi + 1];
         if (x1 <= x0) continue;
 
-        // Skip the core cell — the original region handles it
-        if (x0 >= (int)reg.Left && x1 <= (int)reg.Right &&
-            y0 >= (int)reg.Top  && y1 <= (int)reg.Bottom)
+        // Skip only the exact core rectangle — it is handled by the
+        // original region entry above.  All other cells (including those
+        // inside the core for inward gradients) are created here.
+        if (x0 == (int)reg.Left && x1 == (int)reg.Right &&
+            y0 == (int)reg.Top  && y1 == (int)reg.Bottom)
           continue;
 
         // Interpolate QP based on distance to core
@@ -173,15 +179,25 @@ std::vector<encoder_params::roi_region> ExpandGradientRegions(
           double total = (double)std::abs(gradExtent - coreEdge);
           return std::min(dist / total, 1.0);
         };
+        // Check if cell center lies in any of the 4 gradient bands
+        // (from each core edge to its gradient boundary).  The band
+        // works for both outward (gradExtent < coreEdge) and inward
+        // (gradExtent > coreEdge) cases.
+        auto inBand = [](int pos, int a, int b) -> bool {
+          if (a == b) return false;
+          int lo = std::min(a, b);
+          int hi = std::max(a, b);
+          return pos >= lo && pos <= hi;
+        };
 
-        if (cx < (int)reg.Left)
+        if (inBand(cx, reg.Left, outerL))
           t = std::max(t, falloff(cx, reg.Left, outerL));
-        else if (cx > (int)reg.Right)
+        if (inBand(cx, reg.Right, outerR))
           t = std::max(t, falloff(cx, reg.Right, outerR));
 
-        if (cy < (int)reg.Top)
+        if (inBand(cy, reg.Top, outerT))
           t = std::max(t, falloff(cy, reg.Top, outerT));
-        else if (cy > (int)reg.Bottom)
+        if (inBand(cy, reg.Bottom, outerB))
           t = std::max(t, falloff(cy, reg.Bottom, outerB));
 
         // t=0 → full QP, t=1 → zero QP
