@@ -207,11 +207,12 @@ std::vector<encoder_params::roi_region> ExpandGradientRegions(
              reg.GradRight < 0 || reg.GradBottom < 0);
         mfxI16 qp;
         if (inwardGrad) {
-          // Inward: band cells fade from DQP at gradient boundary (t=1)
-          // to zero at core edge (t→0).  Cells outside any gradient band
-          // (t=0, i.e. the core center) keep the full DeltaQP.
+          // Inward: band cells fade from DQP at core edge (t→0)
+          // to zero at gradient boundary (t=1).  Cells outside any
+          // gradient band (t=0, i.e. the core centre) keep the full
+          // DeltaQP.
           if (t > 0.0)
-            qp = (mfxI16)(reg.DeltaQP * t);
+            qp = (mfxI16)(reg.DeltaQP * (1.0 - t));
           else
             qp = reg.DeltaQP;
         } else {
