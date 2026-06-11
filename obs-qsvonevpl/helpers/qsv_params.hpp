@@ -142,6 +142,7 @@ struct encoder_params {
     mfxI16 GradTop    = 0;
     mfxI16 GradRight  = 0;
     mfxI16 GradBottom = 0;
+    int GradientSteps = 3;  // subdivision count per side (default 3 → 7×7 grid)
   };
   struct normalized_roi_region {
     double Left;    // 0.0 ~ 1.0 (fraction of output width)
@@ -155,6 +156,7 @@ struct encoder_params {
     double GradTop    = 0;
     double GradRight  = 0;
     double GradBottom = 0;
+    int GradientSteps = 3;  // subdivision count per side
   };
   std::vector<roi_region> ROIRegions;
   std::vector<normalized_roi_region> NormalizedROIRegions;

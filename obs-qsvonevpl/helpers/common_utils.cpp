@@ -47,6 +47,7 @@ std::vector<encoder_params::roi_region> NormalizeROIToPixel(
     pr.Bottom = (mfxU16)(nr.Bottom * OutHeight);
     pr.DeltaQP = nr.DeltaQP;
     pr.HasGradient = nr.HasGradient;
+    pr.GradientSteps = nr.GradientSteps;
     if (nr.HasGradient) {
       pr.GradLeft   = (mfxI16)(nr.GradLeft   * OutWidth);
       pr.GradTop    = (mfxI16)(nr.GradTop    * OutHeight);
@@ -85,15 +86,15 @@ std::vector<encoder_params::roi_region> NormalizeROIToPixel(
 }
 
 // ── Expand gradient regions into sub-rectangles ────────────────────
-// Each gradient region is subdivided into a (2*N+1)×(2*N+1) grid.
+// Each gradient region is subdivided into a (2*N+1)×(2*N+1) grid
+// where N = reg.GradientSteps.
 // The core cell at (L,T,R,B) keeps the original DeltaQP; surrounding
 // cells get interpolated QP that fades to 0 at the gradient boundary.
 std::vector<encoder_params::roi_region> ExpandGradientRegions(
     const std::vector<encoder_params::roi_region> &Input,
-    mfxU16 OutWidth, mfxU16 OutHeight,
-    int GradientSteps) {
+    mfxU16 OutWidth, mfxU16 OutHeight) {
   std::vector<encoder_params::roi_region> result;
-  result.reserve(Input.size() * (2 * GradientSteps + 1) * (2 * GradientSteps + 1));
+  result.reserve(Input.size() * 49); // upper-bound estimate: 7×7 grid at default 3 steps
 
   for (auto &reg : Input) {
     if (!reg.HasGradient) {
@@ -126,12 +127,12 @@ std::vector<encoder_params::roi_region> ExpandGradientRegions(
     };
 
     std::vector<int> xBounds, yBounds;
-    genSteps(outerL, reg.Left, GradientSteps, xBounds);
+    genSteps(outerL, reg.Left, reg.GradientSteps, xBounds);
     // Add core boundaries
     if (xBounds.empty() || xBounds.back() != reg.Left)
       xBounds.push_back(reg.Left);
     xBounds.push_back(reg.Right);
-    genSteps(reg.Right, outerR, GradientSteps, xBounds);
+    genSteps(reg.Right, outerR, reg.GradientSteps, xBounds);
     // Remove duplicates between core Right and first right step,
     // then sort so cells are in ascending order regardless of
     // inward/outward gradient direction.
@@ -141,11 +142,11 @@ std::vector<encoder_params::roi_region> ExpandGradientRegions(
         xUnique.push_back(v);
     std::sort(xUnique.begin(), xUnique.end());
 
-    genSteps(outerT, reg.Top, GradientSteps, yBounds);
+    genSteps(outerT, reg.Top, reg.GradientSteps, yBounds);
     if (yBounds.empty() || yBounds.back() != reg.Top)
       yBounds.push_back(reg.Top);
     yBounds.push_back(reg.Bottom);
-    genSteps(reg.Bottom, outerB, GradientSteps, yBounds);
+    genSteps(reg.Bottom, outerB, reg.GradientSteps, yBounds);
     for (auto v : yBounds)
       if (yUnique.empty() || yUnique.back() != v)
         yUnique.push_back(v);
@@ -200,24 +201,9 @@ std::vector<encoder_params::roi_region> ExpandGradientRegions(
         if (inBand(cy, reg.Bottom, outerB))
           t = std::max(t, falloff(cy, reg.Bottom, outerB));
 
-        // Detect gradient direction: inward if any extension is negative
-        // (the gradient boundary lies inside the core rectangle).
-        bool inwardGrad =
-            (reg.GradLeft < 0 || reg.GradTop < 0 ||
-             reg.GradRight < 0 || reg.GradBottom < 0);
-        mfxI16 qp;
-        if (inwardGrad) {
-          // Inward: band cells fade from DQP at gradient boundary (t=1)
-          // to zero at core edge (t→0).  Cells outside any gradient band
-          // (t=0, i.e. the core center) keep the full DeltaQP.
-          if (t > 0.0)
-            qp = (mfxI16)(reg.DeltaQP * t);
-          else
-            qp = reg.DeltaQP;
-        } else {
-          // Outward: full QP at core edge (t=0), zero at gradient boundary (t=1).
-          qp = (mfxI16)(reg.DeltaQP * (1.0 - t));
-        }
+        // Gradient is always outward (positive values only).
+        // Full QP at core edge (t=0), zero at gradient boundary (t=1).
+        mfxI16 qp = (mfxI16)(reg.DeltaQP * (1.0 - t));
 
         encoder_params::roi_region cell;
         cell.Left   = (mfxU16)x0;
@@ -372,7 +358,8 @@ std::string SerializeROIRegions(
       result += "," + FormatROIDouble(r.GradLeft) +
                 "," + FormatROIDouble(r.GradTop) +
                 "," + FormatROIDouble(r.GradRight) +
-                "," + FormatROIDouble(r.GradBottom);
+                "," + FormatROIDouble(r.GradBottom) +
+                "," + std::to_string(r.GradientSteps);
     }
   }
   return result;
@@ -387,10 +374,10 @@ std::vector<encoder_params::normalized_roi_region> DeserializeROIRegions(
     if (segment.empty())
       continue;
     double l = 0, t = 0, r = 0, b = 0;
-    int dqp = 0;
+    int dqp = 0, steps = 3;
     double gl = 0, gt = 0, gr = 0, gb = 0;
-    int parsed = std::sscanf(segment.c_str(), "%lf,%lf,%lf,%lf,%d,%lf,%lf,%lf,%lf",
-                             &l, &t, &r, &b, &dqp, &gl, &gt, &gr, &gb);
+    int parsed = std::sscanf(segment.c_str(), "%lf,%lf,%lf,%lf,%d,%lf,%lf,%lf,%lf,%d",
+                             &l, &t, &r, &b, &dqp, &gl, &gt, &gr, &gb, &steps);
     if (parsed == 5) {
       encoder_params::normalized_roi_region nr = {};
       nr.Left = l;
@@ -399,7 +386,7 @@ std::vector<encoder_params::normalized_roi_region> DeserializeROIRegions(
       nr.Bottom = b;
       nr.DeltaQP = (mfxI16)dqp;
       result.push_back(nr);
-    } else if (parsed == 9) {
+    } else if (parsed >= 9) {
       encoder_params::normalized_roi_region nr = {};
       nr.Left = l;
       nr.Top = t;
@@ -407,10 +394,11 @@ std::vector<encoder_params::normalized_roi_region> DeserializeROIRegions(
       nr.Bottom = b;
       nr.DeltaQP = (mfxI16)dqp;
       nr.HasGradient = true;
-      nr.GradLeft   = gl;
-      nr.GradTop    = gt;
-      nr.GradRight  = gr;
-      nr.GradBottom = gb;
+      nr.GradLeft   = std::abs(gl);
+      nr.GradTop    = std::abs(gt);
+      nr.GradRight  = std::abs(gr);
+      nr.GradBottom = std::abs(gb);
+      if (parsed == 10) nr.GradientSteps = std::max(steps, 1);
       result.push_back(nr);
     }
   }

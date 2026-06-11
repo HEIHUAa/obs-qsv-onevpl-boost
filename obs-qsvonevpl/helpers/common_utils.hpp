@@ -211,11 +211,10 @@ std::vector<encoder_params::roi_region> NormalizeROIToPixel(
 // Expand gradient ROI regions into multiple non-overlapping sub-rectangles.
 // Each sub-rectangle gets interpolated DeltaQP for a smooth falloff.
 // Non-gradient regions are passed through unchanged.
-// GRADIENT_STEPS controls subdivision count per side (default 3 → 7×7 grid).
+// Each region's GradientSteps field controls subdivision count per side.
 std::vector<encoder_params::roi_region> ExpandGradientRegions(
     const std::vector<encoder_params::roi_region> &Input,
-    mfxU16 OutWidth, mfxU16 OutHeight,
-    int GradientSteps = 3);
+    mfxU16 OutWidth, mfxU16 OutHeight);
 
 // Return the ROI coordinate alignment requirement for the given codec.
 // AVC/H.264 requires 16-pixel (macroblock) alignment; HEVC requires 32-pixel alignment.

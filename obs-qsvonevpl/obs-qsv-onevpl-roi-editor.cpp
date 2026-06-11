@@ -498,7 +498,8 @@ static std::string RegionsToUIFormat(
       text += " " + FormatROIDouble(r.GradLeft) +
               " " + FormatROIDouble(r.GradTop) +
               " " + FormatROIDouble(r.GradRight) +
-              " " + FormatROIDouble(r.GradBottom);
+              " " + FormatROIDouble(r.GradBottom) +
+              " " + std::to_string(r.GradientSteps);
     }
   }
   return text;
@@ -525,8 +526,9 @@ void ROIDialog::SetUIFromGlobalConfig() {
 
 // ── Parse text input into normalized ROI regions ────────────────────
 // Format: "Left Top Right Bottom DeltaQP" (no gradient)
-//      or: "Left Top Right Bottom DeltaQP GradL GradT GradR GradB" (with gradient)
-// Values in 0.0 ~ 1.0, Gradients: positive = outward, negative = inward
+//      or: "Left Top Right Bottom DeltaQP GradL GradT GradR GradB [Steps]" (with gradient)
+// Values in 0.0 ~ 1.0, Gradients are forced to positive (outward only).
+// Steps: optional integer for sub-division count per side (default 3 → 7×7 grid).
 static std::vector<encoder_params::normalized_roi_region> ParseROIText(
     const std::string &Text) {
   std::vector<encoder_params::normalized_roi_region> result;
@@ -556,12 +558,15 @@ static std::vector<encoder_params::normalized_roi_region> ParseROIText(
 
     // If a 6th token (GradLeft) is present, enable gradient
     // (tokens 7-9: GradTop, GradRight, GradBottom are optional, default 0)
+    // Gradients are forced to positive (absolute value).
+    // Token 10 (optional): GradientSteps, number of subdivisions per side.
     if (tokens.size() >= 6) {
       nr.HasGradient = true;
-      nr.GradLeft   = tokens[5];
-      if (tokens.size() >= 7) nr.GradTop    = tokens[6];
-      if (tokens.size() >= 8) nr.GradRight  = tokens[7];
-      if (tokens.size() >= 9) nr.GradBottom = tokens[8];
+      nr.GradLeft   = std::abs(tokens[5]);
+      if (tokens.size() >= 7) nr.GradTop    = std::abs(tokens[6]);
+      if (tokens.size() >= 8) nr.GradRight  = std::abs(tokens[7]);
+      if (tokens.size() >= 9) nr.GradBottom = std::abs(tokens[8]);
+      if (tokens.size() >= 10) nr.GradientSteps = std::max((int)tokens[9], 1);
     }
 
     result.push_back(nr);
