@@ -34,6 +34,7 @@ set_target_properties(obs-qsvonevpl PROPERTIES AUTOMOC ON)
 set_target_properties(obs-qsvonevpl PROPERTIES
   FOLDER "plugins/obs-qsvonevpl"
   PREFIX ""
+  DEBUG_POSTFIX ""
 )
 # cmake-format: on
 
@@ -130,6 +131,7 @@ if(WIN32)
       FOLDER "plugins/obs-qsvonevpl"
       PREFIX ""
       AUTOMOC ON
+      DEBUG_POSTFIX ""
     )
 
     target_compile_definitions(
