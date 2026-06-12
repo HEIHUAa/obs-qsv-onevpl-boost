@@ -292,7 +292,16 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
       Status = MFX_ERR_NONE;
     }
 
-    if (Status >= MFX_ERR_NONE) {
+    // When Query returns MFX_ERR_UNSUPPORTED (-3) on older hardware
+    // (e.g. UHD 600 / Apollo Lake), the driver may not support Query
+    // with extended coding option buffers (CO2/CO3).  Init may still
+    // succeed with the same parameters, so we attempt it directly.
+    if (Status >= MFX_ERR_NONE || Status == MFX_ERR_UNSUPPORTED) {
+      if (Status == MFX_ERR_UNSUPPORTED) {
+        warn("MFXVideoENCODE_Query%s returned UNSUPPORTED, "
+             "attempting Init directly", log_prefix);
+      }
+
       if (!InputParams->CustomCodingOptions.empty()) {
         ParseCustomCodingOptions(InputParams->CustomCodingOptions);
       }
@@ -369,6 +378,38 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
            Status);
     }
   }
+
+#ifdef QSV_UHD600_SUPPORT
+  // Retry without mfxExtCodingOption3 (older drivers may reject it)
+  if (Status < MFX_ERR_NONE) {
+    auto CO3Params =
+        QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
+    if (CO3Params) {
+      warn("MFXVideoENCODE_Init%s failed (err=%d), retrying without CO3",
+           log_prefix, Status);
+      QSVEncode->Close();
+      QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOption3>();
+      Status = QSVEncode->Init(&QSVEncodeParams);
+      info("\tMFXVideoENCODE_Init%s retry (without CO3) status: %d",
+           log_prefix, Status);
+    }
+  }
+
+  // Retry without mfxExtCodingOption2 (older drivers may reject it)
+  if (Status < MFX_ERR_NONE) {
+    auto CO2Params =
+        QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
+    if (CO2Params) {
+      warn("MFXVideoENCODE_Init%s failed (err=%d), retrying without CO2",
+           log_prefix, Status);
+      QSVEncode->Close();
+      QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOption2>();
+      Status = QSVEncode->Init(&QSVEncodeParams);
+      info("\tMFXVideoENCODE_Init%s retry (without CO2) status: %d",
+           log_prefix, Status);
+    }
+  }
+#endif
 
   if (Status < MFX_ERR_NONE) {
     QSVEncode->Close();
