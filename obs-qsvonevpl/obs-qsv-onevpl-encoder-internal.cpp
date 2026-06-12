@@ -350,21 +350,21 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
   }
 
   // Retry with simplified CO params if still failed
-  // if (Status < MFX_ERR_NONE) {
-  //   auto COParams =
-  //       QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
-  //   if (COParams) {
-  //     warn("MFXVideoENCODE_Init%s failed, retrying with CO basic", log_prefix);
-  //     QSVEncode->Close();
-  //     COParams->IntraPredBlockSize = MFX_BLOCKSIZE_UNKNOWN;
-  //     COParams->InterPredBlockSize = MFX_BLOCKSIZE_UNKNOWN;
-  //     COParams->MECostType = 0;
-  //     COParams->MESearchType = 0;
-  //     Status = QSVEncode->Init(&QSVEncodeParams);
-  //     info("\tMFXVideoENCODE_Init%s retry (CO basic) status: %d", log_prefix,
-  //          Status);
-  //   }
-  // }
+  if (Status < MFX_ERR_NONE) {
+    auto COParams =
+        QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
+    if (COParams) {
+      warn("MFXVideoENCODE_Init%s failed, retrying with CO basic", log_prefix);
+      QSVEncode->Close();
+      COParams->IntraPredBlockSize = MFX_BLOCKSIZE_UNKNOWN;
+      COParams->InterPredBlockSize = MFX_BLOCKSIZE_UNKNOWN;
+      COParams->MECostType = 0;
+      COParams->MESearchType = 0;
+      Status = QSVEncode->Init(&QSVEncodeParams);
+      info("\tMFXVideoENCODE_Init%s retry (CO basic) status: %d", log_prefix,
+           Status);
+    }
+  }
 
   if (Status < MFX_ERR_NONE) {
     QSVEncode->Close();
