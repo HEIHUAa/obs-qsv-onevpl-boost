@@ -1146,7 +1146,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     COParams->InterPredBlockSize = MFX_BLOCKSIZE_MIN_4X4;
     COParams->MVPrecision = MFX_MVPRECISION_QUARTERPEL;
     COParams->MECostType = static_cast<mfxU16>(8);
-    COParams->MESearchType = static_cast<mfxU16>(16);
+    COParams->MESearchType = static_cast<mfxU16>(1);
     COParams->MVSearchWindow.x = (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC)
                                      ? static_cast<mfxI16>(16)
                                      : static_cast<mfxI16>(32);
@@ -1215,14 +1215,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
         CO2Params->LookAheadDepth = InputParams->LADepth;
       }
     }
-
-    // if ((QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_CBR ||
-    //      QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_VBR) &&
-    //     QSVEncodeParams.mfx.LowPower == MFX_CODINGOPTION_OFF &&
-    //     InputParams->MBBRC == true) {
-    //   InputParams->MBBRC = false;
-    //   info("\tMBBRC set: OFF (CBR/VBR with Lowpower OFF)");
-    // }
 
     CO2Params->MBBRC = GetCodingOpt(InputParams->MBBRC);
 
