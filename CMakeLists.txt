@@ -19,6 +19,15 @@ if(WIN32)
 # VPL
 set(BUILD_TOOLS OFF CACHE BOOL "" FORCE)
 add_subdirectory(libvpl)
+
+# VPL's CompileOptions.cmake sets CMAKE_DEBUG_POSTFIX "d", which gives
+# the VPL target DEBUG_POSTFIX = "d" property. In multi-config generators
+# (Visual Studio) this causes all consumers of VPL to link against debug
+# library names (libvpld.dll, Qt6Widgetsd.dll) even in Release builds.
+# Explicitly reset to empty to prevent this behavior.
+if(TARGET VPL)
+  set_target_properties(VPL PROPERTIES DEBUG_POSTFIX "")
+endif()
 endif()
 
 # VPL-private (experimental / hidden stuff)
