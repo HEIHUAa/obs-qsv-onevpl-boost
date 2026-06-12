@@ -4,6 +4,8 @@
 #include <array>
 #include <cctype>
 #include <cstddef>
+#include <cstdio>
+#include <cstdlib>
 #include <sstream>
 #include <span>
 #include <string>
@@ -263,6 +265,8 @@ static void LogCO2CO3Corrections(
 mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
                                           enum codec_enum Codec,
                                           const char *log_prefix) {
+  FrameQPStats = {};
+
   mfxStatus Status = SetEncoderParams(InputParams, Codec);
   info("\tSetEncoderParams%s status:  %d", log_prefix, Status);
 
@@ -2054,10 +2058,15 @@ mfxStatus QSVEncoder::InitTaskPool([[maybe_unused]] enum codec_enum Codec) {
   Task NewTask = {};
   QSVTaskPool.reserve(QSVEncodeParams.AsyncDepth);
 
+  // Allocate one mfxExtEncodedFrameInfo per task to retrieve per-frame QP
+  QSVTaskEncodedInfo.resize(QSVEncodeParams.AsyncDepth);
+  QSVTaskEncodedExtPtr.resize(QSVEncodeParams.AsyncDepth);
+
   for (int i = 0; i < QSVEncodeParams.AsyncDepth; i++) {
     NewTask.Bitstream.MaxLength =
         static_cast<mfxU32>(QSVEncodeParams.mfx.BufferSizeInKB * 1000 *
-                            QSVEncodeParams.mfx.BRCParamMultiplier);
+                            QSVEncodeParams.mfx.BRCParamMultiplier) +
+        QSV_SEI_EXTRA;
 
     NewTask.Bitstream.DataOffset = 0;
     NewTask.Bitstream.DataLength = 0;
@@ -2069,6 +2078,16 @@ mfxStatus QSVEncoder::InitTaskPool([[maybe_unused]] enum codec_enum Codec) {
     }
     info("\tTask #%d bitstream size: %d Kb", i,
          NewTask.Bitstream.MaxLength / 1000);
+
+    // Attach mfxExtEncodedFrameInfo to each task's bitstream so the
+    // encoder reports back the frame-level QP after EncodeFrameAsync.
+    auto &encInfo = QSVTaskEncodedInfo[i];
+    memset(&encInfo, 0, sizeof(encInfo));
+    encInfo.Header.BufferId = MFX_EXTBUFF_ENCODED_FRAME_INFO;
+    encInfo.Header.BufferSz = sizeof(encInfo);
+    NewTask.Bitstream.ExtParam = &QSVTaskEncodedExtPtr[i];
+    QSVTaskEncodedExtPtr[i] = reinterpret_cast<mfxExtBuffer *>(&encInfo);
+    NewTask.Bitstream.NumExtParam = 1;
 
     QSVTaskPool.push_back(NewTask);
 
@@ -2709,6 +2728,18 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
     }
   } while (SyncStatus == MFX_WRN_IN_EXECUTION);
 
+  // ── Extract per-frame QP from the synced bitstream ─────────────
+  {
+    auto &taskBS = QSVTaskPool[QSVSyncTaskID].Bitstream;
+    if (taskBS.ExtParam && taskBS.NumExtParam > 0) {
+      auto *encInfo =
+          reinterpret_cast<mfxExtEncodedFrameInfo *>(taskBS.ExtParam[0]);
+      if (encInfo && encInfo->Header.BufferId == MFX_EXTBUFF_ENCODED_FRAME_INFO) {
+        UpdateFrameQPStats(taskBS.FrameType, encInfo->QP);
+      }
+    }
+  }
+
   mfxU8 *DataTemp = QSVBitstream.Data;
   QSVBitstream = QSVTaskPool[QSVSyncTaskID].Bitstream;
 
@@ -3079,6 +3110,161 @@ populate:
   }
 }
 
+// ── Per-frame QP tracking ────────────────────────────────────────
+
+void QSVEncoder::UpdateFrameQPStats(mfxU16 frameType, mfxU16 qp) {
+  FrameQPStats.totalFrames++;
+
+  // Pick the correct bucket based on frame type.
+  // MFX_FRAMETYPE flags can be combined (e.g. I+REF), so we check
+  // the primary type first.
+  QPFrameTypeStats *bucket = nullptr;
+
+  if (frameType & MFX_FRAMETYPE_I || frameType & MFX_FRAMETYPE_IDR ||
+      frameType & MFX_FRAMETYPE_xI || frameType & MFX_FRAMETYPE_xIDR) {
+    bucket = &FrameQPStats.i;
+  } else if (frameType & MFX_FRAMETYPE_P || frameType & MFX_FRAMETYPE_xP) {
+    bucket = &FrameQPStats.p;
+  } else if (frameType & MFX_FRAMETYPE_B || frameType & MFX_FRAMETYPE_xB) {
+    bucket = &FrameQPStats.b;
+  } else {
+    // Unknown frame type — still count but can't categorise.
+    return;
+  }
+
+  bucket->count++;
+  bucket->sumQP += qp;
+  if (qp < bucket->minQP) bucket->minQP = qp;
+  if (qp > bucket->maxQP) bucket->maxQP = qp;
+}
+
+void QSVEncoder::LogQPStats() {
+  auto logType = [](const char *label, const QPFrameTypeStats &s) {
+    if (s.count == 0) {
+      blog(LOG_INFO, "[QSV VPL] QPStats: %s — no frames encoded", label);
+      return;
+    }
+    double avg = static_cast<double>(s.sumQP) / static_cast<double>(s.count);
+    blog(LOG_INFO,
+         "[QSV VPL] QPStats: %s  count=%llu  min=%u  max=%u  avg=%.2f",
+         label,
+         static_cast<unsigned long long>(s.count),
+         s.minQP, s.maxQP, avg);
+  };
+
+  blog(LOG_INFO,
+       "[QSV VPL] QPStats: === Per-frame QP summary (total %llu frames) ===",
+       static_cast<unsigned long long>(FrameQPStats.totalFrames));
+  logType("I-frames", FrameQPStats.i);
+  logType("P-frames", FrameQPStats.p);
+  logType("B-frames", FrameQPStats.b);
+}
+
+// ── QP stats SEI injection ──────────────────────────────────────
+//
+// Builds a User Data Unregistered SEI NAL with the current cumulative
+// QP statistics and appends it to |bs|.  Every frame gets one so that
+// the very last frame carries the final summary.
+//
+// SEI NAL structure (AVC):  [00 00 00 01] 06 05 <size> <uuid> <data> 80
+// SEI NAL structure (HEVC): [00 00 00 01] 4E 01 05 <size> <uuid> <data> 80
+
+void QSVEncoder::AppendQpSeiToBitstream(mfxBitstream &bs) {
+  // Account for DataOffset: free space = MaxLength − DataOffset − DataLength
+  mfxU32 freeSpace = bs.MaxLength - bs.DataOffset - bs.DataLength;
+  if (freeSpace < QSV_SEI_EXTRA)
+    return; // not enough room
+
+  auto fmtType = [](const QPFrameTypeStats &s, char label,
+                    std::string &out) {
+    if (s.count == 0)
+      return;
+    double avg = static_cast<double>(s.sumQP) /
+                 static_cast<double>(s.count);
+    // Format: "I:cnt,min,max,avg|"
+    char buf[64];
+    int n = snprintf(buf, sizeof(buf), "%c:%llu,%u,%u,%.2f|",
+                     label,
+                     static_cast<unsigned long long>(s.count),
+                     s.minQP, s.maxQP, avg);
+    out.append(buf, n);
+  };
+
+  std::string payload;
+  payload.reserve(96);
+  payload = "QSVQP|";
+  fmtType(FrameQPStats.i, 'I', payload);
+  fmtType(FrameQPStats.p, 'P', payload);
+  fmtType(FrameQPStats.b, 'B', payload);
+  // Remove trailing '|' if any
+  if (!payload.empty() && payload.back() == '|')
+    payload.pop_back();
+
+  // Determine codec and build the SEI NAL
+  mfxU32 codecId = QSVEncodeParams.mfx.CodecId;
+  bool isHEVC = (codecId == MFX_CODEC_HEVC);
+  // AV1 has no SEI — skip
+  if (codecId == MFX_CODEC_AV1)
+    return;
+
+  // Write buffer: start code + NAL header + SEI type + size + uuid + data + trailing
+  uint8_t buf[QSV_SEI_EXTRA];
+  size_t pos = 0;
+
+  // Annex B start code
+  buf[pos++] = 0x00; buf[pos++] = 0x00; buf[pos++] = 0x00; buf[pos++] = 0x01;
+
+  // NAL unit header
+  if (isHEVC) {
+    buf[pos++] = 0x4E; // nal_unit_type = 39 (SEI), nuh_layer_id = 0
+    buf[pos++] = 0x01; // nuh_temporal_id_plus1 = 1
+  } else {
+    buf[pos++] = 0x06; // nal_unit_type = 6 (SEI)
+  }
+
+  // SEI payload type: user_data_unregistered (5)
+  buf[pos++] = 0x05;
+
+  // SEI payload size (1 byte — our payload is always < 255)
+  const size_t payload_size = 16 + payload.size(); // UUID + text
+  buf[pos++] = static_cast<uint8_t>(payload_size & 0xFF);
+
+  // UUID
+  memcpy(buf + pos, QP_SEI_UUID, 16);
+  pos += 16;
+
+  // User data (the stats string)
+  memcpy(buf + pos, payload.data(), payload.size());
+  pos += payload.size();
+
+  // RBSP trailing bits
+  buf[pos++] = 0x80;
+
+  // Append to the bitstream buffer
+  uint8_t *dst = bs.Data + bs.DataOffset + bs.DataLength;
+  memcpy(dst, buf, pos);
+  bs.DataLength += static_cast<mfxU32>(pos);
+
+  // Keep a copy so external callers can retrieve it later
+  QpStatsSeiBuffer.assign(buf, buf + pos);
+}
+
+void QSVEncoder::GetQpStatsSei(uint8_t **data, size_t *size) {
+  if (QpStatsSeiBuffer.empty()) {
+    *data = nullptr;
+    *size = 0;
+    return;
+  }
+  // Allocate a copy that the caller must free
+  *data = static_cast<uint8_t *>(malloc(QpStatsSeiBuffer.size()));
+  if (*data) {
+    memcpy(*data, QpStatsSeiBuffer.data(), QpStatsSeiBuffer.size());
+    *size = QpStatsSeiBuffer.size();
+  } else {
+    *size = 0;
+  }
+}
+
 mfxStatus QSVEncoder::Drain() {
   mfxStatus Status = MFX_ERR_NONE;
 
@@ -3092,16 +3278,38 @@ mfxStatus QSVEncoder::Drain() {
   }
   Status = MFX_ERR_NONE;
 
+  // Sync and extract QP from any remaining pending tasks.
+  // These frames were submitted during normal encoding but never
+  // synced through SyncAndSwapPendingTask (e.g. the last few frames
+  // in the pipeline).
   for (auto &Task : QSVTaskPool) {
     if (Task.SyncPoint != nullptr) {
       mfxStatus SyncSts = MFXVideoCORE_SyncOperation(
           QSVSession, Task.SyncPoint, 5000);
-      if (SyncSts < MFX_ERR_NONE) {
+      if (SyncSts >= MFX_ERR_NONE) {
+        // Extract QP from this task's bitstream
+        if (Task.Bitstream.ExtParam && Task.Bitstream.NumExtParam > 0) {
+          auto *encInfo =
+              reinterpret_cast<mfxExtEncodedFrameInfo *>(
+                  Task.Bitstream.ExtParam[0]);
+          if (encInfo &&
+              encInfo->Header.BufferId == MFX_EXTBUFF_ENCODED_FRAME_INFO) {
+            UpdateFrameQPStats(Task.Bitstream.FrameType, encInfo->QP);
+          }
+        }
+      } else {
         warn("Drain sync warning: %d", SyncSts);
       }
       Task.SyncPoint = nullptr;
     }
   }
+
+  LogQPStats();
+
+  // Rebuild the SEI buffer with the final cumulative stats so that
+  // GetQpStatsSei() returns the complete summary (including any
+  // frames synced just above).
+  AppendQpSeiToBitstream(QSVBitstream);
 
   return Status;
 }

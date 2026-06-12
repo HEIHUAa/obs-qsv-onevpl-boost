@@ -195,4 +195,54 @@ private:
   // ROI (Region of Interest) data for per-frame encoding control
   std::vector<encoder_params::roi_region> CachedROIRegions;
   mfxU16 CachedROIMode;
+
+  // ── Per-frame QP tracking ──────────────────────────────────────
+  // Tracks QP statistics per I/P/B frame type for diagnostic logging.
+  struct QPFrameTypeStats {
+    uint64_t count = 0;
+    uint64_t sumQP = 0;
+    mfxU16 minQP = UINT16_MAX;
+    mfxU16 maxQP = 0;
+  };
+
+  struct QPFrameStats {
+    QPFrameTypeStats i, p, b;
+    uint64_t totalFrames = 0;
+  };
+
+  QPFrameStats FrameQPStats;
+
+  // One mfxExtEncodedFrameInfo per task, attached to each task's
+  // bitstream so the encoder fills in the frame-level QP after encode.
+  std::vector<mfxExtEncodedFrameInfo> QSVTaskEncodedInfo;
+  // Each task's bitstream.ExtParam points into the array below.
+  std::vector<mfxExtBuffer *> QSVTaskEncodedExtPtr;
+
+  // ── Per-frame QP tracking ──────────────────────────────────────
+  static constexpr size_t QSV_SEI_EXTRA = 1024; // extra bytes per task for SEI injection
+
+  void UpdateFrameQPStats(mfxU16 frameType, mfxU16 qp);
+  void LogQPStats();
+
+  // ── QP stats SEI (User Data Unregistered) injection ────────────
+  // Inserts an SEI NAL containing cumulative QP stats into the video
+  // bitstream so media players (VLC, MPC-HC, PotPlayer) can display
+  // them in the codec information dialog.
+  //
+  // UUID for this plugin's SEI user_data_unregistered messages.
+  static constexpr uint8_t QP_SEI_UUID[16] = {
+      0xe7, 0xa5, 0xa8, 0xd0, 0x6b, 0x3c, 0x4c, 0x2e,
+      0x9f, 0x1d, 0x8a, 0x5b, 0x7c, 0x9d, 0x3f, 0x1a};
+
+  // Appends a User Data Unregistered SEI NAL with the current QP
+  // stats to |bs|.  Handles both AVC (NAL type 6) and HEVC (NAL
+  // type 39).  Assumes |bs| has at least QSV_SEI_EXTRA bytes of
+  // headroom beyond |DataLength|.
+  void AppendQpSeiToBitstream(mfxBitstream &bs);
+
+  // Returns the most recently appended SEI data (raw NAL, allocated
+  // by the encoder, owned by the caller).  Returns nullptr if no SEI
+  // has been written.
+  void GetQpStatsSei(uint8_t **data, size_t *size);
+  std::vector<uint8_t> QpStatsSeiBuffer; // last appended SEI NAL
 };
