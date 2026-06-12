@@ -350,21 +350,21 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
   }
 
   // Retry with simplified CO params if still failed
-  if (Status < MFX_ERR_NONE) {
-    auto COParams =
-        QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
-    if (COParams) {
-      warn("MFXVideoENCODE_Init%s failed, retrying with CO basic", log_prefix);
-      QSVEncode->Close();
-      COParams->IntraPredBlockSize = MFX_BLOCKSIZE_UNKNOWN;
-      COParams->InterPredBlockSize = MFX_BLOCKSIZE_UNKNOWN;
-      COParams->MECostType = 0;
-      COParams->MESearchType = 0;
-      Status = QSVEncode->Init(&QSVEncodeParams);
-      info("\tMFXVideoENCODE_Init%s retry (CO basic) status: %d", log_prefix,
-           Status);
-    }
-  }
+  // if (Status < MFX_ERR_NONE) {
+  //   auto COParams =
+  //       QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
+  //   if (COParams) {
+  //     warn("MFXVideoENCODE_Init%s failed, retrying with CO basic", log_prefix);
+  //     QSVEncode->Close();
+  //     COParams->IntraPredBlockSize = MFX_BLOCKSIZE_UNKNOWN;
+  //     COParams->InterPredBlockSize = MFX_BLOCKSIZE_UNKNOWN;
+  //     COParams->MECostType = 0;
+  //     COParams->MESearchType = 0;
+  //     Status = QSVEncode->Init(&QSVEncodeParams);
+  //     info("\tMFXVideoENCODE_Init%s retry (CO basic) status: %d", log_prefix,
+  //          Status);
+  //   }
+  // }
 
   if (Status < MFX_ERR_NONE) {
     QSVEncode->Close();
@@ -1142,17 +1142,17 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     COParams->FieldOutput = (InputParams->Lowpower == false)
                                 ? MFX_CODINGOPTION_OFF
                                 : MFX_CODINGOPTION_ON;
-    COParams->IntraPredBlockSize = MFX_BLOCKSIZE_MIN_4X4;
-    COParams->InterPredBlockSize = MFX_BLOCKSIZE_MIN_4X4;
-    COParams->MVPrecision = MFX_MVPRECISION_QUARTERPEL;
-    COParams->MECostType = static_cast<mfxU16>(8);
-    COParams->MESearchType = static_cast<mfxU16>(256);
-    COParams->MVSearchWindow.x = (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC)
-                                     ? static_cast<mfxI16>(16)
-                                     : static_cast<mfxI16>(32);
-    COParams->MVSearchWindow.y = (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC)
-                                     ? static_cast<mfxI16>(16)
-                                     : static_cast<mfxI16>(32);
+    // COParams->IntraPredBlockSize = MFX_BLOCKSIZE_MIN_4X4;
+    // COParams->InterPredBlockSize = MFX_BLOCKSIZE_MIN_4X4;
+    // COParams->MVPrecision = MFX_MVPRECISION_QUARTERPEL;
+    // COParams->MECostType = static_cast<mfxU16>(8);
+    // COParams->MESearchType = static_cast<mfxU16>(1);
+    // COParams->MVSearchWindow.x = (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC)
+    //                                  ? static_cast<mfxI16>(16)
+    //                                  : static_cast<mfxI16>(32);
+    // COParams->MVSearchWindow.y = (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC)
+    //                                  ? static_cast<mfxI16>(16)
+    //                                  : static_cast<mfxI16>(32);
 
     if (InputParams->IntraRefEncoding == true) {
       COParams->RecoveryPointSEI = MFX_CODINGOPTION_ON;
