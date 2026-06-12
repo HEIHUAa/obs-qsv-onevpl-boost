@@ -17,11 +17,7 @@ endif()
 
 if(WIN32)
 # VPL's CompileOptions.cmake sets CMAKE_DEBUG_POSTFIX "d" internally,
-# which gives the VPL target DEBUG_POSTFIX = "d" property. In multi-config
-# generators (Visual Studio) this propagates to all consumers of VPL,
-# causing them to link against debug-named libraries (libvpld.dll,
-# Qt6Widgetsd.dll) even in Release builds.
-#
+# which gives the VPL target DEBUG_POSTFIX = "d" property.
 # Pre-set CMAKE_DEBUG_POSTFIX in the CACHE to block VPL's override,
 # then also explicitly clear the property on VPL after creation.
 set(CMAKE_DEBUG_POSTFIX "" CACHE STRING "Debug library postfix" FORCE)
@@ -34,6 +30,17 @@ add_subdirectory(libvpl)
 if(TARGET VPL)
   set_target_properties(VPL PROPERTIES DEBUG_POSTFIX "")
 endif()
+
+# Qt6 imported targets from OBS deps may not expose standard "RELEASE"
+# configuration to multi-config generators.  Override the imported config
+# mapping for Release builds so that CMake always resolves imported targets
+# (Qt6::Widgets, etc.) to their "RELEASE" variant first, then falls back
+# to "RelWithDebInfo".  Without this, Release builds can incorrectly resolve
+# Qt6 to debug-named libraries (Qt6Widgetsd.dll).
+set(CMAKE_MAP_IMPORTED_CONFIG_RELEASE
+  "RELEASE"
+  "RelWithDebInfo"
+  CACHE STRING "Release config mapping for imported targets" FORCE)
 endif()
 
 # VPL-private (experimental / hidden stuff)
