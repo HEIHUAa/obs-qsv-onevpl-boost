@@ -1,4 +1,4 @@
-name: Build obs-qsv-onevpl
+name: Build UHD700+
 
 on:
   push:
@@ -84,18 +84,18 @@ jobs:
         uses: actions/cache@v5
         with:
           path: obs-studio/build_x64
-          key: cmake-${{ runner.os }}-${{ env.OBS_VERSION }}-${{ hashFiles('obs-studio/plugins/obs-qsv-onevpl/obs-qsvonevpl/CMakeLists.txt') }}
+          key: cmake-uhd700-${{ runner.os }}-${{ env.OBS_VERSION }}-${{ hashFiles('obs-studio/plugins/obs-qsv-onevpl/**') }}
 
       - name: Configure CMake
         if: steps.cache-cmake.outputs.cache-hit != 'true'
-        run: cmake --preset windows-x64 -DQSV_UHD600_SUPPORT=ON -DMEDIASDK_INCLUDE_DIR="${{ github.workspace }}/obs-studio/plugins/${{ env.PLUGIN_NAME }}/MediaSDK/api/include"
+        run: cmake --preset windows-x64 -DMEDIASDK_INCLUDE_DIR="${{ github.workspace }}/obs-studio/plugins/${{ env.PLUGIN_NAME }}/MediaSDK/api/include"
         working-directory: ${{ github.workspace }}/obs-studio
 
-      - name: Build Release (UHD700+)
+      - name: Build Release
         run: cmake --build --preset windows-x64 --config Release --target obs-qsvonevpl
         working-directory: ${{ github.workspace }}/obs-studio
 
-      - name: Package Release (UHD700+)
+      - name: Package Release
         run: |
           $ModuleName = "obs-qsvonevpl"
           $SourceDir = "${{ github.workspace }}/obs-studio/plugins/${{ env.PLUGIN_NAME }}/$ModuleName/data"
@@ -106,44 +106,17 @@ jobs:
           Copy-Item "$ReleaseDir/$ModuleName.dll" "$ReleasePackage/obs-plugins/64bit/"
           Copy-Item "$SourceDir/locale/*.ini" "$ReleasePackage/data/obs-plugins/$ModuleName/locale/"
 
-      - name: Upload Release Artifacts (UHD700+)
+      - name: Upload Release Artifacts
         uses: actions/upload-artifact@v7
         with:
           name: ${{ env.PLUGIN_NAME }}-${{ github.sha }}-windows-x64-Release
           path: ${{ github.workspace }}/package/release/**/*
 
-      - name: Build Release (UHD600)
-        run: cmake --build --preset windows-x64 --config Release --target obs-qsvonevpl-uhd600
-        working-directory: ${{ github.workspace }}/obs-studio
-
-      - name: Package Release (UHD600)
-        run: |
-          $ModuleName = "obs-qsvonevpl"
-          $SourceDir = "${{ github.workspace }}/obs-studio/plugins/${{ env.PLUGIN_NAME }}/$ModuleName/data"
-          $UHD600RelDir = "${{ github.workspace }}/obs-studio/build_x64/plugins/${{ env.PLUGIN_NAME }}/$ModuleName/Release"
-          $UHD600ReleasePackage = "${{ github.workspace }}/package/uhd600"
-          New-Item -ItemType Directory -Path "$UHD600ReleasePackage/obs-plugins/64bit" -Force
-          New-Item -ItemType Directory -Path "$UHD600ReleasePackage/data/obs-plugins/$ModuleName/locale" -Force
-          $UHD600Dll = Get-ChildItem -Path "${{ github.workspace }}/obs-studio/build_x64" -Recurse -Filter "obs-qsvonevpl-uhd600.dll" | Select-Object -First 1
-          $UHD600Dir = if ($UHD600Dll) { $UHD600Dll.Directory.FullName } else { $UHD600RelDir }
-          Copy-Item "$UHD600Dir/obs-qsvonevpl-uhd600.dll" "$UHD600ReleasePackage/obs-plugins/64bit/"
-          $UHD600LibVpl = if (Test-Path "$UHD600Dir/libvpl.dll") { Get-Item "$UHD600Dir/libvpl.dll" } else { Get-ChildItem -Path "${{ github.workspace }}/obs-studio/build_x64" -Recurse -Filter "libvpl.dll" | Select-Object -First 1 }
-          if ($UHD600LibVpl) {
-            Copy-Item $UHD600LibVpl.FullName "$UHD600ReleasePackage/obs-plugins/64bit/libvpl.dll"
-          }
-          Copy-Item "$SourceDir/locale/*.ini" "$UHD600ReleasePackage/data/obs-plugins/$ModuleName/locale/"
-
-      - name: Upload Release Artifacts (UHD600)
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ env.PLUGIN_NAME }}-uhd600-${{ github.sha }}-windows-x64-Release
-          path: ${{ github.workspace }}/package/uhd600/**/*
-
-      - name: Build Debug (UHD700+)
+      - name: Build Debug
         run: cmake --build --preset windows-x64 --config Debug --target obs-qsvonevpl
         working-directory: ${{ github.workspace }}/obs-studio
 
-      - name: Package Debug (UHD700+)
+      - name: Package Debug
         run: |
           $ModuleName = "obs-qsvonevpl"
           $SourceDir = "${{ github.workspace }}/obs-studio/plugins/${{ env.PLUGIN_NAME }}/$ModuleName/data"
@@ -155,43 +128,8 @@ jobs:
           Copy-Item "$DebugDir/$ModuleName.pdb" "$DebugPackage/obs-plugins/64bit/"
           Copy-Item "$SourceDir/locale/*.ini" "$DebugPackage/data/obs-plugins/$ModuleName/locale/"
 
-      - name: Upload Debug Artifacts (UHD700+)
+      - name: Upload Debug Artifacts
         uses: actions/upload-artifact@v7
         with:
           name: ${{ env.PLUGIN_NAME }}-${{ github.sha }}-windows-x64-Debug
           path: ${{ github.workspace }}/package/debug/**/*
-
-      - name: Build Debug (UHD600)
-        run: cmake --build --preset windows-x64 --config Debug --target obs-qsvonevpl-uhd600
-        working-directory: ${{ github.workspace }}/obs-studio
-
-      - name: Package Debug (UHD600)
-        run: |
-          $ModuleName = "obs-qsvonevpl"
-          $SourceDir = "${{ github.workspace }}/obs-studio/plugins/${{ env.PLUGIN_NAME }}/$ModuleName/data"
-          $UHD600DbgDir = "${{ github.workspace }}/obs-studio/build_x64/plugins/${{ env.PLUGIN_NAME }}/$ModuleName/Debug"
-          $UHD600DebugPackage = "${{ github.workspace }}/package/uhd600-debug"
-          New-Item -ItemType Directory -Path "$UHD600DebugPackage/obs-plugins/64bit" -Force
-          New-Item -ItemType Directory -Path "$UHD600DebugPackage/data/obs-plugins/$ModuleName/locale" -Force
-          $UHD600DbgDll = Get-ChildItem -Path "${{ github.workspace }}/obs-studio/build_x64" -Recurse -Filter "obs-qsvonevpl-uhd600.pdb" | Select-Object -First 1
-          $UHD600DbgDir = if ($UHD600DbgDll) { $UHD600DbgDll.Directory.FullName } else { $UHD600DbgDir }
-          if (Test-Path "$UHD600DbgDir/obs-qsvonevpl-uhd600.dll") {
-            Copy-Item "$UHD600DbgDir/obs-qsvonevpl-uhd600.dll" "$UHD600DebugPackage/obs-plugins/64bit/"
-          }
-          if (Test-Path "$UHD600DbgDir/obs-qsvonevpl-uhd600.pdb") {
-            Copy-Item "$UHD600DbgDir/obs-qsvonevpl-uhd600.pdb" "$UHD600DebugPackage/obs-plugins/64bit/"
-          }
-          $UHD600DbgLibVpl = if (Test-Path "$UHD600DbgDir/libvpl.dll") { Get-Item "$UHD600DbgDir/libvpl.dll" } else { Get-ChildItem -Path "${{ github.workspace }}/obs-studio/build_x64" -Recurse -Filter "libvpl.dll" | Select-Object -First 1 }
-          if ($UHD600DbgLibVpl) {
-            Copy-Item $UHD600DbgLibVpl.FullName "$UHD600DebugPackage/obs-plugins/64bit/libvpl.dll"
-          }
-          if (Test-Path "$UHD600DbgDir/libvpl.pdb") {
-            Copy-Item "$UHD600DbgDir/libvpl.pdb" "$UHD600DebugPackage/obs-plugins/64bit/"
-          }
-          Copy-Item "$SourceDir/locale/*.ini" "$UHD600DebugPackage/data/obs-plugins/$ModuleName/locale/"
-
-      - name: Upload Debug Artifacts (UHD600)
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ env.PLUGIN_NAME }}-uhd600-${{ github.sha }}-windows-x64-Debug
-          path: ${{ github.workspace }}/package/uhd600-debug/**/*
