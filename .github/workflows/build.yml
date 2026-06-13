@@ -84,10 +84,15 @@ jobs:
         uses: actions/cache@v5
         with:
           path: obs-studio/build_x64
-          key: cmake-${{ runner.os }}-${{ env.OBS_VERSION }}-${{ hashFiles('obs-studio/plugins/obs-qsv-onevpl/obs-qsvonevpl/CMakeLists.txt') }}
+          key: cmake-${{ runner.os }}-${{ env.OBS_VERSION }}-${{
+            hashFiles(
+            'obs-studio/plugins/obs-qsv-onevpl/obs-qsvonevpl/CMakeLists.txt',
+            'obs-studio/plugins/obs-qsv-onevpl/obs-qsvonevpl/**/*.cpp',
+            'obs-studio/plugins/obs-qsv-onevpl/obs-qsvonevpl/**/*.hpp',
+            'obs-studio/plugins/obs-qsv-onevpl/obs-qsvonevpl/**/*.h'
+            ) }}
 
       - name: Configure CMake
-        if: steps.cache-cmake.outputs.cache-hit != 'true'
         run: cmake --preset windows-x64 -DQSV_UHD600_SUPPORT=ON -DMEDIASDK_INCLUDE_DIR="${{ github.workspace }}/obs-studio/plugins/${{ env.PLUGIN_NAME }}/MediaSDK/api/include"
         working-directory: ${{ github.workspace }}/obs-studio
 
@@ -113,7 +118,16 @@ jobs:
           path: ${{ github.workspace }}/package/release/**/*
 
       - name: Build Release (UHD600)
-        run: cmake --build --preset windows-x64 --config Release --target obs-qsvonevpl-uhd600
+        run: |
+          # Force full rebuild: remove cached intermediates from previous run
+          # UHD700+ rebuilds its own .obj files, but UHD600's .obj files stay
+          # stale from cache, producing a mixed/incorrect DLL.
+          $uhd600Dir = "${{ github.workspace }}/obs-studio/build_x64/plugins/${{ env.PLUGIN_NAME }}/obs-qsvonevpl-uhd600.dir"
+          if (Test-Path $uhd600Dir) {
+            Remove-Item -Recurse -Force $uhd600Dir
+            Write-Host "Cleaned UHD600 intermediate directory to force full rebuild"
+          }
+          cmake --build --preset windows-x64 --config Release --target obs-qsvonevpl-uhd600
         working-directory: ${{ github.workspace }}/obs-studio
 
       - name: Package Release (UHD600)
@@ -162,7 +176,14 @@ jobs:
           path: ${{ github.workspace }}/package/debug/**/*
 
       - name: Build Debug (UHD600)
-        run: cmake --build --preset windows-x64 --config Debug --target obs-qsvonevpl-uhd600
+        run: |
+          # Clean UHD600 intermediates to force full rebuild (see Release step)
+          $uhd600Dir = "${{ github.workspace }}/obs-studio/build_x64/plugins/${{ env.PLUGIN_NAME }}/obs-qsvonevpl-uhd600.dir"
+          if (Test-Path $uhd600Dir) {
+            Remove-Item -Recurse -Force $uhd600Dir
+            Write-Host "Cleaned UHD600 intermediate directory to force full rebuild"
+          }
+          cmake --build --preset windows-x64 --config Debug --target obs-qsvonevpl-uhd600
         working-directory: ${{ github.workspace }}/obs-studio
 
       - name: Package Debug (UHD600)

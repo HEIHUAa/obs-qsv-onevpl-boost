@@ -464,6 +464,27 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
          log_prefix, Status);
   }
 
+  // Retry without CodingOption3 (UHD600 compatibility: older drivers
+  // may not support the extended CO3 parameters at all; the standard
+  // OBS plugin only adds CO3 when HasOptimizedBRCSupport() is true,
+  // which is false for old platforms like UHD600).
+  if (Status < MFX_ERR_NONE &&
+      QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
+    auto CO3 =
+        QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
+    if (CO3) {
+      warn("MFXVideoENCODE_Init%s failed (err=%d), "
+           "retrying without CodingOption3",
+           log_prefix, Status);
+      QSVEncode->Close();
+      QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOption3>();
+      Status = QSVEncode->Init(&QSVEncodeParams);
+      info("\tMFXVideoENCODE_Init%s retry "
+           "(without CO3) status: %d",
+           log_prefix, Status);
+    }
+  }
+
   if (Status < MFX_ERR_NONE &&
       QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
     auto ChromaLoc =
