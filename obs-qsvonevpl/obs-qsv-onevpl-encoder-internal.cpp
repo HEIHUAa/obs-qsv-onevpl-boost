@@ -450,6 +450,36 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
            log_prefix, Status);
     }
   }
+
+  if (Status < MFX_ERR_NONE &&
+      QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
+    auto COParams =
+        QSVEncodeParams.GetExtBuffer<mfxExtCodingOptionDDI>();
+    if (COParams) {
+      warn("MFXVideoENCODE_Init%s failed (err=%d), "
+           "retrying without CODDI",
+           log_prefix, Status);
+      QSVEncode->Close();
+      QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOptionDDI>();
+      Status = QSVEncode->Init(&QSVEncodeParams);
+      info("\tMFXVideoENCODE_Init%s retry "
+           "(without CODDI) status: %d",
+           log_prefix, Status);
+    }
+  }
+
+  if (Status < MFX_ERR_NONE &&
+      QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
+    warn("MFXVideoENCODE_Init%s failed (err=%d), "
+         "retrying with NumSlice=0",
+         log_prefix, Status);
+    QSVEncode->Close();
+    QSVEncodeParams.mfx.NumSlice = 0;
+    Status = QSVEncode->Init(&QSVEncodeParams);
+    info("\tMFXVideoENCODE_Init%s retry "
+         "(NumSlice=0) status: %d",
+         log_prefix, Status);
+  }
 #endif
 
   if (Status < MFX_ERR_NONE) {
