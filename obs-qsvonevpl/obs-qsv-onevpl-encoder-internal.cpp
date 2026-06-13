@@ -380,32 +380,39 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
   }
 
 #ifdef QSV_UHD600_SUPPORT
-  // Retry without mfxExtCodingOption3 (older drivers may reject it)
-  if (Status < MFX_ERR_NONE) {
-    auto CO3Params =
-        QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-    if (CO3Params) {
-      warn("MFXVideoENCODE_Init%s failed (err=%d), retrying without CO3",
+  // Retry without HEVC-specific extended buffers (UHD600 compatibility:
+  // older drivers may not support mfxExtHEVCTiles/mfxExtHEVCParam in
+  // system memory mode for HEVC encoding).
+  if (Status < MFX_ERR_NONE &&
+      QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
+    auto HevcTiles =
+        QSVEncodeParams.GetExtBuffer<mfxExtHEVCTiles>();
+    if (HevcTiles) {
+      warn("MFXVideoENCODE_Init%s failed (err=%d), "
+           "retrying without HEVC tiles",
            log_prefix, Status);
       QSVEncode->Close();
-      QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOption3>();
+      QSVEncodeParams.RemoveExtBuffer<mfxExtHEVCTiles>();
       Status = QSVEncode->Init(&QSVEncodeParams);
-      info("\tMFXVideoENCODE_Init%s retry (without CO3) status: %d",
+      info("\tMFXVideoENCODE_Init%s retry "
+           "(without HEVC tiles) status: %d",
            log_prefix, Status);
     }
   }
 
-  // Retry without mfxExtCodingOption2 (older drivers may reject it)
-  if (Status < MFX_ERR_NONE) {
-    auto CO2Params =
-        QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
-    if (CO2Params) {
-      warn("MFXVideoENCODE_Init%s failed (err=%d), retrying without CO2",
+  if (Status < MFX_ERR_NONE &&
+      QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
+    auto HevcParam =
+        QSVEncodeParams.GetExtBuffer<mfxExtHEVCParam>();
+    if (HevcParam) {
+      warn("MFXVideoENCODE_Init%s failed (err=%d), "
+           "retrying without HEVC param",
            log_prefix, Status);
       QSVEncode->Close();
-      QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOption2>();
+      QSVEncodeParams.RemoveExtBuffer<mfxExtHEVCParam>();
       Status = QSVEncode->Init(&QSVEncodeParams);
-      info("\tMFXVideoENCODE_Init%s retry (without CO2) status: %d",
+      info("\tMFXVideoENCODE_Init%s retry "
+           "(without HEVC param) status: %d",
            log_prefix, Status);
     }
   }
