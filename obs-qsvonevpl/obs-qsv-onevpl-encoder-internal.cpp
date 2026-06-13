@@ -419,17 +419,17 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
 
   if (Status < MFX_ERR_NONE &&
       QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
-    auto ChromaLoc =
-        QSVEncodeParams.GetExtBuffer<mfxExtChromaLocInfo>();
-    if (ChromaLoc) {
+    auto COParams =
+        QSVEncodeParams.GetExtBuffer<mfxExtCodingOptionDDI>();
+    if (COParams) {
       warn("MFXVideoENCODE_Init%s failed (err=%d), "
-           "retrying without chroma loc info",
+           "retrying without CODDI",
            log_prefix, Status);
       QSVEncode->Close();
-      QSVEncodeParams.RemoveExtBuffer<mfxExtChromaLocInfo>();
+      QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOptionDDI>();
       Status = QSVEncode->Init(&QSVEncodeParams);
       info("\tMFXVideoENCODE_Init%s retry "
-           "(without chroma loc info) status: %d",
+           "(without CODDI) status: %d",
            log_prefix, Status);
     }
   }
@@ -453,23 +453,6 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
 
   if (Status < MFX_ERR_NONE &&
       QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
-    auto COParams =
-        QSVEncodeParams.GetExtBuffer<mfxExtCodingOptionDDI>();
-    if (COParams) {
-      warn("MFXVideoENCODE_Init%s failed (err=%d), "
-           "retrying without CODDI",
-           log_prefix, Status);
-      QSVEncode->Close();
-      QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOptionDDI>();
-      Status = QSVEncode->Init(&QSVEncodeParams);
-      info("\tMFXVideoENCODE_Init%s retry "
-           "(without CODDI) status: %d",
-           log_prefix, Status);
-    }
-  }
-
-  if (Status < MFX_ERR_NONE &&
-      QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
     warn("MFXVideoENCODE_Init%s failed (err=%d), "
          "retrying with NumSlice=0",
          log_prefix, Status);
@@ -479,6 +462,23 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
     info("\tMFXVideoENCODE_Init%s retry "
          "(NumSlice=0) status: %d",
          log_prefix, Status);
+  }
+
+  if (Status < MFX_ERR_NONE &&
+      QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
+    auto ChromaLoc =
+        QSVEncodeParams.GetExtBuffer<mfxExtChromaLocInfo>();
+    if (ChromaLoc) {
+      warn("MFXVideoENCODE_Init%s failed (err=%d), "
+           "retrying without chroma loc info",
+           log_prefix, Status);
+      QSVEncode->Close();
+      QSVEncodeParams.RemoveExtBuffer<mfxExtChromaLocInfo>();
+      Status = QSVEncode->Init(&QSVEncodeParams);
+      info("\tMFXVideoENCODE_Init%s retry "
+           "(without chroma loc info) status: %d",
+           log_prefix, Status);
+    }
   }
 #endif
 
