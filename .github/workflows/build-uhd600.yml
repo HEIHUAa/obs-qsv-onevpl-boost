@@ -85,6 +85,9 @@ jobs:
         with:
           path: obs-studio/build_x64
           key: cmake-uhd600-${{ runner.os }}-${{ env.OBS_VERSION }}-${{ hashFiles('obs-studio/plugins/obs-qsv-onevpl/**/CMakeLists.txt', 'obs-studio/plugins/obs-qsv-onevpl/CMakePresets.json') }}
+          restore-keys: |
+            cmake-uhd600-${{ runner.os }}-${{ env.OBS_VERSION }}-
+            cmake-uhd600-${{ runner.os }}-
 
       - name: Configure CMake
         if: steps.cache-cmake.outputs.cache-hit != 'true'
@@ -114,31 +117,3 @@ jobs:
         with:
           name: ${{ env.PLUGIN_NAME }}-uhd600-${{ github.sha }}-windows-x64-Release
           path: ${{ github.workspace }}/package/uhd600/**/*
-
-      - name: Build Debug (UHD600)
-        run: cmake --build --preset windows-x64 --config Debug --target obs-qsvonevpl-uhd600
-        working-directory: ${{ github.workspace }}/obs-studio
-
-      - name: Package Debug (UHD600)
-        run: |
-          $ModuleName = "obs-qsvonevpl"
-          $SourceDir = "${{ github.workspace }}/obs-studio/plugins/${{ env.PLUGIN_NAME }}/$ModuleName/data"
-          $UHD600DbgDir = "${{ github.workspace }}/obs-studio/build_x64/plugins/${{ env.PLUGIN_NAME }}/$ModuleName/Debug"
-          $UHD600DebugPackage = "${{ github.workspace }}/package/uhd600-debug"
-          New-Item -ItemType Directory -Path "$UHD600DebugPackage/obs-plugins/64bit" -Force
-          New-Item -ItemType Directory -Path "$UHD600DebugPackage/data/obs-plugins/$ModuleName/locale" -Force
-          Copy-Item "$UHD600DbgDir/obs-qsvonevpl-uhd600.dll" "$UHD600DebugPackage/obs-plugins/64bit/"
-          Copy-Item "$UHD600DbgDir/obs-qsvonevpl-uhd600.pdb" "$UHD600DebugPackage/obs-plugins/64bit/"
-          if (Test-Path "$UHD600DbgDir/libvpl.dll") {
-            Copy-Item "$UHD600DbgDir/libvpl.dll" "$UHD600DebugPackage/obs-plugins/64bit/libvpl.dll"
-          }
-          if (Test-Path "$UHD600DbgDir/libvpl.pdb") {
-            Copy-Item "$UHD600DbgDir/libvpl.pdb" "$UHD600DebugPackage/obs-plugins/64bit/"
-          }
-          Copy-Item "$SourceDir/locale/*.ini" "$UHD600DebugPackage/data/obs-plugins/$ModuleName/locale/"
-
-      - name: Upload Debug Artifacts (UHD600)
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ env.PLUGIN_NAME }}-uhd600-${{ github.sha }}-windows-x64-Debug
-          path: ${{ github.workspace }}/package/uhd600-debug/**/*

@@ -84,7 +84,10 @@ jobs:
         uses: actions/cache@v5
         with:
           path: obs-studio/build_x64
-          key: cmake-uhd700-${{ runner.os }}-${{ env.OBS_VERSION }}-${{ hashFiles('obs-studio/plugins/obs-qsv-onevpl/**') }}
+          key: cmake-uhd700-${{ runner.os }}-${{ env.OBS_VERSION }}-${{ hashFiles('obs-studio/plugins/obs-qsv-onevpl/**/CMakeLists.txt', 'obs-studio/plugins/obs-qsv-onevpl/CMakePresets.json') }}
+          restore-keys: |
+            cmake-uhd700-${{ runner.os }}-${{ env.OBS_VERSION }}-
+            cmake-uhd700-${{ runner.os }}-
 
       - name: Configure CMake
         if: steps.cache-cmake.outputs.cache-hit != 'true'
@@ -111,25 +114,3 @@ jobs:
         with:
           name: ${{ env.PLUGIN_NAME }}-${{ github.sha }}-windows-x64-Release
           path: ${{ github.workspace }}/package/release/**/*
-
-      - name: Build Debug
-        run: cmake --build --preset windows-x64 --config Debug --target obs-qsvonevpl
-        working-directory: ${{ github.workspace }}/obs-studio
-
-      - name: Package Debug
-        run: |
-          $ModuleName = "obs-qsvonevpl"
-          $SourceDir = "${{ github.workspace }}/obs-studio/plugins/${{ env.PLUGIN_NAME }}/$ModuleName/data"
-          $DebugDir = "${{ github.workspace }}/obs-studio/build_x64/plugins/${{ env.PLUGIN_NAME }}/$ModuleName/Debug"
-          $DebugPackage = "${{ github.workspace }}/package/debug"
-          New-Item -ItemType Directory -Path "$DebugPackage/obs-plugins/64bit" -Force
-          New-Item -ItemType Directory -Path "$DebugPackage/data/obs-plugins/$ModuleName/locale" -Force
-          Copy-Item "$DebugDir/$ModuleName.dll" "$DebugPackage/obs-plugins/64bit/"
-          Copy-Item "$DebugDir/$ModuleName.pdb" "$DebugPackage/obs-plugins/64bit/"
-          Copy-Item "$SourceDir/locale/*.ini" "$DebugPackage/data/obs-plugins/$ModuleName/locale/"
-
-      - name: Upload Debug Artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ env.PLUGIN_NAME }}-${{ github.sha }}-windows-x64-Debug
-          path: ${{ github.workspace }}/package/debug/**/*
