@@ -106,7 +106,7 @@ jobs:
           $UHD600ReleasePackage = "${{ github.workspace }}/package/uhd600"
           New-Item -ItemType Directory -Path "$UHD600ReleasePackage/obs-plugins/64bit" -Force
           New-Item -ItemType Directory -Path "$UHD600ReleasePackage/data/obs-plugins/$ModuleName/locale" -Force
-          Copy-Item "$UHD600RelDir/obs-qsvonevpl-uhd600.dll" "$UHD600ReleasePackage/obs-plugins/64bit/"
+          Copy-Item "$UHD600RelDir/obs-qsvonevpl.dll" "$UHD600ReleasePackage/obs-plugins/64bit/"
           if (Test-Path "$UHD600RelDir/libvpl.dll") {
             Copy-Item "$UHD600RelDir/libvpl.dll" "$UHD600ReleasePackage/obs-plugins/64bit/libvpl.dll"
           }
