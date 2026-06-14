@@ -1853,17 +1853,21 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       std::strcmp(VideoProcessingStatusData, "ON") == 0) {
     if (VOI->format == VIDEO_FORMAT_NV12) {
       Context->EncoderParams.ProcessingEnable = true;
-    } else if (VOI->format == VIDEO_FORMAT_P010) {
+    } else if (VOI->format == VIDEO_FORMAT_P010 ||
+               VOI->format == VIDEO_FORMAT_I444 ||
+               VOI->format == VIDEO_FORMAT_I412  ||
+               VOI->format == VIDEO_FORMAT_P416) {
       mfxU16 platformCode = QueryPlatformCodeName();
-      bool p010VPPSupported = platformCode == 0 ||
-                              platformCode >= MFX_PLATFORM_ICELAKE;
-      if (p010VPPSupported) {
+      bool nonNV12VPPSupported = platformCode == 0 ||
+                                 platformCode >= MFX_PLATFORM_ICELAKE;
+      if (nonNV12VPPSupported) {
         Context->EncoderParams.ProcessingEnable = true;
       } else {
-        warn("VPP with P010 is only supported on Ice Lake+");
+        warn("VPP with %s is only supported on Ice Lake+",
+             VOI->format == VIDEO_FORMAT_P010 ? "P010" : "4:4:4");
       }
     } else {
-      warn("VPP is only available with NV12 color format");
+      warn("VPP is only available with NV12 or P010(ICL+) or 4:4:4(ICL+) color format");
     }
   }
 
@@ -1876,6 +1880,16 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   case VIDEO_FORMAT_P010:
     Context->EncoderParams.FourCC = MFX_FOURCC_P010;
     Context->EncoderParams.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
+    break;
+  case VIDEO_FORMAT_I444:
+    Context->EncoderParams.FourCC = MFX_MAKEFOURCC('4','4','4','P');
+    Context->EncoderParams.ChromaFormat = MFX_CHROMAFORMAT_YUV444;
+    break;
+  case VIDEO_FORMAT_I412:
+  case VIDEO_FORMAT_P416:
+    Context->EncoderParams.FourCC = MFX_MAKEFOURCC('4','4','4','P');
+    Context->EncoderParams.ChromaFormat = MFX_CHROMAFORMAT_YUV444;
+    Context->EncoderParams.BitDepth = 12;
     break;
   }
 
@@ -1991,10 +2005,17 @@ plugin_context *InitPluginContext(enum codec_enum Codec, obs_data_t *Settings,
   switch (VOI->format) {
   case VIDEO_FORMAT_I010:
   case VIDEO_FORMAT_P010:
-    Context->EncoderParams.VideoFormat10bit = true;
+  case VIDEO_FORMAT_I210:
+    Context->EncoderParams.BitDepth = 10;
+    break;
+  case VIDEO_FORMAT_I412:
+    Context->EncoderParams.BitDepth = 12;
+    break;
+  case VIDEO_FORMAT_P416:
+    Context->EncoderParams.BitDepth = 16;
     break;
   default:
-    Context->EncoderParams.VideoFormat10bit = false;
+    Context->EncoderParams.BitDepth = 0;
     if (VOI->colorspace == VIDEO_CS_2100_PQ ||
         VOI->colorspace == VIDEO_CS_2100_HLG) {
       auto ErrorText = obs_module_text("8bitUnsupportedHdr");

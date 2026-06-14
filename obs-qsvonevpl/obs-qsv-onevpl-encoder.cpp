@@ -232,6 +232,7 @@ void GetVideoInfo(void *Data, video_scale_info *Info) {
   plugin_context *Context = static_cast<plugin_context *>(Data);
 
   bool use10bit = false;
+  bool use444 = false;
 
   switch (Context->Codec) {
   case QSV_CODEC_HEVC:
@@ -239,6 +240,8 @@ void GetVideoInfo(void *Data, video_scale_info *Info) {
     obs_data_t *settings = obs_encoder_get_settings(Context->EncoderData);
     const char *profile = obs_data_get_string(settings, "profile");
     use10bit = (std::strcmp(profile, "main10") == 0);
+    use444 = (std::strcmp(profile, "rext") == 0 ||
+              std::strcmp(profile, "scc") == 0);
     break;
   }
   case QSV_CODEC_AVC: {
@@ -251,7 +254,10 @@ void GetVideoInfo(void *Data, video_scale_info *Info) {
     break;
   }
 
-  Info->format = use10bit ? VIDEO_FORMAT_P010 : VIDEO_FORMAT_NV12;
+  if (use444)
+    Info->format = VIDEO_FORMAT_I444;
+  else
+    Info->format = use10bit ? VIDEO_FORMAT_P010 : VIDEO_FORMAT_NV12;
 }
 
 mfxU64 ConvertTSOBSMFX(int64_t TS, mfxU32 FpsNum) {

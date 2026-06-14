@@ -141,6 +141,9 @@ mfxStatus HWManager::AllocateTexturePool(MFXVideoParam &EncodeParams) {
     Format = DXGI_FORMAT_P8;
   } else if (MFX_FOURCC_P010 == EncodeParams.mfx.FrameInfo.FourCC) {
     Format = DXGI_FORMAT_P010;
+  } else if (MFX_MAKEFOURCC('4','4','4','P') == EncodeParams.mfx.FrameInfo.FourCC ||
+             MFX_MAKEFOURCC('A','Y','U','V') == EncodeParams.mfx.FrameInfo.FourCC) {
+    Format = DXGI_FORMAT_AYUV;
   } else {
     throw std::runtime_error("AllocateHWTexturePool(): Unsupported Format");
   }

@@ -87,7 +87,7 @@ struct encoder_params {
   std::optional<bool> EncToolsBRCBufferHints;
   std::optional<bool> EncToolsBRC;
   std::optional<bool> EncToolsSaliencyMapHint;
-  bool VideoFormat10bit = false;
+  mfxU16 BitDepth = 0;   /* 0=unspecified(8bit), 8, 10, 12, 16 */
   bool ResetAllowed;
   bool Lowpower;
   bool PercEncPrefilter;
