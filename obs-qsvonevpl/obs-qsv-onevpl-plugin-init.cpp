@@ -1853,6 +1853,15 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       std::strcmp(VideoProcessingStatusData, "ON") == 0) {
     if (VOI->format == VIDEO_FORMAT_NV12) {
       Context->EncoderParams.ProcessingEnable = true;
+    } else if (VOI->format == VIDEO_FORMAT_P010) {
+      mfxU16 platformCode = QueryPlatformCodeName();
+      bool p010VPPSupported = platformCode == 0 ||
+                              platformCode >= MFX_PLATFORM_ICELAKE;
+      if (p010VPPSupported) {
+        Context->EncoderParams.ProcessingEnable = true;
+      } else {
+        warn("VPP with P010 is only supported on Ice Lake+");
+      }
     } else {
       warn("VPP is only available with NV12 color format");
     }
