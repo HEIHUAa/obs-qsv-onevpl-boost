@@ -84,7 +84,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: obs-studio/build_x64
-          key: cmake-uhd600-${{ runner.os }}-${{ env.OBS_VERSION }}-${{ hashFiles('obs-studio/plugins/obs-qsv-onevpl/**') }}
+          key: cmake-uhd600-${{ runner.os }}-${{ env.OBS_VERSION }}-${{ hashFiles('obs-studio/plugins/obs-qsv-onevpl/**/CMakeLists.txt', 'obs-studio/plugins/obs-qsv-onevpl/CMakePresets.json') }}
 
       - name: Configure CMake
         if: steps.cache-cmake.outputs.cache-hit != 'true'
