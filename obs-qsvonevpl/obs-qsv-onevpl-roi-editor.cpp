@@ -376,6 +376,10 @@ static void DrawROIRects(
 }
 
 void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy) {
+  // Get video info once for all sections below
+  struct obs_video_info ovi;
+  obs_get_video_info(&ovi);
+
   // --- 1. Read normalized ROI data; convert to pixel for display ---
   bool enabled = false;
   std::vector<encoder_params::roi_region> regions; // pixel values for drawing
@@ -384,9 +388,6 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy) {
     std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
     enabled = GlobalROIConfig.Enabled;
     if (!GlobalROIConfig.NormalizedRegions.empty()) {
-      // Get output resolution for normalized→pixel conversion
-      struct obs_video_info ovi;
-      obs_get_video_info(&ovi);
       mfxU16 outW = (mfxU16)ovi.output_width;
       mfxU16 outH = (mfxU16)ovi.output_height;
       if (outW > 0 && outH > 0) {
@@ -401,16 +402,12 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy) {
 
   // --- 2a. Expand gradient regions for preview ---
   {
-    struct obs_video_info ovi2;
-    obs_get_video_info(&ovi2);
     regions = ExpandGradientRegions(regions,
-                                    (mfxU16)ovi2.output_width,
-                                    (mfxU16)ovi2.output_height);
+                                    (mfxU16)ovi.output_width,
+                                    (mfxU16)ovi.output_height);
   }
 
   // --- 2b. Get output/base dimensions ---
-  struct obs_video_info ovi;
-  obs_get_video_info(&ovi);
   if (ovi.output_width < 1 || ovi.output_height < 1 ||
       ovi.base_width < 1 || ovi.base_height < 1)
     return;

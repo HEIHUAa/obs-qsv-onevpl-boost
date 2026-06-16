@@ -7,8 +7,6 @@
 #include <vector>
 
 mfxVersion VPLVersion = {{0, 1}}; // for backward compatibility
-std::atomic<bool> IsActive{false};
-
 void GetEncoderVersion(unsigned short *Major, unsigned short *Minor) {
   *Major = VPLVersion.Major;
   *Minor = VPLVersion.Minor;
@@ -59,19 +57,15 @@ bool OpenEncoder(std::unique_ptr<QSVEncoder> &EncoderPTR,
 
     if (EncoderPTR->Init(EncoderParams, Codec, IsTextureEncoder) < MFX_ERR_NONE) {
       error("QSV encoder init failed");
-      IsActive.store(false);
       return false;
     }
 
     VPLVersion = EncoderPTR->GetCachedVPLVersion();
 
-    IsActive.store(true);
-
     return true;
 
   } catch (const std::exception &e) {
     error("QSV ERROR: %s", e.what());
-    IsActive.store(false);
     throw;
   }
 }
@@ -86,7 +80,8 @@ void DestroyPluginContext(void *Data) {
 
     // Wait for any in-progress encode calls to finish before tear-down.
     while (Context->EncodingCount.load(std::memory_order_acquire) > 0) {
-      Sleep(1);
+      std::unique_lock<std::mutex> cvLock(Context->EncoderMutex);
+      Context->EncodingCV.wait_for(cvLock, std::chrono::milliseconds(10));
     }
 
     if (Context->EncoderPTR) {
@@ -97,7 +92,6 @@ void DestroyPluginContext(void *Data) {
 
           Context->EncoderPTR->ClearData();
 
-          IsActive.store(false);
           Context->EncoderPTR = nullptr;
         }
 
@@ -232,12 +226,14 @@ void GetVideoInfo(void *Data, video_scale_info *Info) {
     use10bit = (std::strcmp(profile, "main10") == 0);
     use444 = (std::strcmp(profile, "rext") == 0 ||
               std::strcmp(profile, "scc") == 0);
+    obs_data_release(settings);
     break;
   }
   case QSV_CODEC_AVC: {
     obs_data_t *settings = obs_encoder_get_settings(Context->EncoderData);
     const char *profile = obs_data_get_string(settings, "profile");
     use10bit = (std::strcmp(profile, "high10") == 0);
+    obs_data_release(settings);
     break;
   }
   default:
@@ -599,8 +595,6 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
     return;
   }
 
-  Context->PacketData.resize(0);
-
   if (!Context->ExtraData.first || Context->ExtraData.second == 0) {
     uint8_t *NewPacket = 0;
     size_t NewPacketSize = 0;
@@ -638,12 +632,10 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
                               &Context->ExtraData.second);
     }
 
-    Context->PacketData.insert(Context->PacketData.end(), NewPacket,
-                               NewPacket + NewPacketSize);
+    Context->PacketData.assign(NewPacket, NewPacket + NewPacketSize);
     bfree(NewPacket);
   } else {
-    Context->PacketData.insert(Context->PacketData.end(),
-                               Bitstream->Data + Bitstream->DataOffset,
+    Context->PacketData.assign(Bitstream->Data + Bitstream->DataOffset,
                                Bitstream->Data + Bitstream->DataOffset +
                                    Bitstream->DataLength);
   }
@@ -742,6 +734,7 @@ bool EncodeTexture(void *Data, encoder_texture *Texture, int64_t PTS,
   }
 
   Context->EncodingCount.fetch_sub(1, std::memory_order_release);
+  Context->EncodingCV.notify_one();
   return success;
 }
 
@@ -790,5 +783,6 @@ bool EncodeFrame(void *Data, encoder_frame *Frame, encoder_packet *Packet,
   }
 
   Context->EncodingCount.fetch_sub(1, std::memory_order_release);
+  Context->EncodingCV.notify_one();
   return success;
 }
