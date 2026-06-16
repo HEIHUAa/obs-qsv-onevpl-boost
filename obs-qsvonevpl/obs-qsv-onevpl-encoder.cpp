@@ -85,11 +85,8 @@ void DestroyPluginContext(void *Data) {
     os_end_high_performance(Context->PerformanceToken);
 
     // Wait for any in-progress encode calls to finish before tear-down.
-    {
-      std::unique_lock<std::mutex> lock(Context->EncoderMutex);
-      Context->EncoderCV.wait(lock, [&] {
-        return Context->EncodingCount.load(std::memory_order_acquire) == 0;
-      });
+    while (Context->EncodingCount.load(std::memory_order_acquire) > 0) {
+      Sleep(1);
     }
 
     if (Context->EncoderPTR) {
@@ -744,9 +741,7 @@ bool EncodeTexture(void *Data, encoder_texture *Texture, int64_t PTS,
                        ReceivedPacketStatus);
   }
 
-  if (Context->EncodingCount.fetch_sub(1, std::memory_order_release) == 1) {
-    Context->EncoderCV.notify_one();
-  }
+  Context->EncodingCount.fetch_sub(1, std::memory_order_release);
   return success;
 }
 
@@ -794,8 +789,6 @@ bool EncodeFrame(void *Data, encoder_frame *Frame, encoder_packet *Packet,
                        ReceivedPacketStatus);
   }
 
-  if (Context->EncodingCount.fetch_sub(1, std::memory_order_release) == 1) {
-    Context->EncoderCV.notify_one();
-  }
+  Context->EncodingCount.fetch_sub(1, std::memory_order_release);
   return success;
 }
