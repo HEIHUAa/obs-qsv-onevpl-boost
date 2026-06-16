@@ -4,6 +4,8 @@
 #define __QSV_VPL_PLUGIN_INIT_H__
 #endif
 
+#include <condition_variable>
+
 #ifndef __QSV_VPL_ENCODER_H__
 #include "obs-qsv-onevpl-encoder.hpp"
 #endif

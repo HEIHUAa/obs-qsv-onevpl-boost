@@ -37,6 +37,10 @@ jobs:
           fetch-depth: 1
           submodules: recursive
 
+      - name: Clean Cached Plugin
+        if: steps.cache-obs.outputs.cache-hit == 'true'
+        run: Remove-Item -Recurse -Force "obs-studio/plugins/${{ env.PLUGIN_NAME }}" -ErrorAction SilentlyContinue
+
       - name: Checkout Plugin
         uses: actions/checkout@v5
         with:
