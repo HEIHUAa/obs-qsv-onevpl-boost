@@ -1751,7 +1751,7 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   } else if (std::strcmp(ImageStabModeData, "BOXING") == 0) {
     Context->EncoderParams.VPPImageStabMode = 2;
   } else if (std::strcmp(ImageStabModeData, "AUTO") == 0) {
-    Context->EncoderParams.VPPScalingMode = 0;
+    Context->EncoderParams.VPPImageStabMode = 0;
   }
 
   if (std::strcmp(DetailData, "ON") == 0) {

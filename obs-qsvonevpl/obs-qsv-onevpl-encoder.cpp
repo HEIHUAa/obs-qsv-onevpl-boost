@@ -85,8 +85,11 @@ void DestroyPluginContext(void *Data) {
     os_end_high_performance(Context->PerformanceToken);
 
     // Wait for any in-progress encode calls to finish before tear-down.
-    while (Context->EncodingCount.load(std::memory_order_acquire) > 0) {
-      Sleep(1);
+    {
+      std::unique_lock<std::mutex> lock(Context->EncoderMutex);
+      Context->EncoderCV.wait(lock, [&] {
+        return Context->EncodingCount.load(std::memory_order_acquire) == 0;
+      });
     }
 
     if (Context->EncoderPTR) {
@@ -117,6 +120,9 @@ void DestroyPluginContext(void *Data) {
 bool UpdateEncoderParams(void *Data, obs_data_t *Params) {
   plugin_context *Context = static_cast<plugin_context *>(Data);
   const char *bitrate_control = obs_data_get_string(Params, "rate_control");
+  const bool isCQP = std::strcmp(bitrate_control, "CQP") == 0;
+  const bool isICQ = std::strcmp(bitrate_control, "ICQ") == 0;
+
   if (std::strcmp(bitrate_control, "CBR") == 0) {
     Context->EncoderParams.TargetBitRate =
         static_cast<mfxU16>(obs_data_get_int(Params, "bitrate"));
@@ -125,7 +131,7 @@ bool UpdateEncoderParams(void *Data, obs_data_t *Params) {
         static_cast<mfxU16>(obs_data_get_int(Params, "bitrate"));
     Context->EncoderParams.MaxBitRate =
         static_cast<mfxU16>(obs_data_get_int(Params, "max_bitrate"));
-  } else if (std::strcmp(bitrate_control, "CQP") == 0) {
+  } else if (isCQP) {
     bool separateIPB = obs_data_get_bool(Params, "cqp_separate_ipb");
     if (separateIPB) {
       int qpi = static_cast<int>(obs_data_get_int(Params, "qpi"));
@@ -148,13 +154,12 @@ bool UpdateEncoderParams(void *Data, obs_data_t *Params) {
       Context->EncoderParams.QPP = static_cast<mfxU16>(cqp);
       Context->EncoderParams.QPB = static_cast<mfxU16>(cqp);
     }
-  } else if (std::strcmp(bitrate_control, "ICQ") == 0) {
+  } else if (isICQ) {
     Context->EncoderParams.ICQQuality =
         static_cast<mfxU16>(obs_data_get_int(Params, "icq_quality"));
   }
 
-  if (std::strcmp(bitrate_control, "CQP") == 0 ||
-      std::strcmp(bitrate_control, "ICQ") == 0) {
+  if (isCQP || isICQ) {
     Context->EncoderParams.ExtBRC = 0;
   }
 
@@ -192,18 +197,6 @@ void UpdateEncoderROI(void *Data,
   blog(LOG_INFO,
        "[QSV VPL] UpdateEncoderROI: enabled=%d, regions=%zu, mode=%d",
        (int)Enabled, Regions.size(), (int)Mode);
-}
-
-static int qsv_encoder_reconfig(QSVEncoder *EncoderPTR,
-                                encoder_params *EncoderParams) {
-
-  EncoderPTR->UpdateParams(EncoderParams);
-
-  if (EncoderPTR->ReconfigureEncoder() < MFX_ERR_NONE) {
-
-    return false;
-  }
-  return true;
 }
 
 bool GetExtraData(void *Data, uint8_t **ExtraData, size_t *Size) {
@@ -650,6 +643,7 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
 
     Context->PacketData.insert(Context->PacketData.end(), NewPacket,
                                NewPacket + NewPacketSize);
+    bfree(NewPacket);
   } else {
     Context->PacketData.insert(Context->PacketData.end(),
                                Bitstream->Data + Bitstream->DataOffset,
@@ -671,19 +665,15 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
           : ConvertTSMFXOBS(Bitstream->DecodeTimeStamp,
                             Context->CachedFpsNum, Context->CachedFpsDen,
                             Context->CachedTSDiv);
-  Packet->keyframe = ((Bitstream->FrameType & MFX_FRAMETYPE_I) ||
-                      (Bitstream->FrameType & MFX_FRAMETYPE_IDR) ||
-                      (Bitstream->FrameType & MFX_FRAMETYPE_S) ||
-                      (Bitstream->FrameType & MFX_FRAMETYPE_xI) ||
-                      (Bitstream->FrameType & MFX_FRAMETYPE_xIDR) ||
-                      (Bitstream->FrameType & MFX_FRAMETYPE_xS));
+  bool isKeyframe = ((Bitstream->FrameType & MFX_FRAMETYPE_I) ||
+                     (Bitstream->FrameType & MFX_FRAMETYPE_IDR) ||
+                     (Bitstream->FrameType & MFX_FRAMETYPE_S) ||
+                     (Bitstream->FrameType & MFX_FRAMETYPE_xI) ||
+                     (Bitstream->FrameType & MFX_FRAMETYPE_xIDR) ||
+                     (Bitstream->FrameType & MFX_FRAMETYPE_xS));
+  Packet->keyframe = isKeyframe;
 
-  if ((Bitstream->FrameType & MFX_FRAMETYPE_I) ||
-      (Bitstream->FrameType & MFX_FRAMETYPE_IDR) ||
-      (Bitstream->FrameType & MFX_FRAMETYPE_S) ||
-      (Bitstream->FrameType & MFX_FRAMETYPE_xI) ||
-      (Bitstream->FrameType & MFX_FRAMETYPE_xIDR) ||
-      (Bitstream->FrameType & MFX_FRAMETYPE_xS)) {
+  if (isKeyframe) {
     Packet->priority = static_cast<int>(OBS_NAL_PRIORITY_HIGHEST);
     Packet->drop_priority = static_cast<int>(OBS_NAL_PRIORITY_HIGH);
   } else if ((Bitstream->FrameType & MFX_FRAMETYPE_REF) ||
@@ -732,9 +722,8 @@ bool EncodeTexture(void *Data, encoder_texture *Texture, int64_t PTS,
     if (!Context->EncoderPTR)
       return false;
     fpsNum = Context->CachedFpsNum;
+    Context->EncodingCount.fetch_add(1, std::memory_order_acquire);
   }
-
-  Context->EncodingCount.fetch_add(1, std::memory_order_acquire);
 
   auto *Bitstream = static_cast<mfxBitstream *>(nullptr);
   bool success = true;
@@ -755,7 +744,9 @@ bool EncodeTexture(void *Data, encoder_texture *Texture, int64_t PTS,
                        ReceivedPacketStatus);
   }
 
-  Context->EncodingCount.fetch_sub(1, std::memory_order_release);
+  if (Context->EncodingCount.fetch_sub(1, std::memory_order_release) == 1) {
+    Context->EncoderCV.notify_one();
+  }
   return success;
 }
 
@@ -775,9 +766,8 @@ bool EncodeFrame(void *Data, encoder_frame *Frame, encoder_packet *Packet,
     if (!Context->EncoderPTR)
       return false;
     fpsNum = Context->CachedFpsNum;
+    Context->EncodingCount.fetch_add(1, std::memory_order_acquire);
   }
-
-  Context->EncodingCount.fetch_add(1, std::memory_order_acquire);
 
   auto *Bitstream = static_cast<mfxBitstream *>(nullptr);
   bool success = true;
@@ -804,6 +794,8 @@ bool EncodeFrame(void *Data, encoder_frame *Frame, encoder_packet *Packet,
                        ReceivedPacketStatus);
   }
 
-  Context->EncodingCount.fetch_sub(1, std::memory_order_release);
+  if (Context->EncodingCount.fetch_sub(1, std::memory_order_release) == 1) {
+    Context->EncoderCV.notify_one();
+  }
   return success;
 }
