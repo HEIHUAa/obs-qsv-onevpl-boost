@@ -116,18 +116,84 @@ void ReleaseGlobalLoader() {
   }
 }
 
-static void WarmUpVPLSession() {
-  std::lock_guard<std::mutex> lock(GlobalLoaderMutex);
-  if (!GlobalQSVLoader)
+// ── Deep VPL warm-up ────────────────────────────────────────────────
+// For each supported codec, create a throwaway VPL session and call
+// MFXVideoENCODE_Init to trigger GPU shader JIT compilation inside the
+// driver.  The compiled shaders are cached by the driver, so the first
+// real recording's Init reuses them — eliminating the ~250 ms delay.
+// Surface-level warm-up is NOT duplicated here; it is already handled
+// by per-recording QSVEncoder::WarmUpEncoder().
+
+static void DeepWarmUpVPL() {
+  mfxLoader Loader = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(GlobalLoaderMutex);
+    Loader = GlobalQSVLoader;
+  }
+  if (!Loader)
     return;
 
-  mfxSession WarmupSession = nullptr;
-  mfxStatus Sts = MFXCreateSession(GlobalQSVLoader, 0, &WarmupSession);
-  if (Sts >= MFX_ERR_NONE) {
-    info("oneVPL warm-up session created successfully");
-    MFXClose(WarmupSession);
-  } else {
-    info("oneVPL warm-up session creation failed: %d", Sts);
+  struct obs_video_info ovi {};
+  mfxU16 w = 1920, h = 1080, fpsN = 30, fpsD = 1;
+  if (obs_get_video_info(&ovi) == OBS_VIDEO_SUCCESS &&
+      ovi.base_width > 0 && ovi.base_height > 0) {
+    w    = static_cast<mfxU16>(ovi.base_width);
+    h    = static_cast<mfxU16>(ovi.base_height);
+    fpsN = static_cast<mfxU16>(ovi.fps_num);
+    fpsD = static_cast<mfxU16>(ovi.fps_den);
+  }
+
+  static constexpr struct {
+    mfxU32 id;
+    mfxU16 profile;
+    const char *name;
+  } Codecs[] = {
+    {MFX_CODEC_AVC,  MFX_PROFILE_AVC_HIGH,  "H264"},
+    {MFX_CODEC_HEVC, MFX_PROFILE_HEVC_MAIN,  "HEVC"},
+    {MFX_CODEC_AV1,  MFX_PROFILE_AV1_MAIN,   "AV1"},
+  };
+
+  for (const auto &c : Codecs) {
+    mfxSession session = nullptr;
+    if (MFXCreateSession(Loader, 0, &session) < MFX_ERR_NONE)
+      continue;
+
+    try {
+      MFXVideoENCODE encode(session);
+      mfxVideoParam params{};
+      params.mfx.CodecId       = c.id;
+      params.mfx.CodecProfile  = c.profile;
+      params.mfx.TargetUsage   = MFX_TARGETUSAGE_4;
+      params.mfx.TargetKbps    = 6000;
+      params.mfx.RateControlMethod = MFX_RATECONTROL_CBR;
+      params.mfx.FrameInfo.FourCC         = MFX_FOURCC_NV12;
+      params.mfx.FrameInfo.ChromaFormat   = MFX_CHROMAFORMAT_YUV420;
+      params.mfx.FrameInfo.Width          = w;
+      params.mfx.FrameInfo.Height         = h;
+      params.mfx.FrameInfo.CropW          = w;
+      params.mfx.FrameInfo.CropH          = h;
+      params.mfx.FrameInfo.FrameRateExtN  = fpsN;
+      params.mfx.FrameInfo.FrameRateExtD  = fpsD;
+      params.mfx.FrameInfo.PicStruct      = MFX_PICSTRUCT_PROGRESSIVE;
+      params.mfx.GopPicSize   = fpsN * 2;
+      params.mfx.GopRefDist   = 4;
+      params.AsyncDepth       = 4;
+      params.mfx.LowPower     = MFX_CODINGOPTION_UNKNOWN;
+      params.mfx.BRCParamMultiplier = 1;
+
+      mfxStatus sts = encode.Query(&params, &params);
+      if (sts >= MFX_ERR_NONE || sts == MFX_ERR_UNSUPPORTED) {
+        if (encode.Init(&params) >= MFX_ERR_NONE) {
+          encode.Close();
+          info("VPL warm-up: %s OK (%dx%d)", c.name, w, h);
+        } else {
+          warn("VPL warm-up: %s Init failed", c.name);
+        }
+      }
+    } catch (const std::exception &e) {
+      warn("VPL warm-up %s: %s", c.name, e.what());
+    }
+    MFXClose(session);
   }
 }
 
@@ -165,10 +231,12 @@ bool obs_module_load([[maybe_unused]] void) {
   }
 
   if (SupportAVC || SupportAV1 || SupportHEVC) {
-    WarmUpVPLSession();
     // Pre-warm the platform platform-name cache so the first
     // ParamsVisibilityModifier call does not create a temporary VPL session.
     QueryPlatformCodeName();
+    // Deep warm-up: create full MFXVideoENCODE pipeline for each supported
+    // codec to trigger GPU shader JIT compilation in the driver ahead of time.
+    DeepWarmUpVPL();
   }
 
   // Register ROI editor in Tools menu (only when frontend API is available)
