@@ -102,7 +102,7 @@ static const struct qsv_feature_info qsv_feature_info_list[] = {
     {"win_brc", MFX_PLATFORM_TIGERLAKE},
     {nullptr, 0}};
 
-static mfxU16 QueryPlatformCodeName();
+mfxU16 QueryPlatformCodeName();
 
 static bool IsFeatureSupported(const char *PropertyName) {
     mfxU16 platformCode = QueryPlatformCodeName();
@@ -151,7 +151,7 @@ static bool TryQueryPlatformCodeName(mfxLoader Loader) {
     return false;
 }
 
-static mfxU16 QueryPlatformCodeName() {
+mfxU16 QueryPlatformCodeName() {
     if (CachedQSVPlatformValid) {
         return CachedQSVPlatform.CodeName;
     }
@@ -1413,7 +1413,7 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   Context->EncoderParams.VPPMCTFStrength = static_cast<mfxU16>(VPPMCTFStrengthData);
 
   switch (Context->Codec) {
-  case QSV_CODEC_AVC:
+  case QSV_CODEC_AVC: {
     Codec = "H.264";
     // 4. CodecProfile AVC
     static constexpr std::pair<std::string_view, mfxU16> kCodecProfileAVCMap[] = {
@@ -1434,7 +1434,8 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
         ParseCodecLevel(CodecLevelDataAVC, kAVCLevels,
                         sizeof(kAVCLevels) / sizeof(kAVCLevels[0]));
     break;
-  case QSV_CODEC_HEVC:
+  }
+  case QSV_CODEC_HEVC: {
     Codec = "HEVC";
     // 5. CodecProfile HEVC
     static constexpr std::pair<std::string_view, mfxU16> kCodecProfileHEVCMap[] = {
@@ -1467,7 +1468,8 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
         ParseCodecLevel(CodecLevelData, kHEVLevels,
                         sizeof(kHEVLevels) / sizeof(kHEVLevels[0]));
     break;
-  case QSV_CODEC_AV1:
+  }
+  case QSV_CODEC_AV1: {
     Codec = "AV1";
     // 6. CodecProfile AV1
     static constexpr std::pair<std::string_view, mfxU16> kCodecProfileAV1Map[] = {
@@ -1483,6 +1485,7 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
         ParseCodecLevel(CodecLevelDataAV1, kAV1Levels,
                         sizeof(kAV1Levels) / sizeof(kAV1Levels[0]));
     break;
+  }
   }
   Context->EncoderParams.VideoFormat = 5;
   Context->EncoderParams.VideoFullRange = VOI->range == VIDEO_RANGE_FULL;

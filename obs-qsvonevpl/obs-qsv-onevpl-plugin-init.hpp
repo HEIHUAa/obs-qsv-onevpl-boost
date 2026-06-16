@@ -8,6 +8,8 @@
 #include "obs-qsv-onevpl-encoder.hpp"
 #endif
 
+mfxU16 QueryPlatformCodeName();
+
 struct plugin_context {
   obs_encoder_t *EncoderData;
 
