@@ -293,7 +293,7 @@ void ROIDialog::PreviewDraw(void *param, uint32_t cx, uint32_t cy) {
   gs_viewport_pop();
 
   // Draw ROI overlay in full widget space (after viewport pop)
-  dialog->DrawROIOverlay(cx, cy);
+  dialog->DrawROIOverlay(cx, cy, ovi);
 }
 
 // ── Draw a list of ROI rects (all share the same viewport mapping) ──
@@ -375,11 +375,8 @@ static void DrawROIRects(
   gs_technique_end(tech);
 }
 
-void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy) {
-  // Get video info once for all sections below
-  struct obs_video_info ovi;
-  obs_get_video_info(&ovi);
-
+void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy,
+                                 const struct obs_video_info &ovi) {
   // --- 1. Read normalized ROI data; convert to pixel for display ---
   bool enabled = false;
   std::vector<encoder_params::roi_region> regions; // pixel values for drawing

@@ -51,7 +51,7 @@ private:
   void DestroyPreview();
   void ResizePreview();
   static void PreviewDraw(void *param, uint32_t cx, uint32_t cy);
-  void DrawROIOverlay(uint32_t cx, uint32_t cy);
+  void DrawROIOverlay(uint32_t cx, uint32_t cy, const struct obs_video_info &ovi);
 
   QLabel *InfoLabel;
 

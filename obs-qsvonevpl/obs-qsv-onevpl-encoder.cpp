@@ -530,12 +530,15 @@ static size_t StripHEVCNALTemporalLayer(uint8_t *dst, const uint8_t *src,
   return out_size;
 }
 
-static void StripHEVCExtraDataTemporalLayer(uint8_t *data, size_t *size) {
+static void StripHEVCExtraDataTemporalLayer(uint8_t *data, size_t *size,
+    std::vector<uint8_t> *scratch = nullptr) {
   if (!data || !size || *size < 8)
     return;
 
   size_t tmp_alloc = *size + *size / 2 + 256;
-  std::vector<uint8_t> tmp(tmp_alloc, 0);
+  std::vector<uint8_t> local_tmp;
+  std::vector<uint8_t> &tmp = scratch ? *scratch : local_tmp;
+  tmp.resize(tmp_alloc);
   size_t tmp_pos = 0;
 
   size_t offset = 0;
@@ -610,10 +613,13 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
       // when VPS contains vps_max_sub_layers_minus1 > 0 (temporal layers 2-4)
       size_t bitstream_size = Bitstream->DataLength;
       size_t tmp_alloc = bitstream_size + bitstream_size / 2 + 256;
-      std::vector<uint8_t> tmp_bitstream(tmp_alloc, 0);
+      std::vector<uint8_t> tmp_bitstream;
+      tmp_bitstream.resize(tmp_alloc);
       memcpy(tmp_bitstream.data(), Bitstream->Data + Bitstream->DataOffset,
              bitstream_size);
-      StripHEVCExtraDataTemporalLayer(tmp_bitstream.data(), &bitstream_size);
+      std::vector<uint8_t> hevc_scratch;
+      StripHEVCExtraDataTemporalLayer(tmp_bitstream.data(), &bitstream_size,
+                                       &hevc_scratch);
 
       obs_extract_hevc_headers(tmp_bitstream.data(), bitstream_size, &NewPacket,
                                &NewPacketSize, &Context->ExtraData.first,
@@ -623,7 +629,8 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
       // Also strip temporal sub-layer info from extradata as a safety net
       if (Context->ExtraData.first && Context->ExtraData.second > 0) {
         StripHEVCExtraDataTemporalLayer(Context->ExtraData.first,
-                                         &Context->ExtraData.second);
+                                         &Context->ExtraData.second,
+                                         &hevc_scratch);
       }
     } else if (Context->Codec == QSV_CODEC_AV1) {
       obs_extract_av1_headers(Bitstream->Data + Bitstream->DataOffset,
@@ -714,7 +721,7 @@ bool EncodeTexture(void *Data, encoder_texture *Texture, int64_t PTS,
     Context->EncodingCount.fetch_add(1, std::memory_order_acquire);
   }
 
-  auto *Bitstream = static_cast<mfxBitstream *>(nullptr);
+  mfxBitstream *Bitstream = nullptr;
   bool success = true;
 
   try {
@@ -733,8 +740,11 @@ bool EncodeTexture(void *Data, encoder_texture *Texture, int64_t PTS,
                        ReceivedPacketStatus);
   }
 
-  Context->EncodingCount.fetch_sub(1, std::memory_order_release);
-  Context->EncodingCV.notify_one();
+  {
+    std::lock_guard<std::mutex> lock(Context->EncoderMutex);
+    Context->EncodingCount.fetch_sub(1, std::memory_order_release);
+    Context->EncodingCV.notify_one();
+  }
   return success;
 }
 
@@ -757,7 +767,7 @@ bool EncodeFrame(void *Data, encoder_frame *Frame, encoder_packet *Packet,
     Context->EncodingCount.fetch_add(1, std::memory_order_acquire);
   }
 
-  auto *Bitstream = static_cast<mfxBitstream *>(nullptr);
+  mfxBitstream *Bitstream = nullptr;
   bool success = true;
 
   try {
@@ -782,7 +792,10 @@ bool EncodeFrame(void *Data, encoder_frame *Frame, encoder_packet *Packet,
                        ReceivedPacketStatus);
   }
 
-  Context->EncodingCount.fetch_sub(1, std::memory_order_release);
-  Context->EncodingCV.notify_one();
+  {
+    std::lock_guard<std::mutex> lock(Context->EncoderMutex);
+    Context->EncodingCount.fetch_sub(1, std::memory_order_release);
+    Context->EncodingCV.notify_one();
+  }
   return success;
 }
