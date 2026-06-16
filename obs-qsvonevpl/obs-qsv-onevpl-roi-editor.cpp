@@ -2,6 +2,7 @@
 #include "helpers/common_utils.hpp"
 #include <QWindow>
 #include <QTimer>
+#include <functional>
 #include <mutex>
 #include <sstream>
 #include <cstdio>
@@ -375,102 +376,138 @@ static void DrawROIRects(
   gs_technique_end(tech);
 }
 
+void ROIDialog::InvalidateROICache() {
+  m_GridCacheHash = 0;
+  m_CachedDrawRects.clear();
+  m_CachedUseSegmented = false;
+}
+
 void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy,
                                  const struct obs_video_info &ovi) {
-  // --- 1. Read normalized ROI data; convert to pixel for display ---
-  bool enabled = false;
-  std::vector<encoder_params::roi_region> regions; // pixel values for drawing
-
-  {
-    std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
-    enabled = GlobalROIConfig.Enabled;
-    if (!GlobalROIConfig.NormalizedRegions.empty()) {
-      mfxU16 outW = (mfxU16)ovi.output_width;
-      mfxU16 outH = (mfxU16)ovi.output_height;
-      if (outW > 0 && outH > 0) {
-        regions = NormalizeROIToPixel(GlobalROIConfig.NormalizedRegions,
-                                       outW, outH);
-      }
-    }
-  }
-
-  if (!enabled || regions.empty())
-    return;
-
-  // --- 2a. Expand gradient regions for preview ---
-  {
-    regions = ExpandGradientRegions(regions,
-                                    (mfxU16)ovi.output_width,
-                                    (mfxU16)ovi.output_height);
-  }
-
-  // --- 2b. Get output/base dimensions ---
+  // Quick dimension checks
   if (ovi.output_width < 1 || ovi.output_height < 1 ||
       ovi.base_width < 1 || ovi.base_height < 1)
     return;
 
+  // --- 1. Compute cache key from normalized ROI data + output dims ---
+  size_t newHash = 0;
+  bool enabled = false;
+  mfxU16 previewMode = 1; // default DeltaQP
+
+  {
+    std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
+    enabled = GlobalROIConfig.Enabled;
+    previewMode = GlobalROIConfig.Mode;
+
+    if (enabled && !GlobalROIConfig.NormalizedRegions.empty()) {
+      auto hash_combine = [](size_t &seed, auto val) {
+        seed ^= std::hash<decltype(val)>{}(val) + 0x9e3779b9 + (seed << 6) +
+                (seed >> 2);
+      };
+      hash_combine(newHash, ovi.output_width);
+      hash_combine(newHash, ovi.output_height);
+      for (auto &r : GlobalROIConfig.NormalizedRegions) {
+        hash_combine(newHash, std::hash<double>{}(r.Left));
+        hash_combine(newHash, std::hash<double>{}(r.Top));
+        hash_combine(newHash, std::hash<double>{}(r.Right));
+        hash_combine(newHash, std::hash<double>{}(r.Bottom));
+        hash_combine(newHash, (size_t)r.DeltaQP);
+        hash_combine(newHash, (size_t)r.HasGradient);
+        if (r.HasGradient) {
+          hash_combine(newHash, std::hash<double>{}(r.GradLeft));
+          hash_combine(newHash, std::hash<double>{}(r.GradTop));
+          hash_combine(newHash, std::hash<double>{}(r.GradRight));
+          hash_combine(newHash, std::hash<double>{}(r.GradBottom));
+          hash_combine(newHash, (size_t)r.GradientSteps);
+        }
+      }
+    }
+  }
+
+  if (!enabled || newHash == 0) {
+    InvalidateROICache();
+    return;
+  }
+
+  // --- 2. Retrieve or compute the segmented grid ---
+  std::vector<encoder_params::roi_region> drawRects;
+  bool useSegmented = false;
+
+  if (newHash == m_GridCacheHash && !m_CachedDrawRects.empty()) {
+    // Cache hit — reuse previously computed grid
+    drawRects = m_CachedDrawRects;
+    useSegmented = m_CachedUseSegmented;
+  } else {
+    // Cache miss — recompute
+
+    // Convert normalized regions → pixel (inside lock for data integrity)
+    mfxU16 outW = (mfxU16)ovi.output_width;
+    mfxU16 outH = (mfxU16)ovi.output_height;
+    std::vector<encoder_params::roi_region> regions;
+    {
+      std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
+      regions = NormalizeROIToPixel(GlobalROIConfig.NormalizedRegions,
+                                     outW, outH);
+    }
+
+    // Expand gradient regions
+    regions = ExpandGradientRegions(regions, outW, outH);
+
+    // Region segmentation for overlap resolution
+    std::vector<mfxU16> xs, ys;
+    for (auto &r : regions) {
+      xs.push_back(r.Left);
+      xs.push_back(r.Right);
+      ys.push_back(r.Top);
+      ys.push_back(r.Bottom);
+    }
+    std::sort(xs.begin(), xs.end());
+    std::sort(ys.begin(), ys.end());
+    xs.erase(std::unique(xs.begin(), xs.end()), xs.end());
+    ys.erase(std::unique(ys.begin(), ys.end()), ys.end());
+
+    for (size_t yi = 0; yi + 1 < ys.size(); yi++) {
+      for (size_t xi = 0; xi + 1 < xs.size(); xi++) {
+        mfxI16 cellQP = 0;
+        bool covered = false;
+        for (size_t ri = 0; ri < regions.size(); ri++) {
+          auto &r = regions[ri];
+          if (xs[xi] >= r.Left && xs[xi + 1] <= r.Right &&
+              ys[yi] >= r.Top && ys[yi + 1] <= r.Bottom) {
+            cellQP = r.DeltaQP;
+            covered = true;
+            break; // lowest index wins
+          }
+        }
+        if (!covered || cellQP == 0)
+          continue;
+        useSegmented = true;
+        drawRects.push_back({xs[xi], ys[yi], xs[xi + 1], ys[yi + 1], cellQP});
+      }
+    }
+
+    if (!useSegmented)
+      drawRects = regions;
+
+    // Store in cache
+    m_GridCacheHash = newHash;
+    m_CachedDrawRects = drawRects;
+    m_CachedUseSegmented = useSegmented;
+  }
+
+  // --- 3. Viewport (same as PreviewDraw) ---
   float out_w = (float)ovi.output_width;
   float out_h = (float)ovi.output_height;
   float base_w = (float)ovi.base_width;
   float base_h = (float)ovi.base_height;
 
-  // Viewport (same as PreviewDraw)
   float scale = std::min((float)cx / base_w, (float)cy / base_h);
   float vp_w = base_w * scale;
   float vp_h = base_h * scale;
   float vp_x = ((float)cx - vp_w) * 0.5f;
   float vp_y = ((float)cy - vp_h) * 0.5f;
 
-  // --- 3. Region segmentation for overlap resolution ---
-  // Collect unique x/y boundaries from all ROI rectangles
-  std::vector<mfxU16> xs, ys;
-  for (auto &r : regions) {
-    xs.push_back(r.Left);
-    xs.push_back(r.Right);
-    ys.push_back(r.Top);
-    ys.push_back(r.Bottom);
-  }
-  std::sort(xs.begin(), xs.end());
-  std::sort(ys.begin(), ys.end());
-  xs.erase(std::unique(xs.begin(), xs.end()), xs.end());
-  ys.erase(std::unique(ys.begin(), ys.end()), ys.end());
-
-  // Build a grid of cells; each cell gets the DeltaQP from the
-  // lowest-index ROI covering it (matching VPL driver behavior).
-  // Cells with QP == 0 are skipped.
-  // If no cells have net effect, fall back to drawing raw regions.
-  std::vector<encoder_params::roi_region> drawRects;
-  bool useSegmented = false;
-
-  for (size_t yi = 0; yi + 1 < ys.size(); yi++) {
-    for (size_t xi = 0; xi + 1 < xs.size(); xi++) {
-      mfxI16 cellQP = 0;
-      bool covered = false;
-      for (size_t ri = 0; ri < regions.size(); ri++) {
-        auto &r = regions[ri];
-        if (xs[xi] >= r.Left && xs[xi + 1] <= r.Right &&
-            ys[yi] >= r.Top && ys[yi + 1] <= r.Bottom) {
-          cellQP = r.DeltaQP;
-          covered = true;
-          break; // lowest index wins
-        }
-      }
-      if (!covered || cellQP == 0)
-        continue;
-      useSegmented = true;
-      drawRects.push_back({xs[xi], ys[yi], xs[xi + 1], ys[yi + 1], cellQP});
-    }
-  }
-
-  if (!useSegmented)
-    drawRects = regions;
-
-  // --- 4. Draw all rects through the shared helper ---
-  mfxU16 previewMode = 1; // default DeltaQP
-  {
-    std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
-    previewMode = GlobalROIConfig.Mode;
-  }
+  // --- 4. Draw ---
   DrawROIRects(drawRects, vp_x, vp_y, vp_w, vp_h, out_w, out_h, cx, cy,
                previewMode);
 }
@@ -589,6 +626,7 @@ void ROIDialog::UpdatePreviewFromText() {
     GlobalROIConfig.Enabled = enabled;
   }
 
+  InvalidateROICache();
   ForceRefreshPreview();
 }
 

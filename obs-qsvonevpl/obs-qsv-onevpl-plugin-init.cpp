@@ -2,9 +2,78 @@
 
 #pragma warning(disable : 4996)
 
+#include <string_view>
+
 #ifndef __QSV_VPL_ENCODER_H__
 #include "obs-qsv-onevpl-encoder.hpp"
 #endif
+
+// ── Extern array definitions (declared in obs-qsv-onevpl-plugin-init.hpp) ──
+const char *const qsv_profile_names_av1[] = {"main", "high", "pro", 0};
+const char *const qsv_profile_names_h264[] = {
+    "high10", "high", "main", "baseline", "extended", "high422",
+    "constrained_baseline", "constrained_high", 0};
+const char *const qsv_profile_names_hevc[] = {"main", "main10", "mainsp", "rext", "scc", 0};
+const char *const qsv_profile_tiers_hevc[] = {"main", "high", 0};
+const char *const qsv_levels_hevc[] = {
+    "auto", "1", "2", "2.1", "3", "3.1", "4", "4.1",
+    "5", "5.1", "5.2", "6", "6.1", "6.2", 0};
+const char *const qsv_levels_avc[] = {
+    "auto", "1", "1b", "1.1", "1.2", "1.3", "2", "2.1", "2.2",
+    "3", "3.1", "3.2", "4", "4.1", "4.2", "5", "5.1", "5.2",
+    "6", "6.1", "6.2", 0};
+const char *const qsv_levels_av1[] = {
+    "auto", "2.0", "2.1", "2.2", "2.3", "3.0", "3.1", "3.2", "3.3",
+    "4.0", "4.1", "4.2", "4.3", "5.0", "5.1", "5.2", "5.3",
+    "6.0", "6.1", "6.2", "6.3", 0};
+const char *const qsv_usage_names[] = {
+    "TU1 (Veryslow)", "TU2 (Slower)", "TU3 (Slow)",     "TU4 (Balanced)",
+    "TU5 (Fast)",     "TU6 (Faster)", "TU7 (Veryfast)", 0};
+const char *const qsv_latency_names[] = {"ultra-low", "low", "normal", 0};
+const char *const qsv_params_condition[] = {"ON", "OFF", 0};
+const char *const qsv_params_condition_tristate[] = {"ON", "OFF", "AUTO", 0};
+const char *const qsv_params_weighted_pred_options[] = {"AUTO", "OFF",
+    "DEFAULT", "EXPLICIT", "IMPLICIT", 0};
+const char *const qsv_params_condition_vpp[] = {"PRE ENC", "POST ENC",
+                                                 "PRE ENC | POST ENC", 0};
+const char *const qsv_params_condition_scaling_mode[] = {
+    "OFF", "QUALITY | ADVANCED", "VEBOX | ADVANCED",
+    "LOWPOWER | NEAREST NEIGHBOR", "LOWPOWER | ADVANCED", "AUTO", 0};
+const char *const qsv_params_condition_image_stab_mode[] = {
+    "OFF", "UPSCALE", "BOXING", "AUTO", 0};
+const char *const qsv_params_condition_extbrc[] = {"ON", "OFF", 0};
+const char *const qsv_params_condition_screen_content_tools[] = {
+    "AUTO", "OFF", "ON", 0};
+const char *const qsv_params_condition_intra_ref_encoding[] = {
+    "VERTICAL", "HORIZONTAL", 0};
+const char *const qsv_params_condition_mv_cost_scaling[] = {
+    "DEFAULT", "1/2", "1/4", "1/8", "AUTO", 0};
+const char *const qsv_params_condition_lookahead_mode[] = {"HQ", "LP", "OFF", 0};
+const char *const qsv_params_condition_lookahead_latency[] = {
+    "NORMAL", "HIGH", "LOW", "VERYLOW", 0};
+const char *const qsv_params_condition_lookahead_ds[] = {
+    "SLOW", "MEDIUM", "FAST", "AUTO", 0};
+const char *const qsv_params_condition_trellis[] = {
+    "OFF", "I", "IP", "IPB", "IB", "P", "PB", "B", "AUTO", 0};
+const char *const qsv_params_condition_hevc_sao[] = {
+    "AUTO", "DISABLE", "LUMA", "CHROMA", "ALL", 0};
+const char *const qsv_params_condition_scenario_info[] = {
+    "OFF", "AUTO", "DISPLAY_REMOTING", "VIDEO_CONFERENCE", "ARCHIVE",
+    "LIVE_STREAMING", "CAMERA_CAPTURE", "VIDEO_SURVEILLANCE",
+    "GAME_STREAMING", "REMOTE_GAMING", 0};
+const char *const qsv_params_condition_content_info[] = {
+    "OFF", "AUTO", "NOISY_VIDEO", "GAME", "CAMERA_SCENE",
+    "CLEAN_CAMERA_SCENE", "ANIMATED_GRAPHICS", "COMPUTER_DISPLAY",
+    "PROGRESSIVE_VIDEO", "STILL_IMAGE", "VIDEO_CONFERENCE", 0};
+const char *const qsv_params_condition_tune_quality[] = {
+    "DEFAULT", "PSNR", "SSIM", "MS SSIM", "VMAF", "PERCEPTUAL", "OFF", 0};
+const char *const qsv_params_condition_denoise_mode[] = {
+    "DEFAULT", "AUTO | BDRATE | PRE ENCODE", "AUTO | ADJUST | POST ENCODE",
+    "AUTO | SUBJECTIVE | PRE ENCODE", "MANUAL | PRE ENCODE",
+    "MANUAL | POST ENCODE", "OFF", 0};
+const char *const qsv_params_condition_av1_interp_filter[] = {
+    "DEFAULT", "EIGHTTAP", "EIGHTTAP_SMOOTH", "EIGHTTAP_SHARP", "BILINEAR",
+    "SWITCHABLE", 0};
 
 struct qsv_rate_control_info {
     const char *name;
@@ -212,7 +281,7 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
 }
 
 static inline const char *LocaleKey(const char *str) {
-  static char buf[128];
+  static thread_local char buf[128];
   size_t i;
   if (strcmp(str, "AUTO") == 0)
     return "AUTO_";
@@ -1148,6 +1217,17 @@ static const LevelEntry kAV1Levels[] = {
     {"6.2", MFX_LEVEL_AV1_62}, {"6.3", MFX_LEVEL_AV1_63},
 };
 
+// ── Helper: map string to value via compile-time lookup table ──
+template <typename T, size_t N>
+static std::optional<T> MapString(std::string_view key,
+                                   const std::pair<std::string_view, T> (&map)[N]) {
+  for (const auto &[str, val] : map) {
+    if (key == str)
+      return val;
+  }
+  return std::nullopt;
+}
+
 static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   video_t *Video = obs_encoder_video(Context->EncoderData);
   const video_output_info *VOI = video_output_get_info(Video);
@@ -1275,41 +1355,31 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   Context->CachedFpsDen = static_cast<mfxU32>(VOI->fps_den);
   Context->CachedTSDiv = 90000 * static_cast<int64_t>(VOI->fps_den);
 
-  if (std::strcmp(TargetUsageData, "TU1 (Veryslow)") == 0) {
-    Context->EncoderParams.TargetUsage = MFX_TARGETUSAGE_1;
-    info("\tTarget usage set: TU1 (Veryslow)");
-  } else if (std::strcmp(TargetUsageData, "TU2 (Slower)") == 0) {
-    Context->EncoderParams.TargetUsage = MFX_TARGETUSAGE_2;
-    info("\tTarget usage set: TU2 (Slower)");
-  } else if (std::strcmp(TargetUsageData, "TU3 (Slow)") == 0) {
-    Context->EncoderParams.TargetUsage = MFX_TARGETUSAGE_3;
-    info("\tTarget usage set: TU3 (Slow)");
-  } else if (std::strcmp(TargetUsageData, "TU4 (Balanced)") == 0) {
-    Context->EncoderParams.TargetUsage = MFX_TARGETUSAGE_4;
-    info("\tTarget usage set: TU4 (Balanced)");
-  } else if (std::strcmp(TargetUsageData, "TU5 (Fast)") == 0) {
-    Context->EncoderParams.TargetUsage = MFX_TARGETUSAGE_5;
-    info("\tTarget usage set: TU5 (Fast)");
-  } else if (std::strcmp(TargetUsageData, "TU6 (Faster)") == 0) {
-    Context->EncoderParams.TargetUsage = MFX_TARGETUSAGE_6;
-    info("\tTarget usage set: TU6 (Faster)");
-  } else if (std::strcmp(TargetUsageData, "TU7 (Veryfast)") == 0) {
-    Context->EncoderParams.TargetUsage = MFX_TARGETUSAGE_7;
-    info("\tTarget usage set: TU7 (Veryfast)");
+  // 1. TargetUsage
+  static constexpr std::pair<std::string_view, mfxU16> kTargetUsageMap[] = {
+    {"TU1 (Veryslow)", MFX_TARGETUSAGE_1},
+    {"TU2 (Slower)",   MFX_TARGETUSAGE_2},
+    {"TU3 (Slow)",     MFX_TARGETUSAGE_3},
+    {"TU4 (Balanced)", MFX_TARGETUSAGE_4},
+    {"TU5 (Fast)",     MFX_TARGETUSAGE_5},
+    {"TU6 (Faster)",   MFX_TARGETUSAGE_6},
+    {"TU7 (Veryfast)", MFX_TARGETUSAGE_7},
+  };
+  if (auto v = MapString(TargetUsageData, kTargetUsageMap)) {
+    Context->EncoderParams.TargetUsage = *v;
   }
 
-  if (std::strcmp(TuneQualityData, "PSNR") == 0) {
-    Context->EncoderParams.TuneQualityMode = 1;
-  } else if (std::strcmp(TuneQualityData, "SSIM") == 0) {
-    Context->EncoderParams.TuneQualityMode = 2;
-  } else if (std::strcmp(TuneQualityData, "MS SSIM") == 0) {
-    Context->EncoderParams.TuneQualityMode = 3;
-  } else if (std::strcmp(TuneQualityData, "VMAF") == 0) {
-    Context->EncoderParams.TuneQualityMode = 4;
-  } else if (std::strcmp(TuneQualityData, "PERCEPTUAL") == 0) {
-    Context->EncoderParams.TuneQualityMode = 5;
-  } else if (std::strcmp(TuneQualityData, "DEFAULT") == 0) {
-    Context->EncoderParams.TuneQualityMode = 0;
+  // 2. TuneQuality
+  static constexpr std::pair<std::string_view, int> kTuneQualityMap[] = {
+    {"DEFAULT",     0},
+    {"PSNR",        1},
+    {"SSIM",        2},
+    {"MS SSIM",     3},
+    {"VMAF",        4},
+    {"PERCEPTUAL",  5},
+  };
+  if (auto v = MapString(TuneQualityData, kTuneQualityMap)) {
+    Context->EncoderParams.TuneQualityMode = *v;
   }
 
   Context->EncoderParams.AV1CDEF = ParseAV1Ternary(AV1CDEFData);
@@ -1318,18 +1388,18 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   Context->EncoderParams.AV1SuperRes = ParseAV1Ternary(AV1SuperResData);
   Context->EncoderParams.AV1ErrorResilient = ParseAV1Ternary(AV1ErrorResilientData);
 
-  if (strcmp(AV1InterpFilterData, "DEFAULT") == 0)
-    Context->EncoderParams.AV1InterpFilter = 0;
-  else if (strcmp(AV1InterpFilterData, "EIGHTTAP") == 0)
-    Context->EncoderParams.AV1InterpFilter = 1;
-  else if (strcmp(AV1InterpFilterData, "EIGHTTAP_SMOOTH") == 0)
-    Context->EncoderParams.AV1InterpFilter = 2;
-  else if (strcmp(AV1InterpFilterData, "EIGHTTAP_SHARP") == 0)
-    Context->EncoderParams.AV1InterpFilter = 3;
-  else if (strcmp(AV1InterpFilterData, "BILINEAR") == 0)
-    Context->EncoderParams.AV1InterpFilter = 4;
-  else if (strcmp(AV1InterpFilterData, "SWITCHABLE") == 0)
-    Context->EncoderParams.AV1InterpFilter = 5;
+  // 3. AV1InterpFilter
+  static constexpr std::pair<std::string_view, mfxU16> kAV1InterpFilterMap[] = {
+    {"DEFAULT",          0},
+    {"EIGHTTAP",         1},
+    {"EIGHTTAP_SMOOTH",  2},
+    {"EIGHTTAP_SHARP",   3},
+    {"BILINEAR",         4},
+    {"SWITCHABLE",       5},
+  };
+  if (auto v = MapString(AV1InterpFilterData, kAV1InterpFilterMap)) {
+    Context->EncoderParams.AV1InterpFilter = *v;
+  }
 
   Context->EncoderParams.WeightedPred = ParseWeightedPredMode(WeightedPredData);
   Context->EncoderParams.WeightedBiPred = ParseWeightedPredMode(WeightedBiPredData);
@@ -1345,22 +1415,19 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   switch (Context->Codec) {
   case QSV_CODEC_AVC:
     Codec = "H.264";
-    if (std::strcmp(CodecProfileData, "baseline") == 0) {
-      Context->EncoderParams.CodecProfile = MFX_PROFILE_AVC_BASELINE;
-    } else if (std::strcmp(CodecProfileData, "main") == 0) {
-      Context->EncoderParams.CodecProfile = MFX_PROFILE_AVC_MAIN;
-    } else if (std::strcmp(CodecProfileData, "high") == 0) {
-      Context->EncoderParams.CodecProfile = MFX_PROFILE_AVC_HIGH;
-    } else if (std::strcmp(CodecProfileData, "extended") == 0) {
-      Context->EncoderParams.CodecProfile = MFX_PROFILE_AVC_EXTENDED;
-    } else if (std::strcmp(CodecProfileData, "high10") == 0) {
-      Context->EncoderParams.CodecProfile = MFX_PROFILE_AVC_HIGH10;
-    } else if (std::strcmp(CodecProfileData, "high422") == 0) {
-      Context->EncoderParams.CodecProfile = MFX_PROFILE_AVC_HIGH_422;
-    } else if (std::strcmp(CodecProfileData, "constrained_baseline") == 0) {
-      Context->EncoderParams.CodecProfile = MFX_PROFILE_AVC_CONSTRAINED_BASELINE;
-    } else if (std::strcmp(CodecProfileData, "constrained_high") == 0) {
-      Context->EncoderParams.CodecProfile = MFX_PROFILE_AVC_CONSTRAINED_HIGH;
+    // 4. CodecProfile AVC
+    static constexpr std::pair<std::string_view, mfxU16> kCodecProfileAVCMap[] = {
+      {"baseline",               MFX_PROFILE_AVC_BASELINE},
+      {"main",                   MFX_PROFILE_AVC_MAIN},
+      {"high",                   MFX_PROFILE_AVC_HIGH},
+      {"extended",               MFX_PROFILE_AVC_EXTENDED},
+      {"high10",                 MFX_PROFILE_AVC_HIGH10},
+      {"high422",                MFX_PROFILE_AVC_HIGH_422},
+      {"constrained_baseline",   MFX_PROFILE_AVC_CONSTRAINED_BASELINE},
+      {"constrained_high",       MFX_PROFILE_AVC_CONSTRAINED_HIGH},
+    };
+    if (auto v = MapString(CodecProfileData, kCodecProfileAVCMap)) {
+      Context->EncoderParams.CodecProfile = *v;
     }
 
     Context->EncoderParams.CodecLevel =
@@ -1369,17 +1436,16 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     break;
   case QSV_CODEC_HEVC:
     Codec = "HEVC";
-    if (std::strcmp(CodecProfileData, "main") == 0) {
-      Context->EncoderParams.CodecProfile = MFX_PROFILE_HEVC_MAIN;
-
-    } else if (std::strcmp(CodecProfileData, "main10") == 0) {
-      Context->EncoderParams.CodecProfile = MFX_PROFILE_HEVC_MAIN10;
-    } else if (std::strcmp(CodecProfileData, "rext") == 0) {
-      Context->EncoderParams.CodecProfile = MFX_PROFILE_HEVC_REXT;
-    } else if (std::strcmp(CodecProfileData, "mainsp") == 0) {
-      Context->EncoderParams.CodecProfile = MFX_PROFILE_HEVC_MAINSP;
-    } else if (std::strcmp(CodecProfileData, "scc") == 0) {
-      Context->EncoderParams.CodecProfile = MFX_PROFILE_HEVC_SCC;
+    // 5. CodecProfile HEVC
+    static constexpr std::pair<std::string_view, mfxU16> kCodecProfileHEVCMap[] = {
+      {"main",    MFX_PROFILE_HEVC_MAIN},
+      {"main10",  MFX_PROFILE_HEVC_MAIN10},
+      {"rext",    MFX_PROFILE_HEVC_REXT},
+      {"mainsp",  MFX_PROFILE_HEVC_MAINSP},
+      {"scc",     MFX_PROFILE_HEVC_SCC},
+    };
+    if (auto v = MapString(CodecProfileData, kCodecProfileHEVCMap)) {
+      Context->EncoderParams.CodecProfile = *v;
     }
 
     if (std::strcmp(CodecProfileTierData, "main") == 0) {
@@ -1403,12 +1469,14 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     break;
   case QSV_CODEC_AV1:
     Codec = "AV1";
-    if (std::strcmp(CodecProfileData, "main") == 0) {
-      Context->EncoderParams.CodecProfile = MFX_PROFILE_AV1_MAIN;
-    } else if (std::strcmp(CodecProfileData, "high") == 0) {
-      Context->EncoderParams.CodecProfile = MFX_PROFILE_AV1_HIGH;
-    } else if (std::strcmp(CodecProfileData, "pro") == 0) {
-      Context->EncoderParams.CodecProfile = MFX_PROFILE_AV1_PRO;
+    // 6. CodecProfile AV1
+    static constexpr std::pair<std::string_view, mfxU16> kCodecProfileAV1Map[] = {
+      {"main",  MFX_PROFILE_AV1_MAIN},
+      {"high",  MFX_PROFILE_AV1_HIGH},
+      {"pro",   MFX_PROFILE_AV1_PRO},
+    };
+    if (auto v = MapString(CodecProfileData, kCodecProfileAV1Map)) {
+      Context->EncoderParams.CodecProfile = *v;
     }
 
     Context->EncoderParams.CodecLevel =
@@ -1528,14 +1596,15 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   ParseOptionalBool(DirectBiasAdjustmentData,
                     Context->EncoderParams.DirectBiasAdjustment);
 
-  if (std::strcmp(MVCostScalingFactorData, "OFF") == 0) {
-    Context->EncoderParams.MVCostScalingFactor = 0;
-  } else if (std::strcmp(MVCostScalingFactorData, "1/2") == 0) {
-    Context->EncoderParams.MVCostScalingFactor = 1;
-  } else if (std::strcmp(MVCostScalingFactorData, "1/4") == 0) {
-    Context->EncoderParams.MVCostScalingFactor = 2;
-  } else if (std::strcmp(MVCostScalingFactorData, "1/8") == 0) {
-    Context->EncoderParams.MVCostScalingFactor = 3;
+  // 7. MVCostScalingFactor
+  static constexpr std::pair<std::string_view, int> kMVCostScalingFactorMap[] = {
+    {"OFF",  0},
+    {"1/2",  1},
+    {"1/4",  2},
+    {"1/8",  3},
+  };
+  if (auto v = MapString(MVCostScalingFactorData, kMVCostScalingFactorMap)) {
+    Context->EncoderParams.MVCostScalingFactor = *v;
   }
 
   ParseOptionalBool(UseRawRefData, Context->EncoderParams.RawRef);
@@ -1558,12 +1627,14 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       Context->EncoderParams.LADepth = static_cast<mfxU16>(Depth);
     }
 
-    if (std::strcmp(LookaheadDSData, "SLOW") == 0) {
-      Context->EncoderParams.LookAheadDS = 0;
-    } else if (std::strcmp(LookaheadDSData, "MEDIUM") == 0) {
-      Context->EncoderParams.LookAheadDS = 1;
-    } else if (std::strcmp(LookaheadDSData, "FAST") == 0) {
-      Context->EncoderParams.LookAheadDS = 2;
+    // 8. LookaheadDS
+    static constexpr std::pair<std::string_view, int> kLookaheadDSMap[] = {
+      {"SLOW",   0},
+      {"MEDIUM", 1},
+      {"FAST",   2},
+    };
+    if (auto v = MapString(LookaheadDSData, kLookaheadDSMap)) {
+      Context->EncoderParams.LookAheadDS = *v;
     }
   } else if (std::strcmp(LookaheadData, "LP") == 0) {
     if (BFramesData > 0) {
@@ -1600,78 +1671,66 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
 
   ParseOptionalBool(RDOData, Context->EncoderParams.RDO);
 
-  if (std::strcmp(TrellisData, "I") == 0) {
-    Context->EncoderParams.Trellis = 1;
-  } else if (std::strcmp(TrellisData, "IP") == 0) {
-    Context->EncoderParams.Trellis = 2;
-  } else if (std::strcmp(TrellisData, "IPB") == 0) {
-    Context->EncoderParams.Trellis = 3;
-  } else if (std::strcmp(TrellisData, "IB") == 0) {
-    Context->EncoderParams.Trellis = 4;
-  } else if (std::strcmp(TrellisData, "P") == 0) {
-    Context->EncoderParams.Trellis = 5;
-  } else if (std::strcmp(TrellisData, "PB") == 0) {
-    Context->EncoderParams.Trellis = 6;
-  } else if (std::strcmp(TrellisData, "B") == 0) {
-    Context->EncoderParams.Trellis = 7;
+  // 9. Trellis
+  static constexpr std::pair<std::string_view, int> kTrellisMap[] = {
+    {"I",   1},
+    {"IP",  2},
+    {"IPB", 3},
+    {"IB",  4},
+    {"P",   5},
+    {"PB",  6},
+    {"B",   7},
+  };
+  if (auto v = MapString(TrellisData, kTrellisMap)) {
+    Context->EncoderParams.Trellis = *v;
   }
 
-  if (std::strcmp(SAOData, "DISABLE") == 0) {
-    Context->EncoderParams.SAO = 0;
-  } else if (std::strcmp(SAOData, "LUMA") == 0) {
-    Context->EncoderParams.SAO = 1;
-  } else if (std::strcmp(SAOData, "CHROMA") == 0) {
-    Context->EncoderParams.SAO = 2;
-  } else if (std::strcmp(SAOData, "ALL") == 0) {
-    Context->EncoderParams.SAO = 3;
+  // 10. SAO
+  static constexpr std::pair<std::string_view, int> kSAOMap[] = {
+    {"DISABLE", 0},
+    {"LUMA",    1},
+    {"CHROMA",  2},
+    {"ALL",     3},
+  };
+  if (auto v = MapString(SAOData, kSAOMap)) {
+    Context->EncoderParams.SAO = *v;
   }
 
   ParseOptionalBool(GPBData, Context->EncoderParams.GPB);
 
-  if (std::strcmp(ScenarioInfoData, "OFF") == 0) {
-    Context->EncoderParams.ScenarioInfo = std::nullopt;
-  } else if (std::strcmp(ScenarioInfoData, "AUTO") == 0) {
-    Context->EncoderParams.ScenarioInfo = 0;
-  } else if (std::strcmp(ScenarioInfoData, "DISPLAY_REMOTING") == 0) {
-    Context->EncoderParams.ScenarioInfo = 1;
-  } else if (std::strcmp(ScenarioInfoData, "VIDEO_CONFERENCE") == 0) {
-    Context->EncoderParams.ScenarioInfo = 2;
-  } else if (std::strcmp(ScenarioInfoData, "ARCHIVE") == 0) {
-    Context->EncoderParams.ScenarioInfo = 3;
-  } else if (std::strcmp(ScenarioInfoData, "LIVE_STREAMING") == 0) {
-    Context->EncoderParams.ScenarioInfo = 4;
-  } else if (std::strcmp(ScenarioInfoData, "CAMERA_CAPTURE") == 0) {
-    Context->EncoderParams.ScenarioInfo = 5;
-  } else if (std::strcmp(ScenarioInfoData, "VIDEO_SURVEILLANCE") == 0) {
-    Context->EncoderParams.ScenarioInfo = 6;
-  } else if (std::strcmp(ScenarioInfoData, "GAME_STREAMING") == 0) {
-    Context->EncoderParams.ScenarioInfo = 7;
-  } else if (std::strcmp(ScenarioInfoData, "REMOTE_GAMING") == 0) {
-    Context->EncoderParams.ScenarioInfo = 8;
+  // 11. ScenarioInfo (special: OFF -> nullopt, AUTO -> 0)
+  static constexpr std::pair<std::string_view, std::optional<mfxU16>> kScenarioInfoMap[] = {
+    {"OFF",                std::nullopt},
+    {"AUTO",               std::optional<mfxU16>(0)},
+    {"DISPLAY_REMOTING",   std::optional<mfxU16>(1)},
+    {"VIDEO_CONFERENCE",   std::optional<mfxU16>(2)},
+    {"ARCHIVE",            std::optional<mfxU16>(3)},
+    {"LIVE_STREAMING",     std::optional<mfxU16>(4)},
+    {"CAMERA_CAPTURE",     std::optional<mfxU16>(5)},
+    {"VIDEO_SURVEILLANCE", std::optional<mfxU16>(6)},
+    {"GAME_STREAMING",     std::optional<mfxU16>(7)},
+    {"REMOTE_GAMING",      std::optional<mfxU16>(8)},
+  };
+  if (auto v = MapString(ScenarioInfoData, kScenarioInfoMap)) {
+    Context->EncoderParams.ScenarioInfo = *v;
   }
 
-  if (std::strcmp(ContentInfoData, "OFF") == 0) {
-    Context->EncoderParams.ContentInfo = std::nullopt;
-  } else if (std::strcmp(ContentInfoData, "AUTO") == 0) {
-    Context->EncoderParams.ContentInfo = 0;
-  } else if (std::strcmp(ContentInfoData, "NOISY_VIDEO") == 0) {
-    Context->EncoderParams.ContentInfo = 2;
-  } else if (std::strcmp(ContentInfoData, "GAME") == 0) {
-    Context->EncoderParams.ContentInfo = 4;
-  } else if (std::strcmp(ContentInfoData, "CAMERA_SCENE") == 0) {
-    Context->EncoderParams.ContentInfo = 1;
-  } else if (std::strcmp(ContentInfoData, "CLEAN_CAMERA_SCENE") == 0) {
-    Context->EncoderParams.ContentInfo = 7;
-  } else if (std::strcmp(ContentInfoData, "ANIMATED_GRAPHICS") == 0) {
-    Context->EncoderParams.ContentInfo = 6;
-  } else if (std::strcmp(ContentInfoData, "COMPUTER_DISPLAY") == 0) {
-    Context->EncoderParams.ContentInfo = 10;
-  } else if (std::strcmp(ContentInfoData, "PROGRESSIVE_VIDEO") == 0) {
-    Context->EncoderParams.ContentInfo = 9;
-  } else if (std::strcmp(ContentInfoData, "STILL_IMAGE") == 0) {
-    Context->EncoderParams.ContentInfo = 8;
-  } else if (std::strcmp(ContentInfoData, "VIDEO_CONFERENCE") == 0) {
-    Context->EncoderParams.ContentInfo = 5;
+  // 12. ContentInfo (special: OFF -> nullopt, AUTO -> 0)
+  static constexpr std::pair<std::string_view, std::optional<mfxU16>> kContentInfoMap[] = {
+    {"OFF",                std::nullopt},
+    {"AUTO",               std::optional<mfxU16>(0)},
+    {"NOISY_VIDEO",        std::optional<mfxU16>(2)},
+    {"GAME",               std::optional<mfxU16>(4)},
+    {"CAMERA_SCENE",       std::optional<mfxU16>(1)},
+    {"CLEAN_CAMERA_SCENE", std::optional<mfxU16>(7)},
+    {"ANIMATED_GRAPHICS",  std::optional<mfxU16>(6)},
+    {"COMPUTER_DISPLAY",   std::optional<mfxU16>(10)},
+    {"PROGRESSIVE_VIDEO",  std::optional<mfxU16>(9)},
+    {"STILL_IMAGE",        std::optional<mfxU16>(8)},
+    {"VIDEO_CONFERENCE",   std::optional<mfxU16>(5)},
+  };
+  if (auto v = MapString(ContentInfoData, kContentInfoMap)) {
+    Context->EncoderParams.ContentInfo = *v;
   }
 
   if (std::strcmp(TransformSkipData, "AUTO") == 0) {
@@ -1690,51 +1749,49 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.FadeDetection = false;
   }
 
-  if (std::strcmp(RateControlData, "CBR") == 0) {
-    Context->EncoderParams.RateControl = MFX_RATECONTROL_CBR;
-  } else if (std::strcmp(RateControlData, "VBR") == 0) {
-    Context->EncoderParams.RateControl = MFX_RATECONTROL_VBR;
-  } else if (std::strcmp(RateControlData, "CQP") == 0) {
-    Context->EncoderParams.RateControl = MFX_RATECONTROL_CQP;
-  } else if (std::strcmp(RateControlData, "AVBR") == 0) {
-    Context->EncoderParams.RateControl = MFX_RATECONTROL_AVBR;
-  } else if (std::strcmp(RateControlData, "ICQ") == 0) {
-    Context->EncoderParams.RateControl = MFX_RATECONTROL_ICQ;
-  } else if (std::strcmp(RateControlData, "VCM") == 0) {
-    Context->EncoderParams.RateControl = MFX_RATECONTROL_VCM;
-  } else if (std::strcmp(RateControlData, "QVBR") == 0) {
-    Context->EncoderParams.RateControl = MFX_RATECONTROL_QVBR;
+  // 13. RateControl
+  static constexpr std::pair<std::string_view, mfxU16> kRateControlMap[] = {
+    {"CBR",  MFX_RATECONTROL_CBR},
+    {"VBR",  MFX_RATECONTROL_VBR},
+    {"CQP",  MFX_RATECONTROL_CQP},
+    {"AVBR", MFX_RATECONTROL_AVBR},
+    {"ICQ",  MFX_RATECONTROL_ICQ},
+    {"VCM",  MFX_RATECONTROL_VCM},
+    {"QVBR", MFX_RATECONTROL_QVBR},
+  };
+  if (auto v = MapString(RateControlData, kRateControlMap)) {
+    Context->EncoderParams.RateControl = *v;
   }
 
-  if (std::strcmp(DenoiseModeData, "DEFAULT") == 0) {
-    Context->EncoderParams.VPPDenoiseMode = 0;
-  } else if (std::strcmp(DenoiseModeData, "AUTO | BDRATE | PRE ENCODE") == 0) {
-    Context->EncoderParams.VPPDenoiseMode = 1;
-  } else if (std::strcmp(DenoiseModeData, "AUTO | ADJUST | POST ENCODE") == 0) {
-    Context->EncoderParams.VPPDenoiseMode = 2;
-  } else if (std::strcmp(DenoiseModeData, "AUTO | SUBJECTIVE | PRE ENCODE") ==
-             0) {
-    Context->EncoderParams.VPPDenoiseMode = 3;
-  } else if (std::strcmp(DenoiseModeData, "MANUAL | PRE ENCODE") == 0) {
-    Context->EncoderParams.VPPDenoiseMode = 4;
-    Context->EncoderParams.DenoiseStrength =
-        static_cast<mfxU16>(DenoiseStrengthData);
-  } else if (std::strcmp(DenoiseModeData, "MANUAL | POST ENCODE") == 0) {
-    Context->EncoderParams.VPPDenoiseMode = 5;
+  // 14. DenoiseMode
+  static constexpr std::pair<std::string_view, int> kDenoiseModeMap[] = {
+    {"DEFAULT",                        0},
+    {"AUTO | BDRATE | PRE ENCODE",     1},
+    {"AUTO | ADJUST | POST ENCODE",    2},
+    {"AUTO | SUBJECTIVE | PRE ENCODE", 3},
+    {"MANUAL | PRE ENCODE",            4},
+    {"MANUAL | POST ENCODE",           5},
+  };
+  if (auto v = MapString(DenoiseModeData, kDenoiseModeMap)) {
+    Context->EncoderParams.VPPDenoiseMode = *v;
+  }
+  // MANUAL modes: set DenoiseStrength
+  if (std::strcmp(DenoiseModeData, "MANUAL | PRE ENCODE") == 0 ||
+      std::strcmp(DenoiseModeData, "MANUAL | POST ENCODE") == 0) {
     Context->EncoderParams.DenoiseStrength =
         static_cast<mfxU16>(DenoiseStrengthData);
   }
 
-  if (std::strcmp(ScalingModeData, "QUALITY | ADVANCED") == 0) {
-    Context->EncoderParams.VPPScalingMode = 1;
-  } else if (std::strcmp(ScalingModeData, "VEBOX | ADVANCED") == 0) {
-    Context->EncoderParams.VPPScalingMode = 2;
-  } else if (std::strcmp(ScalingModeData, "LOWPOWER | NEAREST NEIGHBOR") == 0) {
-    Context->EncoderParams.VPPScalingMode = 3;
-  } else if (std::strcmp(ScalingModeData, "LOWPOWER | ADVANCED") == 0) {
-    Context->EncoderParams.VPPScalingMode = 4;
-  } else if (std::strcmp(ScalingModeData, "AUTO") == 0) {
-    Context->EncoderParams.VPPScalingMode = 0;
+  // 15. ScalingMode
+  static constexpr std::pair<std::string_view, int> kScalingModeMap[] = {
+    {"QUALITY | ADVANCED",           1},
+    {"VEBOX | ADVANCED",             2},
+    {"LOWPOWER | NEAREST NEIGHBOR",  3},
+    {"LOWPOWER | ADVANCED",          4},
+    {"AUTO",                         0},
+  };
+  if (auto v = MapString(ScalingModeData, kScalingModeMap)) {
+    Context->EncoderParams.VPPScalingMode = *v;
   }
 
   int64_t VPPOutWidthData = obs_data_get_int(Settings, "vpp_out_width");
@@ -1746,12 +1803,14 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
         static_cast<mfxU16>(VPPOutHeightData);
   }
 
-  if (std::strcmp(ImageStabModeData, "UPSCALE") == 0) {
-    Context->EncoderParams.VPPImageStabMode = 1;
-  } else if (std::strcmp(ImageStabModeData, "BOXING") == 0) {
-    Context->EncoderParams.VPPImageStabMode = 2;
-  } else if (std::strcmp(ImageStabModeData, "AUTO") == 0) {
-    Context->EncoderParams.VPPImageStabMode = 0;
+  // 16. ImageStabMode
+  static constexpr std::pair<std::string_view, int> kImageStabModeMap[] = {
+    {"UPSCALE", 1},
+    {"BOXING",  2},
+    {"AUTO",    0},
+  };
+  if (auto v = MapString(ImageStabModeData, kImageStabModeMap)) {
+    Context->EncoderParams.VPPImageStabMode = *v;
   }
 
   if (std::strcmp(DetailData, "ON") == 0) {

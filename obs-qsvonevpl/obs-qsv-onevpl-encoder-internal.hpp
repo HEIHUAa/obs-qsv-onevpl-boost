@@ -81,6 +81,8 @@ public:
 
   mfxStatus Drain();
 
+  void DisableVPP();
+
   // Submit a dummy frame during Init to force the driver to allocate internal
   // GPU resources (shaders, command buffers, hardware state) ahead of time.
   // Eliminates the visible stutter on first encode.
@@ -143,7 +145,6 @@ private:
   mfxU16 QSVPPSBufferSize;
 
   mfxBitstream QSVBitstream;
-  // mfxU16 MFXTaskPoolSize;
   std::vector<struct Task> QSVTaskPool;
   int QSVSyncTaskID;
 

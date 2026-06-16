@@ -52,6 +52,7 @@ private:
   void ResizePreview();
   static void PreviewDraw(void *param, uint32_t cx, uint32_t cy);
   void DrawROIOverlay(uint32_t cx, uint32_t cy, const struct obs_video_info &ovi);
+  void InvalidateROICache();
 
   QLabel *InfoLabel;
 
@@ -82,4 +83,10 @@ private:
   // Prevents re-entrant textChanged → UpdatePreviewFromText while
   // SetUIFromGlobalConfig is holding GlobalROIConfigMutex
   bool m_IsSettingText = false;
+
+  // Cached grid computation for DrawROIOverlay optimization.
+  // Grid is only recomputed when ROI data or output dimensions change.
+  std::vector<encoder_params::roi_region> m_CachedDrawRects;
+  bool m_CachedUseSegmented = false;
+  size_t m_GridCacheHash = 0;
 };

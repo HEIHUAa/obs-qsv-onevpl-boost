@@ -166,6 +166,9 @@ bool obs_module_load([[maybe_unused]] void) {
 
   if (SupportAVC || SupportAV1 || SupportHEVC) {
     WarmUpVPLSession();
+    // Pre-warm the platform platform-name cache so the first
+    // ParamsVisibilityModifier call does not create a temporary VPL session.
+    QueryPlatformCodeName();
   }
 
   // Register ROI editor in Tools menu (only when frontend API is available)

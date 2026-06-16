@@ -191,112 +191,35 @@ struct plugin_context {
 
 
 
-static const char *const qsv_profile_names_av1[] = {"main", "high", "pro", 0};
-
-static const char *const qsv_profile_names_h264[] = {
-    "high10", "high", "main", "baseline", "extended", "high422",
-    "constrained_baseline", "constrained_high", 0};
-
-static const char *const qsv_profile_names_hevc[] = {"main", "main10", "mainsp", "rext", "scc", 0};
-
-static const char *const qsv_profile_tiers_hevc[] = {"main", "high", 0};
-
-static const char *const qsv_levels_hevc[] = {
-    "auto", "1", "2", "2.1", "3", "3.1", "4", "4.1",
-    "5", "5.1", "5.2", "6", "6.1", "6.2", 0};
-
-static const char *const qsv_levels_avc[] = {
-    "auto", "1", "1b", "1.1", "1.2", "1.3", "2", "2.1", "2.2",
-    "3", "3.1", "3.2", "4", "4.1", "4.2", "5", "5.1", "5.2",
-    "6", "6.1", "6.2", 0};
-
-static const char *const qsv_levels_av1[] = {
-    "auto", "2.0", "2.1", "2.2", "2.3", "3.0", "3.1", "3.2", "3.3",
-    "4.0", "4.1", "4.2", "4.3", "5.0", "5.1", "5.2", "5.3",
-    "6.0", "6.1", "6.2", "6.3", 0};
-
-static const char *const qsv_usage_names[] = {
-    "TU1 (Veryslow)", "TU2 (Slower)", "TU3 (Slow)",     "TU4 (Balanced)",
-    "TU5 (Fast)",     "TU6 (Faster)", "TU7 (Veryfast)", 0};
-
-static const char *const qsv_latency_names[] = {"ultra-low", "low", "normal",
-                                                0};
-
-static const char *const qsv_params_condition[] = {"ON", "OFF", 0};
-
-static const char *const qsv_params_condition_tristate[] = {"ON", "OFF", "AUTO",
-                                                            0};
-
-static const char *const qsv_params_weighted_pred_options[] = {"AUTO", "OFF",
-    "DEFAULT", "EXPLICIT", "IMPLICIT", 0};
-
-static const char *const qsv_params_condition_vpp[] = {"PRE ENC", "POST ENC",
-                                                       "PRE ENC | POST ENC", 0};
-
-static const char *const qsv_params_condition_scaling_mode[] = {
-    "OFF",
-    "QUALITY | ADVANCED",
-    "VEBOX | ADVANCED",
-    "LOWPOWER | NEAREST NEIGHBOR",
-    "LOWPOWER | ADVANCED",
-    "AUTO",
-    0};
-
-static const char *const qsv_params_condition_image_stab_mode[] = {
-    "OFF", "UPSCALE", "BOXING", "AUTO", 0};
-
-static const char *const qsv_params_condition_extbrc[] = {"ON", "OFF", 0};
-
-static const char *const qsv_params_condition_screen_content_tools[] = {
-    "AUTO", "OFF", "ON", 0};
-
-static const char *const qsv_params_condition_intra_ref_encoding[] = {
-    "VERTICAL", "HORIZONTAL", 0};
-
-static const char *const qsv_params_condition_mv_cost_scaling[] = {
-    "DEFAULT", "1/2", "1/4", "1/8", "AUTO", 0};
-
-static const char *const qsv_params_condition_lookahead_mode[] = {"HQ", "LP",
-                                                                  "OFF", 0};
-
-static const char *const qsv_params_condition_lookahead_latency[] = {
-    "NORMAL", "HIGH", "LOW", "VERYLOW", 0};
-
-static const char *const qsv_params_condition_lookahead_ds[] = {
-    "SLOW", "MEDIUM", "FAST", "AUTO", 0};
-
-static const char *const qsv_params_condition_trellis[] = {
-    "OFF", "I", "IP", "IPB", "IB", "P", "PB", "B", "AUTO", 0};
-
-static const char *const qsv_params_condition_hevc_sao[] = {
-    "AUTO", "DISABLE", "LUMA", "CHROMA", "ALL", 0};
-
-static const char *const qsv_params_condition_scenario_info[] = {
-    "OFF", "AUTO", "DISPLAY_REMOTING", "VIDEO_CONFERENCE", "ARCHIVE",
-    "LIVE_STREAMING", "CAMERA_CAPTURE", "VIDEO_SURVEILLANCE",
-    "GAME_STREAMING", "REMOTE_GAMING", 0};
-
-static const char *const qsv_params_condition_content_info[] = {
-    "OFF", "AUTO", "NOISY_VIDEO", "GAME", "CAMERA_SCENE",
-    "CLEAN_CAMERA_SCENE", "ANIMATED_GRAPHICS", "COMPUTER_DISPLAY",
-    "PROGRESSIVE_VIDEO", "STILL_IMAGE", "VIDEO_CONFERENCE", 0};
-
-static const char *const qsv_params_condition_tune_quality[] = {
-    "DEFAULT", "PSNR", "SSIM", "MS SSIM", "VMAF", "PERCEPTUAL", "OFF", 0};
-
-static const char *const qsv_params_condition_denoise_mode[] = {
-    "DEFAULT",
-    "AUTO | BDRATE | PRE ENCODE",
-    "AUTO | ADJUST | POST ENCODE",
-    "AUTO | SUBJECTIVE | PRE ENCODE",
-    "MANUAL | PRE ENCODE",
-    "MANUAL | POST ENCODE",
-    "OFF",
-    0};
-
-static const char *const qsv_params_condition_av1_interp_filter[] = {
-    "DEFAULT", "EIGHTTAP", "EIGHTTAP_SMOOTH", "EIGHTTAP_SHARP", "BILINEAR",
-    "SWITCHABLE", 0};
+extern const char *const qsv_profile_names_av1[];
+extern const char *const qsv_profile_names_h264[];
+extern const char *const qsv_profile_names_hevc[];
+extern const char *const qsv_profile_tiers_hevc[];
+extern const char *const qsv_levels_hevc[];
+extern const char *const qsv_levels_avc[];
+extern const char *const qsv_levels_av1[];
+extern const char *const qsv_usage_names[];
+extern const char *const qsv_latency_names[];
+extern const char *const qsv_params_condition[];
+extern const char *const qsv_params_condition_tristate[];
+extern const char *const qsv_params_weighted_pred_options[];
+extern const char *const qsv_params_condition_vpp[];
+extern const char *const qsv_params_condition_scaling_mode[];
+extern const char *const qsv_params_condition_image_stab_mode[];
+extern const char *const qsv_params_condition_extbrc[];
+extern const char *const qsv_params_condition_screen_content_tools[];
+extern const char *const qsv_params_condition_intra_ref_encoding[];
+extern const char *const qsv_params_condition_mv_cost_scaling[];
+extern const char *const qsv_params_condition_lookahead_mode[];
+extern const char *const qsv_params_condition_lookahead_latency[];
+extern const char *const qsv_params_condition_lookahead_ds[];
+extern const char *const qsv_params_condition_trellis[];
+extern const char *const qsv_params_condition_hevc_sao[];
+extern const char *const qsv_params_condition_scenario_info[];
+extern const char *const qsv_params_condition_content_info[];
+extern const char *const qsv_params_condition_tune_quality[];
+extern const char *const qsv_params_condition_denoise_mode[];
+extern const char *const qsv_params_condition_av1_interp_filter[];
 
 static void SetDefaultEncoderParams(obs_data_t *, enum codec_enum);
 

@@ -84,6 +84,10 @@ void DestroyPluginContext(void *Data) {
       Context->EncodingCV.wait_for(cvLock, std::chrono::milliseconds(10));
     }
 
+    // Hold the lock while checking and tearing down to prevent new encodes
+    // from racing between the wait loop exit and the destruction below.
+    std::lock_guard<std::mutex> destroyLock(Context->EncoderMutex);
+
     if (Context->EncoderPTR) {
       try {
 
@@ -237,6 +241,7 @@ void GetVideoInfo(void *Data, video_scale_info *Info) {
     break;
   }
   default:
+    // AVC with non-high10 profiles needs no adjustment; format remains NV12/P010 based on OBS config
     break;
   }
 
@@ -639,12 +644,13 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
                               &Context->ExtraData.second);
     }
 
-    Context->PacketData.assign(NewPacket, NewPacket + NewPacketSize);
+    Context->PacketData.resize(NewPacketSize);
+    std::memcpy(Context->PacketData.data(), NewPacket, NewPacketSize);
     bfree(NewPacket);
   } else {
-    Context->PacketData.assign(Bitstream->Data + Bitstream->DataOffset,
-                               Bitstream->Data + Bitstream->DataOffset +
-                                   Bitstream->DataLength);
+    Context->PacketData.resize(Bitstream->DataLength);
+    std::memcpy(Context->PacketData.data(),
+                Bitstream->Data + Bitstream->DataOffset, Bitstream->DataLength);
   }
 
   Packet->data = Context->PacketData.data();
