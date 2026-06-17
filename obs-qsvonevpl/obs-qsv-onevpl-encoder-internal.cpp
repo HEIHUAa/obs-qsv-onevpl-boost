@@ -191,6 +191,14 @@ void QSVEncoder::DisableVPP() {
     QSVProcessingEnable = false;
   }
 
+// Forward declaration — full definition after all CO_FIELDS tables
+static void LogCO2CO3Corrections(
+    const char *Prefix,
+    MFXVideoParam &Params,
+    const mfxExtCodingOption2 *CO2Before,
+    const mfxExtCodingOption3 *CO3Before,
+    bool HasCO2, bool HasCO3);
+
 mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
                                           enum codec_enum Codec,
                                           const char *log_prefix) {
@@ -768,30 +776,6 @@ static mfxU64 ReadFieldValue(const void *base, const FieldEntry &entry) {
   return 0;
 }
 
-// Log driver-corrected fields by diffing before/after state using field tables
-static void LogCO2CO3Corrections(
-    const char *Prefix,
-    MFXVideoParam &Params,
-    const mfxExtCodingOption2 *CO2Before,
-    const mfxExtCodingOption3 *CO3Before,
-    bool HasCO2, bool HasCO3) {
-  auto CO2After = Params.GetExtBuffer<mfxExtCodingOption2>();
-  auto CO3After = Params.GetExtBuffer<mfxExtCodingOption3>();
-  info("\tDriver auto-corrected parameters%s:", Prefix);
-  auto logDiffs = [&](const void *before, const void *after,
-                       std::span<const FieldEntry> fields) {
-    if (!before || !after) return;
-    for (const auto &f : fields) {
-      mfxU64 bv = ReadFieldValue(before, f);
-      mfxU64 av = ReadFieldValue(after, f);
-      if (bv != av)
-        info("\t  %s: %llu -> %llu", f.name, bv, av);
-    }
-  };
-  logDiffs(CO2Before, CO2After, CO2_FIELDS);
-  logDiffs(CO3Before, CO3After, CO3_FIELDS);
-}
-
 static constexpr std::array<FieldEntry, 23> CO_FIELDS{
   FieldEntry{"CAVLC", offsetof(mfxExtCodingOption, CAVLC), FT_U16},
   {"MECostType", offsetof(mfxExtCodingOption, MECostType), FT_U16},
@@ -911,6 +895,30 @@ static constexpr std::array<FieldEntry, 43> CODDI_FIELDS{
   {"DDI.IntraPredBlockSize", offsetof(mfxExtCodingOptionDDI, DDI), FT_U16},
   {"DDI.InterPredBlockSize", offsetof(mfxExtCodingOptionDDI, DDI) + sizeof(mfxU16), FT_U16},
 };
+
+// Log driver-corrected fields by diffing before/after state using field tables
+static void LogCO2CO3Corrections(
+    const char *Prefix,
+    MFXVideoParam &Params,
+    const mfxExtCodingOption2 *CO2Before,
+    const mfxExtCodingOption3 *CO3Before,
+    bool HasCO2, bool HasCO3) {
+  auto CO2After = Params.GetExtBuffer<mfxExtCodingOption2>();
+  auto CO3After = Params.GetExtBuffer<mfxExtCodingOption3>();
+  info("\tDriver auto-corrected parameters%s:", Prefix);
+  auto logDiffs = [&](const void *before, const void *after,
+                       std::span<const FieldEntry> fields) {
+    if (!before || !after) return;
+    for (const auto &f : fields) {
+      mfxU64 bv = ReadFieldValue(before, f);
+      mfxU64 av = ReadFieldValue(after, f);
+      if (bv != av)
+        info("\t  %s: %llu -> %llu", f.name, bv, av);
+    }
+  };
+  logDiffs(CO2Before, CO2After, CO2_FIELDS);
+  logDiffs(CO3Before, CO3After, CO3_FIELDS);
+}
 
 static std::optional<mfxU16> ApplyField(void *base, std::span<const FieldEntry> entries,
                                         const std::string &field, const std::string &val) {
