@@ -3421,12 +3421,18 @@ mfxStatus QSVEncoder::Drain() {
     Status = QSVEncode->EncodeFrameAsync(
         nullptr, nullptr, nullptr, &SyncPoint);
     if (Status == MFX_ERR_NONE && SyncPoint != nullptr) {
-      Status = MFXVideoCORE_SyncOperation(QSVSession, SyncPoint, 5000);
+      mfxStatus SyncSts = MFXVideoCORE_SyncOperation(QSVSession, SyncPoint, 5000);
+      // SyncOperation may return MFX_ERR_NULL_PTR on some drivers when the
+      // sync point represents a no-op completion during drain; this is benign
+      // and should not overwrite the EncodeFrameAsync status.
+      if (SyncSts < MFX_ERR_NONE) {
+        warn("Drain sync warning: %d", SyncSts);
+      }
     }
   }
 
-  // MFX_ERR_MORE_DATA is the normal drain exit condition; other errors should be logged
-  if (Status != MFX_ERR_MORE_DATA) {
+  // MFX_ERR_MORE_DATA is the normal drain exit condition
+  if (Status != MFX_ERR_MORE_DATA && Status != MFX_ERR_NULL_PTR) {
     warn("Drain: unexpected exit status: %d", Status);
   }
   Status = MFX_ERR_NONE;
