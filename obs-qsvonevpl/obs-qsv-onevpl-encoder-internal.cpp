@@ -336,9 +336,8 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
   // On older hardware (especially UHD600), certain ext buffers and
   // parameters may not be supported.  Each retry removes one feature
   // and re-attempts Init until it succeeds or all fallbacks are exhausted.
-  // 重试链为顺序 if 块,每个块最多执行一次,无需额外计数器。
-  int retry_count = 0;
-  (void)retry_count; // 保留以备未来扩展为循环重试
+  // The retry chain consists of sequential if-blocks, each executing at most
+  // once — no extra counter needed.
 
   if (Status < MFX_ERR_NONE) {
     auto CO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
@@ -2219,7 +2218,7 @@ void QSVEncoder::ReleaseTaskPool() {
 }
 
 mfxStatus QSVEncoder::ChangeBitstreamSize(mfxU32 NewSize) {
-  // 主 bitstream 缓冲重新分配(异常安全:先分配新,再释放旧)
+  // Reallocate the main bitstream buffer (exception-safe: allocate new first, then free old)
   mfxU8 *Data = static_cast<mfxU8 *>(AlignedMalloc(NewSize, 32));
   if (Data == nullptr) {
     throw std::runtime_error(
@@ -2228,7 +2227,8 @@ mfxStatus QSVEncoder::ChangeBitstreamSize(mfxU32 NewSize) {
 
   mfxU32 DataLen = QSVBitstream.DataLength;
   if (QSVBitstream.DataLength) {
-    // 若 NewSize 小于现有数据长度,属于调用方错误,应报错而非静默截断
+    // If NewSize is smaller than existing data length, it is a caller error;
+    // report it rather than silently truncating
     if (NewSize < DataLen) {
       AlignedFree(Data);
       throw std::runtime_error(
@@ -2243,35 +2243,25 @@ mfxStatus QSVEncoder::ChangeBitstreamSize(mfxU32 NewSize) {
   QSVBitstream.DataLength = static_cast<mfxU32>(DataLen);
   QSVBitstream.MaxLength = NewSize;
 
-  // Fast path: if no tasks have pending sync points, skip the sync loop
-  // and proceed directly to memory reallocation.
-  bool has_pending = false;
+  // Sync all pending tasks before reallocating task buffers
   for (int i = 0; i < QSVTaskPool.size(); i++) {
     if (QSVTaskPool[i].SyncPoint != nullptr) {
-      has_pending = true;
-      break;
-    }
-  }
-
-  if (has_pending) {
-    for (int i = 0; i < QSVTaskPool.size(); i++) {
-      if (QSVTaskPool[i].SyncPoint != nullptr) {
-        mfxStatus SyncSts;
-        do {
-          SyncSts = MFXVideoCORE_SyncOperation(
-              QSVSession, QSVTaskPool[i].SyncPoint, 100);
-        } while (SyncSts == MFX_WRN_IN_EXECUTION);
-        if (SyncSts < MFX_ERR_NONE) {
-          throw std::runtime_error(
-              "ChangeBitstreamSize(): Sync pending task error");
-        }
-        QSVTaskPool[i].SyncPoint = nullptr;
+      mfxStatus SyncSts;
+      do {
+        SyncSts = MFXVideoCORE_SyncOperation(
+            QSVSession, QSVTaskPool[i].SyncPoint, 100);
+      } while (SyncSts == MFX_WRN_IN_EXECUTION);
+      if (SyncSts < MFX_ERR_NONE) {
+        throw std::runtime_error(
+            "ChangeBitstreamSize(): Sync pending task error");
       }
+      QSVTaskPool[i].SyncPoint = nullptr;
     }
   }
 
-  // 两阶段提交:先分配所有新缓冲,全部成功后再释放旧缓冲,
-  // 保证任一分配失败时 QSVTaskPool 仍处于一致状态(旧 Data 未被释放)。
+  // Two-phase commit: first allocate all new buffers, only release old ones
+  // after all allocations succeed.  This guarantees QSVTaskPool remains in a
+  // consistent state (old Data not freed) if any single allocation fails.
   std::vector<mfxU8 *> newTaskData;
   newTaskData.reserve(QSVTaskPool.size());
   try {
@@ -2284,19 +2274,20 @@ mfxStatus QSVEncoder::ChangeBitstreamSize(mfxU32 NewSize) {
       newTaskData.push_back(TaskData);
     }
   } catch (...) {
-    // 分配失败:释放已分配的新缓冲,旧缓冲保持不变,QSVTaskPool 仍可用
+    // Allocation failed: free newly allocated buffers, keep old ones intact,
+    // QSVTaskPool remains usable
     for (auto *p : newTaskData) {
       AlignedFree(p);
     }
     throw;
   }
 
-  // 全部分配成功,拷贝数据并切换到新缓冲
+  // All allocations succeeded, copy data and switch to new buffers
   for (int i = 0; i < QSVTaskPool.size(); i++) {
     mfxU32 TaskDataLen = QSVTaskPool[i].Bitstream.DataLength;
     if (TaskDataLen) {
       if (NewSize < TaskDataLen) {
-        // 理论不应到达,保持防御性
+        // Should not happen in practice; kept as defensive guard
         memcpy(newTaskData[i],
                QSVTaskPool[i].Bitstream.Data +
                    QSVTaskPool[i].Bitstream.DataOffset,
@@ -2887,10 +2878,10 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
 mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
                                             mfxEncodeCtrl *Ctrl, int TaskID,
                                             mfxU32 MaxRetries) {
-  // 设备繁忙时的退避策略常量
-  constexpr mfxU32 YIELD_THRESHOLD = 10;       // 前 10 次让出时间片
-  constexpr mfxU32 MAX_BACKOFF_MS = 64;        // 最大退避 64ms
-  constexpr mfxU32 BITSTREAM_GROW_FACTOR = 2;  // bitstream 缓冲扩容倍数
+  // Backoff constants when device is busy
+  constexpr mfxU32 YIELD_THRESHOLD = 10;       // yield timeslice for first 10 attempts
+  constexpr mfxU32 MAX_BACKOFF_MS = 64;        // max backoff 64ms
+  constexpr mfxU32 BITSTREAM_GROW_FACTOR = 2;  // bitstream buffer growth factor
 
   mfxU32 EncodeRetryCount = 0;
   for (;;) {
@@ -2907,8 +2898,8 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
       break;
     } else if (MFX_ERR_NONE < Status && !QSVTaskPool[TaskID].SyncPoint) [[unlikely]] {
       if (MFX_WRN_DEVICE_BUSY == Status) {
-        // 指数退避:前 YIELD_THRESHOLD 次让出时间片,之后按 2 的幂递增
-        // Sleep(1,2,4,8,...,MAX_BACKOFF_MS),避免忙等浪费 CPU
+        // Exponential backoff: yield for YIELD_THRESHOLD attempts, then
+        // sleep for (1,2,4,8,...,MAX_BACKOFF_MS) to avoid busy-wasting CPU
         if (EncodeRetryCount <= YIELD_THRESHOLD) {
           Sleep(0);
         } else {
@@ -2973,8 +2964,8 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
     HWManager->CopyTexture(Texture, TextureHandle, LockKey,
                            static_cast<mfxU64 *>(NextKey));
   } catch (const std::exception &e) {
-    // 注意:异常发生在 CopyTexture 阶段,Status 尚未被赋值,
-    // 不应输出无意义的 "Error code: 0"
+    // Note: the exception occurred during CopyTexture, Status has not been
+    // assigned yet, so do not output a meaningless "Error code: 0"
     error("Encode(): CopyTexture failed: %s", e.what());
     throw;
   }
@@ -3193,7 +3184,7 @@ void QSVEncoder::SetupROIEncodeCtrl() {
   bool needRepopulate = false;
   if (existing) {
     if (existing->Header.BufferSz >= requiredSize) {
-      // 复用现有缓冲区:清零并重置头部字段
+      // Reuse existing buffer: zero and reset header fields
       memset(existing, 0, existing->Header.BufferSz);
       existing->Header.BufferId = MFX_EXTBUFF_ENCODER_ROI;
       existing->Header.BufferSz = requiredSize;
@@ -3210,7 +3201,7 @@ void QSVEncoder::SetupROIEncodeCtrl() {
       blog(LOG_WARNING, "[QSV VPL] SetupROIEncodeCtrl: AddExtBuffer failed!");
       return;
     }
-    // AddExtBuffer 已清零,仅需设置头部
+    // AddExtBuffer already zeroed the memory; just set the header
     raw->BufferId = MFX_EXTBUFF_ENCODER_ROI;
     raw->BufferSz = requiredSize;
   }
@@ -3232,7 +3223,7 @@ void QSVEncoder::SetupROIEncodeCtrl() {
     roiParams->ROI[i].DeltaQP = CachedROIRegions[i].DeltaQP;
   }
 
-  // 只在每个实例首次调用时输出一次,不重复记录(避免日志刷屏)
+  // Only log on the first call per instance (avoid log spam)
   if (!ROIFirstLogDone) {
     ROIFirstLogDone = true;
     blog(LOG_INFO,
@@ -3367,13 +3358,13 @@ void QSVEncoder::AppendQpSeiToBitstream(mfxBitstream &bs) {
   // SEI payload type: user_data_unregistered (5)
   buf[pos++] = 0x05;
 
-  // SEI payload size:按 AVC/HEVC 规范,大于 255 时使用多字节编码
-  // (连续 0xFF 字节表示累加 255,最后一字节为剩余值)
+  // SEI payload size: per AVC/HEVC spec, multi-byte encoding for sizes > 255
+  // (consecutive 0xFF bytes accumulate 255 each, final byte is the remainder)
   const size_t payload_size = 16 + payload.size(); // UUID + text
   size_t remaining = payload_size;
   while (remaining >= 255) {
     if (pos + 1 > QSV_SEI_EXTRA - payload_size) {
-      // 缓冲区不足以容纳 size 编码 + payload,放弃注入
+      // Buffer too small for size encoding + payload, skip injection
       return;
     }
     buf[pos++] = 0xFF;
@@ -3423,8 +3414,8 @@ void QSVEncoder::GetQpStatsSei(uint8_t **data, size_t *size) {
 mfxStatus QSVEncoder::Drain() {
   mfxStatus Status = MFX_ERR_NONE;
 
-  // 排空编码器:反复提交 nullptr surface 直到返回 MFX_ERR_MORE_DATA
-  // (OneVPL 规范:drain 模式下返回 MORE_DATA 表示已无缓存帧)
+  // Drain the encoder: repeatedly submit nullptr surface until MFX_ERR_MORE_DATA
+  // (OneVPL spec: in drain mode, MORE_DATA means no more buffered frames)
   while (Status >= MFX_ERR_NONE) {
     mfxSyncPoint SyncPoint = nullptr;
     Status = QSVEncode->EncodeFrameAsync(
@@ -3434,7 +3425,7 @@ mfxStatus QSVEncoder::Drain() {
     }
   }
 
-  // MFX_ERR_MORE_DATA 是 drain 正常退出条件,其他错误应记录
+  // MFX_ERR_MORE_DATA is the normal drain exit condition; other errors should be logged
   if (Status != MFX_ERR_MORE_DATA) {
     warn("Drain: unexpected exit status: %d", Status);
   }
