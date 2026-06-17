@@ -196,6 +196,8 @@ private:
   // ROI (Region of Interest) data for per-frame encoding control
   std::vector<encoder_params::roi_region> CachedROIRegions;
   mfxU16 CachedROIMode;
+  // 每个编码器实例独立记录一次 ROI 日志(避免 static 变量在多实例间共享)
+  bool ROIFirstLogDone = false;
 
   // ── Per-frame QP tracking ──────────────────────────────────────
   // Tracks QP statistics per I/P/B frame type for diagnostic logging.

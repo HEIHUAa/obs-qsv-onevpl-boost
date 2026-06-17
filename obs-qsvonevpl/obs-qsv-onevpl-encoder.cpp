@@ -86,18 +86,16 @@ void DestroyPluginContext(void *Data) {
 
     // Hold the lock while checking and tearing down to prevent new encodes
     // from racing between the wait loop exit and the destruction below.
+    // 注意: destroyLock 已持有 EncoderMutex,此处不得再次加锁(非递归 mutex
+    // 重复加锁为未定义行为)。
     std::lock_guard<std::mutex> destroyLock(Context->EncoderMutex);
 
     if (Context->EncoderPTR) {
       try {
 
-        {
-          std::lock_guard<std::mutex> lock(Context->EncoderMutex);
+        Context->EncoderPTR->ClearData();
 
-          Context->EncoderPTR->ClearData();
-
-          Context->EncoderPTR = nullptr;
-        }
+        Context->EncoderPTR = nullptr;
 
         Context->SEI.first = nullptr;
         Context->SEI.second = 0;
@@ -256,12 +254,10 @@ mfxU64 ConvertTSOBSMFX(int64_t TS, mfxU32 FpsNum) {
 }
 
 int64_t ConvertTSMFXOBS(mfxI64 TS, mfxU32 FpsNum, mfxU32 FpsDen, int64_t Div) {
-  if (TS < 0) {
-    return (TS * FpsNum - Div / 2) / Div * FpsDen;
-  }
-  else {
-    return (TS * FpsNum + Div / 2) / Div * FpsDen;
-  }
+  // 整数四舍五入:对正负 TS 对称舍入,避免 C++ 向零截断导致的舍入不对称
+  int64_t numerator = TS * static_cast<int64_t>(FpsNum);
+  int64_t rounding = (numerator >= 0) ? (Div / 2) : -(Div / 2);
+  return (numerator + rounding) / Div * static_cast<int64_t>(FpsDen);
 }
 
 static size_t hevc_extract_rbsp(uint8_t *dst, const uint8_t *src,

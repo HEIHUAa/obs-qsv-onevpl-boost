@@ -336,9 +336,9 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
   // On older hardware (especially UHD600), certain ext buffers and
   // parameters may not be supported.  Each retry removes one feature
   // and re-attempts Init until it succeeds or all fallbacks are exhausted.
-  // A safety counter prevents unbounded retries in pathological cases.
-  constexpr int kMaxRetries = 16;
+  // 重试链为顺序 if 块,每个块最多执行一次,无需额外计数器。
   int retry_count = 0;
+  (void)retry_count; // 保留以备未来扩展为循环重试
 
   if (Status < MFX_ERR_NONE) {
     auto CO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
@@ -2219,74 +2219,104 @@ void QSVEncoder::ReleaseTaskPool() {
 }
 
 mfxStatus QSVEncoder::ChangeBitstreamSize(mfxU32 NewSize) {
-mfxU8 *Data = static_cast<mfxU8 *>(AlignedMalloc(NewSize, 32));
-    if (Data == nullptr) {
+  // 主 bitstream 缓冲重新分配(异常安全:先分配新,再释放旧)
+  mfxU8 *Data = static_cast<mfxU8 *>(AlignedMalloc(NewSize, 32));
+  if (Data == nullptr) {
+    throw std::runtime_error(
+        "ChangeBitstreamSize(): Bitstream memory allocation error");
+  }
+
+  mfxU32 DataLen = QSVBitstream.DataLength;
+  if (QSVBitstream.DataLength) {
+    // 若 NewSize 小于现有数据长度,属于调用方错误,应报错而非静默截断
+    if (NewSize < DataLen) {
+      AlignedFree(Data);
       throw std::runtime_error(
-          "ChangeBitstreamSize(): Bitstream memory allocation error");
+          "ChangeBitstreamSize(): NewSize smaller than existing DataLength");
     }
+    memcpy(Data, QSVBitstream.Data + QSVBitstream.DataOffset, DataLen);
+  }
+  ReleaseBitstream();
 
-    mfxU32 DataLen = QSVBitstream.DataLength;
-    if (QSVBitstream.DataLength) {
-      memcpy(Data, QSVBitstream.Data + QSVBitstream.DataOffset,
-             std::min(DataLen, NewSize));
+  QSVBitstream.Data = Data;
+  QSVBitstream.DataOffset = 0;
+  QSVBitstream.DataLength = static_cast<mfxU32>(DataLen);
+  QSVBitstream.MaxLength = NewSize;
+
+  // Fast path: if no tasks have pending sync points, skip the sync loop
+  // and proceed directly to memory reallocation.
+  bool has_pending = false;
+  for (int i = 0; i < QSVTaskPool.size(); i++) {
+    if (QSVTaskPool[i].SyncPoint != nullptr) {
+      has_pending = true;
+      break;
     }
-    ReleaseBitstream();
+  }
 
-    QSVBitstream.Data = Data;
-    QSVBitstream.DataOffset = 0;
-    QSVBitstream.DataLength = static_cast<mfxU32>(DataLen);
-    QSVBitstream.MaxLength = NewSize;
-
-    // Fast path: if no tasks have pending sync points, skip the sync loop
-    // and proceed directly to memory reallocation.
-    bool has_pending = false;
+  if (has_pending) {
     for (int i = 0; i < QSVTaskPool.size(); i++) {
       if (QSVTaskPool[i].SyncPoint != nullptr) {
-        has_pending = true;
-        break;
-      }
-    }
-
-    if (has_pending) {
-      for (int i = 0; i < QSVTaskPool.size(); i++) {
-        if (QSVTaskPool[i].SyncPoint != nullptr) {
-          mfxStatus SyncSts;
-          do {
-            SyncSts = MFXVideoCORE_SyncOperation(
-                QSVSession, QSVTaskPool[i].SyncPoint, 100);
-          } while (SyncSts == MFX_WRN_IN_EXECUTION);
-          if (SyncSts < MFX_ERR_NONE) {
-            throw std::runtime_error(
-                "ChangeBitstreamSize(): Sync pending task error");
-          }
-          QSVTaskPool[i].SyncPoint = nullptr;
+        mfxStatus SyncSts;
+        do {
+          SyncSts = MFXVideoCORE_SyncOperation(
+              QSVSession, QSVTaskPool[i].SyncPoint, 100);
+        } while (SyncSts == MFX_WRN_IN_EXECUTION);
+        if (SyncSts < MFX_ERR_NONE) {
+          throw std::runtime_error(
+              "ChangeBitstreamSize(): Sync pending task error");
         }
+        QSVTaskPool[i].SyncPoint = nullptr;
       }
     }
+  }
 
+  // 两阶段提交:先分配所有新缓冲,全部成功后再释放旧缓冲,
+  // 保证任一分配失败时 QSVTaskPool 仍处于一致状态(旧 Data 未被释放)。
+  std::vector<mfxU8 *> newTaskData;
+  newTaskData.reserve(QSVTaskPool.size());
+  try {
     for (int i = 0; i < QSVTaskPool.size(); i++) {
-mfxU8 *TaskData = static_cast<mfxU8 *>(AlignedMalloc(NewSize, 32));
+      mfxU8 *TaskData = static_cast<mfxU8 *>(AlignedMalloc(NewSize, 32));
       if (TaskData == nullptr) {
         throw std::runtime_error(
             "ChangeBitstreamSize(): Task memory allocation error");
       }
+      newTaskData.push_back(TaskData);
+    }
+  } catch (...) {
+    // 分配失败:释放已分配的新缓冲,旧缓冲保持不变,QSVTaskPool 仍可用
+    for (auto *p : newTaskData) {
+      AlignedFree(p);
+    }
+    throw;
+  }
 
-      mfxU32 TaskDataLen = QSVTaskPool[i].Bitstream.DataLength;
-      if (QSVTaskPool[i].Bitstream.DataLength) {
-        memcpy(TaskData,
+  // 全部分配成功,拷贝数据并切换到新缓冲
+  for (int i = 0; i < QSVTaskPool.size(); i++) {
+    mfxU32 TaskDataLen = QSVTaskPool[i].Bitstream.DataLength;
+    if (TaskDataLen) {
+      if (NewSize < TaskDataLen) {
+        // 理论不应到达,保持防御性
+        memcpy(newTaskData[i],
                QSVTaskPool[i].Bitstream.Data +
                    QSVTaskPool[i].Bitstream.DataOffset,
-               std::min(TaskDataLen, NewSize));
+               NewSize);
+      } else {
+        memcpy(newTaskData[i],
+               QSVTaskPool[i].Bitstream.Data +
+                   QSVTaskPool[i].Bitstream.DataOffset,
+               TaskDataLen);
       }
-      ReleaseTask(i);
-
-      QSVTaskPool[i].Bitstream.Data = TaskData;
-      QSVTaskPool[i].Bitstream.DataOffset = 0;
-      QSVTaskPool[i].Bitstream.DataLength =
-          static_cast<mfxU32>(TaskDataLen);
-      QSVTaskPool[i].Bitstream.MaxLength =
-          NewSize;
     }
+    ReleaseTask(i);
+
+    QSVTaskPool[i].Bitstream.Data = newTaskData[i];
+    QSVTaskPool[i].Bitstream.DataOffset = 0;
+    QSVTaskPool[i].Bitstream.DataLength =
+        static_cast<mfxU32>(TaskDataLen);
+    QSVTaskPool[i].Bitstream.MaxLength =
+        NewSize;
+  }
 
   return MFX_ERR_NONE;
 }
@@ -2857,6 +2887,11 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
 mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
                                             mfxEncodeCtrl *Ctrl, int TaskID,
                                             mfxU32 MaxRetries) {
+  // 设备繁忙时的退避策略常量
+  constexpr mfxU32 YIELD_THRESHOLD = 10;       // 前 10 次让出时间片
+  constexpr mfxU32 MAX_BACKOFF_MS = 64;        // 最大退避 64ms
+  constexpr mfxU32 BITSTREAM_GROW_FACTOR = 2;  // bitstream 缓冲扩容倍数
+
   mfxU32 EncodeRetryCount = 0;
   for (;;) {
     if (++EncodeRetryCount > MaxRetries) {
@@ -2872,22 +2907,29 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
       break;
     } else if (MFX_ERR_NONE < Status && !QSVTaskPool[TaskID].SyncPoint) [[unlikely]] {
       if (MFX_WRN_DEVICE_BUSY == Status) {
-        if (EncodeRetryCount < 10)
+        // 指数退避:前 YIELD_THRESHOLD 次让出时间片,之后按 2 的幂递增
+        // Sleep(1,2,4,8,...,MAX_BACKOFF_MS),避免忙等浪费 CPU
+        if (EncodeRetryCount <= YIELD_THRESHOLD) {
           Sleep(0);
-        else
-          Sleep(1);
+        } else {
+          mfxU32 shift = std::min<mfxU32>(
+              (EncodeRetryCount - YIELD_THRESHOLD - 1) / 2, 6);
+          mfxU32 backoffMs = std::min<mfxU32>(
+              static_cast<mfxU32>(1) << shift, MAX_BACKOFF_MS);
+          Sleep(backoffMs);
+        }
       }
     } else if (MFX_ERR_NONE < Status && QSVTaskPool[TaskID].SyncPoint) [[likely]] {
       Status = MFX_ERR_NONE;
       break;
     } else if (MFX_ERR_NOT_ENOUGH_BUFFER == Status ||
                MFX_ERR_MORE_BITSTREAM == Status) [[unlikely]] {
-      ChangeBitstreamSize(
-          static_cast<mfxU32>(QSVBitstream.MaxLength * 2));
+      mfxU32 newSize = static_cast<mfxU32>(
+          QSVBitstream.MaxLength * BITSTREAM_GROW_FACTOR);
+      ChangeBitstreamSize(newSize);
       warn("The bitstream buffer size is too small. The size has been "
-           "increased by 2 "
-           "times. New value: %d KB",
-           (QSVBitstream.MaxLength * 2 / 8 / 1000));
+           "increased by %d times. New value: %d KB",
+           BITSTREAM_GROW_FACTOR, (newSize / 8 / 1000));
     } else if (MFX_ERR_MORE_DATA == Status) [[unlikely]] {
       break;
     } else [[unlikely]] {
@@ -2931,7 +2973,9 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
     HWManager->CopyTexture(Texture, TextureHandle, LockKey,
                            static_cast<mfxU64 *>(NextKey));
   } catch (const std::exception &e) {
-    error("Error code: %d. %s", Status, e.what());
+    // 注意:异常发生在 CopyTexture 阶段,Status 尚未被赋值,
+    // 不应输出无意义的 "Error code: 0"
+    error("Encode(): CopyTexture failed: %s", e.what());
     throw;
   }
 
@@ -3146,31 +3190,31 @@ void QSVEncoder::SetupROIEncodeCtrl() {
 
   // Remove existing ROI buffer so AddExtBuffer re-allocates at the correct size
   auto *existing = QSVEncodeCtrlParams.GetExtBuffer<mfxExtEncoderROI>();
+  bool needRepopulate = false;
   if (existing) {
-    // Check if the existing buffer is already large enough
     if (existing->Header.BufferSz >= requiredSize) {
-      // Reuse — just zero and re-populate
+      // 复用现有缓冲区:清零并重置头部字段
       memset(existing, 0, existing->Header.BufferSz);
       existing->Header.BufferId = MFX_EXTBUFF_ENCODER_ROI;
       existing->Header.BufferSz = requiredSize;
-      goto populate;
+      needRepopulate = true;
+    } else {
+      QSVEncodeCtrlParams.RemoveExtBuffer<mfxExtEncoderROI>();
     }
-    QSVEncodeCtrlParams.RemoveExtBuffer<mfxExtEncoderROI>();
   }
 
-  {
+  if (!needRepopulate) {
     auto *raw = QSVEncodeCtrlParams.AddExtBuffer(MFX_EXTBUFF_ENCODER_ROI,
                                                   requiredSize);
     if (!raw) {
       blog(LOG_WARNING, "[QSV VPL] SetupROIEncodeCtrl: AddExtBuffer failed!");
       return;
     }
-    // Already zeroed by AddExtBuffer; just set fields:
+    // AddExtBuffer 已清零,仅需设置头部
     raw->BufferId = MFX_EXTBUFF_ENCODER_ROI;
     raw->BufferSz = requiredSize;
   }
 
-populate:
   auto *roiParams = QSVEncodeCtrlParams.GetExtBuffer<mfxExtEncoderROI>();
   if (!roiParams) {
     blog(LOG_WARNING, "[QSV VPL] SetupROIEncodeCtrl: GetExtBuffer returned null after add!");
@@ -3188,25 +3232,22 @@ populate:
     roiParams->ROI[i].DeltaQP = CachedROIRegions[i].DeltaQP;
   }
 
-  // 只在首次调用时输出一次，不重复记录（避免日志刷屏）
-  {
-    static bool firstLogDone = false;
-    if (!firstLogDone) {
-      firstLogDone = true;
+  // 只在每个实例首次调用时输出一次,不重复记录(避免日志刷屏)
+  if (!ROIFirstLogDone) {
+    ROIFirstLogDone = true;
+    blog(LOG_INFO,
+         "[QSV VPL] SetupROIEncodeCtrl: NumROI=%d, ROIMode=%d, "
+         "BufferSz=%u, NumExtParam=%d, regions=%zu",
+         (int)roiParams->NumROI, (int)roiParams->ROIMode,
+         requiredSize,
+         (int)QSVEncodeCtrlParams.NumExtParam,
+         CachedROIRegions.size());
+    for (int i = 0; i < roiParams->NumROI && i < 4; i++) {
       blog(LOG_INFO,
-           "[QSV VPL] SetupROIEncodeCtrl: NumROI=%d, ROIMode=%d, "
-           "BufferSz=%u, NumExtParam=%d, regions=%zu",
-           (int)roiParams->NumROI, (int)roiParams->ROIMode,
-           requiredSize,
-           (int)QSVEncodeCtrlParams.NumExtParam,
-           CachedROIRegions.size());
-      for (int i = 0; i < roiParams->NumROI && i < 4; i++) {
-        blog(LOG_INFO,
-             "[QSV VPL]   ROI[%d]: Left=%u Top=%u Right=%u Bottom=%u DeltaQP=%d",
-             i, roiParams->ROI[i].Left, roiParams->ROI[i].Top,
-             roiParams->ROI[i].Right, roiParams->ROI[i].Bottom,
-             (int)roiParams->ROI[i].DeltaQP);
-      }
+           "[QSV VPL]   ROI[%d]: Left=%u Top=%u Right=%u Bottom=%u DeltaQP=%d",
+           i, roiParams->ROI[i].Left, roiParams->ROI[i].Top,
+           roiParams->ROI[i].Right, roiParams->ROI[i].Bottom,
+           (int)roiParams->ROI[i].DeltaQP);
     }
   }
 }
@@ -3326,9 +3367,22 @@ void QSVEncoder::AppendQpSeiToBitstream(mfxBitstream &bs) {
   // SEI payload type: user_data_unregistered (5)
   buf[pos++] = 0x05;
 
-  // SEI payload size (1 byte — our payload is always < 255)
+  // SEI payload size:按 AVC/HEVC 规范,大于 255 时使用多字节编码
+  // (连续 0xFF 字节表示累加 255,最后一字节为剩余值)
   const size_t payload_size = 16 + payload.size(); // UUID + text
-  buf[pos++] = static_cast<uint8_t>(payload_size & 0xFF);
+  size_t remaining = payload_size;
+  while (remaining >= 255) {
+    if (pos + 1 > QSV_SEI_EXTRA - payload_size) {
+      // 缓冲区不足以容纳 size 编码 + payload,放弃注入
+      return;
+    }
+    buf[pos++] = 0xFF;
+    remaining -= 255;
+  }
+  if (pos + 1 + remaining > QSV_SEI_EXTRA) {
+    return;
+  }
+  buf[pos++] = static_cast<uint8_t>(remaining & 0xFF);
 
   // UUID
   memcpy(buf + pos, QP_SEI_UUID, 16);
@@ -3369,6 +3423,8 @@ void QSVEncoder::GetQpStatsSei(uint8_t **data, size_t *size) {
 mfxStatus QSVEncoder::Drain() {
   mfxStatus Status = MFX_ERR_NONE;
 
+  // 排空编码器:反复提交 nullptr surface 直到返回 MFX_ERR_MORE_DATA
+  // (OneVPL 规范:drain 模式下返回 MORE_DATA 表示已无缓存帧)
   while (Status >= MFX_ERR_NONE) {
     mfxSyncPoint SyncPoint = nullptr;
     Status = QSVEncode->EncodeFrameAsync(
@@ -3376,6 +3432,11 @@ mfxStatus QSVEncoder::Drain() {
     if (Status == MFX_ERR_NONE && SyncPoint != nullptr) {
       Status = MFXVideoCORE_SyncOperation(QSVSession, SyncPoint, 5000);
     }
+  }
+
+  // MFX_ERR_MORE_DATA 是 drain 正常退出条件,其他错误应记录
+  if (Status != MFX_ERR_MORE_DATA) {
+    warn("Drain: unexpected exit status: %d", Status);
   }
   Status = MFX_ERR_NONE;
 
