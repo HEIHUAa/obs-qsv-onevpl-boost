@@ -4,6 +4,8 @@
 #include "obs-qsv-onevpl-encoder.hpp"
 #endif
 #include <cstring>
+#include <span>
+#include <string_view>
 #include <vector>
 
 mfxVersion VPLVersion = {{0, 1}}; // for backward compatibility
@@ -110,14 +112,14 @@ void DestroyPluginContext(void *Data) {
 
 bool UpdateEncoderParams(void *Data, obs_data_t *Params) {
   plugin_context *Context = static_cast<plugin_context *>(Data);
-  const char *bitrate_control = obs_data_get_string(Params, "rate_control");
-  const bool isCQP = std::strcmp(bitrate_control, "CQP") == 0;
-  const bool isICQ = std::strcmp(bitrate_control, "ICQ") == 0;
+  const std::string_view bitrate_control = obs_data_get_string(Params, "rate_control");
+  const bool isCQP = bitrate_control == "CQP";
+  const bool isICQ = bitrate_control == "ICQ";
 
-  if (std::strcmp(bitrate_control, "CBR") == 0) {
+  if (bitrate_control == "CBR") {
     Context->EncoderParams.TargetBitRate =
         static_cast<mfxU16>(obs_data_get_int(Params, "bitrate"));
-  } else if (std::strcmp(bitrate_control, "VBR") == 0) {
+  } else if (bitrate_control == "VBR") {
     Context->EncoderParams.TargetBitRate =
         static_cast<mfxU16>(obs_data_get_int(Params, "bitrate"));
     Context->EncoderParams.MaxBitRate =
@@ -259,12 +261,11 @@ int64_t ConvertTSMFXOBS(mfxI64 TS, mfxU32 FpsNum, mfxU32 FpsDen, int64_t Div) {
   return (numerator + rounding) / Div * static_cast<int64_t>(FpsDen);
 }
 
-static size_t hevc_extract_rbsp(uint8_t *dst, const uint8_t *src,
-                                 size_t src_size) {
+static size_t hevc_extract_rbsp(uint8_t *dst, std::span<const uint8_t> src) {
   size_t dst_pos = 0;
   size_t i = 0;
-  while (i < src_size) {
-    if (i + 2 < src_size && src[i] == 0 && src[i + 1] == 0 &&
+  while (i < src.size()) {
+    if (i + 2 < src.size() && src[i] == 0 && src[i + 1] == 0 &&
         src[i + 2] == 3) {
       dst[dst_pos++] = 0;
       dst[dst_pos++] = 0;
@@ -276,11 +277,11 @@ static size_t hevc_extract_rbsp(uint8_t *dst, const uint8_t *src,
   return dst_pos;
 }
 
-static size_t hevc_add_emulation_prevention(uint8_t *dst, const uint8_t *src,
-                                             size_t src_size) {
+static size_t hevc_add_emulation_prevention(uint8_t *dst,
+                                             std::span<const uint8_t> src) {
   size_t dst_pos = 0;
   int zero_count = 0;
-  for (size_t i = 0; i < src_size; i++) {
+  for (size_t i = 0; i < src.size(); i++) {
     if (zero_count >= 2 && src[i] <= 3) {
       dst[dst_pos++] = 3;
       zero_count = 0;
@@ -370,31 +371,31 @@ static void hevc_write_uev(uint8_t *data, size_t &byte_pos, int &bit_pos,
   hevc_write_bits(data, byte_pos, bit_pos, val + 1, leading_zeros + 1);
 }
 
-static size_t StripHEVCNALTemporalLayer(uint8_t *dst, const uint8_t *src,
-                                         size_t src_size) {
-  if (src_size < 3)
+static size_t StripHEVCNALTemporalLayer(uint8_t *dst,
+                                         std::span<const uint8_t> src) {
+  if (src.size() < 3)
     return 0;
 
   uint8_t nal_type = (src[0] >> 1) & 0x3F;
 
   if (nal_type != 32) {
-    memcpy(dst, src, src_size);
-    return src_size;
+    memcpy(dst, src.data(), src.size());
+    return src.size();
   }
 
-  std::vector<uint8_t> rbsp_buf(src_size + 4);
+  std::vector<uint8_t> rbsp_buf(src.size() + 4);
   uint8_t *rbsp = rbsp_buf.data();
-  size_t rbsp_size = hevc_extract_rbsp(rbsp, src, src_size);
+  size_t rbsp_size = hevc_extract_rbsp(rbsp, src);
 
   if (rbsp_size < 6) {
-    memcpy(dst, src, src_size);
-    return src_size;
+    memcpy(dst, src.data(), src.size());
+    return src.size();
   }
 
   nal_type = (rbsp[0] >> 1) & 0x3F;
   if (nal_type != 32) {
-    memcpy(dst, src, src_size);
-    return src_size;
+    memcpy(dst, src.data(), src.size());
+    return src.size();
   }
 
   // VPS header layout in RBSP (after 2-byte NAL header):
@@ -404,9 +405,9 @@ static size_t StripHEVCNALTemporalLayer(uint8_t *dst, const uint8_t *src,
   uint8_t old_max_sublayers = (rbsp[3] >> 4) & 0x7;
 
   blog(LOG_INFO,
-       "[QSV VPS] old_max_sublayers=%d, byte3=0x%02x, src_size=%zu, "
+       "[QSV VPS] old_max_sublayers=%d, byte3=0x%02x, src.size()=%zu, "
        "rbsp_size=%zu",
-       old_max_sublayers, rbsp[3], src_size, rbsp_size);
+       old_max_sublayers, rbsp[3], src.size(), rbsp_size);
   blog(LOG_INFO,
        "[QSV VPS] rbsp[0-15]: %02x %02x %02x %02x %02x %02x %02x %02x "
        "%02x %02x %02x %02x %02x %02x %02x %02x",
@@ -415,7 +416,7 @@ static size_t StripHEVCNALTemporalLayer(uint8_t *dst, const uint8_t *src,
        rbsp[14], rbsp[15]);
 
   if (old_max_sublayers == 0) {
-    size_t out_size = hevc_add_emulation_prevention(dst, rbsp, rbsp_size);
+    size_t out_size = hevc_add_emulation_prevention(dst, std::span{rbsp, rbsp_size});
     return out_size;
   }
 
@@ -525,7 +526,7 @@ static size_t StripHEVCNALTemporalLayer(uint8_t *dst, const uint8_t *src,
   hevc_flush_byte(rbsp_out, out_byte, out_bit);
 
   size_t out_size =
-      hevc_add_emulation_prevention(dst, rbsp_out, out_byte);
+      hevc_add_emulation_prevention(dst, std::span{rbsp_out, out_byte});
 
   return out_size;
 }
@@ -577,7 +578,8 @@ static void StripHEVCExtraDataTemporalLayer(uint8_t *data, size_t *size,
     tmp_pos += sc_len;
 
     if (nal_size > 0) {
-      size_t processed = StripHEVCNALTemporalLayer(tmp.data() + tmp_pos, data + nal_start, nal_size);
+      size_t processed = StripHEVCNALTemporalLayer(
+          tmp.data() + tmp_pos, std::span{data + nal_start, nal_size});
       tmp_pos += processed;
     }
 

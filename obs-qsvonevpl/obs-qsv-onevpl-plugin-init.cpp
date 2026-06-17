@@ -2,6 +2,7 @@
 
 #pragma warning(disable : 4996)
 
+#include <algorithm>
 #include <string_view>
 
 #ifndef __QSV_VPL_ENCODER_H__
@@ -109,14 +110,16 @@ static bool IsFeatureSupported(const char *PropertyName) {
     if (platformCode == 0) {
         return true;
     }
-    const struct qsv_feature_info *info = qsv_feature_info_list;
-    while (info->property_name) {
-        if (std::strcmp(info->property_name, PropertyName) == 0) {
-            return platformCode >= info->min_platform;
-        }
-        info++;
-  }
-  return true;
+    const std::string_view prop{PropertyName};
+    const auto it = std::ranges::find_if(
+        qsv_feature_info_list,
+        [prop](const qsv_feature_info &info) {
+            return info.property_name && prop == info.property_name;
+        });
+    if (it != std::end(qsv_feature_info_list)) {
+        return platformCode >= it->min_platform;
+    }
+    return true;
 }
 
 static mfxPlatform CachedQSVPlatform{};

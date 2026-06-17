@@ -6,7 +6,7 @@
 
 class QSVEncoder {
 public:
-  QSVEncoder();
+  QSVEncoder() = default;
   ~QSVEncoder();
 
   mfxStatus GetVPLVersion(mfxVersion &);
@@ -111,12 +111,12 @@ public:
 
 private:
   mfxPlatform QSVPlatform{};
-  mfxVersion QSVVersion;
+  mfxVersion QSVVersion{};
   mfxLoader QSVLoader{};
   mfxConfig QSVLoaderConfig[8]{};
   mfxVariant QSVLoaderVariant[8]{};
   mfxSession QSVSession{};
-  mfxIMPL QSVImpl;
+  mfxIMPL QSVImpl{};
 #if defined(__linux__)
   void *QSVSessionData;
 #endif
@@ -128,25 +128,25 @@ private:
   std::unique_ptr<MFXVideoENCODE> QSVEncode{};
   std::unique_ptr<MFXVideoVPP> QSVProcessing{};
 
-  mfxU8 QSVVPSBuffer[1024];
+  mfxU8 QSVVPSBuffer[1024]{};
   mfxU8 QSVSPSBuffer[1024];
   mfxU8 QSVPPSBuffer[1024];
   mfxU16 QSVVPSBufferSize;
-  mfxU16 QSVSPSBufferSize;
-  mfxU16 QSVPPSBufferSize;
+  mfxU16 QSVSPSBufferSize{1024};
+  mfxU16 QSVPPSBufferSize{1024};
 
-  mfxBitstream QSVBitstream;
+  mfxBitstream QSVBitstream{};
   std::vector<struct Task> QSVTaskPool;
-  int QSVSyncTaskID;
+  int QSVSyncTaskID{};
 
   mfxVideoParam QSVResetParams{};
-  bool QSVResetParamsChanged;
+  bool QSVResetParamsChanged{false};
 
   MFXVideoParam QSVEncodeParams{};
   MFXVideoParam QSVProcessingParams{};
   MFXEncodeCtrl QSVEncodeCtrlParams{};
 
-  mfxExtVppAuxData* QSVProcessingAuxData;
+  mfxExtVppAuxData* QSVProcessingAuxData{};
   
   mfxFrameAllocRequest QSVAllocateRequest{};
 
@@ -162,17 +162,17 @@ private:
 
   mfxTemporalLayer *QSVLayerArray{};
 
-  bool QSVIsTextureEncoder;
+  bool QSVIsTextureEncoder{};
   mfxMemoryInterface *QSVMemoryInterface{};
 
   std::unique_ptr<class HWManager> HWManager{};
 
-  bool QSVProcessingEnable;
+  bool QSVProcessingEnable{};
 
-  mfxU32 QSVEncodeRefCount;
-  mfxU32 QSVProcessingRefCount;
+  mfxU32 QSVEncodeRefCount{};
+  mfxU32 QSVProcessingRefCount{};
 
-  mfxSyncPoint QSVProcessingSyncPoint;
+  mfxSyncPoint QSVProcessingSyncPoint{};
   
   enum class AdditionalFourCC {
     MFX_FOURCC_IMC3 = MFX_MAKEFOURCC('I', 'M', 'C', '3'),
@@ -186,7 +186,7 @@ private:
 
   // ROI (Region of Interest) data for per-frame encoding control
   std::vector<encoder_params::roi_region> CachedROIRegions;
-  mfxU16 CachedROIMode;
+  mfxU16 CachedROIMode{};
   // Each encoder instance records ROI log independently (avoid static variable sharing across instances)
   bool ROIFirstLogDone = false;
 

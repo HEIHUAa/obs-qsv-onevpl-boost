@@ -13,20 +13,6 @@
 
 constexpr mfxU32 BRC_MAX_KBPS_LIMIT = 65535;
 
-QSVEncoder::QSVEncoder()
-    : QSVPlatform(), QSVVersion(), QSVLoader(), QSVLoaderConfig(),
-      QSVLoaderVariant(), QSVSession(nullptr), QSVImpl(), QSVEncodeSurface(),
-      QSVEncodeRefCount(0), QSVProcessingSurface(), QSVProcessingRefCount(0),
-      QSVEncode(nullptr), QSVProcessing(nullptr), QSVVPSBuffer(),
-      QSVSPSBuffer(), QSVPPSBuffer(), QSVVPSBufferSize(1024),
-      QSVSPSBufferSize(1024), QSVPPSBufferSize(1024), QSVBitstream(),
-      QSVTaskPool(), QSVSyncTaskID(), QSVResetParams(),
-      QSVResetParamsChanged(false), QSVEncodeParams(), QSVEncodeCtrlParams(),
-      QSVProcessingAuxData(), QSVAllocateRequest(), QSVIsTextureEncoder(),
-      QSVMemoryInterface(), HWManager(nullptr), QSVProcessingEnable(),
-      QSVProcessingSyncPoint(nullptr), QSVLayerArray(nullptr),
-      CachedROIMode(0) {}
-
 QSVEncoder::~QSVEncoder() {
   if (QSVEncode || QSVProcessing) {
     ClearData();
@@ -158,37 +144,24 @@ mfxStatus QSVEncoder::CreateSession([[maybe_unused]] enum codec_enum Codec,
     }
     Loader = QSVLoader;
 
-    QSVLoaderConfig[0] = MFXCreateConfig(Loader);
-    QSVLoaderVariant[0].Type = MFX_VARIANT_TYPE_U32;
-    QSVLoaderVariant[0].Data.U32 = MFX_IMPL_TYPE_HARDWARE;
-    MFXSetConfigFilterProperty(
-        QSVLoaderConfig[0],
-        reinterpret_cast<const mfxU8 *>("mfxImplDescription.Impl"),
-        QSVLoaderVariant[0]);
+    auto makeConfig = [&](int idx, mfxU32 value, const char *property) {
+      QSVLoaderConfig[idx] = MFXCreateConfig(Loader);
+      QSVLoaderVariant[idx].Type = MFX_VARIANT_TYPE_U32;
+      QSVLoaderVariant[idx].Data.U32 = value;
+      MFXSetConfigFilterProperty(
+          QSVLoaderConfig[idx],
+          reinterpret_cast<const mfxU8 *>(property),
+          QSVLoaderVariant[idx]);
+    };
 
-    QSVLoaderConfig[1] = MFXCreateConfig(Loader);
-    QSVLoaderVariant[1].Type = MFX_VARIANT_TYPE_U32;
-    QSVLoaderVariant[1].Data.U32 = static_cast<mfxU32>(0x8086);
-    MFXSetConfigFilterProperty(
-        QSVLoaderConfig[1],
-        reinterpret_cast<const mfxU8 *>("mfxImplDescription.VendorID"),
-        QSVLoaderVariant[1]);
+    makeConfig(0, MFX_IMPL_TYPE_HARDWARE, "mfxImplDescription.Impl");
+    makeConfig(1, static_cast<mfxU32>(0x8086), "mfxImplDescription.VendorID");
 
   }
 
 #if defined(_WIN32) || defined(_WIN64)
   if (QSVIsTextureEncoder) {
-    mfxConfig TextureConfig = MFXCreateConfig(Loader);
-    mfxVariant TextureVariant{};
-    TextureVariant.Type = MFX_VARIANT_TYPE_U32;
-    TextureVariant.Data.U32 = MFX_ACCEL_MODE_VIA_D3D11;
-    MFXSetConfigFilterProperty(
-        TextureConfig,
-        reinterpret_cast<const mfxU8 *>(
-            "mfxImplDescription.AccelerationMode"),
-        TextureVariant);
-    QSVLoaderConfig[3] = TextureConfig;
-    QSVLoaderVariant[3] = TextureVariant;
+    makeConfig(3, MFX_ACCEL_MODE_VIA_D3D11, "mfxImplDescription.AccelerationMode");
   }
 #endif
 
@@ -218,6 +191,18 @@ void QSVEncoder::DisableVPP() {
     QSVProcessingEnable = false;
   }
 
+// Read an mfxU64-sized value from a struct at the given field offset
+static mfxU64 ReadFieldValue(const void *base, const FieldEntry &entry) {
+  const void *ptr = reinterpret_cast<const char *>(base) + entry.offset;
+  switch (entry.type) {
+  case FT_U16: return *static_cast<const mfxU16 *>(ptr);
+  case FT_S16: return static_cast<mfxU64>(*static_cast<const mfxI16 *>(ptr));
+  case FT_U8:  return *static_cast<const mfxU8 *>(ptr);
+  }
+  return 0;
+}
+
+// Log driver-corrected fields by diffing before/after state using field tables
 static void LogCO2CO3Corrections(
     const char *Prefix,
     MFXVideoParam &Params,
@@ -227,44 +212,18 @@ static void LogCO2CO3Corrections(
   auto CO2After = Params.GetExtBuffer<mfxExtCodingOption2>();
   auto CO3After = Params.GetExtBuffer<mfxExtCodingOption3>();
   info("\tDriver auto-corrected parameters%s:", Prefix);
-  if (HasCO2 && CO2After) {
-    if (CO2Before->MBBRC != CO2After->MBBRC)
-      info("\t  MBBRC: %d -> %d", CO2Before->MBBRC, CO2After->MBBRC);
-    if (CO2Before->AdaptiveI != CO2After->AdaptiveI)
-      info("\t  AdaptiveI: %d -> %d", CO2Before->AdaptiveI, CO2After->AdaptiveI);
-    if (CO2Before->AdaptiveB != CO2After->AdaptiveB)
-      info("\t  AdaptiveB: %d -> %d", CO2Before->AdaptiveB, CO2After->AdaptiveB);
-    if (CO2Before->UseRawRef != CO2After->UseRawRef)
-      info("\t  UseRawRef: %d -> %d", CO2Before->UseRawRef, CO2After->UseRawRef);
-    if (CO2Before->MaxFrameSize != CO2After->MaxFrameSize)
-      info("\t  MaxFrameSize: %d -> %d", CO2Before->MaxFrameSize, CO2After->MaxFrameSize);
-  }
-  if (HasCO3 && CO3After) {
-    if (CO3Before->WeightedPred != CO3After->WeightedPred)
-      info("\t  WeightedPred: %d -> %d", CO3Before->WeightedPred, CO3After->WeightedPred);
-    if (CO3Before->WeightedBiPred != CO3After->WeightedBiPred)
-      info("\t  WeightedBiPred: %d -> %d", CO3Before->WeightedBiPred, CO3After->WeightedBiPred);
-    if (CO3Before->AdaptiveRef != CO3After->AdaptiveRef)
-      info("\t  AdaptiveRef: %d -> %d", CO3Before->AdaptiveRef, CO3After->AdaptiveRef);
-    if (CO3Before->AdaptiveLTR != CO3After->AdaptiveLTR)
-      info("\t  AdaptiveLTR: %d -> %d", CO3Before->AdaptiveLTR, CO3After->AdaptiveLTR);
-    if (CO3Before->MotionVectorsOverPicBoundaries != CO3After->MotionVectorsOverPicBoundaries)
-      info("\t  MotionVectorsOverPicBoundaries: %d -> %d", CO3Before->MotionVectorsOverPicBoundaries, CO3After->MotionVectorsOverPicBoundaries);
-    if (CO3Before->GlobalMotionBiasAdjustment != CO3After->GlobalMotionBiasAdjustment)
-      info("\t  GlobalMotionBiasAdjustment: %d -> %d", CO3Before->GlobalMotionBiasAdjustment, CO3After->GlobalMotionBiasAdjustment);
-    if (CO3Before->MVCostScalingFactor != CO3After->MVCostScalingFactor)
-      info("\t  MVCostScalingFactor: %d -> %d", CO3Before->MVCostScalingFactor, CO3After->MVCostScalingFactor);
-    if (CO3Before->DirectBiasAdjustment != CO3After->DirectBiasAdjustment)
-      info("\t  DirectBiasAdjustment: %d -> %d", CO3Before->DirectBiasAdjustment, CO3After->DirectBiasAdjustment);
-    if (CO3Before->GPB != CO3After->GPB)
-      info("\t  GPB: %d -> %d", CO3Before->GPB, CO3After->GPB);
-    if (CO3Before->PRefType != CO3After->PRefType)
-      info("\t  PRefType: %d -> %d", CO3Before->PRefType, CO3After->PRefType);
-    if (CO3Before->AdaptiveCQM != CO3After->AdaptiveCQM)
-      info("\t  AdaptiveCQM: %d -> %d", CO3Before->AdaptiveCQM, CO3After->AdaptiveCQM);
-    if (CO3Before->FadeDetection != CO3After->FadeDetection)
-      info("\t  FadeDetection: %d -> %d", CO3Before->FadeDetection, CO3After->FadeDetection);
-  }
+  auto logDiffs = [&](const void *before, const void *after,
+                       std::span<const FieldEntry> fields) {
+    if (!before || !after) return;
+    for (const auto &f : fields) {
+      mfxU64 bv = ReadFieldValue(before, f);
+      mfxU64 av = ReadFieldValue(after, f);
+      if (bv != av)
+        info("\t  %s: %llu -> %llu", f.name, bv, av);
+    }
+  };
+  logDiffs(CO2Before, CO2After, CO2_FIELDS);
+  logDiffs(CO3Before, CO3After, CO3_FIELDS);
 }
 
 mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
@@ -813,6 +772,14 @@ static std::string FormatFieldValue([[maybe_unused]] std::string_view Field,
     return std::to_string(Value);
 }
 
+// Trim whitespace (space, tab, \r) from both ends of a string
+static void TrimWhitespace(std::string &s) {
+  while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r'))
+    s.pop_back();
+  while (!s.empty() && (s.front() == ' ' || s.front() == '\t'))
+    s.erase(0, 1);
+}
+
 enum FieldType : uint8_t {
   FT_U16,
   FT_S16,
@@ -825,7 +792,7 @@ struct FieldEntry {
   FieldType type;
 };
 
-static const FieldEntry CO_FIELDS[] = {
+static constexpr std::array CO_FIELDS{
   FieldEntry{"CAVLC", offsetof(mfxExtCodingOption, CAVLC), FT_U16},
   {"MECostType", offsetof(mfxExtCodingOption, MECostType), FT_U16},
   {"MESearchType", offsetof(mfxExtCodingOption, MESearchType), FT_U16},
@@ -851,7 +818,7 @@ static const FieldEntry CO_FIELDS[] = {
   {"EndOfStream", offsetof(mfxExtCodingOption, EndOfStream), FT_U16},
 };
 
-static const FieldEntry CO2_FIELDS[] = {
+static constexpr std::array CO2_FIELDS{
   FieldEntry{"RepeatPPS", offsetof(mfxExtCodingOption2, RepeatPPS), FT_U16},
   {"BRefType", offsetof(mfxExtCodingOption2, BRefType), FT_U16},
   {"NumMbPerSlice", offsetof(mfxExtCodingOption2, NumMbPerSlice), FT_U16},
@@ -869,7 +836,7 @@ static const FieldEntry CO2_FIELDS[] = {
   {"FixedFrameRate", offsetof(mfxExtCodingOption2, FixedFrameRate), FT_U16},
 };
 
-static const FieldEntry CO3_FIELDS[] = {
+static constexpr std::array CO3_FIELDS{
   FieldEntry{"NumSliceI", offsetof(mfxExtCodingOption3, NumSliceI), FT_U16},
   {"NumSliceP", offsetof(mfxExtCodingOption3, NumSliceP), FT_U16},
   {"NumSliceB", offsetof(mfxExtCodingOption3, NumSliceB), FT_U16},
@@ -899,7 +866,7 @@ static const FieldEntry CO3_FIELDS[] = {
   {"ExtBrcAdaptiveLTR", offsetof(mfxExtCodingOption3, ExtBrcAdaptiveLTR), FT_U16},
 };
 
-static const FieldEntry CODDI_FIELDS[] = {
+static constexpr std::array CODDI_FIELDS{
   FieldEntry{"IntraPredCostType", offsetof(mfxExtCodingOptionDDI, IntraPredCostType), FT_U16},
   {"MEInterpolationMethod", offsetof(mfxExtCodingOptionDDI, MEInterpolationMethod), FT_U16},
   {"MEFractionalSearchType", offsetof(mfxExtCodingOptionDDI, MEFractionalSearchType), FT_U16},
@@ -980,11 +947,7 @@ void QSVEncoder::ParseCustomCodingOptions(const std::string &Options) {
 
   while (std::getline(Stream, Line)) {
     LineNo++;
-    while (!Line.empty() && (Line.back() == '\r' || Line.back() == ' ' ||
-                             Line.back() == '\t'))
-      Line.pop_back();
-    while (!Line.empty() && (Line.front() == ' ' || Line.front() == '\t'))
-      Line.erase(0, 1);
+    TrimWhitespace(Line);
 
     if (Line.empty() || Line[0] == '#' || Line[0] == ';')
       continue;
@@ -998,15 +961,8 @@ void QSVEncoder::ParseCustomCodingOptions(const std::string &Options) {
 
     std::string Key = Line.substr(0, EqualPos);
     std::string Val = Line.substr(EqualPos + 1);
-
-    while (!Key.empty() && (Key.back() == ' ' || Key.back() == '\t'))
-      Key.pop_back();
-    while (!Key.empty() && (Key.front() == ' ' || Key.front() == '\t'))
-      Key.erase(0, 1);
-    while (!Val.empty() && (Val.back() == ' ' || Val.back() == '\t'))
-      Val.pop_back();
-    while (!Val.empty() && (Val.front() == ' ' || Val.front() == '\t'))
-      Val.erase(0, 1);
+    TrimWhitespace(Key);
+    TrimWhitespace(Val);
 
     size_t DotPos = Key.find('.');
     if (DotPos == std::string::npos) {
@@ -1021,13 +977,13 @@ void QSVEncoder::ParseCustomCodingOptions(const std::string &Options) {
     std::optional<mfxU16> Result;
 
     if (Scope == "CO" && COParams)
-      Result = ApplyField(COParams, std::span<const FieldEntry>(CO_FIELDS), Field, Val);
+      Result = ApplyField(COParams, CO_FIELDS, Field, Val);
     else if (Scope == "CO2" && CO2Params)
-      Result = ApplyField(CO2Params, std::span<const FieldEntry>(CO2_FIELDS), Field, Val);
+      Result = ApplyField(CO2Params, CO2_FIELDS, Field, Val);
     else if (Scope == "CO3" && CO3Params)
-      Result = ApplyField(CO3Params, std::span<const FieldEntry>(CO3_FIELDS), Field, Val);
+      Result = ApplyField(CO3Params, CO3_FIELDS, Field, Val);
     else if (Scope == "CODDI" && CODDIParams)
-      Result = ApplyField(CODDIParams, std::span<const FieldEntry>(CODDI_FIELDS), Field, Val);
+      Result = ApplyField(CODDIParams, CODDI_FIELDS, Field, Val);
 
     if (Result.has_value()) {
       info("\tCustomCodingOptions[%d]: %s.%s = %s (%s)", LineNo,
