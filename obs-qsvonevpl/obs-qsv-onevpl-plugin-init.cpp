@@ -18,7 +18,7 @@ const char *const qsv_profile_names_hevc[] = {"main", "main10", "mainsp", "rext"
 const char *const qsv_profile_tiers_hevc[] = {"main", "high", 0};
 const char *const qsv_levels_hevc[] = {
     "auto", "1", "2", "2.1", "3", "3.1", "4", "4.1",
-    "5", "5.1", "5.2", "6", "6.1", "6.2", 0};
+    "5", "5.1", "5.2", "6", "6.1", "6.2", "8.5", 0};
 const char *const qsv_levels_avc[] = {
     "auto", "1", "1b", "1.1", "1.2", "1.3", "2", "2.1", "2.2",
     "3", "3.1", "3.2", "4", "4.1", "4.2", "5", "5.1", "5.2",
@@ -26,7 +26,7 @@ const char *const qsv_levels_avc[] = {
 const char *const qsv_levels_av1[] = {
     "auto", "2.0", "2.1", "2.2", "2.3", "3.0", "3.1", "3.2", "3.3",
     "4.0", "4.1", "4.2", "4.3", "5.0", "5.1", "5.2", "5.3",
-    "6.0", "6.1", "6.2", "6.3", 0};
+    "6.0", "6.1", "6.2", "6.3", "7.0", "7.1", "7.2", "7.3", 0};
 const char *const qsv_usage_names[] = {
     "TU1 (Veryslow)", "TU2 (Slower)", "TU3 (Slow)",     "TU4 (Balanced)",
     "TU5 (Fast)",     "TU6 (Faster)", "TU7 (Veryfast)", 0};
@@ -63,9 +63,7 @@ const char *const qsv_params_condition_scenario_info[] = {
     "LIVE_STREAMING", "CAMERA_CAPTURE", "VIDEO_SURVEILLANCE",
     "GAME_STREAMING", "REMOTE_GAMING", 0};
 const char *const qsv_params_condition_content_info[] = {
-    "OFF", "AUTO", "NOISY_VIDEO", "GAME", "CAMERA_SCENE",
-    "CLEAN_CAMERA_SCENE", "ANIMATED_GRAPHICS", "COMPUTER_DISPLAY",
-    "PROGRESSIVE_VIDEO", "STILL_IMAGE", "VIDEO_CONFERENCE", 0};
+    "OFF", "AUTO", "FULL_SCREEN_VIDEO", "NON_VIDEO_SCREEN", "NOISY_VIDEO", 0};
 const char *const qsv_params_condition_tune_quality[] = {
     "DEFAULT", "PSNR", "SSIM", "MS SSIM", "VMAF", "PERCEPTUAL", "OFF", 0};
 const char *const qsv_params_condition_denoise_mode[] = {
@@ -1204,7 +1202,7 @@ static const LevelEntry kHEVLevels[] = {
     {"4.1", MFX_LEVEL_HEVC_41}, {"5", MFX_LEVEL_HEVC_5},
     {"5.1", MFX_LEVEL_HEVC_51}, {"5.2", MFX_LEVEL_HEVC_52},
     {"6", MFX_LEVEL_HEVC_6},    {"6.1", MFX_LEVEL_HEVC_61},
-    {"6.2", MFX_LEVEL_HEVC_62},
+    {"6.2", MFX_LEVEL_HEVC_62}, {"8.5", MFX_LEVEL_HEVC_85},
 };
 
 static const LevelEntry kAV1Levels[] = {
@@ -1218,6 +1216,8 @@ static const LevelEntry kAV1Levels[] = {
     {"5.2", MFX_LEVEL_AV1_52}, {"5.3", MFX_LEVEL_AV1_53},
     {"6.0", MFX_LEVEL_AV1_6},  {"6.1", MFX_LEVEL_AV1_61},
     {"6.2", MFX_LEVEL_AV1_62}, {"6.3", MFX_LEVEL_AV1_63},
+    {"7.0", MFX_LEVEL_AV1_7},  {"7.1", MFX_LEVEL_AV1_71},
+    {"7.2", MFX_LEVEL_AV1_72}, {"7.3", MFX_LEVEL_AV1_73},
 };
 
 // ── Helper: map string to value via compile-time lookup table ──
@@ -1722,18 +1722,13 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   }
 
   // 12. ContentInfo (special: OFF -> nullopt, AUTO -> 0)
+  // Uses mfxExtCodingOption3::ContentInfo values from API
   static constexpr std::pair<std::string_view, std::optional<mfxU16>> kContentInfoMap[] = {
     {"OFF",                std::nullopt},
-    {"AUTO",               std::optional<mfxU16>(0)},
-    {"NOISY_VIDEO",        std::optional<mfxU16>(2)},
-    {"GAME",               std::optional<mfxU16>(4)},
-    {"CAMERA_SCENE",       std::optional<mfxU16>(1)},
-    {"CLEAN_CAMERA_SCENE", std::optional<mfxU16>(7)},
-    {"ANIMATED_GRAPHICS",  std::optional<mfxU16>(6)},
-    {"COMPUTER_DISPLAY",   std::optional<mfxU16>(10)},
-    {"PROGRESSIVE_VIDEO",  std::optional<mfxU16>(9)},
-    {"STILL_IMAGE",        std::optional<mfxU16>(8)},
-    {"VIDEO_CONFERENCE",   std::optional<mfxU16>(5)},
+    {"AUTO",               std::optional<mfxU16>(MFX_CONTENT_UNKNOWN)},
+    {"FULL_SCREEN_VIDEO",  std::optional<mfxU16>(MFX_CONTENT_FULL_SCREEN_VIDEO)},
+    {"NON_VIDEO_SCREEN",   std::optional<mfxU16>(MFX_CONTENT_NON_VIDEO_SCREEN)},
+    {"NOISY_VIDEO",        std::optional<mfxU16>(MFX_CONTENT_NOISY_VIDEO)},
   };
   if (auto v = MapString(ContentInfoData, kContentInfoMap)) {
     Context->EncoderParams.ContentInfo = *v;
@@ -1789,12 +1784,13 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   }
 
   // 15. ScalingMode
-  static constexpr std::pair<std::string_view, int> kScalingModeMap[] = {
-    {"QUALITY | ADVANCED",           1},
-    {"VEBOX | ADVANCED",             2},
-    {"LOWPOWER | NEAREST NEIGHBOR",  3},
-    {"LOWPOWER | ADVANCED",          4},
-    {"AUTO",                         0},
+  static constexpr std::pair<std::string_view, std::optional<int>> kScalingModeMap[] = {
+    {"OFF",                           std::nullopt},
+    {"QUALITY | ADVANCED",            std::optional<int>(1)},
+    {"VEBOX | ADVANCED",              std::optional<int>(2)},
+    {"LOWPOWER | NEAREST NEIGHBOR",   std::optional<int>(3)},
+    {"LOWPOWER | ADVANCED",           std::optional<int>(4)},
+    {"AUTO",                          std::optional<int>(0)},
   };
   if (auto v = MapString(ScalingModeData, kScalingModeMap)) {
     Context->EncoderParams.VPPScalingMode = *v;
