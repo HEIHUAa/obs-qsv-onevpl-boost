@@ -137,22 +137,22 @@ mfxStatus QSVEncoder::CreateSession([[maybe_unused]] enum codec_enum Codec,
     }
   }
 
+  auto makeConfig = [&](int idx, mfxU32 value, const char *property) {
+    QSVLoaderConfig[idx] = MFXCreateConfig(Loader);
+    QSVLoaderVariant[idx].Type = MFX_VARIANT_TYPE_U32;
+    QSVLoaderVariant[idx].Data.U32 = value;
+    MFXSetConfigFilterProperty(
+        QSVLoaderConfig[idx],
+        reinterpret_cast<const mfxU8 *>(property),
+        QSVLoaderVariant[idx]);
+  };
+
   if (!Loader) {
     QSVLoader = MFXLoad();
     if (QSVLoader == nullptr) {
       return MFX_ERR_UNDEFINED_BEHAVIOR;
     }
     Loader = QSVLoader;
-
-    auto makeConfig = [&](int idx, mfxU32 value, const char *property) {
-      QSVLoaderConfig[idx] = MFXCreateConfig(Loader);
-      QSVLoaderVariant[idx].Type = MFX_VARIANT_TYPE_U32;
-      QSVLoaderVariant[idx].Data.U32 = value;
-      MFXSetConfigFilterProperty(
-          QSVLoaderConfig[idx],
-          reinterpret_cast<const mfxU8 *>(property),
-          QSVLoaderVariant[idx]);
-    };
 
     makeConfig(0, MFX_IMPL_TYPE_HARDWARE, "mfxImplDescription.Impl");
     makeConfig(1, static_cast<mfxU32>(0x8086), "mfxImplDescription.VendorID");
@@ -190,41 +190,6 @@ void QSVEncoder::DisableVPP() {
     QSVProcessingParams.ClearAllBuffers();
     QSVProcessingEnable = false;
   }
-
-// Read an mfxU64-sized value from a struct at the given field offset
-static mfxU64 ReadFieldValue(const void *base, const FieldEntry &entry) {
-  const void *ptr = reinterpret_cast<const char *>(base) + entry.offset;
-  switch (entry.type) {
-  case FT_U16: return *static_cast<const mfxU16 *>(ptr);
-  case FT_S16: return static_cast<mfxU64>(*static_cast<const mfxI16 *>(ptr));
-  case FT_U8:  return *static_cast<const mfxU8 *>(ptr);
-  }
-  return 0;
-}
-
-// Log driver-corrected fields by diffing before/after state using field tables
-static void LogCO2CO3Corrections(
-    const char *Prefix,
-    MFXVideoParam &Params,
-    const mfxExtCodingOption2 *CO2Before,
-    const mfxExtCodingOption3 *CO3Before,
-    bool HasCO2, bool HasCO3) {
-  auto CO2After = Params.GetExtBuffer<mfxExtCodingOption2>();
-  auto CO3After = Params.GetExtBuffer<mfxExtCodingOption3>();
-  info("\tDriver auto-corrected parameters%s:", Prefix);
-  auto logDiffs = [&](const void *before, const void *after,
-                       std::span<const FieldEntry> fields) {
-    if (!before || !after) return;
-    for (const auto &f : fields) {
-      mfxU64 bv = ReadFieldValue(before, f);
-      mfxU64 av = ReadFieldValue(after, f);
-      if (bv != av)
-        info("\t  %s: %llu -> %llu", f.name, bv, av);
-    }
-  };
-  logDiffs(CO2Before, CO2After, CO2_FIELDS);
-  logDiffs(CO3Before, CO3After, CO3_FIELDS);
-}
 
 mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
                                           enum codec_enum Codec,
@@ -792,7 +757,42 @@ struct FieldEntry {
   FieldType type;
 };
 
-static constexpr std::array CO_FIELDS{
+// Read an mfxU64-sized value from a struct at the given field offset
+static mfxU64 ReadFieldValue(const void *base, const FieldEntry &entry) {
+  const void *ptr = reinterpret_cast<const char *>(base) + entry.offset;
+  switch (entry.type) {
+  case FT_U16: return *static_cast<const mfxU16 *>(ptr);
+  case FT_S16: return static_cast<mfxU64>(*static_cast<const mfxI16 *>(ptr));
+  case FT_U8:  return *static_cast<const mfxU8 *>(ptr);
+  }
+  return 0;
+}
+
+// Log driver-corrected fields by diffing before/after state using field tables
+static void LogCO2CO3Corrections(
+    const char *Prefix,
+    MFXVideoParam &Params,
+    const mfxExtCodingOption2 *CO2Before,
+    const mfxExtCodingOption3 *CO3Before,
+    bool HasCO2, bool HasCO3) {
+  auto CO2After = Params.GetExtBuffer<mfxExtCodingOption2>();
+  auto CO3After = Params.GetExtBuffer<mfxExtCodingOption3>();
+  info("\tDriver auto-corrected parameters%s:", Prefix);
+  auto logDiffs = [&](const void *before, const void *after,
+                       std::span<const FieldEntry> fields) {
+    if (!before || !after) return;
+    for (const auto &f : fields) {
+      mfxU64 bv = ReadFieldValue(before, f);
+      mfxU64 av = ReadFieldValue(after, f);
+      if (bv != av)
+        info("\t  %s: %llu -> %llu", f.name, bv, av);
+    }
+  };
+  logDiffs(CO2Before, CO2After, CO2_FIELDS);
+  logDiffs(CO3Before, CO3After, CO3_FIELDS);
+}
+
+static constexpr std::array<FieldEntry, 23> CO_FIELDS{
   FieldEntry{"CAVLC", offsetof(mfxExtCodingOption, CAVLC), FT_U16},
   {"MECostType", offsetof(mfxExtCodingOption, MECostType), FT_U16},
   {"MESearchType", offsetof(mfxExtCodingOption, MESearchType), FT_U16},
@@ -818,7 +818,7 @@ static constexpr std::array CO_FIELDS{
   {"EndOfStream", offsetof(mfxExtCodingOption, EndOfStream), FT_U16},
 };
 
-static constexpr std::array CO2_FIELDS{
+static constexpr std::array<FieldEntry, 15> CO2_FIELDS{
   FieldEntry{"RepeatPPS", offsetof(mfxExtCodingOption2, RepeatPPS), FT_U16},
   {"BRefType", offsetof(mfxExtCodingOption2, BRefType), FT_U16},
   {"NumMbPerSlice", offsetof(mfxExtCodingOption2, NumMbPerSlice), FT_U16},
@@ -836,7 +836,7 @@ static constexpr std::array CO2_FIELDS{
   {"FixedFrameRate", offsetof(mfxExtCodingOption2, FixedFrameRate), FT_U16},
 };
 
-static constexpr std::array CO3_FIELDS{
+static constexpr std::array<FieldEntry, 27> CO3_FIELDS{
   FieldEntry{"NumSliceI", offsetof(mfxExtCodingOption3, NumSliceI), FT_U16},
   {"NumSliceP", offsetof(mfxExtCodingOption3, NumSliceP), FT_U16},
   {"NumSliceB", offsetof(mfxExtCodingOption3, NumSliceB), FT_U16},
@@ -866,7 +866,7 @@ static constexpr std::array CO3_FIELDS{
   {"ExtBrcAdaptiveLTR", offsetof(mfxExtCodingOption3, ExtBrcAdaptiveLTR), FT_U16},
 };
 
-static constexpr std::array CODDI_FIELDS{
+static constexpr std::array<FieldEntry, 43> CODDI_FIELDS{
   FieldEntry{"IntraPredCostType", offsetof(mfxExtCodingOptionDDI, IntraPredCostType), FT_U16},
   {"MEInterpolationMethod", offsetof(mfxExtCodingOptionDDI, MEInterpolationMethod), FT_U16},
   {"MEFractionalSearchType", offsetof(mfxExtCodingOptionDDI, MEFractionalSearchType), FT_U16},
