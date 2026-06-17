@@ -1,17 +1,8 @@
 #pragma once
-
-#ifndef __QSV_VPL_COMMON_UTILS_H__
 #include "helpers/common_utils.hpp"
-#endif
-#ifndef __QSV_VPL_ENCODER_H__
 #include "obs-qsv-onevpl-encoder.hpp"
-#endif
-#ifndef __QSV_VPL_EXT_BUF_MANAGER_H__
 #include "helpers/ext_buf_manager.hpp"
-#endif
-#ifndef __QSV_VPL_ENCODER_PARAMS_H__
 #include "helpers/qsv_params.hpp"
-#endif
 
 class QSVEncoder {
 public:

@@ -2059,11 +2059,11 @@ plugin_context *InitPluginContext(enum codec_enum Codec, obs_data_t *Settings,
     return nullptr;
   }
 
-  Context->EncoderData = std::move(EncoderData);
-  Context->Codec = std::move(Codec);
+  Context->EncoderData = EncoderData;
+  Context->Codec = Codec;
 
-  auto Video = std::move(obs_encoder_video(Context->EncoderData));
-  auto VOI = std::move(video_output_get_info(std::move(Video)));
+  video_t *Video = obs_encoder_video(Context->EncoderData);
+  const video_output_info *VOI = video_output_get_info(Video);
   switch (VOI->format) {
   case VIDEO_FORMAT_I010:
   case VIDEO_FORMAT_P010:

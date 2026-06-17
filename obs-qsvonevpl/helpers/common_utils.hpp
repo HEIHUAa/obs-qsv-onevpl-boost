@@ -1,92 +1,39 @@
 #pragma once
 #pragma warning(disable : 4201)
 
-#ifndef __QSV_VPL_WINDOWS_DEFS_H__
 #include "../bits/windows_defs.hpp"
-#endif
-#ifndef __QSV_VPL_LINUX_DEFS_H__
 #include "../bits/linux_defs.hpp"
-#endif
 
-#ifndef _INTTYPES
 #include <inttypes.h>
-#endif
-#ifndef _INC_STDIO
-#include <stdio.h>
-#endif
-#ifndef _CSTDIO_
 #include <cstdio>
-#endif
-#ifndef _CONDITION_VARIABLE_
 #include <condition_variable>
-#endif
-#ifndef _VECTOR_
 #include <vector>
-#endif
-#ifndef _ARRAY_
 #include <array>
-#endif
-#ifndef _STRING_
 #include <string>
-#endif
-#ifndef _OPTIONAL_
 #include <optional>
-#endif
-#ifndef _CINTTYPES_
 #include <cinttypes>
-#endif
-#ifndef _CSTDLIB_
 #include <cstdlib>
-#endif
 #include <cstring>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <thread>
+#include <bit>
+#include <atomic>
+#include <new>
+#include <algorithm>
+#include <iterator>
+#include <mutex>
+#include <map>
+
 #if defined(_WIN32) || defined(_WIN64)
 #include <intrin.h>
 #elif defined(__x86_64__) || defined(__i386__)
 #include <cpuid.h>
 #endif
-#ifndef _INC_STDLIB
-#include <stdlib.h>
-#endif
-#ifndef _MEMORY_
-#include <memory>
-#endif
-#ifndef _THREAD_
-#include <thread>
-#endif
-#ifndef _BIT_
-#include <bit>
-#endif
-#ifndef _CSTDDEF_
-#include <cstddef>
-#endif
-#ifndef _CSTDINT_
-#include <cstdint>
-#endif
-#ifndef _ATOMIC_
-#include <atomic>
-#endif
-#ifndef _NEW_
-#include <new>
-#endif
-#ifndef _ALGORITHM_
-#include <algorithm>
-#endif
-#ifndef _ITERATOR_
-#include <iterator>
-#endif
-#ifndef _MUTEX_
-#include <mutex>
-#endif
-#ifndef _MAP_
-#include <map>
-#endif
 
-#ifndef __MFX_H__
 #include <vpl/mfx.h>
-#endif
-#ifndef __MFXVIDEOPLUSPLUS_H
 #include <vpl/mfxvideo++.h>
-#endif
 
 extern "C" {
 #include <media-io/video-io.h>

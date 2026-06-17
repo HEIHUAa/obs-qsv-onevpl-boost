@@ -58,6 +58,8 @@ target_compile_options(obs-qsvonevpl PRIVATE
   $<$<CONFIG:Release>:/Zc:inline>
   $<$<CONFIG:Debug>:/Od>
   $<$<CONFIG:Release>:/Oi>
+  $<$<CONFIG:Release>:/Ob3>
+  $<$<CONFIG:Release>:/Qpar>
   /MP
   $<$<CONFIG:Release>:/GL>
   $<$<CONFIG:Release>:/Gy>
@@ -155,6 +157,8 @@ if(WIN32)
       $<$<CONFIG:Release>:/Zc:inline>
       $<$<CONFIG:Debug>:/Od>
       $<$<CONFIG:Release>:/Oi>
+      $<$<CONFIG:Release>:/Ob3>
+      $<$<CONFIG:Release>:/Qpar>
       /MP
       $<$<CONFIG:Release>:/GL>
       $<$<CONFIG:Release>:/Gy>

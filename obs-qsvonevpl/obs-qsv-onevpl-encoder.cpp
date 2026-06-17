@@ -78,35 +78,33 @@ void DestroyPluginContext(void *Data) {
     UnregisterEncoderData(Context->EncoderData);
     os_end_high_performance(Context->PerformanceToken);
 
-    // Wait for any in-progress encode calls to finish before tear-down.
-    while (Context->EncodingCount.load(std::memory_order_acquire) > 0) {
-      std::unique_lock<std::mutex> cvLock(Context->EncoderMutex);
-      Context->EncodingCV.wait_for(cvLock, std::chrono::milliseconds(10));
-    }
+    // Wait for in-progress encodes to finish under mutex protection,
+    // then tear down atomically — no race between the wait and destruction.
+    {
+      std::unique_lock<std::mutex> lock(Context->EncoderMutex);
+      Context->EncodingCV.wait_for(lock, std::chrono::milliseconds(10),
+        [&Context]() {
+          return Context->EncodingCount.load(std::memory_order_acquire) == 0;
+        });
 
-    // Hold the lock while checking and tearing down to prevent new encodes
-    // from racing between the wait loop exit and the destruction below.
-    // Note: destroyLock already holds EncoderMutex; do NOT lock again here
-    // (re-locking a non-recursive mutex is undefined behavior).
-    std::lock_guard<std::mutex> destroyLock(Context->EncoderMutex);
+      if (Context->EncoderPTR) {
+        try {
 
-    if (Context->EncoderPTR) {
-      try {
+          Context->EncoderPTR->ClearData();
 
-        Context->EncoderPTR->ClearData();
+          Context->EncoderPTR = nullptr;
 
-        Context->EncoderPTR = nullptr;
-
-        Context->SEI.first = nullptr;
-        Context->SEI.second = 0;
-        Context->ExtraData.first = nullptr;
-        Context->ExtraData.second = 0;
-      } catch (const std::exception &e) {
-        error("QSV ERROR: %s", e.what());
+          Context->SEI.first = nullptr;
+          Context->SEI.second = 0;
+          Context->ExtraData.first = nullptr;
+          Context->ExtraData.second = 0;
+        } catch (const std::exception &e) {
+          error("QSV ERROR: %s", e.what());
+        }
       }
-    }
 
-    delete Context;
+      delete Context;
+    }
   }
 }
 

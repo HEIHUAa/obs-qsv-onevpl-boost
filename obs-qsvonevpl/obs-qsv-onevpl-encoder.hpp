@@ -1,19 +1,10 @@
 #pragma once
-
-#ifndef __QSV_VPL_COMMON_UTILS_H__
 #include "helpers/common_utils.hpp"
-#endif
-
-#ifndef __QSVEncoder_H__
 #include "obs-qsv-onevpl-encoder-internal.hpp"
-#endif
-
-#ifndef __QSV_VPL_PLUGIN_INIT_H__
 #include "obs-qsv-onevpl-plugin-init.hpp"
-#endif
 
-static unsigned short VPLVersionMajor;
-static unsigned short VPLVersionMinor;
+inline unsigned short VPLVersionMajor;
+inline unsigned short VPLVersionMinor;
 
 void GetEncoderVersion(unsigned short *Major, unsigned short *Minor);
 bool OpenEncoder(std::unique_ptr<class QSVEncoder> &EncoderPTR,
