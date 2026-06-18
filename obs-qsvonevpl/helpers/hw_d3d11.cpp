@@ -181,7 +181,7 @@ mfxStatus HWManager::AllocateTexturePool(MFXVideoParam &EncodeParams) {
     }
     Texture2D->SetEvictionPriority(DXGI_RESOURCE_PRIORITY_MAXIMUM);
 
-    HWTexturePool.push_back(std::move(Texture2D));
+    HWTexturePool.push_back(Texture2D);
   }
 
   return Status;

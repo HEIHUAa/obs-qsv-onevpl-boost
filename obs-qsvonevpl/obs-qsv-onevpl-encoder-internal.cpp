@@ -68,7 +68,7 @@ void QSVEncoder::InitSystemMemorySurfacePool() {
     S.Surface.Data.Y = Buffer;
     S.Surface.Data.UV = Buffer + YSize;
     S.Surface.Data.Pitch = static_cast<mfxU16>(Pitch);
-    QSVSystemMemPool.push_back(std::move(S));
+    QSVSystemMemPool.push_back(S);
   }
 }
 #endif
