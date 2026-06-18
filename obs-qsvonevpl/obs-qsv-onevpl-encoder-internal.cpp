@@ -737,7 +737,7 @@ static bool iequals(std::string_view a, std::string_view b) noexcept {
 }
 
 static std::string FormatFieldValue([[maybe_unused]] std::string_view Field,
-                                    mfxU16 Value,
+                                    mfxU64 Value,
                                     std::string_view RawVal) {
     if (iequals(RawVal, "ON"))      return "ON";
     if (iequals(RawVal, "OFF"))     return "OFF";
@@ -757,6 +757,7 @@ enum FieldType : uint8_t {
   FT_U16,
   FT_S16,
   FT_U8,
+  FT_U32,
 };
 
 struct FieldEntry {
@@ -772,6 +773,7 @@ static mfxU64 ReadFieldValue(const void *base, const FieldEntry &entry) {
   case FT_U16: return *static_cast<const mfxU16 *>(ptr);
   case FT_S16: return static_cast<mfxU64>(*static_cast<const mfxI16 *>(ptr));
   case FT_U8:  return *static_cast<const mfxU8 *>(ptr);
+  case FT_U32: return *static_cast<const mfxU32 *>(ptr);
   }
   return 0;
 }
@@ -988,22 +990,25 @@ static void LogCO2CO3Corrections(
   logDiffs(CO3Before, CO3After, CO3_FIELDS);
 }
 
-static std::optional<mfxU16> ApplyField(void *base, std::span<const FieldEntry> entries,
+static std::optional<mfxU64> ApplyField(void *base, std::span<const FieldEntry> entries,
                                         const std::string &field, const std::string &val) {
   for (const auto &e : entries) {
     if (field != e.name)
       continue;
     void *ptr = reinterpret_cast<char *>(base) + e.offset;
-    mfxU16 parsed = ParseCodingOptionValue(val);
+    mfxU64 parsed = ParseCodingOptionValue(val);
     switch (e.type) {
     case FT_U16:
-      *reinterpret_cast<mfxU16 *>(ptr) = parsed;
+      *reinterpret_cast<mfxU16 *>(ptr) = static_cast<mfxU16>(parsed);
       break;
     case FT_S16:
       *reinterpret_cast<mfxI16 *>(ptr) = static_cast<mfxI16>(std::stoi(val));
       break;
     case FT_U8:
       *reinterpret_cast<mfxU8 *>(ptr) = static_cast<mfxU8>(parsed);
+      break;
+    case FT_U32:
+      *reinterpret_cast<mfxU32 *>(ptr) = static_cast<mfxU32>(std::stoul(val));
       break;
     }
     return parsed;
@@ -1050,7 +1055,7 @@ void QSVEncoder::ParseCustomCodingOptions(const std::string &Options) {
     std::string Scope = Key.substr(0, DotPos);
     std::string Field = Key.substr(DotPos + 1);
 
-    std::optional<mfxU16> Result;
+    std::optional<mfxU64> Result;
 
     if (Scope == "CO" && COParams)
       Result = ApplyField(COParams, CO_FIELDS, Field, Val);
