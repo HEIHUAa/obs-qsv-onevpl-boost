@@ -1039,12 +1039,16 @@ static std::optional<mfxU64> ApplyField(void *base, std::span<const FieldEntry> 
       *reinterpret_cast<mfxU32 *>(ptr) = static_cast<mfxU32>(std::stoul(val));
       break;
     }
-    return parsed;
+    // Read back the actual value stored in the struct (may differ from parsed
+    // due to type truncation, e.g. mfxU16 truncating mfxU64 > 65535)
+    return ReadFieldValue(base, e);
   }
   return std::nullopt;
 }
 
 void QSVEncoder::ParseCustomCodingOptions(const std::string &Options) {
+  m_CustomCodingOptions.clear();
+
   auto *COParams = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
   auto *CO2Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
   auto *CO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
@@ -1095,9 +1099,10 @@ void QSVEncoder::ParseCustomCodingOptions(const std::string &Options) {
       Result = ApplyField(CODDIParams, CODDI_FIELDS, Field, Val);
 
     if (Result.has_value()) {
-      info("\tCustomCodingOptions[%d]: %s.%s = %s (%s)", LineNo,
-           Scope.c_str(), Field.c_str(), Val.c_str(),
-           FormatFieldValue(Field, Result.value(), Val).c_str());
+      // Defer logging to LogActualParams() so the value shown reflects
+      // the actual driver state after Init.
+      m_CustomCodingOptions.push_back(
+          {LineNo, Scope, Field, Val});
     } else {
       warn("\tCustomCodingOptions line %d: unknown field '%s.%s' or buffer not available",
            LineNo, Scope.c_str(), Field.c_str());
@@ -2768,6 +2773,52 @@ void QSVEncoder::LogActualParams() {
          MCTF->FilterStrength);
   } else {
     info("\tMCTF set: OFF");
+  }
+
+  // ── Custom Coding Options (deferred from ParseCustomCodingOptions) ──
+  if (!m_CustomCodingOptions.empty()) {
+    info("\tCustom Coding Options:");
+    auto *CODDI = QSVEncodeParams.GetExtBuffer<mfxExtCodingOptionDDI>();
+
+    for (const auto &entry : m_CustomCodingOptions) {
+      void *base = nullptr;
+      std::span<const FieldEntry> entries;
+      if (entry.Scope == "CO") {
+        base = CO;
+        entries = CO_FIELDS;
+      } else if (entry.Scope == "CO2") {
+        base = CO2;
+        entries = CO2_FIELDS;
+      } else if (entry.Scope == "CO3") {
+        base = CO3;
+        entries = CO3_FIELDS;
+      } else if (entry.Scope == "CODDI") {
+        base = CODDI;
+        entries = CODDI_FIELDS;
+      }
+
+      mfxU64 actualVal = 0;
+      bool found = false;
+      if (base) {
+        for (const auto &e : entries) {
+          if (entry.Field == e.name) {
+            actualVal = ReadFieldValue(base, e);
+            found = true;
+            break;
+          }
+        }
+      }
+
+      if (found) {
+        info("\t  CustomCodingOptions[%d]: %s.%s = %s (%s)", entry.LineNo,
+             entry.Scope.c_str(), entry.Field.c_str(),
+             entry.RawVal.c_str(),
+             FormatFieldValue(entry.Field, actualVal, entry.RawVal).c_str());
+      } else {
+        warn("\t  CustomCodingOptions[%d]: %s.%s buffer not available",
+             entry.LineNo, entry.Scope.c_str(), entry.Field.c_str());
+      }
+    }
   }
 }
 

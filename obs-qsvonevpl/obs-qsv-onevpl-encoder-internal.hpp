@@ -215,6 +215,15 @@ private:
   // ── Per-frame QP tracking ──────────────────────────────────────
   static constexpr size_t QSV_SEI_EXTRA = 1024; // extra bytes per task for SEI injection
 
+  // ── Custom Coding Options deferred logging ─────────────────────
+  struct CustomCodingOptionEntry {
+    int LineNo;
+    std::string Scope;
+    std::string Field;
+    std::string RawVal;
+  };
+  std::vector<CustomCodingOptionEntry> m_CustomCodingOptions;
+
   void UpdateFrameQPStats(mfxU16 frameType, mfxU16 qp);
   void LogQPStats();
 
