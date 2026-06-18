@@ -100,7 +100,7 @@ mfxStatus simple_alloc(mfxHDL pthis, mfxFrameAllocRequest *request,
   struct surface_info *surfaces = (struct surface_info *)bmalloc(
       sizeof(struct surface_info) * num_surfaces);
 
-  mids[num_surfaces] = surfaces; // stuff it
+  mids[num_surfaces] = surfaces; // store extra pointer at end (ffmpeg trick)
   for (uint64_t i = 0; i < num_surfaces; i++) {
     surfaces[i].id = temp_surfaces[i];
     surfaces[i].width = request->Info.Width;
@@ -159,7 +159,7 @@ mfxStatus simple_gethdl(mfxHDL pthis, mfxMemId mid, mfxHDL *handle) {
   // oneVPL-intel-gpu-intel-onevpl-23.1.0/_studio/mfx_lib/encode_hw/av1/linux/base/av1ehw_base_va_packer_lin.cpp
   mfxHDLPair *pPair = (mfxHDLPair *)handle;
 
-  // Pointer to a VASurfaceID, will be dereferenced by the driver.
+  // mfxHDLPair.first must point to a VASurfaceID.
   pPair->first = &((struct surface_info *)mid)->id;
   pPair->second = 0;
 
@@ -211,8 +211,7 @@ mfxStatus simple_copytex(mfxHDL pthis, mfxMemId mid, void *tex, mfxU64 lock_key,
   struct surface_info *surf = (struct surface_info *)mid;
 
   obs_enter_graphics();
-  // Error reporting for copy is poor, if earlier surface handling is
-  // broken this will do bad things.
+  // gs_copy_texture does not report errors; broken surface state leads to UB.
   gs_copy_texture(surf->tex_y, ptex->tex[0]);
   gs_copy_texture(surf->tex_uv, ptex->tex[1]);
   obs_leave_graphics();
@@ -381,8 +380,7 @@ bool check_adapter(void *param, const char *node, uint32_t idx) {
 
   struct adapter_info *adapter = &adapters[idx];
   adapter->is_intel = strstr(device.driver, "Intel") != nullptr;
-  // This is currently only used for LowPower coding which is busted on VA-API
-  // anyway.
+  // Only used for LowPower coding which is broken on VA-API
   adapter->is_dgpu = false;
   adapter->supports_av1 = vaapi_supports_av1(device.display);
   adapter->supports_hevc = vaapi_supports_hevc(device.display);

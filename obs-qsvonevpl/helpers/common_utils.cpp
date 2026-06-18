@@ -85,11 +85,10 @@ std::vector<encoder_params::roi_region> NormalizeROIToPixel(
   return result;
 }
 
-// ── Expand gradient regions into sub-rectangles ────────────────────
-// Each gradient region is subdivided into a (2*N+1)×(2*N+1) grid
-// where N = reg.GradientSteps.
-// The core cell at (L,T,R,B) keeps the original DeltaQP; surrounding
-// cells get interpolated QP that fades to 0 at the gradient boundary.
+// Expand gradient regions into sub-rectangles
+// Each region is subdivided into a (2*N+1)×(2*N+1) grid where N = GradientSteps.
+// The core cell keeps the original DeltaQP; surrounding cells get interpolated QP
+// that fades to 0 at the gradient boundary.
 std::vector<encoder_params::roi_region> ExpandGradientRegions(
     const std::vector<encoder_params::roi_region> &Input,
     mfxU16 OutWidth, mfxU16 OutHeight) {
@@ -340,7 +339,7 @@ std::string FormatROIDouble(double Value) {
   return s;
 }
 
-// ── ROI serialization helpers ────────────────────────────────────────
+// ROI serialization helpers
 
 std::string SerializeROIRegions(
     const std::vector<encoder_params::normalized_roi_region> &Regions) {
@@ -404,7 +403,7 @@ std::vector<encoder_params::normalized_roi_region> DeserializeROIRegions(
   return result;
 }
 
-// ── Apply ROI to a single encoder ────────────────────────────────────
+// Apply ROI to a single encoder
 
 void ApplyROIConfigToEncoder(
     plugin_context *Context,
@@ -513,7 +512,7 @@ plugin_context *LookupEncoderData(obs_encoder_t *Encoder) {
   return (it != EncoderDataMap.end()) ? it->second : nullptr;
 }
 
-// ── Per-profile ROI config persistence ─────────────────────────────────
+// Per-profile ROI config persistence
 // Uses obs_frontend_get_current_profile_path() to store ROI settings
 // in each OBS profile's own config file, so different profiles can have
 // different ROI configurations.

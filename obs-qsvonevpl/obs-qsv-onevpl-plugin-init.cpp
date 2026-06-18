@@ -9,7 +9,7 @@
 #include "obs-qsv-onevpl-encoder.hpp"
 #endif
 
-// ── Extern array definitions (declared in obs-qsv-onevpl-plugin-init.hpp) ──
+// Extern array definitions (declared in obs-qsv-onevpl-plugin-init.hpp)
 const char *const qsv_profile_names_av1[] = {"main", "high", "pro", 0};
 const char *const qsv_profile_names_h264[] = {
     "high10", "high", "main", "baseline", "extended", "high422",
@@ -564,7 +564,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_usage_names);
 
-  // ── Profile ─────────────────────────────────────────────────
+  // Profile
   Prop = obs_properties_add_list(Props, "profile", TEXT_PROFILE,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 
@@ -654,7 +654,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
     }
   }
 
-  // ── Quality settings ────────────────────────────────────────
+  // Quality settings
   Prop = obs_properties_add_int_slider(Props, "qvbr_quality", TEXT_QVBR_QUALITY, 0, 51,
                                 1);
   obs_property_set_long_description(Prop,
@@ -676,7 +676,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_properties_add_int_slider(Props, "cqp", TEXT_CQP, 1,
                          Codec == QSV_CODEC_AV1 ? 63 : 51, 1);
 
-  // ── Bitrate ─────────────────────────────────────────────────
+  // Bitrate
   Prop = obs_properties_add_int(Props, "bitrate", TEXT_TARGET_BITRATE, 50,
                                 6553500, 1000);
   obs_property_int_set_suffix(Prop, " Kbps");
@@ -692,7 +692,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                 6553500, 1000);
   obs_property_int_set_suffix(Prop, " KB");
 
-  // ── Frame structure ─────────────────────────────────────────
+  // Frame structure
   Prop = obs_properties_add_int(Props, "keyint_sec", TEXT_KEYINT_SEC, 0,
                                 65535, 1);
   obs_property_int_set_suffix(Prop, " s");
@@ -707,7 +707,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
       Prop, TEXT_B_FRAMES_DESC);
   obs_property_long_description(Prop);
 
-  // ── Lookahead ───────────────────────────────────────────────
+  // Lookahead
   Prop = obs_properties_add_list(Props, "lookahead", TEXT_LA,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_lookahead_mode);
@@ -725,7 +725,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_lookahead_latency);
 
-  // ── WinBRC ──────────────────────────────────────────────────
+  // WinBRC
   Prop = obs_properties_add_list(Props, "win_brc", TEXT_WINBRC,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   obs_property_set_long_description(
@@ -745,7 +745,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(Prop,
                                     obs_module_text("WinBRCSize.Tooltip"));
 
-  // ── Rate control refinements ────────────────────────────────
+  // Rate control refinements
   Prop = obs_properties_add_list(Props, "hrd_conformance", TEXT_HRD_CONFORMANCE,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_tristate);
@@ -779,7 +779,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_visible(Prop, IsFeatureSupported("enc_tools"));
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
-  // ── EncTools sub-options ────────────────────────────────────
+  // EncTools sub-options
   Prop =
       obs_properties_add_list(Props, "enc_tools_scene_change",
                               TEXT_ENC_TOOLS_SCENE_CHANGE,
@@ -842,7 +842,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
       Prop, TEXT_TUNE_QUALITY_DESC);
   obs_property_set_visible(Prop, IsFeatureSupported("tune_quality"));
 
-  // ── Encoder hardware ────────────────────────────────────────
+  // Encoder hardware
   Prop = obs_properties_add_list(Props, "low_power", TEXT_LOW_POWER,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_tristate);
@@ -852,7 +852,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 
   obs_properties_add_int(Props, "async_depth", TEXT_ASYNC_DEPTH, 1, 1000, 1);
 
-  // ── Advanced features ───────────────────────────────────────
+  // Advanced features
   Prop = obs_properties_add_list(Props, "adaptive_i", TEXT_ADAPTIVE_I,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_tristate);
@@ -963,7 +963,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
       Prop, TEXT_TRANSFORM_SKIP_DESC);
   obs_property_set_visible(Prop, Codec == QSV_CODEC_HEVC && IsFeatureSupported("transform_skip"));
 
-  // ── Reference controls ──────────────────────────────────────
+  // Reference controls
   Prop = obs_properties_add_int(Props, "num_ref_active_p",
                                 TEXT_NUM_REF_ACTIVE_P, 0, 65535, 1);
   obs_property_set_long_description(
@@ -979,7 +979,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(
       Prop, TEXT_NUM_REF_ACTIVE_BL1_DESC);
 
-  // ── Codec-specific ──────────────────────────────────────────
+  // Codec-specific
   if (Codec == QSV_CODEC_HEVC) {
     Prop =
         obs_properties_add_list(Props, "hevc_gpb", TEXT_HEVC_GPB,
@@ -1056,7 +1056,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
         Prop, TEXT_INTRA_REF_QP_DELTA_DESC);
   }
 
-  // ── VPP / Post-processing ───────────────────────────────────
+  // VPP / Post-processing
   Prop = obs_properties_add_list(Props, "vpp", TEXT_VPP, OBS_COMBO_TYPE_LIST,
                                  OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition);
@@ -1118,7 +1118,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_properties_add_int_slider(Props, "vpp_mctf_strength", TEXT_VPP_MCTF_STRENGTH, 0, 20, 1);
   obs_property_set_long_description(obs_properties_get(Props, "vpp_mctf_strength"), TEXT_VPP_MCTF_STRENGTH_DESC);
 
-  // ── Miscellaneous ───────────────────────────────────────────
+  // Miscellaneous
   Prop = obs_properties_add_list(Props, "scenario_info", TEXT_SCENARIO_INFO,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_scenario_info);
@@ -1170,7 +1170,7 @@ static inline mfxU16 ParseWeightedPredMode(const char *Data) {
     return 3;
 }
 
-// ── Codec level lookup tables ──────────────────────────────────
+// Codec level lookup tables
 // Replace large if-else chains with data-driven lookup.
 
 struct LevelEntry {
@@ -1225,7 +1225,7 @@ static const LevelEntry kAV1Levels[] = {
     {"7.2", MFX_LEVEL_AV1_72}, {"7.3", MFX_LEVEL_AV1_73},
 };
 
-// ── Helper: map string to value via compile-time lookup table ──
+// Map string to value via compile-time lookup table
 template <typename T, size_t N>
 static std::optional<T> MapString(std::string_view key,
                                    const std::pair<std::string_view, T> (&map)[N]) {
@@ -2004,9 +2004,9 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   info("\tOutput height: %d", VideoHeight);
 }
 
-// ── Forwarding function macros ────────────────────────────────
-// Reduce boilerplate for encoder-info function pointers that merely
-// forward a codec enum to the shared implementation.
+// Forwarding function macros
+// Reduce boilerplate for encoder-info function pointers that forward a codec enum
+// to the shared implementation.
 
 #define FORWARD_PARAM_PROPS(name, codec)                                        \
   static obs_properties_t *Get##name##ParamProps([[maybe_unused]] void *) {     \

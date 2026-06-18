@@ -142,9 +142,7 @@ void ROIDialog::closeEvent(QCloseEvent *Event) {
   QDialog::closeEvent(Event);
 }
 
-// ---------------------------------------------------------------------------
 // Preview (obs_display)
-// ---------------------------------------------------------------------------
 bool ROIDialog::CreatePreview() {
   DestroyPreview();
 
@@ -255,9 +253,7 @@ bool ROIDialog::eventFilter(QObject *Obj, QEvent *Event) {
   return QDialog::eventFilter(Obj, Event);
 }
 
-// ---------------------------------------------------------------------------
 // Preview draw callback (called on OBS render thread)
-// ---------------------------------------------------------------------------
 void ROIDialog::PreviewDraw(void *param, uint32_t cx, uint32_t cy) {
   auto *dialog = static_cast<ROIDialog *>(param);
   if (!dialog)
@@ -297,7 +293,7 @@ void ROIDialog::PreviewDraw(void *param, uint32_t cx, uint32_t cy) {
   dialog->DrawROIOverlay(cx, cy, ovi);
 }
 
-// ── Draw a list of ROI rects (all share the same viewport mapping) ──
+// Draw a list of ROI rects (all share the same viewport mapping)
 static void DrawROIRects(
     const std::vector<encoder_params::roi_region> &Rects,
     float vp_x, float vp_y, float vp_w, float vp_h,
@@ -512,7 +508,7 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy,
                previewMode);
 }
 
-// ── Helper: convert normalized regions → space-separated UI text ─────
+// Convert normalized regions to space-separated UI text
 // Includes 4 extra gradient values if HasGradient is true.
 static std::string RegionsToUIFormat(
     const std::vector<encoder_params::normalized_roi_region> &Regions) {
@@ -536,7 +532,7 @@ static std::string RegionsToUIFormat(
   return text;
 }
 
-// ── Helper: populate UI controls from GlobalROIConfig ────────────────
+// Populate UI controls from GlobalROIConfig
 void ROIDialog::SetUIFromGlobalConfig() {
   std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
   ROIEnableCheck->setChecked(GlobalROIConfig.Enabled);
@@ -555,7 +551,7 @@ void ROIDialog::SetUIFromGlobalConfig() {
   m_IsSettingText = false;
 }
 
-// ── Parse text input into normalized ROI regions ────────────────────
+// Parse text input into normalized ROI regions
 // Format: "Left Top Right Bottom DeltaQP" (no gradient)
 //      or: "Left Top Right Bottom DeltaQP GradL GradT GradR GradB [Steps]" (with gradient)
 // Values in 0.0 ~ 1.0, Gradients are forced to positive (outward only).
@@ -605,8 +601,7 @@ static std::vector<encoder_params::normalized_roi_region> ParseROIText(
   return result;
 }
 
-// ── ROI data load / save
-// ----------------------------------------------------------------------
+// ROI data load / save
 void ROIDialog::UpdatePreviewFromText() {
   // Suppress re-entrant calls triggered by SetUIFromGlobalConfig →
   // setPlainText → textChanged. The mutex is already held by SetUIFromGlobalConfig,
@@ -708,10 +703,7 @@ void ROIDialog::OnToggleAlwaysOnTop(Qt::CheckState State) {
   setVisible(true);
 }
 
-// ---------------------------------------------------------------------------
 // Frontend menu callback
-// ---------------------------------------------------------------------------
-
 // Track the active ROI dialog instance so we can refresh it on profile change
 static ROIDialog *ActiveDialog = nullptr;
 

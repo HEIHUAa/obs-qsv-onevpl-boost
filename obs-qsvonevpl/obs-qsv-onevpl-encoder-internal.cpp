@@ -191,7 +191,7 @@ void QSVEncoder::DisableVPP() {
     QSVProcessingEnable = false;
   }
 
-// Forward declaration — full definition after all CO_FIELDS tables
+// Forward declaration — defined after CO_FIELDS tables
 static void LogCO2CO3Corrections(
     const char *Prefix,
     MFXVideoParam &Params,
@@ -248,12 +248,10 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
     }
   }
 
-  // ── Fallback retry chain ──────────────────────────────────────
+  // Fallback retry chain:
   // On older hardware (especially UHD600), certain ext buffers and
-  // parameters may not be supported.  Each retry removes one feature
+  // parameters may not be supported. Each retry removes one feature
   // and re-attempts Init until it succeeds or all fallbacks are exhausted.
-  // The retry chain consists of sequential if-blocks, each executing at most
-  // once — no extra counter needed.
 
   if (Status < MFX_ERR_NONE) {
     auto CO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
@@ -757,7 +755,7 @@ static std::string FormatFieldValue([[maybe_unused]] std::string_view Field,
     return std::to_string(Value);
 }
 
-// Trim whitespace (space, tab, \r) from both ends of a string
+// Trim whitespace from both ends of a string
 static void TrimWhitespace(std::string &s) {
   while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r'))
     s.pop_back();
@@ -778,7 +776,7 @@ struct FieldEntry {
   FieldType type;
 };
 
-// Read an mfxU64-sized value from a struct at the given field offset
+// Read a field value from a struct at the given offset, returned as mfxU64
 static mfxU64 ReadFieldValue(const void *base, const FieldEntry &entry) {
   const void *ptr = reinterpret_cast<const char *>(base) + entry.offset;
   switch (entry.type) {
@@ -989,7 +987,7 @@ static void LogCO2CO3Corrections(
   auto CO2After = Params.GetExtBuffer<mfxExtCodingOption2>();
   auto CO3After = Params.GetExtBuffer<mfxExtCodingOption3>();
 
-  // Collect diffs first so we can skip the header when nothing changed
+  // Collect diffs first; skip the header if nothing changed
   std::vector<std::string> diffs;
   auto collectDiffs = [&](const void *before, const void *after,
                            std::span<const FieldEntry> fields) {
@@ -1205,10 +1203,8 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
   QSVEncodeParams.mfx.CodecLevel = InputParams->CodecLevel;
 
-  /*BRCParamMultiplier fixed at 100 for driver compatibility
-    (UHD 730 rejects values !=100). Raw values clamped to 65535*100
-    to prevent mfxU16 overflow after division.
-    Effective max: 65535*100 = 6,553,500 kbps*/
+  // BRCParamMultiplier fixed at 100 for driver compatibility (UHD 730 rejects other values).
+  // Max effective bitrate: 65535 * 100 = 6,553,500 kbps
   const mfxU16 BRC_BASELINE = 100;
   const mfxU16 brcMultiplier = BRC_BASELINE;
   QSVEncodeParams.mfx.BRCParamMultiplier = BRC_BASELINE;
@@ -1218,7 +1214,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     return v > limit ? limit : v;
   };
 
-  // Common buffer/init-delay/info boilerplate shared across RC modes
+  // Common buffer/init-delay boilerplate for all RC modes
   auto ApplyBufferSettings = [&]() {
     if (InputParams->CustomBufferSize == true && InputParams->BufferSize > 0) {
       QSVEncodeParams.mfx.BufferSizeInKB =
@@ -2279,7 +2275,7 @@ void QSVEncoder::ReleaseTaskPool() {
 }
 
 mfxStatus QSVEncoder::ChangeBitstreamSize(mfxU32 NewSize) {
-  // Reallocate the main bitstream buffer (exception-safe: allocate new first, then free old)
+  // Reallocate the main bitstream buffer (allocate new first, then swap)
   mfxU8 *Data = static_cast<mfxU8 *>(AlignedMalloc(NewSize, 32));
   if (Data == nullptr) {
     throw std::runtime_error(
@@ -2761,7 +2757,7 @@ void QSVEncoder::LogActualParams() {
     info("\tMCTF set: OFF");
   }
 
-  // ── Custom Coding Options (deferred from ParseCustomCodingOptions) ──
+  // ─ Custom Coding Options (deferred from ParseCustomCodingOptions) ─
   if (!m_CustomCodingOptions.empty()) {
     info("\tCustom Coding Options:");
     auto *CODDI = QSVEncodeParams.GetExtBuffer<mfxExtCodingOptionDDI>();
@@ -2958,7 +2954,7 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
     }
   } while (SyncStatus == MFX_WRN_IN_EXECUTION);
 
-  // ── Extract per-frame QP from the synced bitstream ─────────────
+  // ─ Extract per-frame QP from the synced bitstream ─
   {
     auto &taskBS = QSVTaskPool[QSVSyncTaskID].Bitstream;
     if (taskBS.ExtParam && taskBS.NumExtParam > 0) {
@@ -3007,7 +3003,7 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
     } else if (MFX_ERR_NONE < Status && !QSVTaskPool[TaskID].SyncPoint) [[unlikely]] {
       if (MFX_WRN_DEVICE_BUSY == Status) {
         // Exponential backoff: yield for YIELD_THRESHOLD attempts, then
-        // sleep for (1,2,4,8,...,MAX_BACKOFF_MS) to avoid busy-wasting CPU
+        // sleep for (1,2,4,8,...,MAX_BACKOFF_MS) to avoid busy-waiting
         if (EncodeRetryCount <= YIELD_THRESHOLD) {
           Sleep(0);
         } else {
@@ -3120,8 +3116,7 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
         TaskID, 200);
 
     // Defer VPP sync until after encode submission so VPP and Encode
-    // overlap in the GPU pipeline. The GPU natively orders VPP → Encode
-    // when both use the same session.
+    // overlap in the GPU pipeline.
     if (QSVProcessingEnable) {
       mfxStatus SyncSts;
       do {
@@ -3351,14 +3346,12 @@ void QSVEncoder::SetupROIEncodeCtrl() {
   }
 }
 
-// ── Per-frame QP tracking ────────────────────────────────────────
+// Per-frame QP tracking
 
 void QSVEncoder::UpdateFrameQPStats(mfxU16 frameType, mfxU16 qp) {
   FrameQPStats.totalFrames++;
 
-  // Pick the correct bucket based on frame type.
-  // MFX_FRAMETYPE flags can be combined (e.g. I+REF), so we check
-  // the primary type first.
+  // MFX_FRAMETYPE flags can be combined (e.g. I+REF), check primary type first.
   QPFrameTypeStats *bucket = nullptr;
 
   if (frameType & MFX_FRAMETYPE_I || frameType & MFX_FRAMETYPE_IDR ||
@@ -3369,7 +3362,7 @@ void QSVEncoder::UpdateFrameQPStats(mfxU16 frameType, mfxU16 qp) {
   } else if (frameType & MFX_FRAMETYPE_B || frameType & MFX_FRAMETYPE_xB) {
     bucket = &FrameQPStats.b;
   } else {
-    // Unknown frame type — still count but can't categorise.
+    // Unknown frame type
     return;
   }
 
@@ -3387,8 +3380,7 @@ void QSVEncoder::LogQPStats() {
       return;
     }
     double avg = static_cast<double>(s.sumQP) / static_cast<double>(s.count);
-    // Compute median from histogram: find the QP value where cumulative
-    // count reaches the midpoint. O(QP_HISTOGRAM_SIZE) = O(1) fixed 101 iterations.
+    // Compute median from histogram
     mfxU16 median = 0;
     {
       uint64_t target = (s.count + 1) / 2;
@@ -3416,20 +3408,16 @@ void QSVEncoder::LogQPStats() {
   logType("B-frames", FrameQPStats.b);
 }
 
-// ── QP stats SEI injection ──────────────────────────────────────
+// Append a User Data Unregistered SEI NAL with cumulative QP stats.
+// Every frame gets one so the last frame carries the final summary.
 //
-// Builds a User Data Unregistered SEI NAL with the current cumulative
-// QP statistics and appends it to |bs|.  Every frame gets one so that
-// the very last frame carries the final summary.
-//
-// SEI NAL structure (AVC):  [00 00 00 01] 06 05 <size> <uuid> <data> 80
-// SEI NAL structure (HEVC): [00 00 00 01] 4E 01 05 <size> <uuid> <data> 80
+// AVC:  [00 00 00 01] 06 05 <size> <uuid> <data> 80
+// HEVC: [00 00 00 01] 4E 01 05 <size> <uuid> <data> 80
 
 void QSVEncoder::AppendQpSeiToBitstream(mfxBitstream &bs) {
-  // Account for DataOffset: free space = MaxLength − DataOffset − DataLength
   mfxU32 freeSpace = bs.MaxLength - bs.DataOffset - bs.DataLength;
   if (freeSpace < QSV_SEI_EXTRA)
-    return; // not enough room
+    return;
 
   auto fmtType = [](const QPFrameTypeStats &s, char label,
                     std::string &out) {
@@ -3472,18 +3460,15 @@ void QSVEncoder::AppendQpSeiToBitstream(mfxBitstream &bs) {
   // Determine codec and build the SEI NAL
   mfxU32 codecId = QSVEncodeParams.mfx.CodecId;
   bool isHEVC = (codecId == MFX_CODEC_HEVC);
-  // AV1 has no SEI — skip
   if (codecId == MFX_CODEC_AV1)
     return;
 
-  // Write buffer: start code + NAL header + SEI type + size + uuid + data + trailing
+  // start code + NAL header + SEI type + size + uuid + data + trailing
   uint8_t buf[QSV_SEI_EXTRA];
   size_t pos = 0;
 
-  // Annex B start code
   buf[pos++] = 0x00; buf[pos++] = 0x00; buf[pos++] = 0x00; buf[pos++] = 0x01;
 
-  // NAL unit header
   if (isHEVC) {
     buf[pos++] = 0x4E; // nal_unit_type = 39 (SEI), nuh_layer_id = 0
     buf[pos++] = 0x01; // nuh_temporal_id_plus1 = 1
@@ -3491,11 +3476,9 @@ void QSVEncoder::AppendQpSeiToBitstream(mfxBitstream &bs) {
     buf[pos++] = 0x06; // nal_unit_type = 6 (SEI)
   }
 
-  // SEI payload type: user_data_unregistered (5)
-  buf[pos++] = 0x05;
+  buf[pos++] = 0x05; // SEI payload type: user_data_unregistered (5)
 
-  // SEI payload size: per AVC/HEVC spec, multi-byte encoding for sizes > 255
-  // (consecutive 0xFF bytes accumulate 255 each, final byte is the remainder)
+  // SEI payload size: multi-byte encoding for sizes > 255
   const size_t payload_size = 16 + payload.size(); // UUID + text
   size_t remaining = payload_size;
   while (remaining >= 255) {
@@ -3527,7 +3510,7 @@ void QSVEncoder::AppendQpSeiToBitstream(mfxBitstream &bs) {
   memcpy(dst, buf, pos);
   bs.DataLength += static_cast<mfxU32>(pos);
 
-  // Keep a copy so external callers can retrieve it later
+  // Keep a copy for external retrieval
   QpStatsSeiBuffer.assign(buf, buf + pos);
 }
 
@@ -3559,8 +3542,7 @@ mfxStatus QSVEncoder::Drain() {
     if (Status == MFX_ERR_NONE && SyncPoint != nullptr) {
       mfxStatus SyncSts = MFXVideoCORE_SyncOperation(QSVSession, SyncPoint, 5000);
       // SyncOperation may return MFX_ERR_NULL_PTR on some drivers when the
-      // sync point represents a no-op completion during drain; this is benign
-      // and should not overwrite the EncodeFrameAsync status.
+      // sync point is a no-op during drain. This is benign.
       if (SyncSts < MFX_ERR_NONE) {
         warn("Drain sync warning: %d", SyncSts);
       }
@@ -3573,10 +3555,7 @@ mfxStatus QSVEncoder::Drain() {
   }
   Status = MFX_ERR_NONE;
 
-  // Sync and extract QP from any remaining pending tasks.
-  // These frames were submitted during normal encoding but never
-  // synced through SyncAndSwapPendingTask (e.g. the last few frames
-  // in the pipeline).
+  // Sync and extract QP from any remaining pending tasks
   for (auto &Task : QSVTaskPool) {
     if (Task.SyncPoint != nullptr) {
       mfxStatus SyncSts = MFXVideoCORE_SyncOperation(
@@ -3601,9 +3580,7 @@ mfxStatus QSVEncoder::Drain() {
 
   LogQPStats();
 
-  // Rebuild the SEI buffer with the final cumulative stats so that
-  // GetQpStatsSei() returns the complete summary (including any
-  // frames synced just above).
+  // Rebuild the SEI buffer with the final cumulative stats
   AppendQpSeiToBitstream(QSVBitstream);
 
   return Status;
@@ -3611,20 +3588,19 @@ mfxStatus QSVEncoder::Drain() {
 
 // Submit a dummy frame surface during initialization so the GPU driver
 // allocates internal resources (shaders, command buffers, HW state) now
-// rather than on the first real frame — eliminating the visible stutter.
+// rather than on the first real frame, eliminating the visible stutter.
 //
-// IMPORTANT: this must NOT call EncodeFrameAsync.  Doing so would consume
-// the first IDR slot (with SPS/PPS), causing the first real frame to be
-// a P/B-frame without headers — the decoder sees a green screen.
+// IMPORTANT: Must NOT call EncodeFrameAsync. Doing so would consume the
+// first IDR slot (with SPS/PPS), causing the first real frame to be a
+// P/B-frame without headers — the decoder sees a green screen.
 void QSVEncoder::WarmUpEncoder() {
-  // ── Texture-encoder path ─────────────────────────────────────
+  // Texture-encoder path
   if (QSVIsTextureEncoder && HWManager) {
     const auto &Pool = HWManager->GetTexturePool();
     if (Pool.empty() || Pool[0] == nullptr)
       return;
 
-    // Import one pool texture into VPL's surface manager so it
-    // pre-allocates its internal tracking structures.
+    // Import one pool texture so VPL pre-allocates internal tracking
     mfxSurfaceD3D11Tex2D DummyTex = {};
     DummyTex.SurfaceInterface.Header.SurfaceType =
         MFX_SURFACE_TYPE_D3D11_TEX2D;
@@ -3647,7 +3623,7 @@ void QSVEncoder::WarmUpEncoder() {
     return;
   }
 
-  // ── Frame-encoder path (video / system memory) ───────────────
+  // Frame-encoder path (video / system memory)
   if (!QSVEncode)
     return;
 #ifdef QSV_UHD600_SUPPORT
@@ -3662,8 +3638,7 @@ void QSVEncoder::WarmUpEncoder() {
   }
 
   // Map + write + unmap forces the driver to set up internal
-  // page-table entries / DMA mappings that are otherwise lazily
-  // deferred until the very first Map call in the encode loop.
+  // page-table / DMA mappings that are otherwise lazily deferred.
   const mfxFrameInfo &fi = Surf->Info;
   if (fi.FourCC == MFX_FOURCC_NV12 || fi.FourCC == MFX_FOURCC_P010) {
     sts = Surf->FrameInterface->Map(Surf, MFX_MAP_WRITE);

@@ -25,8 +25,7 @@ bool OpenEncoder(std::unique_ptr<QSVEncoder> &EncoderPTR,
       obs_get_video_info(&OVI);
       mfxU32 AdapterID = OVI.adapter;
       mfxU32 AdapterIDAdjustment = 0;
-      // Select current adapter - will be iGPU if exiStatus due to adapter
-      // reordering
+      // Select current adapter; handle adapter reordering
       if (Codec == QSV_CODEC_AV1 && !AdaptersInfo[AdapterID].SupportAV1) {
         for (mfxU32 i = 0; i < MAX_ADAPTERS; i++) {
           if (!AdaptersInfo[i].IsIntel) {
@@ -80,8 +79,7 @@ void DestroyPluginContext(void *Data) {
     UnregisterEncoderData(Context->EncoderData);
     os_end_high_performance(Context->PerformanceToken);
 
-    // Wait for in-progress encodes to finish under mutex protection,
-    // then tear down atomically — no race between the wait and destruction.
+    // Wait for in-progress encodes to finish, then tear down
     {
       std::unique_lock<std::mutex> lock(Context->EncoderMutex);
       Context->EncodingCV.wait_for(lock, std::chrono::milliseconds(10),
@@ -239,7 +237,7 @@ void GetVideoInfo(void *Data, video_scale_info *Info) {
     break;
   }
   default:
-    // AVC with non-high10 profiles needs no adjustment; format remains NV12/P010 based on OBS config
+    // AVC with non-high10 profiles: no adjustment needed
     break;
   }
 
@@ -254,8 +252,7 @@ mfxU64 ConvertTSOBSMFX(int64_t TS, mfxU32 FpsNum) {
 }
 
 int64_t ConvertTSMFXOBS(mfxI64 TS, mfxU32 FpsNum, mfxU32 FpsDen, int64_t Div) {
-  // Integer rounding: symmetric for positive/negative TS, avoiding the
-  // asymmetry of C++ truncation-toward-zero
+  // Integer rounding: symmetric for +/- TS
   int64_t numerator = TS * static_cast<int64_t>(FpsNum);
   int64_t rounding = (numerator >= 0) ? (Div / 2) : -(Div / 2);
   return (numerator + rounding) / Div * static_cast<int64_t>(FpsDen);
@@ -461,10 +458,9 @@ static size_t StripHEVCNALTemporalLayer(uint8_t *dst,
   // After profile_tier_level, the remaining RBSP data starts with
   // vps_sub_layer_ordering_info_present_flag, followed by
   // (vps_max_sub_layers_minus1+1) groups of 3 ue(v) values.
-  // Since we set output max_sub_layers=0, the output must contain
-  // exactly 1 group. If source has flag=1 with multiple groups,
-  // we need to reduce to 1 group, otherwise the decoder misparses
-  // extra ue(v) values as vps_max_layer_id etc.
+  // Since output max_sub_layers=0, the output must contain exactly 1 group.
+  // If source has flag=1 with multiple groups, reduce to 1 group,
+  // otherwise the decoder misparses extra ue(v) values as vps_max_layer_id etc.
   uint8_t ordering_flag =
       hevc_read_bits(rbsp, rbsp_size, sl_byte, sl_bit, 1);
   uint32_t num_src_entries =
@@ -588,8 +584,8 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
                               &Context->ExtraData.second, &Context->SEI.first,
                               &Context->SEI.second);
     } else if (Context->Codec == QSV_CODEC_HEVC) {
-      // Strip temporal sub-layer info from raw bitstream BEFORE calling
-      // obs_extract_hevc_headers to prevent crash in obs_parse_hevc_header
+      // Strip temporal sub-layer info from raw bitstream before calling
+      // obs_extract_hevc_headers to avoid crash in obs_parse_hevc_header
       // when VPS contains vps_max_sub_layers_minus1 > 0 (temporal layers 2-4)
       size_t bitstream_size = Bitstream->DataLength;
       size_t tmp_alloc = bitstream_size + bitstream_size / 2 + 256;

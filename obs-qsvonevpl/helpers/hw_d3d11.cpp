@@ -2,9 +2,7 @@
 
 #include "hw_d3d11.hpp"
 
-// =================================================================
 // DirectX functionality required to manage DX11 device and surfaces
-//
 HWManager::HWManager()
     : HWTextureCounter(), HWTexturePool(), HWHandledTexturePool() {}
 

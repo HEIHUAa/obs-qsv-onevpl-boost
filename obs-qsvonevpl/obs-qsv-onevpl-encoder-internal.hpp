@@ -187,12 +187,12 @@ private:
   // ROI (Region of Interest) data for per-frame encoding control
   std::vector<encoder_params::roi_region> CachedROIRegions;
   mfxU16 CachedROIMode{};
-  // Each encoder instance records ROI log independently (avoid static variable sharing across instances)
+  // ROI log per encoder instance (not shared across instances)
   bool ROIFirstLogDone = false;
 
-  // ── Per-frame QP tracking ──────────────────────────────────────
-  // Tracks QP statistics per I/P/B frame type for diagnostic logging.
-  // Uses a histogram (0-100) for O(1) median/percentile computation.
+  // ─ Per-frame QP tracking ─
+  // Tracks QP stats per I/P/B frame type for diagnostic logging.
+  // Uses a histogram (0-100) for O(1) median computation.
   static constexpr size_t QP_HISTOGRAM_SIZE = 101;
 
   struct QPFrameTypeStats {
@@ -211,15 +211,15 @@ private:
   QPFrameStats FrameQPStats;
 
   // One mfxExtEncodedFrameInfo per task, attached to each task's
-  // bitstream so the encoder fills in the frame-level QP after encode.
+  // bitstream so the encoder fills in frame-level QP after encode.
   std::vector<mfxExtEncodedFrameInfo> QSVTaskEncodedInfo;
   // Each task's bitstream.ExtParam points into the array below.
   std::vector<mfxExtBuffer *> QSVTaskEncodedExtPtr;
 
-  // ── Per-frame QP tracking ──────────────────────────────────────
+  // ─ Per-frame QP tracking ─
   static constexpr size_t QSV_SEI_EXTRA = 1024; // extra bytes per task for SEI injection
 
-  // ── Custom Coding Options deferred logging ─────────────────────
+  // ─ Custom Coding Options deferred logging ─
   struct CustomCodingOptionEntry {
     int LineNo;
     std::string Scope;
@@ -231,25 +231,20 @@ private:
   void UpdateFrameQPStats(mfxU16 frameType, mfxU16 qp);
   void LogQPStats();
 
-  // ── QP stats SEI (User Data Unregistered) injection ────────────
-  // Inserts an SEI NAL containing cumulative QP stats into the video
-  // bitstream so media players (VLC, MPC-HC, PotPlayer) can display
-  // them in the codec information dialog.
-  //
+  // QP stats SEI (User Data Unregistered) injection
+  // Inserts an SEI NAL with cumulative QP stats so media players can display them.
   // UUID for this plugin's SEI user_data_unregistered messages.
   static constexpr uint8_t QP_SEI_UUID[16] = {
       0xe7, 0xa5, 0xa8, 0xd0, 0x6b, 0x3c, 0x4c, 0x2e,
       0x9f, 0x1d, 0x8a, 0x5b, 0x7c, 0x9d, 0x3f, 0x1a};
 
-  // Appends a User Data Unregistered SEI NAL with the current QP
-  // stats to |bs|.  Handles both AVC (NAL type 6) and HEVC (NAL
-  // type 39).  Assumes |bs| has at least QSV_SEI_EXTRA bytes of
-  // headroom beyond |DataLength|.
+  // Appends a User Data Unregistered SEI NAL with current QP stats to |bs|.
+  // Handles AVC (NAL type 6) and HEVC (NAL type 39).
+  // Assumes |bs| has at least QSV_SEI_EXTRA bytes headroom beyond |DataLength|.
   void AppendQpSeiToBitstream(mfxBitstream &bs);
 
-  // Returns the most recently appended SEI data (raw NAL, allocated
-  // by the encoder, owned by the caller).  Returns nullptr if no SEI
-  // has been written.
+  // Returns the most recently appended SEI NAL data, or nullptr if none written.
+  // Caller owns the returned buffer.
   void GetQpStatsSei(uint8_t **data, size_t *size);
   std::vector<uint8_t> QpStatsSeiBuffer; // last appended SEI NAL
   std::string QpSeiPayload;              // reused buffer for SEI payload

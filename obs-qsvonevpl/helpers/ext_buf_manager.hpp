@@ -329,9 +329,9 @@ public:
         throw msg;
       }
 
-      // 'false' below is because here we just copy extBuffer's one by one
+      // Pass 'false' for AddExtBuffer: we copy ext buffers one by one
       auto DSTBuffer = AddExtBuffer(SRCBuffer->BufferId, SRCBuffer->BufferSz, false);
-      // copy Bufferfer content w/o restoring its type
+      // copy buffer content without restoring its type
       memcpy(static_cast<void *>(DSTBuffer), static_cast<void *>(SRCBuffer),
              SRCBuffer->BufferSz);
     }

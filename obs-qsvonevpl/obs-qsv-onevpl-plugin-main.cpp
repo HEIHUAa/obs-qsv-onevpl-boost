@@ -116,13 +116,12 @@ void ReleaseGlobalLoader() {
   }
 }
 
-// ── Deep VPL warm-up ────────────────────────────────────────────────
+// Deep VPL warm-up:
 // For each supported codec, create a throwaway VPL session and call
-// MFXVideoENCODE_Init to trigger GPU shader JIT compilation inside the
-// driver.  The compiled shaders are cached by the driver, so the first
-// real recording's Init reuses them — eliminating the ~250 ms delay.
-// Surface-level warm-up is NOT duplicated here; it is already handled
-// by per-recording QSVEncoder::WarmUpEncoder().
+// MFXVideoENCODE_Init to trigger GPU shader JIT compilation. The
+// compiled shaders are cached by the driver, so the first real
+// recording's Init reuses them — eliminating the ~250 ms delay.
+// Surface-level warm-up is handled by per-recording WarmUpEncoder().
 
 static void DeepWarmUpVPL() {
   mfxLoader Loader = nullptr;
@@ -231,11 +230,11 @@ bool obs_module_load([[maybe_unused]] void) {
   }
 
   if (SupportAVC || SupportAV1 || SupportHEVC) {
-    // Pre-warm the platform platform-name cache so the first
-    // ParamsVisibilityModifier call does not create a temporary VPL session.
+    // Pre-warm the platform name cache so the first ParamsVisibilityModifier
+    // call does not create a temporary VPL session.
     QueryPlatformCodeName();
-    // Deep warm-up: create full MFXVideoENCODE pipeline for each supported
-    // codec to trigger GPU shader JIT compilation in the driver ahead of time.
+    // Deep warm-up: create MFXVideoENCODE pipeline for each supported
+    // codec to trigger GPU shader JIT compilation ahead of time.
     DeepWarmUpVPL();
   }
 

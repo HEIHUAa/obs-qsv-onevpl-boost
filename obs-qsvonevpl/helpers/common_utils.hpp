@@ -211,8 +211,7 @@ static inline void ParseOptionalBool(const char *Data,
 void avx2_memcpy(uint8_t *Dst, const uint8_t *Src,
                  unsigned long long Size);
 
-// ── HEVC bitstream parsing helpers ──────────────────────────────
-// Shared between encoder.cpp and encoder-internal.cpp.
+// HEVC bitstream parsing helpers
 uint32_t hevc_read_bits(const uint8_t *data, size_t max_size,
                         size_t &byte_pos, int &bit_pos, int n);
 uint32_t hevc_read_uev(const uint8_t *data, size_t max_size,
