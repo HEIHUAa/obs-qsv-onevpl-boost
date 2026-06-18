@@ -2835,7 +2835,7 @@ void QSVEncoder::LoadFrameData(mfxFrameSurface1 *&Surface, uint8_t **FrameData,
                                  SurfaceInfo->CropY * Pitch);
 
       for (i = 0; i < Height; i++) {
-        memcpy(PTR + i * Pitch, FrameData[0] + i * FrameLinesize[0], Width);
+        avx2_memcpy(PTR + i * Pitch, FrameData[0] + i * FrameLinesize[0], Width);
       }
 
       Height /= 2;
@@ -2843,7 +2843,7 @@ void QSVEncoder::LoadFrameData(mfxFrameSurface1 *&Surface, uint8_t **FrameData,
                                   (SurfaceInfo->CropY / 2) * Pitch));
 
       for (i = 0; i < Height; i++) {
-        memcpy(PTR + i * Pitch, FrameData[1] + i * FrameLinesize[1], Width);
+        avx2_memcpy(PTR + i * Pitch, FrameData[1] + i * FrameLinesize[1], Width);
       }
     }
   } else if (Surface->Info.FourCC == MFX_FOURCC_P010) {
@@ -2858,7 +2858,7 @@ void QSVEncoder::LoadFrameData(mfxFrameSurface1 *&Surface, uint8_t **FrameData,
                                  SurfaceInfo->CropY * Pitch);
 
       for (i = 0; i < Height; i++) {
-        memcpy(PTR + i * Pitch, FrameData[0] + i * FrameLinesize[0], line_size);
+        avx2_memcpy(PTR + i * Pitch, FrameData[0] + i * FrameLinesize[0], line_size);
       }
 
       Height /= 2;
@@ -2866,7 +2866,7 @@ void QSVEncoder::LoadFrameData(mfxFrameSurface1 *&Surface, uint8_t **FrameData,
                                   (SurfaceInfo->CropY / 2) * Pitch));
 
       for (i = 0; i < Height; i++) {
-        memcpy(PTR + i * Pitch, FrameData[1] + i * FrameLinesize[1], line_size);
+        avx2_memcpy(PTR + i * Pitch, FrameData[1] + i * FrameLinesize[1], line_size);
       }
     }
   } else if (Surface->Info.FourCC == MFX_FOURCC_RGB4) {
@@ -2876,7 +2876,7 @@ void QSVEncoder::LoadFrameData(mfxFrameSurface1 *&Surface, uint8_t **FrameData,
              static_cast<size_t>(Height) * Pitch);
     } else {
       for (i = 0; i < Height; i++) {
-        memcpy(SurfaceData->B + i * Pitch, FrameData[0] + i * FrameLinesize[0],
+        avx2_memcpy(SurfaceData->B + i * Pitch, FrameData[0] + i * FrameLinesize[0],
                line_size);
       }
     }
