@@ -2239,9 +2239,6 @@ mfxStatus QSVEncoder::InitTaskPool([[maybe_unused]] enum codec_enum Codec) {
       throw std::runtime_error(
           "InitTaskPool(): Task memory allocation error");
     }
-    info("\tTask #%d bitstream size: %d Kb", i,
-         NewTask.Bitstream.MaxLength / 1000);
-
     // Attach mfxExtEncodedFrameInfo to each task's bitstream so the
     // encoder reports back the frame-level QP after EncodeFrameAsync.
     auto &encInfo = QSVTaskEncodedInfo[i];
