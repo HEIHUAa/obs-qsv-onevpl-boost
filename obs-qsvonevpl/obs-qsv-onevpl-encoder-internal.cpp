@@ -478,8 +478,18 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
       QSVProcessing = std::make_unique<MFXVideoVPP>(QSVSession);
 
       Status = SetProcessingParams(InputParams, Codec);
-
-      Status = QSVProcessing->Init(&QSVProcessingParams);
+      if (Status >= MFX_ERR_NONE) {
+        Status = QSVProcessing->Init(&QSVProcessingParams);
+        if (Status < MFX_ERR_NONE) {
+          warn("VPP Init failed (%d), disabling VPP for this session", Status);
+          DisableVPP();
+        }
+      } else {
+        warn("VPP configuration not supported for FourCC=0x%04X, "
+             "disabling VPP for this session",
+             InputParams->FourCC);
+        DisableVPP();
+      }
     }
 
 #ifdef QSV_UHD600_SUPPORT
@@ -727,7 +737,10 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
   memcpy(&ValidParams, &QSVProcessingParams, sizeof(mfxVideoParam));
   mfxStatus Status = QSVProcessing->Query(&QSVProcessingParams, &ValidParams);
   if (Status < MFX_ERR_NONE) {
-    throw std::runtime_error("SetProcessingParams(): Query params error");
+    error("SetProcessingParams(): VPP Query returned %d for FourCC=0x%04X "
+          "BitDepth=%u",
+          Status, InputParams->FourCC, InputParams->BitDepth);
+    return Status;
   }
 
   QSVProcessingAuxData = QSVEncodeCtrlParams.AddExtBuffer<mfxExtVppAuxData>();
