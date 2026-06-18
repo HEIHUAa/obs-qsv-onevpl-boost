@@ -192,11 +192,15 @@ private:
 
   // ── Per-frame QP tracking ──────────────────────────────────────
   // Tracks QP statistics per I/P/B frame type for diagnostic logging.
+  // Uses a histogram (0-100) for O(1) median/percentile computation.
+  static constexpr size_t QP_HISTOGRAM_SIZE = 101;
+
   struct QPFrameTypeStats {
     uint64_t count = 0;
     uint64_t sumQP = 0;
     mfxU16 minQP = UINT16_MAX;
     mfxU16 maxQP = 0;
+    std::array<uint64_t, QP_HISTOGRAM_SIZE> histogram{};
   };
 
   struct QPFrameStats {

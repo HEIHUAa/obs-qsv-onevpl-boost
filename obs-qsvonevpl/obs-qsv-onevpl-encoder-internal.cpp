@@ -3377,6 +3377,7 @@ void QSVEncoder::UpdateFrameQPStats(mfxU16 frameType, mfxU16 qp) {
   bucket->sumQP += qp;
   if (qp < bucket->minQP) bucket->minQP = qp;
   if (qp > bucket->maxQP) bucket->maxQP = qp;
+  if (qp < QP_HISTOGRAM_SIZE) bucket->histogram[qp]++;
 }
 
 void QSVEncoder::LogQPStats() {
@@ -3386,11 +3387,25 @@ void QSVEncoder::LogQPStats() {
       return;
     }
     double avg = static_cast<double>(s.sumQP) / static_cast<double>(s.count);
+    // Compute median from histogram: find the QP value where cumulative
+    // count reaches the midpoint. O(QP_HISTOGRAM_SIZE) = O(1) fixed 101 iterations.
+    mfxU16 median = 0;
+    {
+      uint64_t target = (s.count + 1) / 2;
+      uint64_t cumulative = 0;
+      for (size_t qp = 0; qp < QP_HISTOGRAM_SIZE; qp++) {
+        cumulative += s.histogram[qp];
+        if (cumulative >= target) {
+          median = static_cast<mfxU16>(qp);
+          break;
+        }
+      }
+    }
     blog(LOG_INFO,
-         "[QSV VPL] QPStats: %s  count=%llu  min=%u  max=%u  avg=%.2f",
+         "[QSV VPL] QPStats: %s  count=%llu  min=%u  max=%u  avg=%.2f  median=%u",
          label,
          static_cast<unsigned long long>(s.count),
-         s.minQP, s.maxQP, avg);
+         s.minQP, s.maxQP, avg, median);
   };
 
   blog(LOG_INFO,
@@ -3422,12 +3437,25 @@ void QSVEncoder::AppendQpSeiToBitstream(mfxBitstream &bs) {
       return;
     double avg = static_cast<double>(s.sumQP) /
                  static_cast<double>(s.count);
-    // Format: "I:cnt,min,max,avg|"
+    // Compute median from histogram (O(QP_HISTOGRAM_SIZE) = O(1))
+    mfxU16 median = 0;
+    {
+      uint64_t target = (s.count + 1) / 2;
+      uint64_t cumulative = 0;
+      for (size_t qp = 0; qp < QP_HISTOGRAM_SIZE; qp++) {
+        cumulative += s.histogram[qp];
+        if (cumulative >= target) {
+          median = static_cast<mfxU16>(qp);
+          break;
+        }
+      }
+    }
+    // Format: "I:cnt,min,max,avg,med|"
     char buf[64];
-    int n = snprintf(buf, sizeof(buf), "%c:%llu,%u,%u,%.2f|",
+    int n = snprintf(buf, sizeof(buf), "%c:%llu,%u,%u,%.2f,%u|",
                      label,
                      static_cast<unsigned long long>(s.count),
-                     s.minQP, s.maxQP, avg);
+                     s.minQP, s.maxQP, avg, median);
     out.append(buf, n);
   };
 
