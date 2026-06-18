@@ -574,7 +574,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
       bool showProfileH264 = true;
       if (platformCode != 0) {
         bool isHigh422 = std::strcmp(*profileEntryH264, "high422") == 0;
-        if (isHigh422) {
+        if (isHigh422 && platformCode < MFX_PLATFORM_HASWELL) {
           showProfileH264 = false;
         }
       }
@@ -1040,6 +1040,11 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
     AddStrings(Prop, qsv_params_condition);
     obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
+    Prop = obs_properties_add_list(Props, "intra_ref_type",
+                                   TEXT_INTRA_REF_TYPE, OBS_COMBO_TYPE_LIST,
+                                   OBS_COMBO_FORMAT_STRING);
+    AddStrings(Prop, qsv_params_condition_intra_ref_encoding);
+
     Prop = obs_properties_add_int(Props, "intra_ref_cycle_size",
                                   TEXT_INTRA_REF_CYCLE_SIZE, 2, 1000, 1);
     obs_property_set_long_description(
@@ -1321,6 +1326,8 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   const char *EncToolsData = obs_data_get_string(Settings, "enctools");
   const char *IntraRefEncodingData =
       obs_data_get_string(Settings, "intra_ref_encoding");
+  const char *IntraRefTypeData =
+      obs_data_get_string(Settings, "intra_ref_type");
   int IntraRefCycleSizeData =
       static_cast<int>(obs_data_get_int(Settings, "intra_ref_cycle_size"));
   int IntraRefQPDeltaData =
@@ -1657,6 +1664,12 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.IntraRefEncoding = 1;
   } else if (std::strcmp(IntraRefEncodingData, "OFF") == 0) {
     Context->EncoderParams.IntraRefEncoding = 0;
+  }
+
+  if (std::strcmp(IntraRefTypeData, "VERTICAL") == 0) {
+    Context->EncoderParams.IntraRefType = MFX_REFRESH_VERTICAL;
+  } else {
+    Context->EncoderParams.IntraRefType = MFX_REFRESH_HORIZONTAL;
   }
 
   ParseOptionalBool(AdaptiveCQMData, Context->EncoderParams.AdaptiveCQM);

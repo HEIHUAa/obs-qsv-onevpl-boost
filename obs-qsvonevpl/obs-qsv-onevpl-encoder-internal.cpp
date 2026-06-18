@@ -1347,7 +1347,10 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
     if (InputParams->IntraRefEncoding == true) {
 
-      CO2Params->IntRefType = MFX_REFRESH_HORIZONTAL;
+      CO2Params->IntRefType =
+          static_cast<mfxU16>(InputParams->IntraRefType > 0
+                                  ? InputParams->IntraRefType
+                                  : MFX_REFRESH_HORIZONTAL);
 
       CO2Params->IntRefCycleSize =
           static_cast<mfxU16>(InputParams->IntraRefCycleSize > 1

@@ -113,6 +113,7 @@ struct plugin_context {
 #define TEXT_PERC_ENC_PREFILTER obs_module_text("PercEncPrefilter")
 
 #define TEXT_INTRA_REF_ENCODING obs_module_text("IntraRefEncoding")
+#define TEXT_INTRA_REF_TYPE obs_module_text("IntraRefType")
 #define TEXT_INTRA_REF_CYCLE_SIZE obs_module_text("IntraRefCycleSize")
 #define TEXT_INTRA_REF_QP_DELTA obs_module_text("IntraRefQPDelta")
 

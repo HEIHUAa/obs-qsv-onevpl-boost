@@ -76,6 +76,7 @@ struct encoder_params {
   bool WinBRC;
   bool ExtBRC;
   bool IntraRefEncoding;
+  mfxU16 IntraRefType;
   bool CustomBufferSize;
   bool EncTools;
   std::optional<bool> EncToolsSceneChange;
