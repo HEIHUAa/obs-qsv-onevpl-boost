@@ -739,7 +739,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(Prop,
                                     obs_module_text("WinBRCMaxAvgSize.Tooltip"));
 
-  Prop = obs_properties_add_int(Props, "win_brc_size", TEXT_WINBRC_SIZE, 0, 1000,
+  Prop = obs_properties_add_int(Props, "win_brc_size", TEXT_WINBRC_SIZE, 0, 65535,
                                 1);
   obs_property_int_set_suffix(Prop, " frames");
   obs_property_set_long_description(Prop,
