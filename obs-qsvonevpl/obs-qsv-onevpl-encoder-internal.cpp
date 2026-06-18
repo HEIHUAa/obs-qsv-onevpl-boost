@@ -609,6 +609,21 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
   QSVProcessingParams.vpp.Out.FrameRateExtD =
       static_cast<mfxU32>(InputParams->FpsDen);
 
+  // Propagate bit-depth and shift to VPP frame info (the encoder init already
+  // does this for the encode params, but VPP frame info was left zeroed).
+  // Without these fields the VPP Query may reject 10-bit+ FourCC values
+  // (e.g. P010) because the SDK sees an inconsistent format description:
+  // FourCC implies 10-bit but BitDepth/Shift still read 0 (8-bit, no shift).
+  if (InputParams->BitDepth > 0) {
+    auto setBitDepth = [&](mfxFrameInfo &fi) {
+      fi.BitDepthLuma   = InputParams->BitDepth;
+      fi.BitDepthChroma = InputParams->BitDepth;
+      fi.Shift          = InputParams->BitDepth > 8 ? 1 : 0;
+    };
+    setBitDepth(QSVProcessingParams.vpp.In);
+    setBitDepth(QSVProcessingParams.vpp.Out);
+  }
+
   if (InputParams->VPPDenoiseMode.has_value()) {
     auto DenoiseParams = QSVProcessingParams.AddExtBuffer<mfxExtVPPDenoise2>();
     DenoiseParams->Header.BufferId = MFX_EXTBUFF_VPP_DENOISE2;
