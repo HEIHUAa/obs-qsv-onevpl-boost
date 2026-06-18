@@ -248,4 +248,5 @@ private:
   // has been written.
   void GetQpStatsSei(uint8_t **data, size_t *size);
   std::vector<uint8_t> QpStatsSeiBuffer; // last appended SEI NAL
+  std::string QpSeiPayload;              // reused buffer for SEI payload
 };

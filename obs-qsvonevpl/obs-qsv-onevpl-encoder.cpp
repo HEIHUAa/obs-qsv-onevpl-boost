@@ -723,8 +723,8 @@ bool EncodeTexture(void *Data, encoder_texture *Texture, int64_t PTS,
 
   {
     std::lock_guard<std::mutex> lock(Context->EncoderMutex);
-    Context->EncodingCount.fetch_sub(1, std::memory_order_release);
-    Context->EncodingCV.notify_one();
+    if (Context->EncodingCount.fetch_sub(1, std::memory_order_release) == 1)
+      Context->EncodingCV.notify_one();
   }
   return success;
 }
@@ -775,8 +775,8 @@ bool EncodeFrame(void *Data, encoder_frame *Frame, encoder_packet *Packet,
 
   {
     std::lock_guard<std::mutex> lock(Context->EncoderMutex);
-    Context->EncodingCount.fetch_sub(1, std::memory_order_release);
-    Context->EncodingCV.notify_one();
+    if (Context->EncodingCount.fetch_sub(1, std::memory_order_release) == 1)
+      Context->EncodingCV.notify_one();
   }
   return success;
 }

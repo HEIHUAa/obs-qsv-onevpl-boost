@@ -2928,11 +2928,12 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
 
 mfxStatus QSVEncoder::GetFreeTaskIndex(int *TaskID) {
   if (!QSVTaskPool.empty()) {
+    const int PoolSize = static_cast<int>(QSVTaskPool.size());
     int StartIdx = QSVSyncTaskID;
-    for (int i = 0; i < static_cast<int>(QSVTaskPool.size()); i++) {
-      int Idx = (StartIdx + i) % static_cast<int>(QSVTaskPool.size());
+    for (int i = 0; i < PoolSize; i++) {
+      int Idx = (StartIdx + i) % PoolSize;
       if (static_cast<mfxSyncPoint>(nullptr) == QSVTaskPool[Idx].SyncPoint) {
-        QSVSyncTaskID = (Idx + 1) % static_cast<int>(QSVTaskPool.size());
+        QSVSyncTaskID = (Idx + 1) % PoolSize;
         *TaskID = Idx;
         return MFX_ERR_NONE;
       }
@@ -3430,9 +3431,9 @@ void QSVEncoder::AppendQpSeiToBitstream(mfxBitstream &bs) {
     out.append(buf, n);
   };
 
-  std::string payload;
-  payload.reserve(96);
-  payload = "QSVQP|";
+  std::string &payload = QpSeiPayload;
+  payload.clear();
+  payload += "QSVQP|";
   fmtType(FrameQPStats.i, 'I', payload);
   fmtType(FrameQPStats.p, 'P', payload);
   fmtType(FrameQPStats.b, 'B', payload);
