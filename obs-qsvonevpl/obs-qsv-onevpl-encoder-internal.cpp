@@ -243,24 +243,8 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
         ParseCustomCodingOptions(InputParams->CustomCodingOptions);
       }
 
-      mfxExtCodingOption2 CO2InitCopy = {};
-      mfxExtCodingOption3 CO3InitCopy = {};
-      bool HasCO2Init = false, HasCO3Init = false;
-      if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>()) {
-        CO2InitCopy = *p;
-        HasCO2Init = true;
-      }
-      if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>()) {
-        CO3InitCopy = *p;
-        HasCO3Init = true;
-      }
-
       Status = QSVEncode->Init(&QSVEncodeParams);
       info("\tMFXVideoENCODE_Init%s status: %d", log_prefix, Status);
-
-      LogCO2CO3Corrections(" (Init)", QSVEncodeParams,
-                           &CO2InitCopy, &CO3InitCopy,
-                           HasCO2Init, HasCO3Init);
     }
   }
 
@@ -994,7 +978,8 @@ static constexpr std::array<FieldEntry, 46> CODDI_FIELDS{
   FieldEntry{"TMVP", offsetof(mfxExtCodingOptionDDI, TMVP), FT_U16},
 };
 
-// Log driver-corrected fields by diffing before/after state using field tables
+// Log driver-corrected fields by diffing before/after state using field tables.
+// Only emits output when the driver actually changed something.
 static void LogCO2CO3Corrections(
     const char *Prefix,
     MFXVideoParam &Params,
@@ -1003,19 +988,30 @@ static void LogCO2CO3Corrections(
     bool HasCO2, bool HasCO3) {
   auto CO2After = Params.GetExtBuffer<mfxExtCodingOption2>();
   auto CO3After = Params.GetExtBuffer<mfxExtCodingOption3>();
-  info("\tDriver auto-corrected parameters%s:", Prefix);
-  auto logDiffs = [&](const void *before, const void *after,
-                       std::span<const FieldEntry> fields) {
+
+  // Collect diffs first so we can skip the header when nothing changed
+  std::vector<std::string> diffs;
+  auto collectDiffs = [&](const void *before, const void *after,
+                           std::span<const FieldEntry> fields) {
     if (!before || !after) return;
     for (const auto &f : fields) {
       mfxU64 bv = ReadFieldValue(before, f);
       mfxU64 av = ReadFieldValue(after, f);
-      if (bv != av)
-        info("\t  %s: %llu -> %llu", f.name, bv, av);
+      if (bv != av) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "\t  %s: %llu -> %llu", f.name, bv, av);
+        diffs.push_back(buf);
+      }
     }
   };
-  logDiffs(CO2Before, CO2After, CO2_FIELDS);
-  logDiffs(CO3Before, CO3After, CO3_FIELDS);
+  collectDiffs(CO2Before, CO2After, CO2_FIELDS);
+  collectDiffs(CO3Before, CO3After, CO3_FIELDS);
+
+  if (diffs.empty()) return;
+
+  info("\tDriver auto-corrected parameters%s:", Prefix);
+  for (const auto &d : diffs)
+    info("%s", d.c_str());
 }
 
 static std::optional<mfxU64> ApplyField(void *base, std::span<const FieldEntry> entries,
@@ -3662,7 +3658,6 @@ void QSVEncoder::WarmUpEncoder() {
   }
 
   Surf->FrameInterface->Release(Surf);
-  info("Encoder warm-up (frame) — GetSurface+Map done");
 }
 
 mfxStatus QSVEncoder::ClearData() {
