@@ -450,7 +450,7 @@ private:
   }
 
   bool IsCopyAllowed(mfxU32 ID) {
-    static const mfxU32 Allowed[] = {
+    static constexpr mfxU32 Allowed[] = {
         MFX_EXTBUFF_CODING_OPTION,       MFX_EXTBUFF_CODING_OPTION2,
         MFX_EXTBUFF_CODING_OPTION3,      MFX_EXTBUFF_BRC,
         MFX_EXTBUFF_HEVC_PARAM,          MFX_EXTBUFF_VP9_PARAM,
@@ -458,10 +458,7 @@ private:
         MFX_EXTBUFF_AV1_TILE_PARAM,      MFX_EXTBUFF_DEC_VIDEO_PROCESSING,
         MFX_EXTBUFF_ALLOCATION_HINTS};
 
-    auto it = std::find_if(
-        std::begin(Allowed), std::end(Allowed),
-        [&ID](const mfxU32 AllowedID) { return AllowedID == ID; });
-    return it != std::end(Allowed);
+    return std::ranges::contains(Allowed, ID);
   }
 
   struct CmpExtBufByID {

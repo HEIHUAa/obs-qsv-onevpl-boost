@@ -25,6 +25,7 @@
 #include <iterator>
 #include <mutex>
 #include <map>
+#include <unordered_map>
 
 #if defined(_WIN32) || defined(_WIN64)
 #include <intrin.h>
@@ -107,7 +108,7 @@ void ReleaseGlobalLoader();
 // Encoder data registry - maps obs_encoder_t* to plugin_context*
 // Used by ROI editor to look up encoder data without using internal OBS APIs
 struct plugin_context;
-extern std::map<obs_encoder_t *, plugin_context *> EncoderDataMap;
+extern std::unordered_map<obs_encoder_t *, plugin_context *> EncoderDataMap;
 extern std::mutex EncoderDataMapMutex;
 
 void RegisterEncoderData(obs_encoder_t *Encoder, plugin_context *Context);
@@ -122,7 +123,7 @@ struct pending_roi_config {
   mfxU16 Mode;
   bool Enabled = false;
 };
-extern std::map<std::string, pending_roi_config> PendingROIConfig;
+extern std::unordered_map<std::string, pending_roi_config> PendingROIConfig;
 extern std::mutex PendingROIMutex;
 
 // Single global ROI config (replaces per-type/PendingROIConfig[""] indirection)

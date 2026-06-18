@@ -21,11 +21,11 @@ struct adapter_info AdaptersInfo[MAX_ADAPTERS] = {};
 size_t AdaptersCount = 0;
 
 // Encoder data registry
-std::map<obs_encoder_t *, plugin_context *> EncoderDataMap;
+std::unordered_map<obs_encoder_t *, plugin_context *> EncoderDataMap;
 std::mutex EncoderDataMapMutex;
 
 // Pending ROI config for encoder types not yet instantiated
-std::map<std::string, pending_roi_config> PendingROIConfig;
+std::unordered_map<std::string, pending_roi_config> PendingROIConfig;
 std::mutex PendingROIMutex;
 
 // Single global ROI config (used by the ROI Editor dialog)
@@ -326,10 +326,9 @@ void RegisterEncoderData(obs_encoder_t *Encoder, plugin_context *Context) {
 
 // Serialize helper: format a double without scientific notation and with minimal precision
 std::string FormatROIDouble(double Value) {
-  std::ostringstream ss;
-  ss.precision(6);
-  ss << std::fixed << Value;
-  std::string s = ss.str();
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%.6f", Value);
+  std::string s = buf;
   auto dot = s.find('.');
   if (dot != std::string::npos) {
     auto last = s.find_last_not_of('0');

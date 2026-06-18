@@ -1497,17 +1497,10 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
     CO3Params->LowDelayHrd = GetCodingOpt(InputParams->LowDelayHRD);
 
-    if (InputParams->WeightedPred.has_value()) {
-      CO3Params->WeightedPred = InputParams->WeightedPred.value();
-    } else {
-      CO3Params->WeightedPred = MFX_WEIGHTED_PRED_DEFAULT;
-    }
-
-    if (InputParams->WeightedBiPred.has_value()) {
-      CO3Params->WeightedBiPred = InputParams->WeightedBiPred.value();
-    } else {
-      CO3Params->WeightedBiPred = MFX_WEIGHTED_PRED_DEFAULT;
-    }
+    CO3Params->WeightedPred =
+        InputParams->WeightedPred.value_or(MFX_WEIGHTED_PRED_DEFAULT);
+    CO3Params->WeightedBiPred =
+        InputParams->WeightedBiPred.value_or(MFX_WEIGHTED_PRED_DEFAULT);
 
     CO3Params->RepartitionCheckEnable = MFX_CODINGOPTION_ON;
 
