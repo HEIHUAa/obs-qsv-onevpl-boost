@@ -383,7 +383,8 @@ static size_t StripHEVCNALTemporalLayer(uint8_t *dst,
     return src.size();
   }
 
-  std::vector<uint8_t> rbsp_buf(src.size() + 4);
+  thread_local static std::vector<uint8_t> rbsp_buf;
+  rbsp_buf.assign(src.size() + 4, 0);
   uint8_t *rbsp = rbsp_buf.data();
   size_t rbsp_size = hevc_extract_rbsp(rbsp, src);
 
@@ -404,26 +405,15 @@ static size_t StripHEVCNALTemporalLayer(uint8_t *dst,
   // byte 4-5: vps_reserved_0xffff[15:3](13 bits)
   uint8_t old_max_sublayers = (rbsp[3] >> 4) & 0x7;
 
-  blog(LOG_INFO,
-       "[QSV VPS] old_max_sublayers=%d, byte3=0x%02x, src.size()=%zu, "
-       "rbsp_size=%zu",
-       old_max_sublayers, rbsp[3], src.size(), rbsp_size);
-  blog(LOG_INFO,
-       "[QSV VPS] rbsp[0-15]: %02x %02x %02x %02x %02x %02x %02x %02x "
-       "%02x %02x %02x %02x %02x %02x %02x %02x",
-       rbsp[0], rbsp[1], rbsp[2], rbsp[3], rbsp[4], rbsp[5], rbsp[6],
-       rbsp[7], rbsp[8], rbsp[9], rbsp[10], rbsp[11], rbsp[12], rbsp[13],
-       rbsp[14], rbsp[15]);
-
   if (old_max_sublayers == 0) {
     size_t out_size = hevc_add_emulation_prevention(dst, std::span{rbsp, rbsp_size});
     return out_size;
   }
 
   size_t rbsp_out_alloc = rbsp_size + rbsp_size / 2 + 64;
-  std::vector<uint8_t> rbsp_out_buf(rbsp_out_alloc);
+  thread_local static std::vector<uint8_t> rbsp_out_buf;
+  rbsp_out_buf.assign(rbsp_out_alloc, 0);
   uint8_t *rbsp_out = rbsp_out_buf.data();
-  memset(rbsp_out, 0, rbsp_out_alloc);
 
   memcpy(rbsp_out, rbsp, 6);
   size_t out_byte = 6;
@@ -467,18 +457,6 @@ static size_t StripHEVCNALTemporalLayer(uint8_t *dst,
   // | 0x09: set bit 3 (vps_temporal_id_nesting_flag=1) and bit 0 (vps_reserved_0xffff LSB=1)
   // This sets bits 6-4 (vps_max_sub_layers_minus1) to 0
   rbsp_out[3] = (rbsp_out[3] & 0x8F) | 0x09;
-
-  blog(LOG_INFO,
-       "[QSV VPS] OUT old_max_sublayers=%d, byte3=0x%02x, "
-       "out_rbsp_size=%zu",
-       old_max_sublayers, rbsp_out[3], out_byte);
-  blog(LOG_INFO,
-       "[QSV VPS] OUT rbsp[0-15]: %02x %02x %02x %02x %02x %02x %02x %02x "
-       "%02x %02x %02x %02x %02x %02x %02x %02x",
-       rbsp_out[0], rbsp_out[1], rbsp_out[2], rbsp_out[3], rbsp_out[4],
-       rbsp_out[5], rbsp_out[6], rbsp_out[7], rbsp_out[8], rbsp_out[9],
-       rbsp_out[10], rbsp_out[11], rbsp_out[12], rbsp_out[13], rbsp_out[14],
-       rbsp_out[15]);
 
   // After profile_tier_level, the remaining RBSP data starts with
   // vps_sub_layer_ordering_info_present_flag, followed by
@@ -615,11 +593,11 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
       // when VPS contains vps_max_sub_layers_minus1 > 0 (temporal layers 2-4)
       size_t bitstream_size = Bitstream->DataLength;
       size_t tmp_alloc = bitstream_size + bitstream_size / 2 + 256;
-      std::vector<uint8_t> tmp_bitstream;
-      tmp_bitstream.resize(tmp_alloc);
+      thread_local static std::vector<uint8_t> tmp_bitstream;
+      tmp_bitstream.assign(tmp_alloc, 0);
       memcpy(tmp_bitstream.data(), Bitstream->Data + Bitstream->DataOffset,
              bitstream_size);
-      std::vector<uint8_t> hevc_scratch;
+      thread_local static std::vector<uint8_t> hevc_scratch;
       StripHEVCExtraDataTemporalLayer(tmp_bitstream.data(), &bitstream_size,
                                        &hevc_scratch);
 
