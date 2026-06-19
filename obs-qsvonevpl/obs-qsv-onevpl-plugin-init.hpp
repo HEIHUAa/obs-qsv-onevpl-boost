@@ -76,7 +76,6 @@ struct plugin_context {
 #define TEXT_HEVC_SAO obs_module_text("SampleAdaptiveOffset")
 #define TEXT_HEVC_GPB obs_module_text("GPB")
 #define TEXT_TUNE_QUALITY_MODE obs_module_text("TuneQualityMode")
-#define TEXT_EXT_BRC obs_module_text("ExtBRC")
 #define TEXT_ENC_TOOLS obs_module_text("EncTools")
 #define TEXT_ENC_TOOLS_SCENE_CHANGE obs_module_text("EncToolsSceneChange")
 #define TEXT_ENC_TOOLS_ADAPTIVE_REF_P obs_module_text("EncToolsAdaptiveRefP")
@@ -154,7 +153,6 @@ struct plugin_context {
 #define TEXT_TRANSFORM_SKIP_DESC obs_module_text("TransformSkipDesc")
 #define TEXT_FADE_DETECTION_DESC obs_module_text("FadeDetectionDesc")
 
-#define TEXT_EXT_BRC_DESC obs_module_text("ExtBRCDesc")
 #define TEXT_GPU_NUMBER_DESC obs_module_text("GPUNumberDesc")
 
 #define TEXT_AV1_CDEF obs_module_text("AV1CDEF")
@@ -203,7 +201,6 @@ extern const char *const qsv_params_weighted_pred_options[];
 extern const char *const qsv_params_condition_vpp[];
 extern const char *const qsv_params_condition_scaling_mode[];
 extern const char *const qsv_params_condition_image_stab_mode[];
-extern const char *const qsv_params_condition_extbrc[];
 extern const char *const qsv_params_condition_screen_content_tools[];
 extern const char *const qsv_params_condition_intra_ref_encoding[];
 extern const char *const qsv_params_condition_mv_cost_scaling[];

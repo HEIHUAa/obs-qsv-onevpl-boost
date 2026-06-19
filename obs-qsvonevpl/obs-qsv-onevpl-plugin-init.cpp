@@ -40,7 +40,6 @@ const char *const qsv_params_condition_scaling_mode[] = {
     "LOWPOWER | NEAREST NEIGHBOR", "LOWPOWER | ADVANCED", "AUTO", 0};
 const char *const qsv_params_condition_image_stab_mode[] = {
     "OFF", "UPSCALE", "BOXING", "AUTO", 0};
-const char *const qsv_params_condition_extbrc[] = {"ON", "OFF", 0};
 const char *const qsv_params_condition_screen_content_tools[] = {
     "AUTO", "OFF", "ON", 0};
 const char *const qsv_params_condition_intra_ref_encoding[] = {
@@ -244,7 +243,6 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(Settings, "lookahead", "OFF");
   obs_data_set_default_string(Settings, "lookahead_latency", "NORMAL");
   obs_data_set_default_string(Settings, "lookahead_ds", "MEDIUM");
-  obs_data_set_default_string(Settings, "extbrc", "OFF");
   obs_data_set_default_string(Settings, "enctools", "OFF");
   obs_data_set_default_string(Settings, "enc_tools_scene_change", "ON");
   obs_data_set_default_string(Settings, "enc_tools_adaptive_ref_p", "ON");
@@ -355,9 +353,10 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   Prop = obs_properties_get(Properties, "icq_quality");
   obs_property_set_visible(Prop, bVisible);
 
-  bool bExtBRCVisible = (bIsCBR || bIsVBR || bIsAVBR || bIsVCM || bIsQVBR);
+  // EncTools visibility: CBR/VBR/AVBR/VCM/QVBR modes with feature support
+  bool bEncToolsVisible = (bIsCBR || bIsVBR || bIsAVBR || bIsVCM || bIsQVBR);
   Prop = obs_properties_get(Properties, "enctools");
-  bVisible = bExtBRCVisible;
+  bVisible = bEncToolsVisible;
   if (bVisible) bVisible = IsFeatureSupported("enc_tools");
   obs_property_set_visible(Prop, bVisible);
 
@@ -374,12 +373,6 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   for (const char **opt = enc_tools_sub_opts; *opt; opt++) {
     Prop = obs_properties_get(Properties, *opt);
     if (Prop) obs_property_set_visible(Prop, bVisibleEnctools);
-  }
-
-  Prop = obs_properties_get(Properties, "extbrc");
-  obs_property_set_visible(Prop, bExtBRCVisible);
-  if (!bExtBRCVisible) {
-    obs_data_set_string(Settings, "extbrc", "OFF");
   }
 
   bVisible = (bIsCBR || bIsVBR || bIsAVBR || bIsVCM || bIsQVBR) &&
@@ -755,13 +748,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
   obs_property_set_long_description(
       Prop, TEXT_MBBRC_DESC);
-
-  Prop = obs_properties_add_list(Props, "extbrc", TEXT_EXT_BRC,
-                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  obs_property_set_long_description(
-      Prop, TEXT_EXT_BRC_DESC);
-  AddStrings(Prop, qsv_params_condition_extbrc);
-  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
   Prop = obs_properties_add_list(Props, "enctools", TEXT_ENC_TOOLS,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -1312,7 +1298,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   const char *VPPMCTFData = obs_data_get_string(Settings, "vpp_mctf");
   int VPPMCTFStrengthData = static_cast<int>(obs_data_get_int(Settings, "vpp_mctf_strength"));
   const char *PPyramidData = obs_data_get_string(Settings, "p_pyramid");
-  const char *ExtBRCData = obs_data_get_string(Settings, "extbrc");
   const char *EncToolsData = obs_data_get_string(Settings, "enctools");
   const char *IntraRefEncodingData =
       obs_data_get_string(Settings, "intra_ref_encoding");
@@ -1562,14 +1547,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   ParseOptionalBool(HRDConformanceData, Context->EncoderParams.HRDConformance);
 
   ParseOptionalBool(MBBRCData, Context->EncoderParams.MBBRC);
-
-  if (std::strcmp(ExtBRCData, "ON") == 0) {
-    Context->EncoderParams.ExtBRC = 1;
-  }
-  if (std::strcmp(RateControlData, "CQP") == 0 ||
-      std::strcmp(RateControlData, "ICQ") == 0) {
-    Context->EncoderParams.ExtBRC = 0;
-  }
 
   static constexpr std::pair<std::string_view, bool> kEncToolsMap[] = {
     {"ON", true},

@@ -1365,13 +1365,9 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
     // ExtBRC (external BRC callbacks) is disabled: the manual CPU BRC
     // implementation was removed because the driver's built-in BRC is generally
-    // better tuned. Force OFF regardless of user setting to avoid attaching
-    // callbacks that don't exist anymore.
+    // better tuned. Force OFF — no UI option exists anymore, but CustomCodingOptions
+    // may still try to set it, so we also re-force OFF after parsing those.
     CO2Params->ExtBRC = MFX_CODINGOPTION_OFF;
-    if (InputParams->ExtBRC == true) {
-      info("\tExtBRC requested ON but forced OFF (manual BRC removed, "
-           "using driver built-in BRC)");
-    }
 
     if (InputParams->IntraRefEncoding == true) {
 
@@ -2527,8 +2523,6 @@ void QSVEncoder::LogActualParams() {
 
   auto *CO2 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
   if (CO2) {
-    info("\tExtBRC set: %s",
-         GetCodingOptStatus(CO2->ExtBRC).c_str());
     info("\tLookaheadDepth set to: %d",
          CO2->LookAheadDepth);
     info("\tMBBRC set: %s",

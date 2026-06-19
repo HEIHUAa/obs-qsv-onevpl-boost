@@ -143,10 +143,6 @@ bool UpdateEncoderParams(void *Data, obs_data_t *Params) {
         static_cast<mfxU16>(obs_data_get_int(Params, "icq_quality"));
   }
 
-  if (isCQP || isICQ) {
-    Context->EncoderParams.ExtBRC = 0;
-  }
-
   if (Context->EncoderPTR->UpdateParams(&Context->EncoderParams)) {
     mfxStatus Status = Context->EncoderPTR->ReconfigureEncoder();
 
