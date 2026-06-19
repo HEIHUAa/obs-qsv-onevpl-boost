@@ -1212,25 +1212,27 @@ static mfxStatus MFX_CDECL ExtBRC_Update(mfxHDL pthis,
   ctx->totalEncodedBytes += encodedSize;
   ctx->encodedFrames++;
 
+  // bufferFullness += bitsPerFrame - encodedSize
   mfxU32 bitsPerFrame = static_cast<mfxU32>(
       ctx->targetBitrate / (ctx->frameRate > 0 ? ctx->frameRate : 30.0) / 8);
-  if (ctx->bufferFullness + encodedSize > bitsPerFrame) {
-    ctx->bufferFullness = ctx->bufferFullness + encodedSize - bitsPerFrame;
+  if (ctx->bufferFullness + bitsPerFrame > encodedSize) {
+    ctx->bufferFullness = ctx->bufferFullness + bitsPerFrame - encodedSize;
   } else {
     ctx->bufferFullness = 0;
+  }
+  if (ctx->bufferFullness > ctx->maxBufferFullness) {
+    ctx->bufferFullness = ctx->maxBufferFullness;
   }
 
   if (ctx->targetFrameSize > 0 && encodedSize > 0) {
     mfxF64 ratio = static_cast<mfxF64>(encodedSize) / ctx->targetFrameSize;
     mfxI32 qpDelta = 0;
 
-    if (ratio > 1.5)       qpDelta = 4;
-    else if (ratio > 1.3)  qpDelta = 3;
-    else if (ratio > 1.15) qpDelta = 2;
-    else if (ratio > 1.05) qpDelta = 1;
-    else if (ratio < 0.5)  qpDelta = -3;
-    else if (ratio < 0.7)  qpDelta = -2;
-    else if (ratio < 0.85) qpDelta = -1;
+    if (ratio > 2.0)       qpDelta = 3;
+    else if (ratio > 1.5)  qpDelta = 2;
+    else if (ratio > 1.2)  qpDelta = 1;
+    else if (ratio < 0.3)  qpDelta = -2;
+    else if (ratio < 0.5)  qpDelta = -1;
 
     if (ctx->rateControlMethod == MFX_RATECONTROL_VBR ||
         ctx->rateControlMethod == MFX_RATECONTROL_QVBR) {
@@ -1241,17 +1243,29 @@ static mfxStatus MFX_CDECL ExtBRC_Update(mfxHDL pthis,
                                  ctx->minQP, ctx->maxQP);
   }
 
-  status->BRCStatus = MFX_BRC_OK;
+  if (ctx->targetFrameSize > 0 && encodedSize > 0) {
+    mfxF64 ratio = static_cast<mfxF64>(encodedSize) / ctx->targetFrameSize;
+    if (ratio > 1.5) {
+      status->BRCStatus = MFX_BRC_BIG_FRAME;
+    } else if (ratio < 0.3) {
+      status->BRCStatus = MFX_BRC_SMALL_FRAME;
+    } else {
+      status->BRCStatus = MFX_BRC_OK;
+    }
+  } else {
+    status->BRCStatus = MFX_BRC_OK;
+  }
   status->MinFrameSize = 0;
 
   if ((ctx->encodedFrames % 60) == 0) {
     info("ExtBRC_Update: frame=%u encodedSize=%u targetSize=%u "
-         "ratio=%.2f QP=%d->%d bufFullness=%u",
+         "ratio=%.2f QP=%d->%d bufFullness=%u/%u BRCStatus=%u",
          ctx->encodedFrames, encodedSize, ctx->targetFrameSize,
          ctx->targetFrameSize > 0
              ? static_cast<double>(encodedSize) / ctx->targetFrameSize
              : 0.0,
-         ctx->lastQP, ctx->currentQP, ctx->bufferFullness);
+         ctx->lastQP, ctx->currentQP, ctx->bufferFullness,
+         ctx->maxBufferFullness, status->BRCStatus);
   }
 
   return MFX_ERR_NONE;
