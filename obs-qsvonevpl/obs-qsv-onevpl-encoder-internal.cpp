@@ -2960,9 +2960,20 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
     // remain in the task pool and cause MFX_ERR_NULL_PTR when synced later.
     QSVTaskPool[TaskID].SyncPoint = nullptr;
 
+    // DEBUG: log all pointers to diagnose MFX_ERR_NULL_PTR (-2)
+    debug("[DBG] EncodeFrameAsync[%d] Ctrl=0x%p Surface=0x%p "
+          "Bitstream=0x%p SyncPoint=0x%p QSVEncode=0x%p",
+          TaskID, (void *)Ctrl, (void *)Surface,
+          (void *)&QSVTaskPool[TaskID].Bitstream,
+          (void *)&QSVTaskPool[TaskID].SyncPoint,
+          (void *)QSVEncode.get());
+
     mfxStatus Status = QSVEncode->EncodeFrameAsync(
         Ctrl, Surface, &QSVTaskPool[TaskID].Bitstream,
         &QSVTaskPool[TaskID].SyncPoint);
+
+    debug("[DBG] EncodeFrameAsync[%d] returned %d (SyncPoint=0x%p)",
+          TaskID, Status, (void *)QSVTaskPool[TaskID].SyncPoint);
 
     if (MFX_ERR_NONE == Status) [[likely]] {
       // Some drivers (especially with ExtBRC / EncTools) may set the sync
