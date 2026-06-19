@@ -140,6 +140,9 @@ private:
   int QSVSyncTaskID{};
   mutable std::mutex QSVTaskPoolMutex{};
 
+  struct ExtBRCContext;
+  std::unique_ptr<ExtBRCContext> QSVExtBRCContext{};
+
   mfxVideoParam QSVResetParams{};
   bool QSVResetParamsChanged{false};
 

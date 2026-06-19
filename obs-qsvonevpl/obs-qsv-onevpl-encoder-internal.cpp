@@ -13,6 +13,23 @@
 
 constexpr mfxU32 BRC_MAX_KBPS_LIMIT = 65535;
 
+struct ExtBRCContext {
+  mfxU16 rateControlMethod{};
+  mfxU32 targetBitrate{};      // bps
+  mfxU32 maxBitrate{};         // bps
+  mfxF64 frameRate{};          // fps
+  mfxU32 targetFrameSize{};    // bytes
+  mfxI32 currentQP{};
+  mfxI32 minQP{10};
+  mfxI32 maxQP{48};
+  mfxU32 bufferFullness{};     // bytes
+  mfxU32 maxBufferFullness{};  // bytes
+  mfxU32 encodedFrames{};
+  mfxU64 totalEncodedBytes{};
+  mfxI32 lastQP{};
+  mfxU32 lastFrameSize{};
+};
+
 QSVEncoder::~QSVEncoder() {
   if (QSVEncode || QSVProcessing) {
     ClearData();
@@ -1098,6 +1115,143 @@ void QSVEncoder::ParseCustomCodingOptions(const std::string &Options) {
   }
 }
 
+static mfxStatus MFX_CDECL ExtBRC_Init(mfxHDL pthis, mfxVideoParam *par) {
+  if (!pthis || !par) return MFX_ERR_NULL_PTR;
+  auto *ctx = static_cast<ExtBRCContext *>(pthis);
+
+  ctx->rateControlMethod = par->mfx.RateControlMethod;
+  ctx->targetBitrate = static_cast<mfxU32>(par->mfx.TargetKbps) * 1000;
+  ctx->maxBitrate = static_cast<mfxU32>(par->mfx.MaxKbps) * 1000;
+  if (ctx->maxBitrate == 0) ctx->maxBitrate = ctx->targetBitrate;
+
+  mfxF64 fpsN = static_cast<mfxF64>(par->mfx.FrameInfo.FrameRateExtN);
+  mfxF64 fpsD = static_cast<mfxF64>(par->mfx.FrameInfo.FrameRateExtD);
+  ctx->frameRate = (fpsD > 0) ? fpsN / fpsD : 30.0;
+
+  if (ctx->frameRate > 0) {
+    ctx->targetFrameSize =
+        static_cast<mfxU32>(ctx->targetBitrate / (ctx->frameRate * 8));
+  } else {
+    ctx->targetFrameSize = ctx->targetBitrate / (30 * 8);
+  }
+
+  ctx->maxBufferFullness =
+      static_cast<mfxU32>(par->mfx.BufferSizeInKB) * 1000;
+  ctx->bufferFullness =
+      static_cast<mfxU32>(par->mfx.InitialDelayInKB) * 1000;
+  if (ctx->maxBufferFullness == 0) {
+    ctx->maxBufferFullness = ctx->targetBitrate;  // ~1 second buffer
+    ctx->bufferFullness = ctx->maxBufferFullness / 2;
+  }
+
+  if (ctx->targetBitrate > 0) {
+    mfxF64 mbps = ctx->targetBitrate / 1000000.0;
+    if (mbps > 8.0)       ctx->currentQP = 20;
+    else if (mbps > 4.0)  ctx->currentQP = 24;
+    else if (mbps > 2.0)  ctx->currentQP = 28;
+    else if (mbps > 1.0)  ctx->currentQP = 32;
+    else                  ctx->currentQP = 36;
+  } else {
+    ctx->currentQP = 26;
+  }
+
+  ctx->encodedFrames = 0;
+  ctx->totalEncodedBytes = 0;
+  ctx->lastQP = ctx->currentQP;
+  ctx->lastFrameSize = 0;
+
+  return MFX_ERR_NONE;
+}
+
+static mfxStatus MFX_CDECL ExtBRC_Reset(mfxHDL pthis, mfxVideoParam *par) {
+  return ExtBRC_Init(pthis, par);
+}
+
+static mfxStatus MFX_CDECL ExtBRC_Close(mfxHDL pthis) {
+  (void)pthis;
+  return MFX_ERR_NONE;
+}
+
+static mfxStatus MFX_CDECL ExtBRC_GetFrameCtrl(mfxHDL pthis,
+                                                mfxBRCFrameParam *par,
+                                                mfxBRCFrameCtrl *ctrl) {
+  if (!pthis || !par || !ctrl) return MFX_ERR_NULL_PTR;
+  auto *ctx = static_cast<ExtBRCContext *>(pthis);
+
+  mfxI32 qp = ctx->currentQP;
+
+  if (par->SceneChange) {
+    qp = std::min(qp + 4, ctx->maxQP);
+  }
+
+  if (par->FrameType & MFX_FRAMETYPE_I) {
+    qp = std::max(qp - 2, ctx->minQP);
+  } else if (par->FrameType & MFX_FRAMETYPE_B) {
+    qp = std::min(qp + 1, ctx->maxQP);
+  }
+
+  if (ctx->maxBufferFullness > 0) {
+    mfxF64 bufRatio = static_cast<mfxF64>(ctx->bufferFullness) /
+                      ctx->maxBufferFullness;
+    if (bufRatio > 0.85) {
+      qp = std::min(qp + 2, ctx->maxQP);
+    } else if (bufRatio < 0.15) {
+      qp = std::max(qp - 2, ctx->minQP);
+    }
+  }
+
+  ctrl->QpY = qp;
+  ctx->lastQP = qp;
+
+  return MFX_ERR_NONE;
+}
+
+static mfxStatus MFX_CDECL ExtBRC_Update(mfxHDL pthis,
+                                          mfxBRCFrameParam *par,
+                                          mfxBRCFrameCtrl *ctrl,
+                                          mfxBRCFrameStatus *status) {
+  if (!pthis || !par || !ctrl || !status) return MFX_ERR_NULL_PTR;
+  auto *ctx = static_cast<ExtBRCContext *>(pthis);
+
+  mfxU32 encodedSize = par->CodedFrameSize;
+  ctx->lastFrameSize = encodedSize;
+  ctx->totalEncodedBytes += encodedSize;
+  ctx->encodedFrames++;
+
+  mfxU32 bitsPerFrame = static_cast<mfxU32>(
+      ctx->targetBitrate / (ctx->frameRate > 0 ? ctx->frameRate : 30.0) / 8);
+  if (ctx->bufferFullness + encodedSize > bitsPerFrame) {
+    ctx->bufferFullness = ctx->bufferFullness + encodedSize - bitsPerFrame;
+  } else {
+    ctx->bufferFullness = 0;
+  }
+
+  if (ctx->targetFrameSize > 0 && encodedSize > 0) {
+    mfxF64 ratio = static_cast<mfxF64>(encodedSize) / ctx->targetFrameSize;
+    mfxI32 qpDelta = 0;
+
+    if (ratio > 1.5)       qpDelta = 4;
+    else if (ratio > 1.3)  qpDelta = 3;
+    else if (ratio > 1.15) qpDelta = 2;
+    else if (ratio > 1.05) qpDelta = 1;
+    else if (ratio < 0.5)  qpDelta = -3;
+    else if (ratio < 0.7)  qpDelta = -2;
+    else if (ratio < 0.85) qpDelta = -1;
+
+    if (ctx->rateControlMethod == MFX_RATECONTROL_VBR ||
+        ctx->rateControlMethod == MFX_RATECONTROL_QVBR) {
+      qpDelta = qpDelta * 3 / 4;
+    }
+
+    ctx->currentQP = std::clamp(ctx->currentQP + qpDelta,
+                                 ctx->minQP, ctx->maxQP);
+  }
+
+  status->BRCStatus = MFX_BRC_OK;
+  status->MinFrameSize = 0;
+  return MFX_ERR_NONE;
+}
+
 mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
                                        enum codec_enum Codec) {
   switch (Codec) {
@@ -1353,6 +1507,20 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CO2Params->EnableMAD = MFX_CODINGOPTION_ON;
 
     CO2Params->ExtBRC = GetCodingOpt(InputParams->ExtBRC);
+
+    if (CO2Params->ExtBRC == MFX_CODINGOPTION_ON) {
+      QSVExtBRCContext = std::make_unique<ExtBRCContext>();
+      auto *pBRC = QSVEncodeParams.AddExtBuffer<mfxExtBRC>();
+      pBRC->Header.BufferId = MFX_EXTBUFF_BRC;
+      pBRC->Header.BufferSz = sizeof(mfxExtBRC);
+      pBRC->pthis = static_cast<mfxHDL>(QSVExtBRCContext.get());
+      pBRC->Init = ExtBRC_Init;
+      pBRC->Reset = ExtBRC_Reset;
+      pBRC->Close = ExtBRC_Close;
+      pBRC->GetFrameCtrl = ExtBRC_GetFrameCtrl;
+      pBRC->Update = ExtBRC_Update;
+      info("\tExtBRC callbacks attached (mfxExtBRC)");
+    }
 
     if (InputParams->IntraRefEncoding == true) {
 
