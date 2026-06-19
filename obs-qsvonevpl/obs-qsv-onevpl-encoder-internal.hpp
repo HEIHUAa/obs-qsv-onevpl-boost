@@ -4,24 +4,6 @@
 #include "helpers/ext_buf_manager.hpp"
 #include "helpers/qsv_params.hpp"
 
-// External BRC 上下文 (ExtBRC 启用时使用)
-struct ExtBRCContext {
-  mfxU16 rateControlMethod{};
-  mfxU32 targetBitrate{};      // bps
-  mfxU32 maxBitrate{};         // bps
-  mfxF64 frameRate{};          // fps
-  mfxU32 targetFrameSize{};    // bytes
-  mfxI32 currentQP{};
-  mfxI32 minQP{10};
-  mfxI32 maxQP{48};
-  mfxU32 bufferFullness{};     // bytes
-  mfxU32 maxBufferFullness{};  // bytes
-  mfxU32 encodedFrames{};
-  mfxU64 totalEncodedBytes{};
-  mfxI32 lastQP{};
-  mfxU32 lastFrameSize{};
-};
-
 class QSVEncoder {
 public:
   QSVEncoder() = default;
@@ -157,8 +139,6 @@ private:
   std::vector<struct Task> QSVTaskPool;
   int QSVSyncTaskID{};
   mutable std::mutex QSVTaskPoolMutex{};
-
-  std::unique_ptr<ExtBRCContext> QSVExtBRCContext{};
 
   mfxVideoParam QSVResetParams{};
   bool QSVResetParamsChanged{false};

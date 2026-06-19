@@ -244,6 +244,17 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
         ParseCustomCodingOptions(InputParams->CustomCodingOptions);
       }
 
+      // Re-force ExtBRC OFF after CustomCodingOptions, in case the user
+      // tried to enable it via CO2.ExtBRC=1. Manual BRC is removed, so
+      // ExtBRC must stay OFF to avoid NULL callback errors.
+      {
+        auto *CO2Force = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
+        if (CO2Force && CO2Force->ExtBRC == MFX_CODINGOPTION_ON) {
+          CO2Force->ExtBRC = MFX_CODINGOPTION_OFF;
+          warn("\tExtBRC forced OFF after CustomCodingOptions (manual BRC removed)");
+        }
+      }
+
       Status = QSVEncode->Init(&QSVEncodeParams);
       info("\tMFXVideoENCODE_Init%s status: %d", log_prefix, Status);
     }
@@ -1098,189 +1109,6 @@ void QSVEncoder::ParseCustomCodingOptions(const std::string &Options) {
   }
 }
 
-static mfxStatus MFX_CDECL ExtBRC_Init(mfxHDL pthis, mfxVideoParam *par) {
-  if (!pthis || !par) return MFX_ERR_NULL_PTR;
-  auto *ctx = static_cast<ExtBRCContext *>(pthis);
-
-  ctx->rateControlMethod = par->mfx.RateControlMethod;
-  ctx->targetBitrate = static_cast<mfxU32>(par->mfx.TargetKbps) * 1000;
-  ctx->maxBitrate = static_cast<mfxU32>(par->mfx.MaxKbps) * 1000;
-  if (ctx->maxBitrate == 0) ctx->maxBitrate = ctx->targetBitrate;
-
-  mfxF64 fpsN = static_cast<mfxF64>(par->mfx.FrameInfo.FrameRateExtN);
-  mfxF64 fpsD = static_cast<mfxF64>(par->mfx.FrameInfo.FrameRateExtD);
-  ctx->frameRate = (fpsD > 0) ? fpsN / fpsD : 30.0;
-
-  if (ctx->frameRate > 0) {
-    ctx->targetFrameSize =
-        static_cast<mfxU32>(ctx->targetBitrate / (ctx->frameRate * 8));
-  } else {
-    ctx->targetFrameSize = ctx->targetBitrate / (30 * 8);
-  }
-
-  ctx->maxBufferFullness =
-      static_cast<mfxU32>(par->mfx.BufferSizeInKB) * 1000;
-  ctx->bufferFullness =
-      static_cast<mfxU32>(par->mfx.InitialDelayInKB) * 1000;
-  if (ctx->maxBufferFullness == 0) {
-    ctx->maxBufferFullness = ctx->targetBitrate;  // ~1 second buffer
-    ctx->bufferFullness = ctx->maxBufferFullness / 2;
-  }
-
-  if (ctx->targetBitrate > 0) {
-    mfxF64 mbps = ctx->targetBitrate / 1000000.0;
-    if (mbps > 8.0)       ctx->currentQP = 20;
-    else if (mbps > 4.0)  ctx->currentQP = 24;
-    else if (mbps > 2.0)  ctx->currentQP = 28;
-    else if (mbps > 1.0)  ctx->currentQP = 32;
-    else                  ctx->currentQP = 36;
-  } else {
-    ctx->currentQP = 26;
-  }
-
-  ctx->encodedFrames = 0;
-  ctx->totalEncodedBytes = 0;
-  ctx->lastQP = ctx->currentQP;
-  ctx->lastFrameSize = 0;
-
-  info("ExtBRC_Init: rc=%u target=%u bps max=%u bps fps=%.1f "
-       "targetFrameSize=%u initialQP=%d bufMax=%u",
-       ctx->rateControlMethod, ctx->targetBitrate, ctx->maxBitrate,
-       ctx->frameRate, ctx->targetFrameSize, ctx->currentQP,
-       ctx->maxBufferFullness);
-
-  return MFX_ERR_NONE;
-}
-
-static mfxStatus MFX_CDECL ExtBRC_Reset(mfxHDL pthis, mfxVideoParam *par) {
-  return ExtBRC_Init(pthis, par);
-}
-
-static mfxStatus MFX_CDECL ExtBRC_Close(mfxHDL pthis) {
-  (void)pthis;
-  return MFX_ERR_NONE;
-}
-
-static mfxStatus MFX_CDECL ExtBRC_GetFrameCtrl(mfxHDL pthis,
-                                                mfxBRCFrameParam *par,
-                                                mfxBRCFrameCtrl *ctrl) {
-  if (!pthis || !par || !ctrl) return MFX_ERR_NULL_PTR;
-  auto *ctx = static_cast<ExtBRCContext *>(pthis);
-
-  // zero out ctrl to clear any stale fields from previous calls
-  memset(ctrl, 0, sizeof(*ctrl));
-
-  mfxI32 qp = ctx->currentQP;
-
-  // scene change: bump QP to prevent bitrate spike
-  if (par->SceneChange) {
-    qp = std::min(qp + 4, ctx->maxQP);
-  }
-
-  // frame type adjustment based on ICQ reference data:
-  // I-frame QP offset ~ -6, B-frame QP offset ~ +8 relative to P-frame.
-  // This matches the natural QP distribution observed in ICQ mode.
-  if (par->FrameType & MFX_FRAMETYPE_I) {
-    qp = std::max(qp - 6, ctx->minQP);
-  } else if (par->FrameType & MFX_FRAMETYPE_B) {
-    qp = std::min(qp + 8, ctx->maxQP);
-  }
-
-  // HRD buffer check
-  if (ctx->maxBufferFullness > 0) {
-    mfxF64 bufRatio = static_cast<mfxF64>(ctx->bufferFullness) /
-                      ctx->maxBufferFullness;
-    if (bufRatio > 0.85) {
-      qp = std::min(qp + 2, ctx->maxQP);
-    } else if (bufRatio < 0.15) {
-      qp = std::max(qp - 2, ctx->minQP);
-    }
-  }
-
-  ctrl->QpY = qp;
-
-  ctx->lastQP = qp;
-
-  if ((ctx->encodedFrames % 60) == 0) {
-    info("ExtBRC_GetFrameCtrl: frame=%u type=0x%x QP=%d sceneChange=%d",
-         ctx->encodedFrames, par->FrameType, qp, par->SceneChange);
-  }
-
-  return MFX_ERR_NONE;
-}
-
-static mfxStatus MFX_CDECL ExtBRC_Update(mfxHDL pthis,
-                                          mfxBRCFrameParam *par,
-                                          mfxBRCFrameCtrl *ctrl,
-                                          mfxBRCFrameStatus *status) {
-  if (!pthis || !par || !ctrl || !status) return MFX_ERR_NULL_PTR;
-  auto *ctx = static_cast<ExtBRCContext *>(pthis);
-
-  mfxU32 encodedSize = par->CodedFrameSize;
-  ctx->lastFrameSize = encodedSize;
-  ctx->totalEncodedBytes += encodedSize;
-  ctx->encodedFrames++;
-
-  // bufferFullness += bitsPerFrame - encodedSize
-  mfxU32 bitsPerFrame = static_cast<mfxU32>(
-      ctx->targetBitrate / (ctx->frameRate > 0 ? ctx->frameRate : 30.0) / 8);
-  if (ctx->bufferFullness + bitsPerFrame > encodedSize) {
-    ctx->bufferFullness = ctx->bufferFullness + bitsPerFrame - encodedSize;
-  } else {
-    ctx->bufferFullness = 0;
-  }
-  if (ctx->bufferFullness > ctx->maxBufferFullness) {
-    ctx->bufferFullness = ctx->maxBufferFullness;
-  }
-
-  if (ctx->targetFrameSize > 0 && encodedSize > 0) {
-    // Frame-type-aware target sizes matching the QP offsets in GetFrameCtrl.
-    // QP-6 for I-frames → ~4x larger frames; QP+8 for B-frames → ~0.4x smaller.
-    // This keeps ratio ≈ 1.0 under normal conditions, preventing QP oscillation.
-    mfxU32 adjustedTarget = ctx->targetFrameSize;
-    if (par->FrameType & MFX_FRAMETYPE_I) {
-      adjustedTarget = ctx->targetFrameSize * 4;
-    } else if (par->FrameType & MFX_FRAMETYPE_P) {
-      adjustedTarget = ctx->targetFrameSize * 3 / 2;
-    } else if (par->FrameType & MFX_FRAMETYPE_B) {
-      adjustedTarget = ctx->targetFrameSize * 2 / 5;  // 0.4x
-    }
-
-    mfxF64 ratio = static_cast<mfxF64>(encodedSize) / adjustedTarget;
-    mfxI32 qpDelta = 0;
-
-    if (ratio > 2.0)       qpDelta = 2;
-    else if (ratio > 1.5)  qpDelta = 1;
-    else if (ratio > 1.2)  qpDelta = 1;
-    else if (ratio < 0.3)  qpDelta = -2;
-    else if (ratio < 0.5)  qpDelta = -1;
-
-    if (ctx->rateControlMethod == MFX_RATECONTROL_VBR ||
-        ctx->rateControlMethod == MFX_RATECONTROL_QVBR) {
-      qpDelta = qpDelta * 3 / 4;
-    }
-
-    ctx->currentQP = std::clamp(ctx->currentQP + qpDelta,
-                                 ctx->minQP, ctx->maxQP);
-  }
-
-  status->BRCStatus = MFX_BRC_OK;
-  status->MinFrameSize = 0;
-
-  if ((ctx->encodedFrames % 60) == 0) {
-    info("ExtBRC_Update: frame=%u encodedSize=%u targetSize=%u "
-         "ratio=%.2f QP=%d->%d bufFullness=%u/%u",
-         ctx->encodedFrames, encodedSize, ctx->targetFrameSize,
-         ctx->targetFrameSize > 0
-             ? static_cast<double>(encodedSize) / ctx->targetFrameSize
-             : 0.0,
-         ctx->lastQP, ctx->currentQP, ctx->bufferFullness,
-         ctx->maxBufferFullness);
-  }
-
-  return MFX_ERR_NONE;
-}
-
 mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
                                        enum codec_enum Codec) {
   switch (Codec) {
@@ -1535,26 +1363,14 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CO2Params->DisableDeblockingIdc = 0; // enable deblocking filter
     CO2Params->EnableMAD = MFX_CODINGOPTION_ON;
 
-    CO2Params->ExtBRC = GetCodingOpt(InputParams->ExtBRC);
-
-    if (CO2Params->ExtBRC == MFX_CODINGOPTION_ON) {
-      QSVExtBRCContext = std::make_unique<ExtBRCContext>();
-      auto *pBRC = QSVEncodeParams.AddExtBuffer<mfxExtBRC>();
-      pBRC->Header.BufferId = MFX_EXTBUFF_BRC;
-      pBRC->Header.BufferSz = sizeof(mfxExtBRC);
-      pBRC->pthis = static_cast<mfxHDL>(QSVExtBRCContext.get());
-      pBRC->Init = ExtBRC_Init;
-      pBRC->Reset = ExtBRC_Reset;
-      pBRC->Close = ExtBRC_Close;
-      pBRC->GetFrameCtrl = ExtBRC_GetFrameCtrl;
-      pBRC->Update = ExtBRC_Update;
-      info("\tExtBRC callbacks attached (mfxExtBRC)");
-
-      // MBBRC (macroblock-level BRC) and EncTools AdaptiveMBQP do their own
-      // per-MB QP adjustment which overrides ExtBRC's frame-level QpY.
-      // Force them OFF so the driver actually uses ExtBRC's QpY value.
-      CO2Params->MBBRC = MFX_CODINGOPTION_OFF;
-      info("\tMBBRC forced OFF (conflicts with ExtBRC QpY)");
+    // ExtBRC (external BRC callbacks) is disabled: the manual CPU BRC
+    // implementation was removed because the driver's built-in BRC is generally
+    // better tuned. Force OFF regardless of user setting to avoid attaching
+    // callbacks that don't exist anymore.
+    CO2Params->ExtBRC = MFX_CODINGOPTION_OFF;
+    if (InputParams->ExtBRC == true) {
+      info("\tExtBRC requested ON but forced OFF (manual BRC removed, "
+           "using driver built-in BRC)");
     }
 
     if (InputParams->IntraRefEncoding == true) {
@@ -1589,11 +1405,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       }
     }
 
-    // MBBRC conflicts with ExtBRC — when ExtBRC is ON, MBBRC was already
-    // forced OFF above.  Don't overwrite it here.
-    if (CO2Params->ExtBRC != MFX_CODINGOPTION_ON) {
-      CO2Params->MBBRC = GetCodingOpt(InputParams->MBBRC);
-    }
+    CO2Params->MBBRC = GetCodingOpt(InputParams->MBBRC);
 
     if (InputParams->Trellis.has_value()) {
       switch (InputParams->Trellis.value()) {
@@ -1742,10 +1554,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CO3Params->AdaptiveRef = GetCodingOpt(InputParams->AdaptiveRef);
 
     CO3Params->AdaptiveLTR = GetCodingOpt(InputParams->AdaptiveLTR);
-    if (InputParams->ExtBRC == true &&
-        QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC) {
-      CO3Params->ExtBrcAdaptiveLTR = GetCodingOpt(InputParams->AdaptiveLTR);
-    }
 
     if (InputParams->WinBRC &&
         (QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_CBR ||
@@ -1818,19 +1626,10 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     EncToolsParams->AdaptivePyramidQuantP = GetCodingOpt(InputParams->EncToolsAdaptivePyramidQuantP);
     EncToolsParams->AdaptivePyramidQuantB = GetCodingOpt(InputParams->EncToolsAdaptivePyramidQuantB);
     EncToolsParams->AdaptiveQuantMatrices = GetCodingOpt(InputParams->AdaptiveCQM);
-    // AdaptiveMBQP does per-MB QP adjustment which overrides ExtBRC's QpY.
-    // Force OFF when ExtBRC is enabled.
-    {
-      auto *CO2Check = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
-      if (CO2Check && CO2Check->ExtBRC == MFX_CODINGOPTION_ON) {
-        EncToolsParams->AdaptiveMBQP = MFX_CODINGOPTION_OFF;
-        info("\tEncTools AdaptiveMBQP forced OFF (conflicts with ExtBRC QpY)");
-        EncToolsParams->BRC = MFX_CODINGOPTION_OFF;
-      } else {
-        EncToolsParams->AdaptiveMBQP = GetCodingOpt(InputParams->EncToolsAdaptiveMBQP);
-        EncToolsParams->BRC = GetCodingOpt(InputParams->EncToolsBRC);
-      }
-    }
+    // ExtBRC is always OFF now, so AdaptiveMBQP and BRC can freely use user
+    // settings — they work with the driver's built-in BRC, not ExtBRC.
+    EncToolsParams->AdaptiveMBQP = GetCodingOpt(InputParams->EncToolsAdaptiveMBQP);
+    EncToolsParams->BRC = GetCodingOpt(InputParams->EncToolsBRC);
     EncToolsParams->BRCBufferHints = GetCodingOpt(InputParams->EncToolsBRCBufferHints);
     EncToolsParams->SaliencyMapHint = GetCodingOpt(InputParams->EncToolsSaliencyMapHint);
   }
@@ -3181,7 +2980,7 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
     }
 
     // ── MFX_WRN_DEVICE_BUSY: always retry, regardless of sync point ──
-    // Some drivers (especially with ExtBRC / EncTools) may set the sync
+    // Some drivers (especially with EncTools) may set the sync
     // point pointer even when returning DEVICE_BUSY.  The old code
     // required !SyncPoint to enter the DEVICE_BUSY path, so a non-null
     // sync point would fall through to the "async submit" branch below
