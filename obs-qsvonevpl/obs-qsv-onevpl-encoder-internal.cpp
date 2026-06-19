@@ -1143,6 +1143,12 @@ static mfxStatus MFX_CDECL ExtBRC_Init(mfxHDL pthis, mfxVideoParam *par) {
   ctx->lastQP = ctx->currentQP;
   ctx->lastFrameSize = 0;
 
+  info("ExtBRC_Init: rc=%u target=%u bps max=%u bps fps=%.1f "
+       "targetFrameSize=%u initialQP=%d bufMax=%u",
+       ctx->rateControlMethod, ctx->targetBitrate, ctx->maxBitrate,
+       ctx->frameRate, ctx->targetFrameSize, ctx->currentQP,
+       ctx->maxBufferFullness);
+
   return MFX_ERR_NONE;
 }
 
@@ -1185,6 +1191,11 @@ static mfxStatus MFX_CDECL ExtBRC_GetFrameCtrl(mfxHDL pthis,
 
   ctrl->QpY = qp;
   ctx->lastQP = qp;
+
+  if ((ctx->encodedFrames % 60) == 0) {
+    info("ExtBRC_GetFrameCtrl: frame=%u type=0x%x QP=%d sceneChange=%d",
+         ctx->encodedFrames, par->FrameType, qp, par->SceneChange);
+  }
 
   return MFX_ERR_NONE;
 }
@@ -1232,6 +1243,17 @@ static mfxStatus MFX_CDECL ExtBRC_Update(mfxHDL pthis,
 
   status->BRCStatus = MFX_BRC_OK;
   status->MinFrameSize = 0;
+
+  if ((ctx->encodedFrames % 60) == 0) {
+    info("ExtBRC_Update: frame=%u encodedSize=%u targetSize=%u "
+         "ratio=%.2f QP=%d->%d bufFullness=%u",
+         ctx->encodedFrames, encodedSize, ctx->targetFrameSize,
+         ctx->targetFrameSize > 0
+             ? static_cast<double>(encodedSize) / ctx->targetFrameSize
+             : 0.0,
+         ctx->lastQP, ctx->currentQP, ctx->bufferFullness);
+  }
+
   return MFX_ERR_NONE;
 }
 
