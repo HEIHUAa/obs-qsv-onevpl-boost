@@ -13,23 +13,6 @@
 
 constexpr mfxU32 BRC_MAX_KBPS_LIMIT = 65535;
 
-struct ExtBRCContext {
-  mfxU16 rateControlMethod{};
-  mfxU32 targetBitrate{};      // bps
-  mfxU32 maxBitrate{};         // bps
-  mfxF64 frameRate{};          // fps
-  mfxU32 targetFrameSize{};    // bytes
-  mfxI32 currentQP{};
-  mfxI32 minQP{10};
-  mfxI32 maxQP{48};
-  mfxU32 bufferFullness{};     // bytes
-  mfxU32 maxBufferFullness{};  // bytes
-  mfxU32 encodedFrames{};
-  mfxU64 totalEncodedBytes{};
-  mfxI32 lastQP{};
-  mfxU32 lastFrameSize{};
-};
-
 QSVEncoder::~QSVEncoder() {
   if (QSVEncode || QSVProcessing) {
     ClearData();
