@@ -1167,18 +1167,24 @@ static mfxStatus MFX_CDECL ExtBRC_GetFrameCtrl(mfxHDL pthis,
   if (!pthis || !par || !ctrl) return MFX_ERR_NULL_PTR;
   auto *ctx = static_cast<ExtBRCContext *>(pthis);
 
+  // zero out ctrl to clear any stale fields from previous calls
+  memset(ctrl, 0, sizeof(*ctrl));
+
   mfxI32 qp = ctx->currentQP;
 
+  // scene change: bump QP to prevent bitrate spike
   if (par->SceneChange) {
     qp = std::min(qp + 4, ctx->maxQP);
   }
 
+  // frame type adjustment: I-frame lower QP for quality, B-frame higher
   if (par->FrameType & MFX_FRAMETYPE_I) {
     qp = std::max(qp - 2, ctx->minQP);
   } else if (par->FrameType & MFX_FRAMETYPE_B) {
     qp = std::min(qp + 1, ctx->maxQP);
   }
 
+  // HRD buffer check
   if (ctx->maxBufferFullness > 0) {
     mfxF64 bufRatio = static_cast<mfxF64>(ctx->bufferFullness) /
                       ctx->maxBufferFullness;
@@ -1190,6 +1196,18 @@ static mfxStatus MFX_CDECL ExtBRC_GetFrameCtrl(mfxHDL pthis,
   }
 
   ctrl->QpY = qp;
+
+  // repack feature: force driver to use QpY and limit frame size
+  // driver re-packs with QpY + DeltaQP[i] if frame exceeds MaxFrameSize
+  if (ctx->targetFrameSize > 0) {
+    ctrl->MaxFrameSize = ctx->targetFrameSize * 2;
+    ctrl->MaxNumRepak  = 4;
+    ctrl->DeltaQP[0]   = 2;
+    ctrl->DeltaQP[1]   = 2;
+    ctrl->DeltaQP[2]   = 2;
+    ctrl->DeltaQP[3]   = 2;
+  }
+
   ctx->lastQP = qp;
 
   if ((ctx->encodedFrames % 60) == 0) {
