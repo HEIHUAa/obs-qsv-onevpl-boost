@@ -1243,29 +1243,18 @@ static mfxStatus MFX_CDECL ExtBRC_Update(mfxHDL pthis,
                                  ctx->minQP, ctx->maxQP);
   }
 
-  if (ctx->targetFrameSize > 0 && encodedSize > 0) {
-    mfxF64 ratio = static_cast<mfxF64>(encodedSize) / ctx->targetFrameSize;
-    if (ratio > 1.5) {
-      status->BRCStatus = MFX_BRC_BIG_FRAME;
-    } else if (ratio < 0.3) {
-      status->BRCStatus = MFX_BRC_SMALL_FRAME;
-    } else {
-      status->BRCStatus = MFX_BRC_OK;
-    }
-  } else {
-    status->BRCStatus = MFX_BRC_OK;
-  }
+  status->BRCStatus = MFX_BRC_OK;
   status->MinFrameSize = 0;
 
   if ((ctx->encodedFrames % 60) == 0) {
     info("ExtBRC_Update: frame=%u encodedSize=%u targetSize=%u "
-         "ratio=%.2f QP=%d->%d bufFullness=%u/%u BRCStatus=%u",
+         "ratio=%.2f QP=%d->%d bufFullness=%u/%u",
          ctx->encodedFrames, encodedSize, ctx->targetFrameSize,
          ctx->targetFrameSize > 0
              ? static_cast<double>(encodedSize) / ctx->targetFrameSize
              : 0.0,
          ctx->lastQP, ctx->currentQP, ctx->bufferFullness,
-         ctx->maxBufferFullness, status->BRCStatus);
+         ctx->maxBufferFullness);
   }
 
   return MFX_ERR_NONE;
