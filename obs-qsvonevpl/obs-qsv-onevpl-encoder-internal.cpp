@@ -1197,17 +1197,6 @@ static mfxStatus MFX_CDECL ExtBRC_GetFrameCtrl(mfxHDL pthis,
 
   ctrl->QpY = qp;
 
-  // repack feature: force driver to use QpY and limit frame size
-  // driver re-packs with QpY + DeltaQP[i] if frame exceeds MaxFrameSize
-  if (ctx->targetFrameSize > 0) {
-    ctrl->MaxFrameSize = ctx->targetFrameSize * 2;
-    ctrl->MaxNumRepak  = 4;
-    ctrl->DeltaQP[0]   = 2;
-    ctrl->DeltaQP[1]   = 2;
-    ctrl->DeltaQP[2]   = 2;
-    ctrl->DeltaQP[3]   = 2;
-  }
-
   ctx->lastQP = qp;
 
   if ((ctx->encodedFrames % 60) == 0) {
@@ -1243,11 +1232,20 @@ static mfxStatus MFX_CDECL ExtBRC_Update(mfxHDL pthis,
   }
 
   if (ctx->targetFrameSize > 0 && encodedSize > 0) {
-    mfxF64 ratio = static_cast<mfxF64>(encodedSize) / ctx->targetFrameSize;
+    // I-frames are naturally 4-10x larger than the average frame size.
+    // Use a frame-type-aware target to avoid spiking QP on every keyframe.
+    mfxU32 adjustedTarget = ctx->targetFrameSize;
+    if (par->FrameType & MFX_FRAMETYPE_I) {
+      adjustedTarget = ctx->targetFrameSize * 4;
+    } else if (par->FrameType & MFX_FRAMETYPE_P) {
+      adjustedTarget = ctx->targetFrameSize * 3 / 2;
+    }
+
+    mfxF64 ratio = static_cast<mfxF64>(encodedSize) / adjustedTarget;
     mfxI32 qpDelta = 0;
 
-    if (ratio > 2.0)       qpDelta = 3;
-    else if (ratio > 1.5)  qpDelta = 2;
+    if (ratio > 2.0)       qpDelta = 2;
+    else if (ratio > 1.5)  qpDelta = 1;
     else if (ratio > 1.2)  qpDelta = 1;
     else if (ratio < 0.3)  qpDelta = -2;
     else if (ratio < 0.5)  qpDelta = -1;
@@ -1546,6 +1544,12 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       pBRC->GetFrameCtrl = ExtBRC_GetFrameCtrl;
       pBRC->Update = ExtBRC_Update;
       info("\tExtBRC callbacks attached (mfxExtBRC)");
+
+      // MBBRC (macroblock-level BRC) and EncTools AdaptiveMBQP do their own
+      // per-MB QP adjustment which overrides ExtBRC's frame-level QpY.
+      // Force them OFF so the driver actually uses ExtBRC's QpY value.
+      CO2Params->MBBRC = MFX_CODINGOPTION_OFF;
+      info("\tMBBRC forced OFF (conflicts with ExtBRC QpY)");
     }
 
     if (InputParams->IntraRefEncoding == true) {
@@ -1580,7 +1584,11 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       }
     }
 
-    CO2Params->MBBRC = GetCodingOpt(InputParams->MBBRC);
+    // MBBRC conflicts with ExtBRC — when ExtBRC is ON, MBBRC was already
+    // forced OFF above.  Don't overwrite it here.
+    if (CO2Params->ExtBRC != MFX_CODINGOPTION_ON) {
+      CO2Params->MBBRC = GetCodingOpt(InputParams->MBBRC);
+    }
 
     if (InputParams->Trellis.has_value()) {
       switch (InputParams->Trellis.value()) {
@@ -1805,9 +1813,20 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     EncToolsParams->AdaptivePyramidQuantP = GetCodingOpt(InputParams->EncToolsAdaptivePyramidQuantP);
     EncToolsParams->AdaptivePyramidQuantB = GetCodingOpt(InputParams->EncToolsAdaptivePyramidQuantB);
     EncToolsParams->AdaptiveQuantMatrices = GetCodingOpt(InputParams->AdaptiveCQM);
-    EncToolsParams->AdaptiveMBQP = GetCodingOpt(InputParams->EncToolsAdaptiveMBQP);
+    // AdaptiveMBQP does per-MB QP adjustment which overrides ExtBRC's QpY.
+    // Force OFF when ExtBRC is enabled.
+    {
+      auto *CO2Check = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
+      if (CO2Check && CO2Check->ExtBRC == MFX_CODINGOPTION_ON) {
+        EncToolsParams->AdaptiveMBQP = MFX_CODINGOPTION_OFF;
+        info("\tEncTools AdaptiveMBQP forced OFF (conflicts with ExtBRC QpY)");
+        EncToolsParams->BRC = MFX_CODINGOPTION_OFF;
+      } else {
+        EncToolsParams->AdaptiveMBQP = GetCodingOpt(InputParams->EncToolsAdaptiveMBQP);
+        EncToolsParams->BRC = GetCodingOpt(InputParams->EncToolsBRC);
+      }
+    }
     EncToolsParams->BRCBufferHints = GetCodingOpt(InputParams->EncToolsBRCBufferHints);
-    EncToolsParams->BRC = GetCodingOpt(InputParams->EncToolsBRC);
     EncToolsParams->SaliencyMapHint = GetCodingOpt(InputParams->EncToolsSaliencyMapHint);
   }
 
