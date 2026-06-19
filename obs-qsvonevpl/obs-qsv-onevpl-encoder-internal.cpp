@@ -744,9 +744,8 @@ static bool iequals(std::string_view a, std::string_view b) noexcept {
 static std::string FormatFieldValue([[maybe_unused]] std::string_view Field,
                                     mfxU64 Value,
                                     std::string_view RawVal) {
-    if (iequals(RawVal, "ON"))      return "ON";
-    if (iequals(RawVal, "OFF"))     return "OFF";
-    if (iequals(RawVal, "UNKNOWN")) return "UNKNOWN";
+    for (std::string_view keyword : {"ON", "OFF", "UNKNOWN"})
+        if (iequals(RawVal, keyword)) return std::string(keyword);
     return std::to_string(Value);
 }
 

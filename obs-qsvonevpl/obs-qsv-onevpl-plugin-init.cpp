@@ -1140,25 +1140,22 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 }
 
 // Helper: parse AV1 ON/OFF/auto three-state string to 1/0/2
+static constexpr std::pair<std::string_view, mfxU16> kAV1TernaryMap[] = {
+    {"ON",  1},
+    {"OFF", 0},
+};
 static inline mfxU16 ParseAV1Ternary(const char *Data) {
-  if (std::strcmp(Data, "ON") == 0)
-    return 1;
-  else if (std::strcmp(Data, "OFF") == 0)
-    return 0;
-  else
-    return 2;
+  return MapString(Data, kAV1TernaryMap).value_or(2);
 }
 
 // Helper: parse WeightedPred/BiPred four-state string to 0/1/2/3
+static constexpr std::pair<std::string_view, mfxU16> kWeightedPredModeMap[] = {
+    {"OFF",      0},
+    {"DEFAULT",  1},
+    {"EXPLICIT", 2},
+};
 static inline mfxU16 ParseWeightedPredMode(const char *Data) {
-  if (std::strcmp(Data, "OFF") == 0)
-    return 0;
-  else if (std::strcmp(Data, "DEFAULT") == 0)
-    return 1;
-  else if (std::strcmp(Data, "EXPLICIT") == 0)
-    return 2;
-  else // IMPLICIT
-    return 3;
+  return MapString(Data, kWeightedPredModeMap).value_or(3);
 }
 
 // Codec level lookup tables
@@ -1169,13 +1166,10 @@ struct LevelEntry {
   mfxU16 value;
 };
 
-static mfxU16 ParseCodecLevel(const char *LevelStr,
+static mfxU16 ParseCodecLevel(std::string_view LevelStr,
                                const LevelEntry *Table, size_t Count) {
-  for (size_t i = 0; i < Count; i++) {
-    if (std::strcmp(LevelStr, Table[i].name) == 0)
-      return Table[i].value;
-  }
-  return 0; // default to "auto" (0)
+  auto it = std::ranges::find(Table, Table + Count, LevelStr, &LevelEntry::name);
+  return it != Table + Count ? it->value : 0;
 }
 
 static const LevelEntry kAVCLevels[] = {
@@ -1572,11 +1566,10 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.ExtBRC = 0;
   }
 
-  if (std::strcmp(EncToolsData, "ON") == 0) {
-    Context->EncoderParams.EncTools = true;
-  } else {
-    Context->EncoderParams.EncTools = false;
-  }
+  static constexpr std::pair<std::string_view, bool> kEncToolsMap[] = {
+    {"ON", true},
+  };
+  Context->EncoderParams.EncTools = MapString(EncToolsData, kEncToolsMap).value_or(false);
 
   ParseOptionalBool(obs_data_get_string(Settings, "enc_tools_scene_change"),
                     Context->EncoderParams.EncToolsSceneChange);
@@ -1651,10 +1644,12 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.Lookahead = false;
   }
 
-  if (std::strcmp(IntraRefEncodingData, "ON") == 0) {
-    Context->EncoderParams.IntraRefEncoding = 1;
-  } else if (std::strcmp(IntraRefEncodingData, "OFF") == 0) {
-    Context->EncoderParams.IntraRefEncoding = 0;
+  static constexpr std::pair<std::string_view, int> kIntraRefEncodingMap[] = {
+    {"ON",  1},
+    {"OFF", 0},
+  };
+  if (auto v = MapString(IntraRefEncodingData, kIntraRefEncodingMap)) {
+    Context->EncoderParams.IntraRefEncoding = *v;
   }
 
   if (std::strcmp(IntraRefTypeData, "VERTICAL") == 0) {
@@ -1673,10 +1668,12 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
 
   ParseOptionalBool(AdaptiveRefData, Context->EncoderParams.AdaptiveRef);
 
-  if (std::strcmp(LowPowerData, "ON") == 0) {
-    Context->EncoderParams.Lowpower = true;
-  } else if (std::strcmp(LowPowerData, "OFF") == 0) {
-    Context->EncoderParams.Lowpower = false;
+  static constexpr std::pair<std::string_view, bool> kLowPowerMap[] = {
+    {"ON",  true},
+    {"OFF", false},
+  };
+  if (auto v = MapString(LowPowerData, kLowPowerMap)) {
+    Context->EncoderParams.Lowpower = *v;
   }
 
   ParseOptionalBool(RDOData, Context->EncoderParams.RDO);
@@ -1738,20 +1735,22 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.ContentInfo = *v;
   }
 
-  if (std::strcmp(TransformSkipData, "AUTO") == 0) {
-    Context->EncoderParams.TransformSkip = std::nullopt;
-  } else if (std::strcmp(TransformSkipData, "ON") == 0) {
-    Context->EncoderParams.TransformSkip = true;
-  } else if (std::strcmp(TransformSkipData, "OFF") == 0) {
-    Context->EncoderParams.TransformSkip = false;
+  static constexpr std::pair<std::string_view, std::optional<bool>> kTransformSkipMap[] = {
+    {"AUTO", std::nullopt},
+    {"ON",   true},
+    {"OFF",  false},
+  };
+  if (auto v = MapString(TransformSkipData, kTransformSkipMap)) {
+    Context->EncoderParams.TransformSkip = *v;
   }
 
-  if (std::strcmp(FadeDetectionData, "AUTO") == 0) {
-    Context->EncoderParams.FadeDetection = std::nullopt;
-  } else if (std::strcmp(FadeDetectionData, "ON") == 0) {
-    Context->EncoderParams.FadeDetection = true;
-  } else if (std::strcmp(FadeDetectionData, "OFF") == 0) {
-    Context->EncoderParams.FadeDetection = false;
+  static constexpr std::pair<std::string_view, std::optional<bool>> kFadeDetectionMap[] = {
+    {"AUTO", std::nullopt},
+    {"ON",   true},
+    {"OFF",  false},
+  };
+  if (auto v = MapString(FadeDetectionData, kFadeDetectionMap)) {
+    Context->EncoderParams.FadeDetection = *v;
   }
 
   // 13. RateControl
@@ -1819,16 +1818,19 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.VPPImageStabMode = *v;
   }
 
-  if (std::strcmp(DetailData, "ON") == 0) {
+  std::string_view DetailSV(DetailData);
+  if (DetailSV == "ON") {
     Context->EncoderParams.VPPDetail = DetailFactorData;
-  } else if (std::strcmp(DetailData, "OFF") == 0) {
+  } else if (DetailSV == "OFF") {
     Context->EncoderParams.VPPDetail = 0;
   }
 
-  if (std::strcmp(PercEncPrefilterData, "ON") == 0) {
-    Context->EncoderParams.PercEncPrefilter = 1;
-  } else if (std::strcmp(PercEncPrefilterData, "OFF") == 0) {
-    Context->EncoderParams.PercEncPrefilter = 0;
+  static constexpr std::pair<std::string_view, int> kPercEncPrefilterMap[] = {
+    {"ON",  1},
+    {"OFF", 0},
+  };
+  if (auto v = MapString(PercEncPrefilterData, kPercEncPrefilterMap)) {
+    Context->EncoderParams.PercEncPrefilter = *v;
   }
 
   Context->EncoderParams.AsyncDepth =
@@ -1891,12 +1893,13 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   Context->EncoderParams.QVBRQuality =
       static_cast<mfxU16>(obs_data_get_int(Settings, "qvbr_quality"));
 
-  if (std::strcmp(ScreenContentToolsData, "AUTO") == 0) {
-    Context->EncoderParams.ScreenContentTools = 0;
-  } else if (std::strcmp(ScreenContentToolsData, "OFF") == 0) {
-    Context->EncoderParams.ScreenContentTools = 1;
-  } else if (std::strcmp(ScreenContentToolsData, "ON") == 0) {
-    Context->EncoderParams.ScreenContentTools = 2;
+  static constexpr std::pair<std::string_view, int> kScreenContentToolsMap[] = {
+    {"AUTO", 0},
+    {"OFF",  1},
+    {"ON",   2},
+  };
+  if (auto v = MapString(ScreenContentToolsData, kScreenContentToolsMap)) {
+    Context->EncoderParams.ScreenContentTools = *v;
   }
 
   Context->EncoderParams.TemporalLayersNum =
