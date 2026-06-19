@@ -1177,11 +1177,13 @@ static mfxStatus MFX_CDECL ExtBRC_GetFrameCtrl(mfxHDL pthis,
     qp = std::min(qp + 4, ctx->maxQP);
   }
 
-  // frame type adjustment: I-frame lower QP for quality, B-frame higher
+  // frame type adjustment based on ICQ reference data:
+  // I-frame QP offset ~ -6, B-frame QP offset ~ +8 relative to P-frame.
+  // This matches the natural QP distribution observed in ICQ mode.
   if (par->FrameType & MFX_FRAMETYPE_I) {
-    qp = std::max(qp - 2, ctx->minQP);
+    qp = std::max(qp - 6, ctx->minQP);
   } else if (par->FrameType & MFX_FRAMETYPE_B) {
-    qp = std::min(qp + 1, ctx->maxQP);
+    qp = std::min(qp + 8, ctx->maxQP);
   }
 
   // HRD buffer check
@@ -1232,13 +1234,16 @@ static mfxStatus MFX_CDECL ExtBRC_Update(mfxHDL pthis,
   }
 
   if (ctx->targetFrameSize > 0 && encodedSize > 0) {
-    // I-frames are naturally 4-10x larger than the average frame size.
-    // Use a frame-type-aware target to avoid spiking QP on every keyframe.
+    // Frame-type-aware target sizes matching the QP offsets in GetFrameCtrl.
+    // QP-6 for I-frames → ~4x larger frames; QP+8 for B-frames → ~0.4x smaller.
+    // This keeps ratio ≈ 1.0 under normal conditions, preventing QP oscillation.
     mfxU32 adjustedTarget = ctx->targetFrameSize;
     if (par->FrameType & MFX_FRAMETYPE_I) {
       adjustedTarget = ctx->targetFrameSize * 4;
     } else if (par->FrameType & MFX_FRAMETYPE_P) {
       adjustedTarget = ctx->targetFrameSize * 3 / 2;
+    } else if (par->FrameType & MFX_FRAMETYPE_B) {
+      adjustedTarget = ctx->targetFrameSize * 2 / 5;  // 0.4x
     }
 
     mfxF64 ratio = static_cast<mfxF64>(encodedSize) / adjustedTarget;
