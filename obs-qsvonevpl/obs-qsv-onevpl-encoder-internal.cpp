@@ -2212,6 +2212,7 @@ void QSVEncoder::ReleaseTask(int TaskID) {
 }
 
 void QSVEncoder::ReleaseTaskPool() {
+  std::lock_guard<std::mutex> lock(QSVTaskPoolMutex);
   if (!QSVTaskPool.empty()) {
     for (int i = 0; i < QSVTaskPool.size(); i++) {
       ReleaseTask(i);
@@ -2845,7 +2846,6 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
       throw std::runtime_error(
           "Encode(): Sync operation failed - unrecoverable error");
     }
-    TaskID = QSVSyncTaskID;
   }
 
   mfxFrameSurface1 *EncodeSurface = QSVTaskPool[TaskID].Surface;
@@ -2870,6 +2870,7 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
 #endif
 
 mfxStatus QSVEncoder::GetFreeTaskIndex(int *TaskID) {
+  std::lock_guard<std::mutex> lock(QSVTaskPoolMutex);
   if (!QSVTaskPool.empty()) {
     const int PoolSize = static_cast<int>(QSVTaskPool.size());
     int StartIdx = QSVSyncTaskID;
@@ -2889,37 +2890,49 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
   mfxStatus SyncStatus = MFX_ERR_NONE;
   profile_start("qsv_sync_task");
 
-  while (QSVTaskPool[QSVSyncTaskID].SyncPoint != nullptr) {
-    SyncStatus = MFXVideoCORE_SyncOperation(
-        QSVSession, QSVTaskPool[QSVSyncTaskID].SyncPoint, 100);
-    if (SyncStatus < MFX_ERR_NONE) {
-      profile_end("qsv_sync_task");
-      return SyncStatus;
-    }
-    if (SyncStatus != MFX_WRN_IN_EXECUTION) {
-      break;
-    }
-  }
-
-  // ─ Extract per-frame QP from the synced bitstream ─
   {
-    auto &taskBS = QSVTaskPool[QSVSyncTaskID].Bitstream;
-    if (taskBS.ExtParam && taskBS.NumExtParam > 0) {
-      auto *encInfo =
-          reinterpret_cast<mfxExtEncodedFrameInfo *>(taskBS.ExtParam[0]);
-      if (encInfo && encInfo->Header.BufferId == MFX_EXTBUFF_ENCODED_FRAME_INFO) {
-        UpdateFrameQPStats(taskBS.FrameType, encInfo->QP);
+    std::lock_guard<std::mutex> lock(QSVTaskPoolMutex);
+
+    while (QSVTaskPool[QSVSyncTaskID].SyncPoint != nullptr) {
+      SyncStatus = MFXVideoCORE_SyncOperation(
+          QSVSession, QSVTaskPool[QSVSyncTaskID].SyncPoint, 100);
+      if (SyncStatus < MFX_ERR_NONE) {
+        profile_end("qsv_sync_task");
+        return SyncStatus;
+      }
+      if (SyncStatus != MFX_WRN_IN_EXECUTION) {
+        break;
       }
     }
+
+    // ─ Extract per-frame QP from the synced bitstream ─
+    {
+      auto &taskBS = QSVTaskPool[QSVSyncTaskID].Bitstream;
+      if (taskBS.ExtParam && taskBS.NumExtParam > 0) {
+        auto *encInfo =
+            reinterpret_cast<mfxExtEncodedFrameInfo *>(taskBS.ExtParam[0]);
+        if (encInfo &&
+            encInfo->Header.BufferId == MFX_EXTBUFF_ENCODED_FRAME_INFO) {
+          UpdateFrameQPStats(taskBS.FrameType, encInfo->QP);
+        }
+      }
+    }
+
+    mfxU8 *DataTemp = QSVBitstream.Data;
+    QSVBitstream = QSVTaskPool[QSVSyncTaskID].Bitstream;
+
+    QSVTaskPool[QSVSyncTaskID].Bitstream.Data = DataTemp;
+    QSVTaskPool[QSVSyncTaskID].Bitstream.DataLength = 0;
+    QSVTaskPool[QSVSyncTaskID].Bitstream.DataOffset = 0;
+    QSVTaskPool[QSVSyncTaskID].SyncPoint = nullptr;
+
+    // Advance QSVSyncTaskID so that subsequent GetFreeTaskIndex can find
+    // and reuse this freed slot, preventing other busy tasks from becoming
+    // permanently orphaned.
+    QSVSyncTaskID =
+        (QSVSyncTaskID + 1) % static_cast<int>(QSVTaskPool.size());
   }
 
-  mfxU8 *DataTemp = QSVBitstream.Data;
-  QSVBitstream = QSVTaskPool[QSVSyncTaskID].Bitstream;
-
-  QSVTaskPool[QSVSyncTaskID].Bitstream.Data = DataTemp;
-  QSVTaskPool[QSVSyncTaskID].Bitstream.DataLength = 0;
-  QSVTaskPool[QSVSyncTaskID].Bitstream.DataOffset = 0;
-  QSVTaskPool[QSVSyncTaskID].SyncPoint = nullptr;
   *Bitstream = &QSVBitstream;
 
   profile_end("qsv_sync_task");
@@ -2940,6 +2953,11 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
       error("Encode retry count exceeded");
       throw std::runtime_error("Encode(): retry count exceeded");
     }
+
+    // Clear SyncPoint before each retry: if the driver partially sets the
+    // sync point and then returns an error, a stale/invalid SyncPoint could
+    // remain in the task pool and cause MFX_ERR_NULL_PTR when synced later.
+    QSVTaskPool[TaskID].SyncPoint = nullptr;
 
     mfxStatus Status = QSVEncode->EncodeFrameAsync(
         Ctrl, Surface, &QSVTaskPool[TaskID].Bitstream,
@@ -2966,8 +2984,15 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
       break;
     } else if (MFX_ERR_NOT_ENOUGH_BUFFER == Status ||
                MFX_ERR_MORE_BITSTREAM == Status) [[unlikely]] {
-      mfxU32 newSize = static_cast<mfxU32>(
-          QSVBitstream.MaxLength * BITSTREAM_GROW_FACTOR);
+      // ChangeBitstreamSize modifies QSVBitstream which is shared state
+      // (swapped between QSVBitstream and task bitstreams in
+      // SyncAndSwapPendingTask). Lock to prevent concurrent swap.
+      mfxU32 newSize;
+      {
+        std::lock_guard<std::mutex> lock(QSVTaskPoolMutex);
+        newSize = static_cast<mfxU32>(
+            QSVBitstream.MaxLength * BITSTREAM_GROW_FACTOR);
+      }
       ChangeBitstreamSize(newSize);
       warn("The bitstream buffer size is too small. The size has been "
            "increased by %d times. New value: %d KB",
@@ -3008,7 +3033,6 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
       error("Error code: %d", SyncStatus);
       throw std::runtime_error("Encode(): Syncronization error");
     }
-    TaskID = QSVSyncTaskID;
   }
 
   try {
@@ -3126,7 +3150,6 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
       throw std::runtime_error(
           "Encode(): Sync operation failed - unrecoverable error");
     }
-    TaskID = QSVSyncTaskID;
   }
 
   Status =

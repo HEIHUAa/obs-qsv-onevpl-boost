@@ -138,6 +138,7 @@ private:
   mfxBitstream QSVBitstream{};
   std::vector<struct Task> QSVTaskPool;
   int QSVSyncTaskID{};
+  mutable std::mutex QSVTaskPoolMutex{};
 
   mfxVideoParam QSVResetParams{};
   bool QSVResetParamsChanged{false};
