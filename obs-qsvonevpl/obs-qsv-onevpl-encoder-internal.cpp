@@ -2896,6 +2896,7 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
     while (QSVTaskPool[QSVSyncTaskID].SyncPoint != nullptr) {
       SyncStatus = MFXVideoCORE_SyncOperation(
           QSVSession, QSVTaskPool[QSVSyncTaskID].SyncPoint, 100);
+      debug("SyncAndSwap: task=%d SyncOperation sts=%d", QSVSyncTaskID, SyncStatus);
       if (SyncStatus < MFX_ERR_NONE) {
         profile_end("qsv_sync_task");
         return SyncStatus;
@@ -2964,26 +2965,53 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
         &QSVTaskPool[TaskID].SyncPoint);
 
     if (MFX_ERR_NONE == Status) [[likely]] {
+      debug("EncodeFrameAsync[%d] sync=0x%p NONE", TaskID,
+            (void *)QSVTaskPool[TaskID].SyncPoint);
       break;
-    } else if (MFX_ERR_NONE < Status && !QSVTaskPool[TaskID].SyncPoint) [[unlikely]] {
-      if (MFX_WRN_DEVICE_BUSY == Status) {
-        // Exponential backoff: yield for YIELD_THRESHOLD attempts, then
-        // sleep for (1,2,4,8,...,MAX_BACKOFF_MS) to avoid busy-waiting
-        if (EncodeRetryCount <= YIELD_THRESHOLD) {
-          Sleep(0);
-        } else {
-          mfxU32 shift = std::min<mfxU32>(
-              (EncodeRetryCount - YIELD_THRESHOLD - 1) / 2, 6);
-          mfxU32 backoffMs = std::min<mfxU32>(
-              static_cast<mfxU32>(1) << shift, MAX_BACKOFF_MS);
-          Sleep(backoffMs);
-        }
+    }
+
+    // ── MFX_WRN_DEVICE_BUSY: always retry, regardless of sync point ──
+    // Some drivers (especially with ExtBRC / EncTools) may set the sync
+    // point pointer even when returning DEVICE_BUSY.  The old code
+    // required !SyncPoint to enter the DEVICE_BUSY path, so a non-null
+    // sync point would fall through to the "async submit" branch below
+    // and break out of the retry loop with a stale/invalid sync point.
+    // That later caused MFX_ERR_NULL_PTR in SyncAndSwapPendingTask.
+    if (MFX_WRN_DEVICE_BUSY == Status) [[unlikely]] {
+      QSVTaskPool[TaskID].SyncPoint = nullptr;
+      // Exponential backoff: yield for YIELD_THRESHOLD attempts, then
+      // sleep for (1,2,4,8,...,MAX_BACKOFF_MS) to avoid busy-waiting
+      if (EncodeRetryCount <= YIELD_THRESHOLD) {
+        Sleep(0);
+      } else {
+        mfxU32 shift = std::min<mfxU32>(
+            (EncodeRetryCount - YIELD_THRESHOLD - 1) / 2, 6);
+        mfxU32 backoffMs = std::min<mfxU32>(
+            static_cast<mfxU32>(1) << shift, MAX_BACKOFF_MS);
+        Sleep(backoffMs);
       }
-    } else if (MFX_ERR_NONE < Status && QSVTaskPool[TaskID].SyncPoint) [[likely]] {
+      continue;
+    }
+
+    // ── Warnings (> MFX_ERR_NONE) other than DEVICE_BUSY with sync point → async submit ──
+    if (MFX_ERR_NONE < Status && QSVTaskPool[TaskID].SyncPoint) [[likely]] {
+      debug("EncodeFrameAsync[%d] sync=0x%p warning=0x%x (async submit)", TaskID,
+            (void *)QSVTaskPool[TaskID].SyncPoint, Status);
       Status = MFX_ERR_NONE;
       break;
-    } else if (MFX_ERR_NOT_ENOUGH_BUFFER == Status ||
-               MFX_ERR_MORE_BITSTREAM == Status) [[unlikely]] {
+    }
+
+    // Non-BUSY warning without sync point – driver should not do this, but
+    // handle gracefully: reset sync point and retry.
+    if (MFX_ERR_NONE < Status) [[unlikely]] {
+      debug("EncodeFrameAsync[%d] warning=0x%x no sync point, retrying", TaskID, Status);
+      QSVTaskPool[TaskID].SyncPoint = nullptr;
+      continue;
+    }
+
+    // ── Buffer too small → grow and retry ──
+    if (MFX_ERR_NOT_ENOUGH_BUFFER == Status ||
+        MFX_ERR_MORE_BITSTREAM == Status) [[unlikely]] {
       // ChangeBitstreamSize modifies QSVBitstream which is shared state
       // (swapped between QSVBitstream and task bitstreams in
       // SyncAndSwapPendingTask). Lock to prevent concurrent swap.
@@ -3030,8 +3058,11 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
   while (GetFreeTaskIndex(&TaskID) == MFX_ERR_NOT_FOUND) {
     SyncStatus = SyncAndSwapPendingTask(Bitstream);
     if (SyncStatus < MFX_ERR_NONE) {
-      error("Error code: %d", SyncStatus);
-      throw std::runtime_error("Encode(): Syncronization error");
+      error("Encode[%d].SyncAndSwap error: %d (pool=%zu syncID=%d)",
+            TaskID, SyncStatus,
+            QSVTaskPool.size(), QSVSyncTaskID);
+      throw std::runtime_error(
+          "Encode(): Sync operation failed - unrecoverable error");
     }
   }
 
