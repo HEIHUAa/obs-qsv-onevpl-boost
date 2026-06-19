@@ -244,17 +244,6 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
         ParseCustomCodingOptions(InputParams->CustomCodingOptions);
       }
 
-      // Re-force ExtBRC OFF after CustomCodingOptions, in case the user
-      // tried to enable it via CO2.ExtBRC=1. Manual BRC is removed, so
-      // ExtBRC must stay OFF to avoid NULL callback errors.
-      {
-        auto *CO2Force = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
-        if (CO2Force && CO2Force->ExtBRC == MFX_CODINGOPTION_ON) {
-          CO2Force->ExtBRC = MFX_CODINGOPTION_OFF;
-          warn("\tExtBRC forced OFF after CustomCodingOptions (manual BRC removed)");
-        }
-      }
-
       Status = QSVEncode->Init(&QSVEncodeParams);
       info("\tMFXVideoENCODE_Init%s status: %d", log_prefix, Status);
     }
@@ -829,7 +818,6 @@ static constexpr std::array<FieldEntry, 29> CO2_FIELDS{
   FieldEntry{"MaxSliceSize", offsetof(mfxExtCodingOption2, MaxSliceSize), FT_U32},
   FieldEntry{"BitrateLimit", offsetof(mfxExtCodingOption2, BitrateLimit), FT_U16},
   FieldEntry{"MBBRC", offsetof(mfxExtCodingOption2, MBBRC), FT_U16},
-  FieldEntry{"ExtBRC", offsetof(mfxExtCodingOption2, ExtBRC), FT_U16},
   FieldEntry{"LookAheadDepth", offsetof(mfxExtCodingOption2, LookAheadDepth), FT_U16},
   FieldEntry{"Trellis", offsetof(mfxExtCodingOption2, Trellis), FT_U16},
   FieldEntry{"RepeatPPS", offsetof(mfxExtCodingOption2, RepeatPPS), FT_U16},
@@ -1362,12 +1350,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CO2Params->FixedFrameRate = MFX_CODINGOPTION_ON;
     CO2Params->DisableDeblockingIdc = 0; // enable deblocking filter
     CO2Params->EnableMAD = MFX_CODINGOPTION_ON;
-
-    // ExtBRC (external BRC callbacks) is disabled: the manual CPU BRC
-    // implementation was removed because the driver's built-in BRC is generally
-    // better tuned. Force OFF — no UI option exists anymore, but CustomCodingOptions
-    // may still try to set it, so we also re-force OFF after parsing those.
-    CO2Params->ExtBRC = MFX_CODINGOPTION_OFF;
 
     if (InputParams->IntraRefEncoding == true) {
 
