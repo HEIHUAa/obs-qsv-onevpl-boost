@@ -2926,12 +2926,6 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
     QSVTaskPool[QSVSyncTaskID].Bitstream.DataLength = 0;
     QSVTaskPool[QSVSyncTaskID].Bitstream.DataOffset = 0;
     QSVTaskPool[QSVSyncTaskID].SyncPoint = nullptr;
-
-    // Advance QSVSyncTaskID so that subsequent GetFreeTaskIndex can find
-    // and reuse this freed slot, preventing other busy tasks from becoming
-    // permanently orphaned.
-    QSVSyncTaskID =
-        (QSVSyncTaskID + 1) % static_cast<int>(QSVTaskPool.size());
   }
 
   *Bitstream = &QSVBitstream;
@@ -2960,27 +2954,11 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
     // remain in the task pool and cause MFX_ERR_NULL_PTR when synced later.
     QSVTaskPool[TaskID].SyncPoint = nullptr;
 
-    // DEBUG: log all pointers to diagnose MFX_ERR_NULL_PTR (-2)
-    info("[DBG] EncodeFrameAsync[%d] Ctrl=0x%p Surface=0x%p "
-          "Bitstream=0x%p SyncPoint=0x%p QSVEncode=0x%p",
-          TaskID, (void *)Ctrl, (void *)Surface,
-          (void *)&QSVTaskPool[TaskID].Bitstream,
-          (void *)&QSVTaskPool[TaskID].SyncPoint,
-          (void *)QSVEncode.get());
-
     mfxStatus Status = QSVEncode->EncodeFrameAsync(
         Ctrl, Surface, &QSVTaskPool[TaskID].Bitstream,
         &QSVTaskPool[TaskID].SyncPoint);
 
-    info("[DBG] EncodeFrameAsync[%d] returned %d (SyncPoint=0x%p)",
-          TaskID, Status, (void *)QSVTaskPool[TaskID].SyncPoint);
-
     if (MFX_ERR_NONE == Status) [[likely]] {
-      // Some drivers (especially with ExtBRC / EncTools) may set the sync
-      // point even on synchronous completion.  Reset it here to prevent
-      // a stale/invalid value from reaching SyncAndSwapPendingTask.
-      QSVTaskPool[TaskID].SyncPoint = nullptr;
-      debug("EncodeFrameAsync[%d] NONE (sync cleared)", TaskID);
       break;
     }
 
