@@ -2965,8 +2965,11 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
         &QSVTaskPool[TaskID].SyncPoint);
 
     if (MFX_ERR_NONE == Status) [[likely]] {
-      debug("EncodeFrameAsync[%d] sync=0x%p NONE", TaskID,
-            (void *)QSVTaskPool[TaskID].SyncPoint);
+      // Some drivers (especially with ExtBRC / EncTools) may set the sync
+      // point even on synchronous completion.  Reset it here to prevent
+      // a stale/invalid value from reaching SyncAndSwapPendingTask.
+      QSVTaskPool[TaskID].SyncPoint = nullptr;
+      debug("EncodeFrameAsync[%d] NONE (sync cleared)", TaskID);
       break;
     }
 
@@ -3173,7 +3176,8 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
   while (GetFreeTaskIndex(&TaskID) == MFX_ERR_NOT_FOUND) {
     SyncStatus = SyncAndSwapPendingTask(Bitstream);
     if (SyncStatus < MFX_ERR_NONE) {
-      error("Encode sync error: %d", SyncStatus);
+      error("EncodeFrame[%d].SyncAndSwap error: %d (pool=%zu syncID=%d)",
+            TaskID, SyncStatus, QSVTaskPool.size(), QSVSyncTaskID);
       if (QSVEncodeSurface) {
         QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
         QSVEncodeSurface = nullptr;
