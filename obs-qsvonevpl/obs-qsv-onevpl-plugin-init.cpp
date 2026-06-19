@@ -1139,6 +1139,11 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   return Props;
 }
 
+// Forward declaration for MapString used below
+template <typename T, size_t N>
+static std::optional<T> MapString(std::string_view key,
+                                   const std::pair<std::string_view, T> (&map)[N]);
+
 // Helper: parse AV1 ON/OFF/auto three-state string to 1/0/2
 static constexpr std::pair<std::string_view, mfxU16> kAV1TernaryMap[] = {
     {"ON",  1},
