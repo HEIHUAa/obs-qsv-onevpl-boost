@@ -2961,7 +2961,7 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
     QSVTaskPool[TaskID].SyncPoint = nullptr;
 
     // DEBUG: log all pointers to diagnose MFX_ERR_NULL_PTR (-2)
-    debug("[DBG] EncodeFrameAsync[%d] Ctrl=0x%p Surface=0x%p "
+    info("[DBG] EncodeFrameAsync[%d] Ctrl=0x%p Surface=0x%p "
           "Bitstream=0x%p SyncPoint=0x%p QSVEncode=0x%p",
           TaskID, (void *)Ctrl, (void *)Surface,
           (void *)&QSVTaskPool[TaskID].Bitstream,
@@ -2972,7 +2972,7 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
         Ctrl, Surface, &QSVTaskPool[TaskID].Bitstream,
         &QSVTaskPool[TaskID].SyncPoint);
 
-    debug("[DBG] EncodeFrameAsync[%d] returned %d (SyncPoint=0x%p)",
+    info("[DBG] EncodeFrameAsync[%d] returned %d (SyncPoint=0x%p)",
           TaskID, Status, (void *)QSVTaskPool[TaskID].SyncPoint);
 
     if (MFX_ERR_NONE == Status) [[likely]] {
