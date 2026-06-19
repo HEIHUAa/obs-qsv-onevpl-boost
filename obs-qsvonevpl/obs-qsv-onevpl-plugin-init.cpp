@@ -5,9 +5,7 @@
 #include <algorithm>
 #include <string_view>
 
-#ifndef __QSV_VPL_ENCODER_H__
 #include "obs-qsv-onevpl-encoder.hpp"
-#endif
 
 // Extern array definitions (declared in obs-qsv-onevpl-plugin-init.hpp)
 const char *const qsv_profile_names_av1[] = {"main", "high", "pro", 0};
@@ -122,6 +120,7 @@ static bool IsFeatureSupported(const char *PropertyName) {
 
 static mfxPlatform CachedQSVPlatform{};
 static bool CachedQSVPlatformValid = false;
+static std::once_flag QueryPlatformOnceFlag;
 
 static bool TryQueryPlatformCodeName(mfxLoader Loader) {
     mfxConfig Config = MFXCreateConfig(Loader);
@@ -144,40 +143,46 @@ static bool TryQueryPlatformCodeName(mfxLoader Loader) {
     mfxSession Session{};
     mfxStatus Status = MFXCreateSession(Loader, 0, &Session);
     if (Status >= MFX_ERR_NONE) {
-        MFXVideoCORE_QueryPlatform(Session, &CachedQSVPlatform);
+        mfxPlatform platform{};
+        mfxStatus qStatus = MFXVideoCORE_QueryPlatform(Session, &platform);
         MFXClose(Session);
-        CachedQSVPlatformValid = true;
-        return true;
+        if (qStatus >= MFX_ERR_NONE) {
+            CachedQSVPlatform = platform;
+            CachedQSVPlatformValid = true;
+            return true;
+        }
+        return false;
     }
     return false;
 }
 
 mfxU16 QueryPlatformCodeName() {
+    std::call_once(QueryPlatformOnceFlag, []() {
+        mfxLoader GlobalLoader = nullptr;
+        {
+            std::lock_guard<std::mutex> Lock(GlobalLoaderMutex);
+            GlobalLoader = GlobalQSVLoader;
+        }
+
+        if (GlobalLoader != nullptr) {
+            if (TryQueryPlatformCodeName(GlobalLoader)) {
+                return;
+            }
+        } else {
+            mfxLoader Loader = MFXLoad();
+            if (Loader != nullptr) {
+                bool ok = TryQueryPlatformCodeName(Loader);
+                MFXUnload(Loader);
+                if (ok) {
+                    return;
+                }
+            }
+        }
+    });
+
     if (CachedQSVPlatformValid) {
         return CachedQSVPlatform.CodeName;
     }
-
-    mfxLoader GlobalLoader = nullptr;
-    {
-        std::lock_guard<std::mutex> Lock(GlobalLoaderMutex);
-        GlobalLoader = GlobalQSVLoader;
-    }
-
-    if (GlobalLoader != nullptr) {
-        if (TryQueryPlatformCodeName(GlobalLoader)) {
-            return CachedQSVPlatform.CodeName;
-        }
-    } else {
-        mfxLoader Loader = MFXLoad();
-        if (Loader != nullptr) {
-            if (TryQueryPlatformCodeName(Loader)) {
-                MFXUnload(Loader);
-                return CachedQSVPlatform.CodeName;
-            }
-            MFXUnload(Loader);
-        }
-    }
-
     return 0;
 }
 
@@ -510,18 +515,6 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   Prop = obs_properties_get(Properties, "intra_ref_qp_delta");
   obs_property_set_visible(Prop, bVisible);
 
-  //const char *extbrc = obs_data_get_string(Settings, "extbrc");
-  //const char *enctools = obs_data_get_string(Settings, "enctools");
-  //bool bVisible_extbrc = std::strcmp(extbrc, "OFF") == 0;
-  //bool bVisible_enctools = std::strcmp(enctools, "OFF") == 0;
-
-  //Prop = obs_properties_get(Properties, "num_ref_active_p");
-  //obs_property_set_visible(Prop, bVisible_extbrc && bVisible_enctools);
-  //Prop = obs_properties_get(Properties, "num_ref_active_bl0");
-  //obs_property_set_visible(Prop, bVisible_extbrc && bVisible_enctools);
-  //Prop = obs_properties_get(Properties, "num_ref_active_bl1");
-  //obs_property_set_visible(Prop, bVisible_extbrc && bVisible_enctools);
-
   mfxU16 platformCode = QueryPlatformCodeName();
   bool hasHighTier = platformCode == 0 ||
                      platformCode >= MFX_PLATFORM_TIGERLAKE;
@@ -703,9 +696,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   Prop =
       obs_properties_add_int(Props, "b_frames", TEXT_B_FRAMES, 0,
                              65534, 1);
-  obs_property_set_long_description(
-      Prop, TEXT_B_FRAMES_DESC);
-  obs_property_long_description(Prop);
+  obs_property_set_long_description(Prop, TEXT_B_FRAMES_DESC);
 
   // Lookahead
   Prop = obs_properties_add_list(Props, "lookahead", TEXT_LA,
@@ -1200,7 +1191,7 @@ static const LevelEntry kAVCLevels[] = {
     {"6.1", MFX_LEVEL_AVC_61}, {"6.2", MFX_LEVEL_AVC_62},
 };
 
-static const LevelEntry kHEVLevels[] = {
+static const LevelEntry kHEVCLevels[] = {
     {"auto", 0},   {"1", MFX_LEVEL_HEVC_1},     {"2", MFX_LEVEL_HEVC_2},
     {"2.1", MFX_LEVEL_HEVC_21}, {"3", MFX_LEVEL_HEVC_3},
     {"3.1", MFX_LEVEL_HEVC_31}, {"4", MFX_LEVEL_HEVC_4},
@@ -1475,8 +1466,8 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     }
 
     Context->EncoderParams.CodecLevel =
-        ParseCodecLevel(CodecLevelData, kHEVLevels,
-                        sizeof(kHEVLevels) / sizeof(kHEVLevels[0]));
+        ParseCodecLevel(CodecLevelData, kHEVCLevels,
+                        sizeof(kHEVCLevels) / sizeof(kHEVCLevels[0]));
     break;
   }
   case QSV_CODEC_AV1: {
@@ -1867,8 +1858,7 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   }
 
   Context->EncoderParams.TargetBitRate = TargetBitrateData;
-  Context->EncoderParams.CustomBufferSize =
-      static_cast<bool>(CustomBufferSizeData);
+  Context->EncoderParams.CustomBufferSize = CustomBufferSizeData;
   Context->EncoderParams.BufferSize = BufferSizeData;
   Context->EncoderParams.MaxBitRate = MaxBitrateData;
   Context->EncoderParams.Width = static_cast<mfxU16>(VideoWidth);
@@ -1969,7 +1959,7 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
 
   info("\tDebug info:");
   info("\tCodec: %s", Codec);
-  info("\tRate control: %s\n", RateControlData);
+  info("\tRate control: %s", RateControlData);
 
   if (Context->EncoderParams.RateControl == MFX_RATECONTROL_QVBR)
     info("\tQVBR Quality: %d", Context->EncoderParams.QVBRQuality);
@@ -1987,7 +1977,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     info("\tICQ Quality: %d", Context->EncoderParams.ICQQuality);
 
   if (Context->EncoderParams.RateControl == MFX_RATECONTROL_CQP) {
-    bool CQPSeparateIPB = obs_data_get_bool(Settings, "cqp_separate_ipb");
     if (CQPSeparateIPB) {
       info("\tQPI: %d, QPP: %d, QPB: %d",
            Context->EncoderParams.QPI,
@@ -2059,17 +2048,7 @@ plugin_context *InitPluginContext(enum codec_enum Codec, obs_data_t *Settings,
                                   obs_encoder_t *EncoderData,
                                   bool IsTextureEncoder) {
 
-  plugin_context *Context = nullptr;
-  try {
-    Context = new plugin_context;
-    // throw std::exception("test");
-  } catch (const std::exception &e) {
-    blog(LOG_WARNING, "QSV init failed. %s", e.what());
-
-    delete Context;
-
-    return nullptr;
-  }
+  plugin_context *Context = new plugin_context;
 
   Context->EncoderData = EncoderData;
   Context->Codec = Codec;
@@ -2148,7 +2127,7 @@ static void *InitTextureEncoder(enum codec_enum Codec, obs_data_t *Settings,
   if (!AdaptersInfo[OVI.adapter].IsIntel) {
     info(">>> app not on intel GPU, fall back to non-texture encoder");
     return obs_encoder_create_rerouted(EncoderData,
-                                       static_cast<const char *>(FallbackID));
+                                       FallbackID);
   }
 
   if (static_cast<int>(obs_data_get_int(Settings, "gpu_number")) > 0) {
@@ -2156,20 +2135,20 @@ static void *InitTextureEncoder(enum codec_enum Codec, obs_data_t *Settings,
          "transferring textures to third-party adapters, fall back to "
          "non-texture encoder");
     return obs_encoder_create_rerouted(EncoderData,
-                                       static_cast<const char *>(FallbackID));
+                                       FallbackID);
   }
 
 #if !defined(_WIN32) || !defined(_WIN64)
   info(">>> unsupported platform for texture encode");
   return obs_encoder_create_rerouted(EncoderData,
-                                     static_cast<const char *>(FallbackID));
+                                     FallbackID);
 #endif
 
   if (Codec == QSV_CODEC_AV1 && !AdaptersInfo[OVI.adapter].SupportAV1) {
     info(">>> cap on different device, fall back to non-texture "
          "sharing AV1 qsv encoder");
     return obs_encoder_create_rerouted(EncoderData,
-                                       static_cast<const char *>(FallbackID));
+                                       FallbackID);
   }
 
   bool TextureEncodeSupport = obs_nv12_tex_active();
@@ -2180,14 +2159,14 @@ static void *InitTextureEncoder(enum codec_enum Codec, obs_data_t *Settings,
   if (!TextureEncodeSupport) {
     info(">>> gpu tex not active, fall back to non-texture encoder");
     return obs_encoder_create_rerouted(EncoderData,
-                                       static_cast<const char *>(FallbackID));
+                                       FallbackID);
   }
 
   if (obs_encoder_scaling_enabled(EncoderData)) {
     if (!obs_encoder_gpu_scaling_enabled(EncoderData)) {
       info(">>> encoder CPU scaling active, fall back to non-texture encoder");
       return obs_encoder_create_rerouted(EncoderData,
-                                         static_cast<const char *>(FallbackID));
+                                         FallbackID);
     }
     info(">>> encoder GPU scaling active");
   }
@@ -2197,7 +2176,7 @@ static void *InitTextureEncoder(enum codec_enum Codec, obs_data_t *Settings,
   if (!Context) {
     info(">>> texture encoder init failed, fall back to non-texture encoder");
     return obs_encoder_create_rerouted(EncoderData,
-                                       static_cast<const char *>(FallbackID));
+                                       FallbackID);
   }
   return Context;
 }

@@ -41,18 +41,18 @@ std::vector<encoder_params::roi_region> NormalizeROIToPixel(
   result.reserve(NormRegions.size());
   for (auto &nr : NormRegions) {
     encoder_params::roi_region pr;
-    pr.Left   = (mfxU16)(nr.Left   * OutWidth);
-    pr.Top    = (mfxU16)(nr.Top    * OutHeight);
-    pr.Right  = (mfxU16)(nr.Right  * OutWidth);
-    pr.Bottom = (mfxU16)(nr.Bottom * OutHeight);
+    pr.Left   = static_cast<mfxU16>(nr.Left   * OutWidth);
+    pr.Top    = static_cast<mfxU16>(nr.Top    * OutHeight);
+    pr.Right  = static_cast<mfxU16>(nr.Right  * OutWidth);
+    pr.Bottom = static_cast<mfxU16>(nr.Bottom * OutHeight);
     pr.DeltaQP = nr.DeltaQP;
     pr.HasGradient = nr.HasGradient;
     pr.GradientSteps = nr.GradientSteps;
     if (nr.HasGradient) {
-      pr.GradLeft   = (mfxI16)(nr.GradLeft   * OutWidth);
-      pr.GradTop    = (mfxI16)(nr.GradTop    * OutHeight);
-      pr.GradRight  = (mfxI16)(nr.GradRight  * OutWidth);
-      pr.GradBottom = (mfxI16)(nr.GradBottom * OutHeight);
+      pr.GradLeft   = static_cast<mfxI16>(nr.GradLeft   * OutWidth);
+      pr.GradTop    = static_cast<mfxI16>(nr.GradTop    * OutHeight);
+      pr.GradRight  = static_cast<mfxI16>(nr.GradRight  * OutWidth);
+      pr.GradBottom = static_cast<mfxI16>(nr.GradBottom * OutHeight);
     }
 
     // Round to nearest codec-specific block boundary so oneVPL does not
@@ -95,6 +95,8 @@ std::vector<encoder_params::roi_region> ExpandGradientRegions(
   std::vector<encoder_params::roi_region> result;
   result.reserve(Input.size() * 49); // upper-bound estimate: 7×7 grid at default 3 steps
 
+  std::vector<int> xBounds, yBounds, xUnique, yUnique;
+
   for (auto &reg : Input) {
     if (!reg.HasGradient) {
       result.push_back(reg);
@@ -125,7 +127,11 @@ std::vector<encoder_params::roi_region> ExpandGradientRegions(
       }
     };
 
-    std::vector<int> xBounds, yBounds;
+    xBounds.clear();
+    yBounds.clear();
+    xUnique.clear();
+    yUnique.clear();
+
     genSteps(outerL, reg.Left, reg.GradientSteps, xBounds);
     // Add core boundaries
     if (xBounds.empty() || xBounds.back() != reg.Left)
@@ -135,7 +141,6 @@ std::vector<encoder_params::roi_region> ExpandGradientRegions(
     // Remove duplicates between core Right and first right step,
     // then sort so cells are in ascending order regardless of
     // inward/outward gradient direction.
-    std::vector<int> xUnique, yUnique;
     for (auto v : xBounds)
       if (xUnique.empty() || xUnique.back() != v)
         xUnique.push_back(v);
@@ -331,10 +336,11 @@ std::string FormatROIDouble(double Value) {
   auto dot = s.find('.');
   if (dot != std::string::npos) {
     auto last = s.find_last_not_of('0');
-    if (last > dot)
-      s = s.substr(0, last + 1);
-    else
-      s = s.substr(0, dot + 2);
+    if (last > dot) {
+      s.erase(last + 1);
+    } else {
+      s.erase(dot + 2);
+    }
   }
   return s;
 }

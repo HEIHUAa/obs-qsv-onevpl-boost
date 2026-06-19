@@ -1,8 +1,6 @@
 // #define MFXDEPRECATED_OFF
 
-#ifndef __QSV_VPL_ENCODER_H__
 #include "obs-qsv-onevpl-encoder.hpp"
-#endif
 #include <cstring>
 #include <span>
 #include <string_view>
@@ -19,7 +17,6 @@ bool OpenEncoder(std::unique_ptr<QSVEncoder> &EncoderPTR,
                  bool IsTextureEncoder) {
   try {
     EncoderPTR = std::make_unique<QSVEncoder>();
-    // throw std::exception("test");
     if (EncoderParams->GPUNum == 0) {
       obs_video_info OVI;
       obs_get_video_info(&OVI);
@@ -77,9 +74,8 @@ void DestroyPluginContext(void *Data) {
   if (Context) {
     // Unregister from the global encoder data map
     UnregisterEncoderData(Context->EncoderData);
-    os_end_high_performance(Context->PerformanceToken);
 
-    // Wait for in-progress encodes to finish, then tear down
+    // Wait for in-progress encodes to finish before ending high-performance mode,
     {
       std::unique_lock<std::mutex> lock(Context->EncoderMutex);
       Context->EncodingCV.wait_for(lock, std::chrono::milliseconds(10),
@@ -89,15 +85,8 @@ void DestroyPluginContext(void *Data) {
 
       if (Context->EncoderPTR) {
         try {
-
           Context->EncoderPTR->ClearData();
-
           Context->EncoderPTR = nullptr;
-
-          Context->SEI.first = nullptr;
-          Context->SEI.second = 0;
-          Context->ExtraData.first = nullptr;
-          Context->ExtraData.second = 0;
         } catch (const std::exception &e) {
           error("QSV ERROR: %s", e.what());
         }
@@ -105,6 +94,8 @@ void DestroyPluginContext(void *Data) {
 
       delete Context;
     }
+
+    os_end_high_performance(Context->PerformanceToken);
   }
 }
 
@@ -113,6 +104,8 @@ bool UpdateEncoderParams(void *Data, obs_data_t *Params) {
   const std::string_view bitrate_control = obs_data_get_string(Params, "rate_control");
   const bool isCQP = bitrate_control == "CQP";
   const bool isICQ = bitrate_control == "ICQ";
+
+  std::lock_guard<std::mutex> lock(Context->EncoderMutex);
 
   if (bitrate_control == "CBR") {
     Context->EncoderParams.TargetBitRate =
@@ -575,7 +568,7 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
   }
 
   if (!Context->ExtraData.first || Context->ExtraData.second == 0) {
-    uint8_t *NewPacket = 0;
+    uint8_t *NewPacket = nullptr;
     size_t NewPacketSize = 0;
     if (Context->Codec == QSV_CODEC_AVC) {
       obs_extract_avc_headers(Bitstream->Data + Bitstream->DataOffset,
@@ -664,7 +657,6 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
 
   *ReceivedPacketStatus = true;
 
-  *Bitstream->Data = 0;
   Bitstream->DataLength = 0;
   Bitstream->DataOffset = 0;
 }

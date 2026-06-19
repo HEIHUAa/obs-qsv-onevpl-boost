@@ -200,50 +200,26 @@ bool ROIDialog::CreatePreview() {
 
 void ROIDialog::DestroyPreview() {
   if (PreviewDisplay) {
-    try {
-      obs_display_remove_draw_callback(PreviewDisplay, PreviewDraw, this);
-      obs_display_destroy(PreviewDisplay);
-    } catch (const std::exception &e) {
-      blog(LOG_ERROR,
-           "[QSV VPL] DestroyPreview: std::exception: %s", e.what());
-    } catch (...) {
-      blog(LOG_ERROR,
-           "[QSV VPL] DestroyPreview: unknown exception");
-    }
+    obs_display_remove_draw_callback(PreviewDisplay, PreviewDraw, this);
+    obs_display_destroy(PreviewDisplay);
     PreviewDisplay = nullptr;
   }
 }
 
 void ROIDialog::ResizePreview() {
   if (PreviewDisplay && PreviewWidget) {
-    try {
-      obs_display_resize(PreviewDisplay,
-                         (uint32_t)PreviewWidget->width(),
-                         (uint32_t)PreviewWidget->height());
-    } catch (const std::exception &e) {
-      blog(LOG_ERROR,
-           "[QSV VPL] ResizePreview: std::exception: %s", e.what());
-    } catch (...) {
-      blog(LOG_ERROR,
-           "[QSV VPL] ResizePreview: unknown exception");
-    }
+    obs_display_resize(PreviewDisplay,
+                       (uint32_t)PreviewWidget->width(),
+                       (uint32_t)PreviewWidget->height());
   }
 }
 
 void ROIDialog::ForceRefreshPreview() {
   if (!PreviewDisplay)
     return;
-  try {
-    // Toggle enabled state to force obs_display to re-evaluate and redraw
-    obs_display_set_enabled(PreviewDisplay, false);
-    obs_display_set_enabled(PreviewDisplay, true);
-  } catch (const std::exception &e) {
-    blog(LOG_ERROR,
-         "[QSV VPL] ForceRefreshPreview: std::exception: %s", e.what());
-  } catch (...) {
-    blog(LOG_ERROR,
-         "[QSV VPL] ForceRefreshPreview: unknown exception");
-  }
+  // Toggle enabled state to force obs_display to re-evaluate and redraw
+  obs_display_set_enabled(PreviewDisplay, false);
+  obs_display_set_enabled(PreviewDisplay, true);
 }
 
 bool ROIDialog::eventFilter(QObject *Obj, QEvent *Event) {
@@ -426,15 +402,15 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy,
   }
 
   // --- 2. Retrieve or compute the segmented grid ---
-  std::vector<encoder_params::roi_region> drawRects;
+  const std::vector<encoder_params::roi_region> *drawRectsPtr = nullptr;
   bool useSegmented = false;
 
   if (newHash == m_GridCacheHash && !m_CachedDrawRects.empty()) {
-    // Cache hit — reuse previously computed grid
-    drawRects = m_CachedDrawRects;
+    drawRectsPtr = &m_CachedDrawRects;
     useSegmented = m_CachedUseSegmented;
   } else {
     // Cache miss — recompute
+    std::vector<encoder_params::roi_region> drawRects;
 
     // Convert normalized regions → pixel (inside lock for data integrity)
     mfxU16 outW = (mfxU16)ovi.output_width;
@@ -487,9 +463,12 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy,
 
     // Store in cache
     m_GridCacheHash = newHash;
-    m_CachedDrawRects = drawRects;
+    m_CachedDrawRects = std::move(drawRects);
     m_CachedUseSegmented = useSegmented;
+    drawRectsPtr = &m_CachedDrawRects;
   }
+
+  const auto &drawRects = *drawRectsPtr;
 
   // --- 3. Viewport (same as PreviewDraw) ---
   float out_w = (float)ovi.output_width;

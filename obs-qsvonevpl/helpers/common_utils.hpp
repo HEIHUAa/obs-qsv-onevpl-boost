@@ -166,7 +166,7 @@ std::vector<encoder_params::roi_region> ExpandGradientRegions(
 
 // Return the ROI coordinate alignment requirement for the given codec.
 // AVC/H.264 requires 16-pixel (macroblock) alignment; HEVC requires 32-pixel alignment.
-inline mfxU16 GetCodecAlignment(enum codec_enum Codec) {
+constexpr inline mfxU16 GetCodecAlignment(enum codec_enum Codec) {
   switch (Codec) {
   case QSV_CODEC_HEVC:
     return 32;
@@ -197,13 +197,13 @@ bool LoadROIConfigFromFile();
 void *AlignedMalloc(size_t Size, size_t Alignment = 32);
 void AlignedFree(void *Ptr);
 
-static inline void ParseOptionalBool(const char *Data,
+static inline void ParseOptionalBool(std::string_view Data,
                                      std::optional<bool> &Param) {
-  if (std::strcmp(Data, "AUTO") == 0) {
+  if (Data == "AUTO") {
     Param = std::nullopt;
-  } else if (std::strcmp(Data, "ON") == 0) {
+  } else if (Data == "ON") {
     Param = true;
-  } else if (std::strcmp(Data, "OFF") == 0) {
+  } else if (Data == "OFF") {
     Param = false;
   }
 }

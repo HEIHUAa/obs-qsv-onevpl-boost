@@ -322,11 +322,10 @@ public:
     for (size_t i = 0; i < Ref_.NumExtParam; ++i) {
       const auto SRCBuffer = Ref_.ExtParam[i];
       if (!SRCBuffer)
-        throw "Null pointer attached to source ExtParam";
+        throw std::invalid_argument("Null pointer attached to source ExtParam");
       if (!IsCopyAllowed(SRCBuffer->BufferId)) {
-        auto msg = "Deep copy of '" + Fourcc2Str(SRCBuffer->BufferId) +
-                   "' extBuffer is not allowed";
-        throw msg;
+        throw std::runtime_error("Deep copy of '" + Fourcc2Str(SRCBuffer->BufferId) +
+                                 "' extBuffer is not allowed");
       }
 
       // Pass 'false' for AddExtBuffer: we copy ext buffers one by one
@@ -354,8 +353,9 @@ public:
   }
 
   template <typename TB> void RemoveExtBuffer() {
-    auto it = std::find_if(MFXExtBufferPool.begin(), MFXExtBufferPool.end(),
-                           CmpExtBufByID(MFXExtBufferID<TB>::id));
+    const mfxU32 targetID = MFXExtBufferID<TB>::id;
+    auto it = std::ranges::find_if(MFXExtBufferPool,
+        [targetID](mfxExtBuffer *Buffer) { return Buffer && Buffer->BufferId == targetID; });
     if (it != MFXExtBufferPool.end()) {
       delete[] reinterpret_cast<mfxU8 *>((*it));
       it = MFXExtBufferPool.erase(it);
@@ -363,7 +363,7 @@ public:
       if (IsPairedMFXExtBuffer<TB>::value) {
         if (it == MFXExtBufferPool.end() ||
             (*it)->BufferId != MFXExtBufferID<TB>::id)
-          throw "RemoveExtBuffer: ExtBuffer's parity has been broken";
+          throw std::runtime_error("RemoveExtBuffer: ExtBuffer's parity has been broken");
 
         delete[] reinterpret_cast<mfxU8 *>((*it));
         MFXExtBufferPool.erase(it);
@@ -390,10 +390,10 @@ public:
 private:
   mfxExtBuffer *AddExtBuffer(mfxU32 ID, mfxU32 Size, bool IsPairedExtBuffer) {
     if (!Size || !ID)
-      throw "AddExtBuffer: wrong size or id!";
+      throw std::invalid_argument("AddExtBuffer: wrong size or id!");
 
-    auto it =
-        std::find_if(MFXExtBufferPool.begin(), MFXExtBufferPool.end(), CmpExtBufByID(ID));
+    auto it = std::ranges::find_if(MFXExtBufferPool,
+        [ID](mfxExtBuffer *Buffer) { return Buffer && Buffer->BufferId == ID; });
     if (it == MFXExtBufferPool.end()) {
       auto Buffer = reinterpret_cast<mfxExtBuffer *>(new mfxU8[Size]);
       memset(Buffer, 0, Size);
@@ -424,8 +424,8 @@ private:
   }
 
   mfxExtBuffer *FindExtBuffer(mfxU32 ID, uint32_t FieldID) const {
-    auto it =
-        std::find_if(MFXExtBufferPool.begin(), MFXExtBufferPool.end(), CmpExtBufByID(ID));
+    auto it = std::ranges::find_if(MFXExtBufferPool,
+        [ID](mfxExtBuffer *Buffer) { return Buffer && Buffer->BufferId == ID; });
     if (FieldID && it != MFXExtBufferPool.end()) {
       ++it;
       return it != MFXExtBufferPool.end() ? *it : nullptr;
@@ -461,20 +461,10 @@ private:
     return std::ranges::contains(Allowed, ID);
   }
 
-  struct CmpExtBufByID {
-    mfxU32 ID;
-
-    CmpExtBufByID(mfxU32 ID_) : ID(ID_){};
-
-    bool operator()(mfxExtBuffer *Buffer) { return (Buffer && Buffer->BufferId == ID); };
-  };
-
   static std::string Fourcc2Str(mfxU32 FourCC) {
-    std::string String;
-    for (size_t i = 0; i < 4; i++) {
-      String.push_back(*(i + reinterpret_cast<char *>(&FourCC)));
-    }
-    return String;
+    std::array<char, 4> bytes{};
+    std::memcpy(bytes.data(), &FourCC, sizeof(FourCC));
+    return std::string(bytes.data(), bytes.size());
   }
 
   std::vector<mfxExtBuffer *> MFXExtBufferPool;

@@ -29,11 +29,11 @@ public:
                          mfxU16 Mode);
 
   protected:
-  typedef struct Task {
-    mfxBitstream Bitstream;
-    mfxSyncPoint SyncPoint;
-    mfxFrameSurface1 *Surface;
-  } Task;
+  struct Task {
+    mfxBitstream Bitstream{};
+    mfxSyncPoint SyncPoint{};
+    mfxFrameSurface1 *Surface{};
+  };
 
   mfxStatus CreateSession(enum codec_enum Codec, [[maybe_unused]] void **Data,
                           int GPUNum);
@@ -129,9 +129,9 @@ private:
   std::unique_ptr<MFXVideoVPP> QSVProcessing{};
 
   mfxU8 QSVVPSBuffer[1024]{};
-  mfxU8 QSVSPSBuffer[1024];
-  mfxU8 QSVPPSBuffer[1024];
-  mfxU16 QSVVPSBufferSize;
+  mfxU8 QSVSPSBuffer[1024]{};
+  mfxU8 QSVPPSBuffer[1024]{};
+  mfxU16 QSVVPSBufferSize{1024};
   mfxU16 QSVSPSBufferSize{1024};
   mfxU16 QSVPPSBufferSize{1024};
 

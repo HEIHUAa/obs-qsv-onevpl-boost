@@ -133,11 +133,11 @@ struct encoder_params {
 
   // ROI (Region of Interest) settings
   struct roi_region {
-    mfxU16 Left;
-    mfxU16 Top;
-    mfxU16 Right;
-    mfxU16 Bottom;
-    mfxI16 DeltaQP;
+    mfxU16 Left = 0;
+    mfxU16 Top = 0;
+    mfxU16 Right = 0;
+    mfxU16 Bottom = 0;
+    mfxI16 DeltaQP = 0;
     bool HasGradient = false;
     mfxI16 GradLeft   = 0; // pixel values (positive = outward, negative = inward)
     mfxI16 GradTop    = 0;
@@ -146,11 +146,11 @@ struct encoder_params {
     int GradientSteps = 3;  // subdivision count per side (default 3 → 7×7 grid)
   };
   struct normalized_roi_region {
-    double Left;    // 0.0 ~ 1.0 (fraction of output width)
-    double Top;     // 0.0 ~ 1.0 (fraction of output height)
-    double Right;   // 0.0 ~ 1.0
-    double Bottom;  // 0.0 ~ 1.0
-    mfxI16 DeltaQP;
+    double Left = 0.0;    // 0.0 ~ 1.0 (fraction of output width)
+    double Top = 0.0;     // 0.0 ~ 1.0 (fraction of output height)
+    double Right = 0.0;   // 0.0 ~ 1.0
+    double Bottom = 0.0;  // 0.0 ~ 1.0
+    mfxI16 DeltaQP = 0;
     // Optional gradient / falloff
     bool HasGradient = false;
     double GradLeft   = 0; // expansion outward (+), inward (-)
