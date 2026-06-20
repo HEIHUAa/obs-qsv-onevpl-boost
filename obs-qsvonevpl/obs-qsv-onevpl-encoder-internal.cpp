@@ -1290,12 +1290,11 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
   QSVEncodeParams.AsyncDepth = static_cast<mfxU16>(InputParams->AsyncDepth);
 
-  constexpr mfxU16 DEFAULT_GOP_PIC_SIZE = 240;
   const float fps = static_cast<float>(QSVEncodeParams.mfx.FrameInfo.FrameRateExtN) /
                     QSVEncodeParams.mfx.FrameInfo.FrameRateExtD;
   QSVEncodeParams.mfx.GopPicSize = (InputParams->KeyIntSec > 0)
       ? static_cast<mfxU16>(InputParams->KeyIntSec * fps)
-      : DEFAULT_GOP_PIC_SIZE;
+      : 10 * fps;
 
   const bool adaptiveIOn = InputParams->AdaptiveI == true;
   const bool adaptiveBOn = InputParams->AdaptiveB == true;
@@ -1349,12 +1348,8 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CO2Params->RepeatPPS = MFX_CODINGOPTION_OFF;
     CO2Params->FixedFrameRate = MFX_CODINGOPTION_ON;
     CO2Params->DisableDeblockingIdc = 0; // enable deblocking filter
-    CO2Params->EnableMAD = MFX_CODINGOPTION_ON;
-
-    CO2Params->ExtBRC = MFX_CODINGOPTION_ON;
 
     if (InputParams->IntraRefEncoding == true) {
-
       CO2Params->IntRefType =
           static_cast<mfxU16>(InputParams->IntraRefType > 0
                                   ? InputParams->IntraRefType
