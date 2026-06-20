@@ -1294,7 +1294,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
                     QSVEncodeParams.mfx.FrameInfo.FrameRateExtD;
   QSVEncodeParams.mfx.GopPicSize = (InputParams->KeyIntSec > 0)
       ? static_cast<mfxU16>(InputParams->KeyIntSec * fps)
-      : 10 * fps;
+      : static_cast<mfxU16>(10 * fps);
 
   const bool adaptiveIOn = InputParams->AdaptiveI == true;
   const bool adaptiveBOn = InputParams->AdaptiveB == true;
