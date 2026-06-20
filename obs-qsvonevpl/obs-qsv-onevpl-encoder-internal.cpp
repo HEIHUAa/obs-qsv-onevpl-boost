@@ -2891,6 +2891,22 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
           QSVSession, QSVTaskPool[QSVSyncTaskID].SyncPoint, 100);
       debug("SyncAndSwap: task=%d SyncOperation sts=%d", QSVSyncTaskID, SyncStatus);
       if (SyncStatus < MFX_ERR_NONE) {
+        const auto &bs = QSVTaskPool[QSVSyncTaskID].Bitstream;
+        warn("SyncAndSwap FAILED: sts=%d task=%d syncID=%d "
+             "bs[MaxLength=%u DataLen=%u DataOff=%u] poolSize=%zu",
+             SyncStatus, QSVSyncTaskID, QSVSyncTaskID,
+             bs.MaxLength, bs.DataLength, bs.DataOffset,
+             QSVTaskPool.size());
+        int pending = 0;
+        for (const auto &t : QSVTaskPool) {
+          if (t.SyncPoint != nullptr) pending++;
+        }
+        warn("SyncAndSwap FAILED: pending tasks=%d/%zu AsyncDepth=%d "
+             "BufferSizeInKB=%u BRCMult=%u",
+             pending, QSVTaskPool.size(),
+             QSVEncodeParams.AsyncDepth,
+             QSVEncodeParams.mfx.BufferSizeInKB,
+             QSVEncodeParams.mfx.BRCParamMultiplier);
         profile_end("qsv_sync_task");
         return SyncStatus;
       }
@@ -3013,7 +3029,19 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
     } else if (MFX_ERR_MORE_DATA == Status) [[unlikely]] {
       break;
     } else [[unlikely]] {
-      error("Encode fatal error: %d", Status);
+      const auto &bs = QSVTaskPool[TaskID].Bitstream;
+      error("EncodeFrameAsync FATAL: sts=%d task=%d retry=%u/%u "
+            "bs[MaxLength=%u DataLen=%u DataOff=%u]",
+            Status, TaskID, EncodeRetryCount, MaxRetries,
+            bs.MaxLength, bs.DataLength, bs.DataOffset);
+      error("EncodeFrameAsync FATAL: RC=%u TargetKbps=%u MaxKbps=%u "
+            "CodecId=0x%08X LowPower=%d AsyncDepth=%d",
+            QSVEncodeParams.mfx.RateControlMethod,
+            QSVEncodeParams.mfx.TargetKbps,
+            QSVEncodeParams.mfx.MaxKbps,
+            QSVEncodeParams.mfx.CodecId,
+            QSVEncodeParams.mfx.LowPower,
+            QSVEncodeParams.AsyncDepth);
       throw std::runtime_error("Encode(): EncodeFrameAsync fatal error");
     }
   }
