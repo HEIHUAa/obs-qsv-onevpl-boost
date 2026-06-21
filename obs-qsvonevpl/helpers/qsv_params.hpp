@@ -40,8 +40,6 @@ struct encoder_params {
   mfxU16 IntraRefCycleSize;
   mfxU16 NumRefFrame;
   mfxU16 DenoiseStrength;
-  mfxU16 WinBRCMaxAvgKbps;
-  mfxU16 WinBRCSize;
   mfxU16 QVBRQuality;
 
   mfxI16 IntraRefQPDelta;
@@ -74,7 +72,6 @@ struct encoder_params {
   bool Lookahead;
   bool LookaheadLP;
   bool PPyramid;
-  bool WinBRC;
   bool IntraRefEncoding;
   mfxU16 IntraRefType;
   bool CustomBufferSize;

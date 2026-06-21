@@ -1532,36 +1532,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
     CO3Params->AdaptiveLTR = GetCodingOpt(InputParams->AdaptiveLTR);
 
-    if (InputParams->WinBRC &&
-        (QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_CBR ||
-        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_VBR ||
-        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_AVBR ||
-        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_VCM ||
-        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_QVBR)) {
-
-      if (InputParams->WinBRCMaxAvgKbps > 0) {
-        CO3Params->WinBRCMaxAvgKbps = InputParams->WinBRCMaxAvgKbps;
-      } else {
-        mfxF64 winBRCMultiplier = 1.3;
-        if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1)
-          winBRCMultiplier = 1.2;
-
-        mfxF64 winBRCMaxKbps =
-            winBRCMultiplier * InputParams->TargetBitRate;
-        if (winBRCMaxKbps > static_cast<mfxF64>(std::numeric_limits<mfxU16>::max()))
-          winBRCMaxKbps = static_cast<mfxF64>(std::numeric_limits<mfxU16>::max());
-        CO3Params->WinBRCMaxAvgKbps = static_cast<mfxU16>(winBRCMaxKbps);
-      }
-
-      if (InputParams->WinBRCSize > 0) {
-        CO3Params->WinBRCSize = InputParams->WinBRCSize;
-      } else {
-        CO3Params->WinBRCSize =
-            static_cast<mfxU16>(QSVEncodeParams.mfx.FrameInfo.FrameRateExtN /
-                                QSVEncodeParams.mfx.FrameInfo.FrameRateExtD);
-      }
-    }
-
     CO3Params->MotionVectorsOverPicBoundaries =
         GetCodingOpt(InputParams->MotionVectorsOverPicBoundaries);
 
