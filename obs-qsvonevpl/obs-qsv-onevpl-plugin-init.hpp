@@ -60,7 +60,7 @@ struct plugin_context {
 #define TEXT_TRELLIS obs_module_text("Trellis")
 #define TEXT_LA obs_module_text("Lookahead_Mode")
 #define TEXT_LA_DEPTH obs_module_text("LookaheadDepth")
-#define TEXT_LA_LATENCY obs_module_text("Lookahead_Latency")
+#define TEXT_LA_DS obs_module_text("Lookahead_DS")
 #define TEXT_MV_OVER_PIC_BOUNDARIES obs_module_text("MotionVectorsOverpicBoundaries")
 #define TEXT_USE_RAW_REF obs_module_text("UseRawRef")
 #define TEXT_MV_COST_SCALING_FACTOR obs_module_text("MVCostScalingFactor")
@@ -94,7 +94,6 @@ struct plugin_context {
 #define TEXT_FADE_DETECTION obs_module_text("FadeDetection")
 
 #define TEXT_VPP obs_module_text("VideoProcessing_Filters")
-#define TEXT_VPP_MODE obs_module_text("VideoProcessing_Mode")
 #define TEXT_DENOISE_STRENGTH obs_module_text("Denoise_Strength")
 #define TEXT_DENOISE_MODE obs_module_text("Denoise_Mode")
 #define TEXT_SCALING_MODE obs_module_text("Scaling_Mode")
@@ -198,14 +197,12 @@ extern const char *const qsv_latency_names[];
 extern const char *const qsv_params_condition[];
 extern const char *const qsv_params_condition_tristate[];
 extern const char *const qsv_params_weighted_pred_options[];
-extern const char *const qsv_params_condition_vpp[];
 extern const char *const qsv_params_condition_scaling_mode[];
 extern const char *const qsv_params_condition_image_stab_mode[];
 extern const char *const qsv_params_condition_screen_content_tools[];
 extern const char *const qsv_params_condition_intra_ref_encoding[];
 extern const char *const qsv_params_condition_mv_cost_scaling[];
 extern const char *const qsv_params_condition_lookahead_mode[];
-extern const char *const qsv_params_condition_lookahead_latency[];
 extern const char *const qsv_params_condition_lookahead_ds[];
 extern const char *const qsv_params_condition_trellis[];
 extern const char *const qsv_params_condition_hevc_sao[];

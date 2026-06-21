@@ -33,8 +33,6 @@ const char *const qsv_params_condition[] = {"ON", "OFF", 0};
 const char *const qsv_params_condition_tristate[] = {"ON", "OFF", "AUTO", 0};
 const char *const qsv_params_weighted_pred_options[] = {"AUTO", "OFF",
     "DEFAULT", "EXPLICIT", "IMPLICIT", 0};
-const char *const qsv_params_condition_vpp[] = {"PRE ENC", "POST ENC",
-                                                 "PRE ENC | POST ENC", 0};
 const char *const qsv_params_condition_scaling_mode[] = {
     "OFF", "QUALITY | ADVANCED", "VEBOX | ADVANCED",
     "LOWPOWER | NEAREST NEIGHBOR", "LOWPOWER | ADVANCED", "AUTO", 0};
@@ -47,8 +45,6 @@ const char *const qsv_params_condition_intra_ref_encoding[] = {
 const char *const qsv_params_condition_mv_cost_scaling[] = {
     "DEFAULT", "1/2", "1/4", "1/8", "AUTO", 0};
 const char *const qsv_params_condition_lookahead_mode[] = {"HQ", "LP", "OFF", 0};
-const char *const qsv_params_condition_lookahead_latency[] = {
-    "NORMAL", "HIGH", "LOW", "VERYLOW", 0};
 const char *const qsv_params_condition_lookahead_ds[] = {
     "SLOW", "MEDIUM", "FAST", "AUTO", 0};
 const char *const qsv_params_condition_trellis[] = {
@@ -241,7 +237,6 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_int(Settings, "qvbr_quality", 0);
 
   obs_data_set_default_string(Settings, "lookahead", "OFF");
-  obs_data_set_default_string(Settings, "lookahead_latency", "NORMAL");
   obs_data_set_default_string(Settings, "lookahead_ds", "MEDIUM");
   obs_data_set_default_string(Settings, "enctools", "OFF");
   obs_data_set_default_string(Settings, "enc_tools_scene_change", "ON");
@@ -261,7 +256,6 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_int(Settings, "intra_ref_qp_delta", 0);
 
   obs_data_set_default_string(Settings, "vpp", "OFF");
-  obs_data_set_default_string(Settings, "vpp_mode", "PRE ENC");
   obs_data_set_default_string(Settings, "denoise_mode", "OFF");
   obs_data_set_default_int(Settings, "denoise_strength", 50);
   obs_data_set_default_string(Settings, "detail", "OFF");
@@ -405,9 +399,6 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   Prop = obs_properties_get(Properties, "lookahead_ds");
   obs_property_set_visible(Prop, bVisible && bVisible_lookahead_hq);
 
-  Prop = obs_properties_get(Properties, "lookahead_latency");
-  obs_property_set_visible(Prop, bVisible && bVisible_lookahead_hq);
-
   Prop = obs_properties_get(Properties, "la_depth");
   obs_property_set_visible(Prop, bVisible && bVisible_lookahead_hq);
 
@@ -444,6 +435,13 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   Prop = obs_properties_get(Properties, "low_delay_hrd");
   obs_property_set_visible(Prop, bVisible);
 
+  bVisible = bIsVBR || bIsVCM || bIsQVBR;
+  Prop = obs_properties_get(Properties, "low_delay_brc");
+  obs_property_set_visible(Prop, bVisible);
+  if (!bVisible) {
+    obs_data_set_string(Settings, "low_delay_brc", "OFF");
+  }
+
   bool bMaxFrameSizeVisible = !(bIsCQP || bIsICQ);
   Prop = obs_properties_get(Properties, "adaptive_max_frame_size");
   obs_property_set_visible(Prop, bMaxFrameSizeVisible);
@@ -462,8 +460,6 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
 
   const char *vpp = obs_data_get_string(Settings, "vpp");
   bool bVisibleVPP = std::strcmp(vpp, "ON") == 0;
-  Prop = obs_properties_get(Properties, "vpp_mode");
-  obs_property_set_visible(Prop, bVisibleVPP);
   Prop = obs_properties_get(Properties, "detail");
   obs_property_set_visible(Prop, bVisibleVPP);
   Prop = obs_properties_get(Properties, "image_stab_mode");
@@ -705,10 +701,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 
   obs_properties_add_int_slider(Props, "la_depth", TEXT_LA_DEPTH, 1, 100, 1);
 
-  Prop = obs_properties_add_list(Props, "lookahead_latency", TEXT_LA_LATENCY,
-                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition_lookahead_latency);
-
   // WinBRC
   Prop = obs_properties_add_list(Props, "win_brc", TEXT_WINBRC,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -741,6 +733,10 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
+
+  Prop = obs_properties_add_list(Props, "low_delay_brc", TEXT_LOW_DELAY_BRC,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition_tristate);
 
   Prop = obs_properties_add_list(Props, "mbbrc", TEXT_MBBRC,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -1041,11 +1037,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
       Prop, TEXT_VPP_DESC);
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
-  Prop = obs_properties_add_list(Props, "vpp_mode", TEXT_VPP_MODE,
-                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition_vpp);
-  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
-
   Prop = obs_properties_add_list(Props, "denoise_mode", TEXT_DENOISE_MODE,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_denoise_mode);
@@ -1243,6 +1234,7 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       obs_data_get_string(Settings, "hrd_conformance");
 
   const char *LowDelayHRDData = obs_data_get_string(Settings, "low_delay_hrd");
+  const char *LowDelayBRCData = obs_data_get_string(Settings, "low_delay_brc");
 
   const char *MBBRCData = obs_data_get_string(Settings, "mbbrc");
 
@@ -1269,8 +1261,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       obs_data_get_string(Settings, "mv_cost_scaling_factor");
   const char *LookaheadData = obs_data_get_string(Settings, "lookahead");
   const char *LookaheadDSData = obs_data_get_string(Settings, "lookahead_ds");
-  const char *LookaheadLatencyData =
-      obs_data_get_string(Settings, "lookahead_latency");
   const char *DirectBiasAdjustmentData =
       obs_data_get_string(Settings, "direct_bias_adjustment");
   const char *MVOverPicBoundariesData =
@@ -1540,6 +1530,8 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   }
 
   ParseOptionalBool(LowDelayHRDData, Context->EncoderParams.LowDelayHRD);
+
+  ParseOptionalBool(LowDelayBRCData, Context->EncoderParams.LowDelayBRC);
 
   ParseOptionalBool(MVOverPicBoundariesData,
                     Context->EncoderParams.MotionVectorsOverPicBoundaries);

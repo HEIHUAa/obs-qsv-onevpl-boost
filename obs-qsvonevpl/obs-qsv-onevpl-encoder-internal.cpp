@@ -1469,6 +1469,8 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
     CO3Params->LowDelayHrd = GetCodingOpt(InputParams->LowDelayHRD);
 
+    CO3Params->LowDelayBRC = GetCodingOpt(InputParams->LowDelayBRC);
+
     CO3Params->WeightedPred =
         InputParams->WeightedPred.value_or(MFX_WEIGHTED_PRED_DEFAULT);
     CO3Params->WeightedBiPred =
