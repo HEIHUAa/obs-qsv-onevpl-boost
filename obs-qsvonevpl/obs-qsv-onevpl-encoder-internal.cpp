@@ -2547,8 +2547,10 @@ void QSVEncoder::LogActualParams() {
     } else {
       info("\tContentInfo: AUTO");
     }
-    info("\tGPB set: %s",
-         GetCodingOptStatus(CO3->GPB).c_str());
+    if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
+      info("\tGPB set: %s",
+           GetCodingOptStatus(CO3->GPB).c_str());
+    }
     {
       auto *CO2Pyramid =
           QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
@@ -2588,12 +2590,6 @@ void QSVEncoder::LogActualParams() {
          GetCodingOptStatus(CO3->TransformSkip).c_str());
     if (CO3->ScenarioInfo) {
       info("\tScenarioInfo set: %d", CO3->ScenarioInfo);
-    }
-    if (CO3->WinBRCMaxAvgKbps) {
-      info("\tWinBRCMaxAvgKbps set: %d", CO3->WinBRCMaxAvgKbps);
-    }
-    if (CO3->WinBRCSize) {
-      info("\tWinBRCSize set: %d frames", CO3->WinBRCSize);
     }
   }
 
