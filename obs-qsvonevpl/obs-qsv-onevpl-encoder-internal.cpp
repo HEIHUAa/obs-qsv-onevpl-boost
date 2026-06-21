@@ -2521,8 +2521,13 @@ void QSVEncoder::LogActualParams() {
     } else {
       info("\tAdaptiveMaxFrameSize set: AUTO");
     }
-    if (CO2->LookAheadDS != MFX_LOOKAHEAD_DS_OFF) {
-      info("\tLookAheadDS set: %d", CO2->LookAheadDS);
+    {
+      static constexpr std::string_view kLookaheadDSNames[] = {
+        "UNKNOWN", "1X", "2X", "4X"
+      };
+      auto ds_idx = CO2->LookAheadDS < 4 ? CO2->LookAheadDS : 0;
+      info("\tLookAheadDS set: %s (%d)",
+           kLookaheadDSNames[ds_idx].data(), CO2->LookAheadDS);
     }
   }
 

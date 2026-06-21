@@ -46,7 +46,7 @@ const char *const qsv_params_condition_mv_cost_scaling[] = {
     "DEFAULT", "1/2", "1/4", "1/8", "AUTO", 0};
 const char *const qsv_params_condition_lookahead_mode[] = {"HQ", "LP", "OFF", 0};
 const char *const qsv_params_condition_lookahead_ds[] = {
-    "SLOW", "MEDIUM", "FAST", "AUTO", 0};
+    "1X", "2X", "4X", "AUTO", 0};
 const char *const qsv_params_condition_trellis[] = {
     "OFF", "I", "IP", "IPB", "IB", "P", "PB", "B", "AUTO", 0};
 const char *const qsv_params_condition_hevc_sao[] = {
@@ -1654,9 +1654,9 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
 
     // 8. LookaheadDS
     static constexpr std::pair<std::string_view, int> kLookaheadDSMap[] = {
-      {"SLOW",   0},
-      {"MEDIUM", 1},
-      {"FAST",   2},
+      {"1X",    0},
+      {"2X",    1},
+      {"4X",    2},
     };
     if (auto v = MapString(LookaheadDSData, kLookaheadDSMap)) {
       Context->EncoderParams.LookAheadDS = *v;
