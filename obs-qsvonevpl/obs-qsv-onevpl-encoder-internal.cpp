@@ -209,6 +209,10 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
   info("\tSetEncoderParams%s status:  %d", log_prefix, Status);
 
   if (Status >= MFX_ERR_NONE) {
+    if (!InputParams->CustomCodingOptions.empty()) {
+      ParseCustomCodingOptions(InputParams->CustomCodingOptions);
+    }
+
     mfxExtCodingOption2 CO2Copy = {};
     mfxExtCodingOption3 CO3Copy = {};
     bool HasCO2 = false, HasCO3 = false;
@@ -238,10 +242,6 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
       if (Status == MFX_ERR_UNSUPPORTED) {
         warn("MFXVideoENCODE_Query%s returned UNSUPPORTED, "
              "attempting Init directly", log_prefix);
-      }
-
-      if (!InputParams->CustomCodingOptions.empty()) {
-        ParseCustomCodingOptions(InputParams->CustomCodingOptions);
       }
 
       Status = QSVEncode->Init(&QSVEncodeParams);
