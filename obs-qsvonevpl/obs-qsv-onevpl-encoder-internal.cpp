@@ -2472,6 +2472,16 @@ void QSVEncoder::LogActualParams() {
     info("\tGopOptFlag set: CLOSED");
   }
 
+  // ─ CO (mfxExtCodingOption) ─
+  auto *CO = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
+  if (CO) {
+    info("\tRDO set: %s",
+         GetCodingOptStatus(CO->RateDistortionOpt).c_str());
+    info("\tHRDConformance set: %s",
+         GetCodingOptStatus(CO->VuiVclHrdParameters).c_str());
+  }
+
+  // ─ CO2 (mfxExtCodingOption2) ─
   auto *CO2 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
   if (CO2) {
     info("\tMBBRC set: %s",
@@ -2498,28 +2508,11 @@ void QSVEncoder::LogActualParams() {
            kLookaheadDSNames[ds_idx].data(), CO2->LookAheadDS);
     }
     info("\tLookaheadDepth set to: %d", CO2->LookAheadDepth);
-  }
 
-  auto *CO = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
-  if (CO) {
-    info("\tRDO set: %s",
-         GetCodingOptStatus(CO->RateDistortionOpt).c_str());
-    info("\tHRDConformance set: %s",
-         GetCodingOptStatus(CO->VuiVclHrdParameters).c_str());
-  }
-
-  if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
-    auto *SPSPPS = QSVEncodeParams.GetExtBuffer<mfxExtCodingOptionSPSPPS>();
-    if (SPSPPS && SPSPPS->SPSBuffer && SPSPPS->SPSBufSize > 0) {
-      mfxU16 actual_ctb =
-          parse_hevc_sps_ctb_size(SPSPPS->SPSBuffer, SPSPPS->SPSBufSize);
-      if (actual_ctb > 0) {
-        info("\tCTU Size (actual): %d", actual_ctb);
-      } else {
-        info("\tCTU Size: could not parse from SPS");
-      }
-    } else {
-      info("\tCTU Size: not available from SPS");
+    if (QSVEncodeParams.mfx.CodecId != MFX_CODEC_AV1 &&
+        CO2->IntRefType > 0) {
+      info("\tIntraRefresh: type=%d, cycle=%d, QP delta=%d",
+           CO2->IntRefType, CO2->IntRefCycleSize, CO2->IntRefQPDelta);
     }
   }
 
@@ -2529,6 +2522,8 @@ void QSVEncoder::LogActualParams() {
          GetCodingOptStatus(CO3->FadeDetection).c_str());
     info("\tLowDelayHRD set: %s",
          GetCodingOptStatus(CO3->LowDelayHrd).c_str());
+    info("\tLowDelayBRC set: %s",
+         GetCodingOptStatus(CO3->LowDelayBRC).c_str());
     if (CO3->NumRefActiveP[0]) {
       info("\tNumRefActiveP set: %d",
            CO3->NumRefActiveP[0]);
@@ -2586,8 +2581,10 @@ void QSVEncoder::LogActualParams() {
          GetWeightedPredStatus(CO3->WeightedPred).c_str());
     info("\tWeightedBiPred set: %s",
          GetWeightedPredStatus(CO3->WeightedBiPred).c_str());
-    info("\tTransformSkip set: %s",
-         GetCodingOptStatus(CO3->TransformSkip).c_str());
+    if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
+      info("\tTransformSkip set: %s",
+           GetCodingOptStatus(CO3->TransformSkip).c_str());
+    }
     if (CO3->ScenarioInfo) {
       info("\tScenarioInfo set: %d", CO3->ScenarioInfo);
     }
@@ -2632,6 +2629,14 @@ void QSVEncoder::LogActualParams() {
       info("\tAV1 ErrorResilient set: %s",
            GetCodingOptStatus(AV1AuxData->ErrorResilientMode).c_str());
     }
+
+    auto *AV1ScreenTools =
+        QSVEncodeParams.GetExtBuffer<mfxExtAV1ScreenContentTools>();
+    if (AV1ScreenTools) {
+      info("\tAV1 ScreenContentTools: Palette=%s, IntraBlockCopy=%s",
+           GetCodingOptStatus(AV1ScreenTools->Palette).c_str(),
+           GetCodingOptStatus(AV1ScreenTools->IntraBlockCopy).c_str());
+    }
   }
 
   auto *TuneQuality = QSVEncodeParams.GetExtBuffer<mfxExtTuneEncodeQuality>();
@@ -2652,6 +2657,19 @@ void QSVEncoder::LogActualParams() {
   }
 
   if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
+    auto *SPSPPS = QSVEncodeParams.GetExtBuffer<mfxExtCodingOptionSPSPPS>();
+    if (SPSPPS && SPSPPS->SPSBuffer && SPSPPS->SPSBufSize > 0) {
+      mfxU16 actual_ctb =
+          parse_hevc_sps_ctb_size(SPSPPS->SPSBuffer, SPSPPS->SPSBufSize);
+      if (actual_ctb > 0) {
+        info("\tCTU Size (actual): %d", actual_ctb);
+      } else {
+        info("\tCTU Size: could not parse from SPS");
+      }
+    } else {
+      info("\tCTU Size: not available from SPS");
+    }
+
     auto *HEVC = QSVEncodeParams.GetExtBuffer<mfxExtHEVCParam>();
     if (HEVC) {
       info("\tSAO set: %s",
@@ -2659,7 +2677,13 @@ void QSVEncoder::LogActualParams() {
     }
   }
 
-  auto *MCTF = QSVEncodeParams.GetExtBuffer<mfxExtVppMctf>();
+  auto *TemporalLayers =
+      QSVEncodeParams.GetExtBuffer<mfxExtTemporalLayers>();
+  if (TemporalLayers && TemporalLayers->NumLayers > 0) {
+    info("\tTemporalLayers: %d layers", TemporalLayers->NumLayers);
+  }
+
+  auto *MCTF = QSVProcessingParams.GetExtBuffer<mfxExtVppMctf>();
   if (MCTF) {
     info("\tMCTF set: ON | Strength %d",
          MCTF->FilterStrength);
