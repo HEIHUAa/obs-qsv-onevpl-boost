@@ -2504,8 +2504,6 @@ void QSVEncoder::LogActualParams() {
 
   auto *CO2 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
   if (CO2) {
-    info("\tLookaheadDepth set to: %d",
-         CO2->LookAheadDepth);
     info("\tMBBRC set: %s",
          GetCodingOptStatus(CO2->MBBRC).c_str());
     info("\tTrellis set: %s",
@@ -2529,6 +2527,7 @@ void QSVEncoder::LogActualParams() {
       info("\tLookAheadDS set: %s (%d)",
            kLookaheadDSNames[ds_idx].data(), CO2->LookAheadDS);
     }
+    info("\tLookaheadDepth set to: %d", CO2->LookAheadDepth);
   }
 
   auto *CO = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
