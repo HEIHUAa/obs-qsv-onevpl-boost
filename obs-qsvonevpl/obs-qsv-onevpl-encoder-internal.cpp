@@ -1222,14 +1222,14 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
         ((QSVVersion.Minor >= 2 && QSVVersion.Major >= 13) ||
          QSVVersion.Major > 2)) {
       QSVEncodeParams.mfx.BufferSizeInKB =
-          static_cast<mfxU16>(QSVEncodeParams.mfx.TargetKbps / 8);
+          static_cast<mfxU16>(QSVEncodeParams.mfx.TargetKbps / 4);
 
       info("\tCBR fix: ON");
     } else {
       QSVEncodeParams.mfx.BufferSizeInKB =
           InputParams->Lookahead
               ? static_cast<mfxU16>((QSVEncodeParams.mfx.TargetKbps / 8) * 2)
-              : static_cast<mfxU16>(QSVEncodeParams.mfx.TargetKbps / 8);
+              : static_cast<mfxU16>(QSVEncodeParams.mfx.TargetKbps / 4);
     }
 
     ApplyBufferSettings();
@@ -1248,7 +1248,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
           InputParams->Lookahead
               ? static_cast<mfxU16>((vbrKbps / 8.0f) / vbrFps *
                                     (InputParams->LADepth + vbrFps))
-              : static_cast<mfxU16>(vbrKbps / 8.0f);
+              : static_cast<mfxU16>(vbrKbps / 4.0f);
     }
     ApplyBufferSettings();
     break;
@@ -1265,7 +1265,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     QSVEncodeParams.mfx.TargetKbps =
         static_cast<mfxU16>(brcClamp(InputParams->TargetBitRate) / brcMultiplier);
     QSVEncodeParams.mfx.BufferSizeInKB =
-        static_cast<mfxU16>(QSVEncodeParams.mfx.TargetKbps / 8);
+        static_cast<mfxU16>(QSVEncodeParams.mfx.TargetKbps / 4);
     ApplyBufferSettings();
     break;
   case MFX_RATECONTROL_VCM:
@@ -1283,7 +1283,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     QSVEncodeParams.mfx.MaxKbps =
         static_cast<mfxU16>(brcClamp(InputParams->MaxBitRate) / brcMultiplier);
     QSVEncodeParams.mfx.BufferSizeInKB =
-        static_cast<mfxU16>(QSVEncodeParams.mfx.TargetKbps / 8);
+        static_cast<mfxU16>(QSVEncodeParams.mfx.TargetKbps / 4);
     ApplyBufferSettings();
     break;
   }
