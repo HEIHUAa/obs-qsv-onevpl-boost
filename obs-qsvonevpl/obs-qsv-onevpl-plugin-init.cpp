@@ -698,7 +698,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(Prop, TEXT_KEYFRAME_INTERVAL_SEC_DESC);
 
   obs_properties_add_int(Props, "num_ref_frame", TEXT_NUM_REF_FRAME, 0,
-                         65535, 1);
+                         15, 1);
   obs_property_set_long_description(
       obs_properties_get(Props, "num_ref_frame"),
       obs_module_text("NumRefFrame.Tooltip"));
