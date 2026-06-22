@@ -511,6 +511,11 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 
   obs_properties_t *RCGroup = obs_properties_create();
 
+  Prop = obs_properties_add_list(RCGroup, "target_usage", TEXT_SPEED,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_usage_names);
+  obs_property_set_long_description(Prop, TEXT_TARGET_USAGE_DESC);
+
   Prop = obs_properties_add_list(RCGroup, "rate_control", TEXT_RATE_CONTROL,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   obs_property_set_long_description(Prop, TEXT_RATE_CONTROL_DESC);
@@ -583,6 +588,13 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                  OBS_TEXT_DEFAULT);
   obs_property_set_long_description(Prop, TEXT_MAX_QP_DESC);
 
+  Prop = obs_properties_add_int(RCGroup, "adaptive_max_frame_size",
+                                TEXT_ADAPTIVE_MAX_FRAME_SIZE, 0, 2147483647, 100);
+  obs_property_set_long_description(Prop, TEXT_ADAPTIVE_MAX_FRAME_SIZE_DESC);
+  obs_property_int_set_suffix(Prop, " bytes");
+  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
+
+  // VBV settings at bottom of Rate Control group
   Prop = obs_properties_add_list(RCGroup, "hrd_conformance",
                                  TEXT_HRD_CONFORMANCE,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -760,12 +772,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_long_description(Prop, TEXT_FADE_DETECTION_DESC);
 
-  Prop = obs_properties_add_int(ETGroup, "adaptive_max_frame_size",
-                                TEXT_ADAPTIVE_MAX_FRAME_SIZE, 0, 2147483647, 100);
-  obs_property_set_long_description(Prop, TEXT_ADAPTIVE_MAX_FRAME_SIZE_DESC);
-  obs_property_int_set_suffix(Prop, " bytes");
-  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
-
   Prop = obs_properties_add_list(ETGroup, "transform_skip",
                                  TEXT_TRANSFORM_SKIP,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -775,18 +781,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                            IsFeatureSupported("transform_skip"));
 
   obs_properties_t *RMGroup = obs_properties_create();
-
-  Prop = obs_properties_add_int(RMGroup, "num_ref_active_p",
-                                TEXT_NUM_REF_ACTIVE_P, 0, 65535, 1);
-  obs_property_set_long_description(Prop, TEXT_NUM_REF_ACTIVE_P_DESC);
-
-  Prop = obs_properties_add_int(RMGroup, "num_ref_active_bl0",
-                                TEXT_NUM_REF_ACTIVE_BL0, 0, 65535, 1);
-  obs_property_set_long_description(Prop, TEXT_NUM_REF_ACTIVE_BL0_DESC);
-
-  Prop = obs_properties_add_int(RMGroup, "num_ref_active_bl1",
-                                TEXT_NUM_REF_ACTIVE_BL1, 0, 65535, 1);
-  obs_property_set_long_description(Prop, TEXT_NUM_REF_ACTIVE_BL1_DESC);
 
   Prop = obs_properties_add_list(RMGroup, "global_motion_bias_adjustment",
                                  TEXT_GLOBAL_MOTION_BIAS_ADJUSTMENT,
@@ -826,6 +820,18 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_weighted_pred_options);
   obs_property_set_long_description(Prop, TEXT_WEIGHTED_BI_PRED_DESC);
+
+  Prop = obs_properties_add_int(RMGroup, "num_ref_active_p",
+                                TEXT_NUM_REF_ACTIVE_P, 0, 65535, 1);
+  obs_property_set_long_description(Prop, TEXT_NUM_REF_ACTIVE_P_DESC);
+
+  Prop = obs_properties_add_int(RMGroup, "num_ref_active_bl0",
+                                TEXT_NUM_REF_ACTIVE_BL0, 0, 65535, 1);
+  obs_property_set_long_description(Prop, TEXT_NUM_REF_ACTIVE_BL0_DESC);
+
+  Prop = obs_properties_add_int(RMGroup, "num_ref_active_bl1",
+                                TEXT_NUM_REF_ACTIVE_BL1, 0, 65535, 1);
+  obs_property_set_long_description(Prop, TEXT_NUM_REF_ACTIVE_BL1_DESC);
 
   obs_properties_t *VFGroup = obs_properties_create();
 
@@ -1069,11 +1075,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 
   obs_properties_t *MXGroup = obs_properties_create();
 
-  Prop = obs_properties_add_list(MXGroup, "target_usage", TEXT_SPEED,
-                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_usage_names);
-  obs_property_set_long_description(Prop, TEXT_TARGET_USAGE_DESC);
-
   Prop = obs_properties_add_list(MXGroup, "low_power", TEXT_LOW_POWER,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_tristate);
@@ -1114,6 +1115,9 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_properties_add_group(Props, "group_rate_control",
                            TEXT_GROUP_RATE_CONTROL,
                            OBS_GROUP_NORMAL, RCGroup);
+  obs_properties_add_group(Props, "group_codec_specific",
+                           TEXT_GROUP_CODEC_SPECIFIC,
+                           OBS_GROUP_NORMAL, CSGroup);
   obs_properties_add_group(Props, "group_inter_frame",
                            TEXT_GROUP_INTER_FRAME,
                            OBS_GROUP_NORMAL, IFGroup);
@@ -1126,9 +1130,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_properties_add_group(Props, "group_vpp_filters",
                            TEXT_GROUP_VPP_FILTERS,
                            OBS_GROUP_NORMAL, VFGroup);
-  obs_properties_add_group(Props, "group_codec_specific",
-                           TEXT_GROUP_CODEC_SPECIFIC,
-                           OBS_GROUP_NORMAL, CSGroup);
   obs_properties_add_group(Props, "group_intra_refresh",
                            TEXT_GROUP_INTRA_REFRESH,
                            OBS_GROUP_NORMAL, IRGroup);
