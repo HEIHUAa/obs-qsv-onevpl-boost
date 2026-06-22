@@ -256,19 +256,6 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
   // parameters may not be supported. Each retry removes one feature
   // and re-attempts Init until it succeeds or all fallbacks are exhausted.
 
-  if (Status < MFX_ERR_NONE) {
-    auto CO3Params = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-    if (CO3Params && CO3Params->ScenarioInfo != 0) {
-      warn("MFXVideoENCODE_Init%s failed with ScenarioInfo=%d, retrying without ScenarioInfo",
-           log_prefix, CO3Params->ScenarioInfo);
-      QSVEncode->Close();
-      CO3Params->ScenarioInfo = 0;
-
-      Status = QSVEncode->Init(&QSVEncodeParams);
-      info("\tMFXVideoENCODE_Init%s retry (ScenarioInfo) status: %d", log_prefix, Status);
-    }
-  }
-
   // Retry without Temporal Layers if Init still failed
   if (Status < MFX_ERR_NONE) {
     auto TemporalLayers =
