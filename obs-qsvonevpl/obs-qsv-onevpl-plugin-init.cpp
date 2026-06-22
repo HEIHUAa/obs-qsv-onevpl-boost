@@ -271,6 +271,9 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_int(Settings, "temporal_layers", 0);
 
   obs_data_set_default_int(Settings, "gpu_number", 0);
+
+  obs_data_set_default_string(Settings, "min_qp", "-1");
+  obs_data_set_default_string(Settings, "max_qp", "-1");
 }
 
 static inline const char *LocaleKey(const char *str) {
@@ -671,6 +674,15 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                 6553500, 1000);
   obs_property_int_set_suffix(Prop, " KB");
   obs_property_set_long_description(Prop, TEXT_BUFFER_SIZE_DESC);
+
+  // Min/Max QP constraints (text input: "-1" / "12" / "12,12,12")
+  Prop = obs_properties_add_text(Props, "min_qp", TEXT_MIN_QP,
+                                 OBS_TEXT_DEFAULT);
+  obs_property_set_long_description(Prop, TEXT_MIN_QP_DESC);
+
+  Prop = obs_properties_add_text(Props, "max_qp", TEXT_MAX_QP,
+                                 OBS_TEXT_DEFAULT);
+  obs_property_set_long_description(Prop, TEXT_MAX_QP_DESC);
 
   // Frame structure
   Prop = obs_properties_add_int(Props, "keyint_sec", TEXT_KEYINT_SEC, 0,
@@ -1319,6 +1331,9 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   int TemporalLayersData =
       static_cast<int>(obs_data_get_int(Settings, "temporal_layers"));
 
+  const char *MinQPData = obs_data_get_string(Settings, "min_qp");
+  const char *MaxQPData = obs_data_get_string(Settings, "max_qp");
+
   int VideoWidth =
       static_cast<int>(obs_encoder_get_width(Context->EncoderData));
   int VideoHeight =
@@ -1892,6 +1907,9 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   if (CustomCodingOptionsData) {
     Context->EncoderParams.CustomCodingOptions = CustomCodingOptionsData;
   }
+
+  Context->EncoderParams.MinQP = MinQPData ? MinQPData : "-1";
+  Context->EncoderParams.MaxQP = MaxQPData ? MaxQPData : "-1";
 
   Context->EncoderParams.ProcessingEnable = false;
   if ((Context->EncoderParams.VPPDenoiseMode.has_value() ||

@@ -179,6 +179,11 @@ struct plugin_context {
 #define TEXT_CUSTOM_CODING_OPTIONS obs_module_text("CustomCodingOptions")
 #define TEXT_CUSTOM_CODING_OPTIONS_DESC obs_module_text("CustomCodingOptionsDesc")
 
+#define TEXT_MIN_QP obs_module_text("MinQP")
+#define TEXT_MIN_QP_DESC obs_module_text("MinQPDesc")
+#define TEXT_MAX_QP obs_module_text("MaxQP")
+#define TEXT_MAX_QP_DESC obs_module_text("MaxQPDesc")
+
 #define TEXT_TARGET_USAGE_DESC obs_module_text("TargetUsageDesc")
 #define TEXT_RATE_CONTROL_DESC obs_module_text("RateControlDesc")
 #define TEXT_PROFILE_DESC obs_module_text("ProfileDesc")

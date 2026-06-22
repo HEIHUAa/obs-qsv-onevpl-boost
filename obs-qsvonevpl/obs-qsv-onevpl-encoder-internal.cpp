@@ -213,6 +213,8 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
       ParseCustomCodingOptions(InputParams->CustomCodingOptions);
     }
 
+    ApplyQPLimits(InputParams);
+
     mfxExtCodingOption2 CO2Copy = {};
     mfxExtCodingOption3 CO3Copy = {};
     bool HasCO2 = false, HasCO3 = false;
@@ -1093,6 +1095,81 @@ void QSVEncoder::ParseCustomCodingOptions(const std::string &Options) {
     } else {
       warn("\tCustomCodingOptions line %d: unknown field '%s.%s' or buffer not available",
            LineNo, Scope.c_str(), Field.c_str());
+    }
+  }
+}
+
+void QSVEncoder::ApplyQPLimits(struct encoder_params *InputParams) {
+  auto *CO2 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
+  if (!CO2)
+    return;
+
+  mfxU16 bitDepth = InputParams->BitDepth;
+  if (bitDepth == 0)
+    bitDepth = 8;
+  mfxU8 maxQP = static_cast<mfxU8>((std::min)(255, 51 + 6 * (bitDepth - 8)));
+
+  auto ParseQPString = [&](const std::string &qpStr, mfxU8 &qpi,
+                           mfxU8 &qpp, mfxU8 &qpb,
+                           bool &skip) -> bool {
+    skip = false;
+    if (qpStr.empty() || qpStr == "-1") {
+      skip = true;
+      return true;
+    }
+
+    size_t comma1 = qpStr.find(',');
+    if (comma1 == std::string::npos) {
+      int val = std::atoi(qpStr.c_str());
+      if (val < 0 || val > 255)
+        return false;
+      mfxU8 clamped = static_cast<mfxU8>((std::min)(val, (int)maxQP));
+      qpi = qpp = qpb = clamped;
+      return true;
+    }
+
+    size_t comma2 = qpStr.find(',', comma1 + 1);
+    if (comma2 == std::string::npos)
+      return false;
+
+    int v1 = std::atoi(qpStr.substr(0, comma1).c_str());
+    int v2 = std::atoi(qpStr.substr(comma1 + 1, comma2 - comma1 - 1).c_str());
+    int v3 = std::atoi(qpStr.substr(comma2 + 1).c_str());
+
+    if (v1 < 0 || v1 > 255 || v2 < 0 || v2 > 255 || v3 < 0 || v3 > 255)
+      return false;
+
+    qpi = static_cast<mfxU8>((std::min)(v1, (int)maxQP));
+    qpp = static_cast<mfxU8>((std::min)(v2, (int)maxQP));
+    qpb = static_cast<mfxU8>((std::min)(v3, (int)maxQP));
+    return true;
+  };
+
+  {
+    bool skipMin = false;
+    mfxU8 minQPI = 0, minQPP = 0, minQPB = 0;
+    if (ParseQPString(InputParams->MinQP, minQPI, minQPP, minQPB, skipMin)) {
+      if (!skipMin) {
+        CO2->MinQPI = minQPI;
+        CO2->MinQPP = minQPP;
+        CO2->MinQPB = minQPB;
+        info("\tMinQP applied: I=%d, P=%d, B=%d (maxQP=%u)",
+             minQPI, minQPP, minQPB, maxQP);
+      }
+    }
+  }
+
+  {
+    bool skipMax = false;
+    mfxU8 maxQPI = 0, maxQPP = 0, maxQPB = 0;
+    if (ParseQPString(InputParams->MaxQP, maxQPI, maxQPP, maxQPB, skipMax)) {
+      if (!skipMax) {
+        CO2->MaxQPI = maxQPI;
+        CO2->MaxQPP = maxQPP;
+        CO2->MaxQPB = maxQPB;
+        info("\tMaxQP applied: I=%d, P=%d, B=%d (maxQP=%u)",
+             maxQPI, maxQPP, maxQPB, maxQP);
+      }
     }
   }
 }
@@ -2513,6 +2590,14 @@ void QSVEncoder::LogActualParams() {
         CO2->IntRefType > 0) {
       info("\tIntraRefresh: type=%d, cycle=%d, QP delta=%d",
            CO2->IntRefType, CO2->IntRefCycleSize, CO2->IntRefQPDelta);
+    }
+
+    // Min/Max QP constraints
+    if (CO2->MinQPI > 0 || CO2->MinQPP > 0 || CO2->MinQPB > 0 ||
+        CO2->MaxQPI > 0 || CO2->MaxQPP > 0 || CO2->MaxQPB > 0) {
+      info("\tQP limits ─ Min: I=%d, P=%d, B=%d │ Max: I=%d, P=%d, B=%d",
+           CO2->MinQPI, CO2->MinQPP, CO2->MinQPB,
+           CO2->MaxQPI, CO2->MaxQPP, CO2->MaxQPB);
     }
   }
 

@@ -44,6 +44,7 @@ public:
                              enum codec_enum Codec);
 
   void ParseCustomCodingOptions(const std::string &Options);
+  void ApplyQPLimits(struct encoder_params *InputParams);
 
   mfxStatus GetVideoParam(enum codec_enum Codec);
   void LogActualParams();

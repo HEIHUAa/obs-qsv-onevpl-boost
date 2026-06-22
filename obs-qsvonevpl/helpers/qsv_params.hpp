@@ -128,6 +128,12 @@ struct encoder_params {
 
   std::string CustomCodingOptions;
 
+  // Min/Max QP constraints: "-1" = driver default, "12" = all IPB=12,
+  // "12,12,12" = per-type (I,P,B). Applied after custom coding options
+  // in InitEncoderInternal.
+  std::string MinQP;
+  std::string MaxQP;
+
   // ROI (Region of Interest) settings
   struct roi_region {
     mfxU16 Left = 0;
