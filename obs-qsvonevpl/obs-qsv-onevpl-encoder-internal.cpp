@@ -1191,6 +1191,12 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
          encodeWidth, encodeHeight);
   }
 
+  QSVEncodeParams.mfx.FrameInfo.Width =
+      static_cast<mfxU16>((((encodeWidth + 15) >> 4) << 4));
+
+  QSVEncodeParams.mfx.FrameInfo.Height =
+      static_cast<mfxU16>((((encodeHeight + 15) >> 4) << 4));
+  info("\tHeight: %d", QSVEncodeParams.mfx.FrameInfo.Height);
   QSVEncodeParams.mfx.FrameInfo.ChromaFormat =
       static_cast<mfxU16>(InputParams->ChromaFormat);
 
