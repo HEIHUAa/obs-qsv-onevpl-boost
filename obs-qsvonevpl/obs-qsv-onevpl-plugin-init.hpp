@@ -184,6 +184,16 @@ struct plugin_context {
 #define TEXT_MAX_QP obs_module_text("MaxQP")
 #define TEXT_MAX_QP_DESC obs_module_text("MaxQPDesc")
 
+// Property group names
+#define TEXT_GROUP_RATE_CONTROL obs_module_text("Group.RateControl")
+#define TEXT_GROUP_INTER_FRAME obs_module_text("Group.InterFrame")
+#define TEXT_GROUP_ENC_TOOLS obs_module_text("Group.EncTools")
+#define TEXT_GROUP_REF_MOTION obs_module_text("Group.RefMotion")
+#define TEXT_GROUP_VPP_FILTERS obs_module_text("Group.VPPFilters")
+#define TEXT_GROUP_CODEC_SPECIFIC obs_module_text("Group.CodecSpecific")
+#define TEXT_GROUP_INTRA_REFRESH obs_module_text("Group.IntraRefresh")
+#define TEXT_GROUP_MISC obs_module_text("Group.Misc")
+
 #define TEXT_TARGET_USAGE_DESC obs_module_text("TargetUsageDesc")
 #define TEXT_RATE_CONTROL_DESC obs_module_text("RateControlDesc")
 #define TEXT_PROFILE_DESC obs_module_text("ProfileDesc")
