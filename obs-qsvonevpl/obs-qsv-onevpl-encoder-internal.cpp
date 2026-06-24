@@ -234,8 +234,6 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
       Status = MFX_ERR_NONE;
     }
 
-    ApplyQPLimits(InputParams);
-
     // When Query returns MFX_ERR_UNSUPPORTED (-3) on older hardware
     // (e.g. UHD 600 / Apollo Lake), the driver may not support Query
     // with extended coding option buffers (CO2/CO3).  Init may still
@@ -250,6 +248,8 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
       info("\tMFXVideoENCODE_Init%s status: %d", log_prefix, Status);
     }
   }
+
+  ApplyQPLimits(InputParams);
 
   // Fallback retry chain:
   // On older hardware (especially UHD600), certain ext buffers and
