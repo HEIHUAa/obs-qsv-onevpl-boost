@@ -213,8 +213,6 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
       ParseCustomCodingOptions(InputParams->CustomCodingOptions);
     }
 
-    ApplyQPLimits(InputParams);
-
     mfxExtCodingOption2 CO2Copy = {};
     mfxExtCodingOption3 CO3Copy = {};
     bool HasCO2 = false, HasCO3 = false;
@@ -235,6 +233,8 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
                            HasCO2, HasCO3);
       Status = MFX_ERR_NONE;
     }
+
+    ApplyQPLimits(InputParams);
 
     // When Query returns MFX_ERR_UNSUPPORTED (-3) on older hardware
     // (e.g. UHD 600 / Apollo Lake), the driver may not support Query
@@ -1140,8 +1140,6 @@ void QSVEncoder::ApplyQPLimits(struct encoder_params *InputParams) {
         CO2->MinQPI = minQPI;
         CO2->MinQPP = minQPP;
         CO2->MinQPB = minQPB;
-        info("\tMinQP applied: I=%d, P=%d, B=%d (maxQP=%u)",
-             minQPI, minQPP, minQPB, maxQP);
       }
     }
   }
@@ -1154,8 +1152,6 @@ void QSVEncoder::ApplyQPLimits(struct encoder_params *InputParams) {
         CO2->MaxQPI = maxQPI;
         CO2->MaxQPP = maxQPP;
         CO2->MaxQPB = maxQPB;
-        info("\tMaxQP applied: I=%d, P=%d, B=%d (maxQP=%u)",
-             maxQPI, maxQPP, maxQPB, maxQP);
       }
     }
   }
