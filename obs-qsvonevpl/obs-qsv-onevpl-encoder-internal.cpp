@@ -213,6 +213,8 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
       ParseCustomCodingOptions(InputParams->CustomCodingOptions);
     }
 
+    ApplyQPLimits(InputParams);
+
     mfxExtCodingOption2 CO2Copy = {};
     mfxExtCodingOption3 CO3Copy = {};
     bool HasCO2 = false, HasCO3 = false;
@@ -248,8 +250,6 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
       info("\tMFXVideoENCODE_Init%s status: %d", log_prefix, Status);
     }
   }
-
-  ApplyQPLimits(InputParams);
 
   // Fallback retry chain:
   // On older hardware (especially UHD600), certain ext buffers and
