@@ -2876,7 +2876,7 @@ void QSVEncoder::LoadFrameData(mfxFrameSurface1 *&Surface, uint8_t **FrameData,
                line_size);
       }
     }
-  } else if (Surface->Info.FourCC == MFX_FOURCC_YUV444) {
+  } else if (Surface->Info.FourCC == MFX_MAKEFOURCC('4','4','4','P')) {
     // I444 / YUV444: three planes, all full resolution
     const size_t line_size = static_cast<size_t>(Width);
     auto copyPlane = [&](mfxU8 *dst, uint8_t *src, mfxU16 planePitch, uint32_t srcLinesize) {
@@ -3749,7 +3749,7 @@ void QSVEncoder::WarmUpEncoder() {
              static_cast<size_t>(h / 2) * pitch);
       Surf->FrameInterface->Unmap(Surf);
     }
-  } else if (fi.FourCC == MFX_FOURCC_YUV444) {
+  } else if (fi.FourCC == MFX_MAKEFOURCC('4','4','4','P')) {
     sts = Surf->FrameInterface->Map(Surf, MFX_MAP_WRITE);
     if (sts >= MFX_ERR_NONE) {
       mfxU16 h = fi.CropH > 0 ? fi.CropH : fi.Height;
