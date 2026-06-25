@@ -2876,6 +2876,23 @@ void QSVEncoder::LoadFrameData(mfxFrameSurface1 *&Surface, uint8_t **FrameData,
                line_size);
       }
     }
+  } else if (Surface->Info.FourCC == MFX_FOURCC_YUV444) {
+    // I444 / YUV444: three planes, all full resolution
+    const size_t line_size = static_cast<size_t>(Width);
+    auto copyPlane = [&](mfxU8 *dst, uint8_t *src, mfxU16 planePitch, uint32_t srcLinesize) {
+      if (Pitch == static_cast<mfxU16>(srcLinesize)) {
+        avx2_memcpy(dst, src, static_cast<size_t>(Height) * Pitch);
+      } else {
+        PTR = static_cast<mfxU8 *>(dst + SurfaceInfo->CropX +
+                                   SurfaceInfo->CropY * Pitch);
+        for (i = 0; i < Height; i++) {
+          avx2_memcpy(PTR + i * Pitch, src + i * srcLinesize, line_size);
+        }
+      }
+    };
+    copyPlane(SurfaceData->Y, FrameData[0], Pitch, FrameLinesize[0]);
+    copyPlane(SurfaceData->U, FrameData[1], Pitch, FrameLinesize[1]);
+    copyPlane(SurfaceData->V, FrameData[2], Pitch, FrameLinesize[2]);
   }
 }
 
@@ -3730,6 +3747,16 @@ void QSVEncoder::WarmUpEncoder() {
              static_cast<size_t>(h) * pitch);
       memset(Surf->Data.UV, is10bit ? 512 : 128,
              static_cast<size_t>(h / 2) * pitch);
+      Surf->FrameInterface->Unmap(Surf);
+    }
+  } else if (fi.FourCC == MFX_FOURCC_YUV444) {
+    sts = Surf->FrameInterface->Map(Surf, MFX_MAP_WRITE);
+    if (sts >= MFX_ERR_NONE) {
+      mfxU16 h = fi.CropH > 0 ? fi.CropH : fi.Height;
+      mfxU32 pitch = Surf->Data.Pitch;
+      memset(Surf->Data.Y, 16, static_cast<size_t>(h) * pitch);
+      memset(Surf->Data.U, 128, static_cast<size_t>(h) * pitch);
+      memset(Surf->Data.V, 128, static_cast<size_t>(h) * pitch);
       Surf->FrameInterface->Unmap(Surf);
     }
   }

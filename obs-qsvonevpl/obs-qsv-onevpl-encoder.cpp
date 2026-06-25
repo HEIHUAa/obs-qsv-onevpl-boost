@@ -213,8 +213,7 @@ void GetVideoInfo(void *Data, video_scale_info *Info) {
     obs_data_t *settings = obs_encoder_get_settings(Context->EncoderData);
     const char *profile = obs_data_get_string(settings, "profile");
     use10bit = (std::strcmp(profile, "main10") == 0);
-    use444 = (std::strcmp(profile, "rext") == 0 ||
-              std::strcmp(profile, "scc") == 0);
+    use444 = (std::strcmp(profile, "rext") == 0);
     obs_data_release(settings);
     break;
   }
