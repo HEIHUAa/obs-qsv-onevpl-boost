@@ -45,7 +45,6 @@ public:
 
   void ParseCustomCodingOptions(const std::string &Options);
   void ApplyQPLimits(struct encoder_params *InputParams);
-  void EnforceQPLimits();
 
   mfxStatus GetVideoParam(enum codec_enum Codec);
   void LogActualParams();
@@ -150,13 +149,8 @@ private:
   MFXEncodeCtrl QSVEncodeCtrlParams{};
 
   mfxExtVppAuxData* QSVProcessingAuxData{};
-
+  
   mfxFrameAllocRequest QSVAllocateRequest{};
-
-  // desired QP limits for per-frame enforcement
-  bool QPLimitsActive{false};
-  mfxU8 DesiredMinQPI{}, DesiredMinQPP{}, DesiredMinQPB{};
-  mfxU8 DesiredMaxQPI{}, DesiredMaxQPP{}, DesiredMaxQPB{};
 
 #ifdef QSV_UHD600_SUPPORT
   bool QSVUseSystemMemoryPath{};
