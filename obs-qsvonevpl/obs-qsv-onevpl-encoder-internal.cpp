@@ -1140,6 +1140,10 @@ void QSVEncoder::ApplyQPLimits(struct encoder_params *InputParams) {
         CO2->MinQPI = minQPI;
         CO2->MinQPP = minQPP;
         CO2->MinQPB = minQPB;
+        DesiredMinQPI = minQPI;
+        DesiredMinQPP = minQPP;
+        DesiredMinQPB = minQPB;
+        QPLimitsActive = true;
       }
     }
   }
@@ -1152,8 +1156,49 @@ void QSVEncoder::ApplyQPLimits(struct encoder_params *InputParams) {
         CO2->MaxQPI = maxQPI;
         CO2->MaxQPP = maxQPP;
         CO2->MaxQPB = maxQPB;
+        DesiredMaxQPI = maxQPI;
+        DesiredMaxQPP = maxQPP;
+        DesiredMaxQPB = maxQPB;
+        QPLimitsActive = true;
       }
     }
+  }
+}
+
+void QSVEncoder::EnforceQPLimits() {
+  if (!QPLimitsActive)
+    return;
+
+  auto *CO2 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
+  if (!CO2)
+    return;
+
+  // check if driver values still match what we want
+  if (CO2->MinQPI == DesiredMinQPI && CO2->MinQPP == DesiredMinQPP &&
+      CO2->MinQPB == DesiredMinQPB && CO2->MaxQPI == DesiredMaxQPI &&
+      CO2->MaxQPP == DesiredMaxQPP && CO2->MaxQPB == DesiredMaxQPB)
+    return;
+
+  // driver diverged — force restore via Reset
+  warn("QP limits drifted (driver: Min I/P/B=%d/%d/%d Max I/P/B=%d/%d/%d, "
+       "desired: Min I/P/B=%d/%d/%d Max I/P/B=%d/%d/%d), forcing Reset",
+       CO2->MinQPI, CO2->MinQPP, CO2->MinQPB,
+       CO2->MaxQPI, CO2->MaxQPP, CO2->MaxQPB,
+       DesiredMinQPI, DesiredMinQPP, DesiredMinQPB,
+       DesiredMaxQPI, DesiredMaxQPP, DesiredMaxQPB);
+
+  CO2->MinQPI = DesiredMinQPI;
+  CO2->MinQPP = DesiredMinQPP;
+  CO2->MinQPB = DesiredMinQPB;
+  CO2->MaxQPI = DesiredMaxQPI;
+  CO2->MaxQPP = DesiredMaxQPP;
+  CO2->MaxQPB = DesiredMaxQPB;
+
+  mfxStatus sts = QSVEncode->Reset(&QSVEncodeParams);
+  if (sts < MFX_ERR_NONE) {
+    error("EnforceQPLimits: Reset failed (sts=%d)", sts);
+  } else {
+    info("EnforceQPLimits: Reset succeeded, QP limits restored");
   }
 }
 
@@ -2930,6 +2975,7 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
   bool roiActive = !CachedROIRegions.empty();
   if (roiActive)
     SetupROIEncodeCtrl();
+  EnforceQPLimits();
   Status = EncodeFrameRetryLoop(EncodeSurface,
                                 roiActive ? &QSVEncodeCtrlParams : nullptr,
                                 TaskID, 200);
@@ -3201,6 +3247,7 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
     bool roiActive = !CachedROIRegions.empty();
     if (roiActive)
       SetupROIEncodeCtrl();
+    EnforceQPLimits();
     EncodeFrameRetryLoop(
         (QSVProcessingEnable ? QSVProcessingSurface : QSVEncodeSurface),
         roiActive ? &QSVEncodeCtrlParams : nullptr,
@@ -3328,6 +3375,7 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
   bool roiActive = !CachedROIRegions.empty();
   if (roiActive)
     SetupROIEncodeCtrl();
+  EnforceQPLimits();
   EncodeFrameRetryLoop(
       (QSVProcessingEnable ? QSVProcessingSurface : QSVEncodeSurface),
       roiActive ? &QSVEncodeCtrlParams : nullptr,
