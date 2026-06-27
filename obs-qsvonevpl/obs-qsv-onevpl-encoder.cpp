@@ -133,9 +133,9 @@ bool UpdateEncoderParams(void *Data, obs_data_t *Params) {
       int qpi = static_cast<int>(obs_data_get_int(Params, "qpi"));
       int qpp = static_cast<int>(obs_data_get_int(Params, "qpp"));
       int qpb = static_cast<int>(obs_data_get_int(Params, "qpb"));
-      // AV1/VP9 use 0-255 QP range internally; user inputs 1-63, scale up
-      if (Context->Codec == QSV_CODEC_AV1 ||
-          Context->Codec == QSV_CODEC_VP9) {
+      // AV1 uses 0-255 QP range internally; user inputs 1-63, scale up.
+      // VP9's QPI is used directly as base_q_idx (no scaling needed).
+      if (Context->Codec == QSV_CODEC_AV1) {
         qpi *= 4;
         qpp *= 4;
         qpb *= 4;
@@ -145,8 +145,7 @@ bool UpdateEncoderParams(void *Data, obs_data_t *Params) {
       Context->EncoderParams.QPB = static_cast<mfxU16>(qpb);
     } else {
       int cqp = static_cast<int>(obs_data_get_int(Params, "cqp"));
-      if (Context->Codec == QSV_CODEC_AV1 ||
-          Context->Codec == QSV_CODEC_VP9) {
+      if (Context->Codec == QSV_CODEC_AV1) {
         cqp *= 4;
       }
       Context->EncoderParams.QPI = static_cast<mfxU16>(cqp);

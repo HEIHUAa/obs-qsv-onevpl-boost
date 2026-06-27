@@ -15,7 +15,8 @@ constexpr mfxU32 BRC_MAX_KBPS_LIMIT = 65535;
 
 // VP9 encoder doesn't populate mfxExtEncodedFrameInfo.QP, so parse the
 // bitstream uncompressed header to extract base_q_idx (8 bits, 0-255).
-// Returns base_q_idx / 4 to map to the 0-63 user-facing QP range.
+// VP9's QPI is used directly as base_q_idx (no *4 scaling at init time),
+// so we return base_q_idx as-is — it already matches the user-facing 0-63 range.
 // Returns 0 on any parse failure (safe default — matches old behavior).
 static mfxU16 ExtractVP9QP(std::span<const uint8_t> data) {
   if (data.size() < 4)
@@ -161,8 +162,7 @@ static mfxU16 ExtractVP9QP(std::span<const uint8_t> data) {
   }
 
   // base_q_idx (8 bits) — the actual quantizer index
-  uint32_t base_q = read_bits(8);
-  return static_cast<mfxU16>(base_q / 4);
+  return static_cast<mfxU16>(read_bits(8));
 }
 
 QSVEncoder::~QSVEncoder() {
