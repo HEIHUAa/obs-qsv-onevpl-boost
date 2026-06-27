@@ -1789,34 +1789,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       AV1TileParams->NumTileRows = 1;
     }
 
-    if (InputParams->TuneQualityMode.has_value()) {
-      auto TuneQualityParams =
-          QSVEncodeParams.AddExtBuffer<mfxExtTuneEncodeQuality>();
-      TuneQualityParams->Header.BufferId = MFX_EXTBUFF_TUNE_ENCODE_QUALITY;
-      TuneQualityParams->Header.BufferSz = sizeof(mfxExtTuneEncodeQuality);
-      switch ((int)InputParams->TuneQualityMode.value()) {
-      default:
-      case 0:
-        TuneQualityParams->TuneQuality = MFX_ENCODE_TUNE_OFF;
-        break;
-      case 1:
-        TuneQualityParams->TuneQuality = MFX_ENCODE_TUNE_PSNR;
-        break;
-      case 2:
-        TuneQualityParams->TuneQuality = MFX_ENCODE_TUNE_SSIM;
-        break;
-      case 3:
-        TuneQualityParams->TuneQuality = MFX_ENCODE_TUNE_MS_SSIM;
-        break;
-      case 4:
-        TuneQualityParams->TuneQuality = MFX_ENCODE_TUNE_VMAF;
-        break;
-      case 5:
-        TuneQualityParams->TuneQuality = MFX_ENCODE_TUNE_PERCEPTUAL;
-        break;
-      }
-    }
-
     if (InputParams->AV1CDEF.has_value() || InputParams->AV1Restoration.has_value() ||
         InputParams->AV1LoopFilter.has_value() || InputParams->AV1SuperRes.has_value() ||
         InputParams->AV1InterpFilter.has_value() || InputParams->AV1ErrorResilient.has_value()) {
@@ -1913,6 +1885,34 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
           break;
         }
       }
+    }
+  }
+
+  if (InputParams->TuneQualityMode.has_value()) {
+    auto TuneQualityParams =
+        QSVEncodeParams.AddExtBuffer<mfxExtTuneEncodeQuality>();
+    TuneQualityParams->Header.BufferId = MFX_EXTBUFF_TUNE_ENCODE_QUALITY;
+    TuneQualityParams->Header.BufferSz = sizeof(mfxExtTuneEncodeQuality);
+    switch ((int)InputParams->TuneQualityMode.value()) {
+    default:
+    case 0:
+      TuneQualityParams->TuneQuality = MFX_ENCODE_TUNE_OFF;
+      break;
+    case 1:
+      TuneQualityParams->TuneQuality = MFX_ENCODE_TUNE_PSNR;
+      break;
+    case 2:
+      TuneQualityParams->TuneQuality = MFX_ENCODE_TUNE_SSIM;
+      break;
+    case 3:
+      TuneQualityParams->TuneQuality = MFX_ENCODE_TUNE_MS_SSIM;
+      break;
+    case 4:
+      TuneQualityParams->TuneQuality = MFX_ENCODE_TUNE_VMAF;
+      break;
+    case 5:
+      TuneQualityParams->TuneQuality = MFX_ENCODE_TUNE_PERCEPTUAL;
+      break;
     }
   }
 
