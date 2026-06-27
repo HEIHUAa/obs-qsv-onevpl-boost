@@ -1740,37 +1740,28 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   }
 
   if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1) {
-    if (InputParams->ScreenContentTools == 0) {
-      if (QSVVersion.Major >= 2 && QSVVersion.Minor >= 12 ||
-          QSVVersion.Major > 2) {
-        if (QSVPlatform.CodeName >= MFX_PLATFORM_LUNARLAKE &&
-            QSVPlatform.CodeName != MFX_PLATFORM_ALDERLAKE_N &&
-            QSVPlatform.CodeName != MFX_PLATFORM_ARROWLAKE) {
-          auto AV1ScreenContentTools =
-              QSVEncodeParams.AddExtBuffer<mfxExtAV1ScreenContentTools>();
-          AV1ScreenContentTools->Header.BufferId =
-              MFX_EXTBUFF_AV1_SCREEN_CONTENT_TOOLS;
-          AV1ScreenContentTools->Header.BufferSz =
-              sizeof(mfxExtAV1ScreenContentTools);
-          AV1ScreenContentTools->Palette = MFX_CODINGOPTION_ON;
-          AV1ScreenContentTools->IntraBlockCopy = MFX_CODINGOPTION_ON;
-        }
-      }
-    } else {
+    const bool AutoEnable =
+        InputParams->ScreenContentTools == 0 &&
+        (QSVVersion.Major > 2 ||
+         (QSVVersion.Major == 2 && QSVVersion.Minor >= 12)) &&
+        QSVPlatform.CodeName >= MFX_PLATFORM_LUNARLAKE &&
+        QSVPlatform.CodeName != MFX_PLATFORM_ALDERLAKE_N &&
+        QSVPlatform.CodeName != MFX_PLATFORM_ARROWLAKE;
+    const bool UserEnable = InputParams->ScreenContentTools == 2;
+
+    if (AutoEnable || UserEnable) {
       auto AV1ScreenContentTools =
           QSVEncodeParams.AddExtBuffer<mfxExtAV1ScreenContentTools>();
       AV1ScreenContentTools->Header.BufferId =
           MFX_EXTBUFF_AV1_SCREEN_CONTENT_TOOLS;
       AV1ScreenContentTools->Header.BufferSz =
           sizeof(mfxExtAV1ScreenContentTools);
-      AV1ScreenContentTools->Palette =
-          (InputParams->ScreenContentTools == 2) ? MFX_CODINGOPTION_ON
-                                                  : MFX_CODINGOPTION_OFF;
-      AV1ScreenContentTools->IntraBlockCopy =
-          (InputParams->ScreenContentTools == 2) ? MFX_CODINGOPTION_ON
-                                                  : MFX_CODINGOPTION_OFF;
-      info("\tAV1ScreenContentTools: %s",
-           InputParams->ScreenContentTools == 2 ? "ON" : "OFF");
+      AV1ScreenContentTools->Palette = MFX_CODINGOPTION_ON;
+      AV1ScreenContentTools->IntraBlockCopy = MFX_CODINGOPTION_ON;
+      info("\tAV1ScreenContentTools: ON (%s)",
+           AutoEnable ? "auto" : "user");
+    } else {
+      info("\tAV1ScreenContentTools: skipped (OFF or unsupported platform)");
     }
 
     auto AV1BitstreamParams =
