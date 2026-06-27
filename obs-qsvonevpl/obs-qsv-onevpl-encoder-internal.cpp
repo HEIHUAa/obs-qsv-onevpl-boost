@@ -248,6 +248,12 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
 
       Status = QSVEncode->Init(&QSVEncodeParams);
       info("\tMFXVideoENCODE_Init%s status: %d", log_prefix, Status);
+
+      if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
+        LogCO2CO3Corrections(log_prefix, QSVEncodeParams, &CO2Copy,
+                             &CO3Copy, HasCO2, HasCO3);
+        Status = MFX_ERR_NONE;
+      }
     }
   }
 
