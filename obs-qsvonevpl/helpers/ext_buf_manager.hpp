@@ -124,6 +124,9 @@ template <> struct MFXExtBufferID<mfxExtHEVCTiles> {
 template <> struct MFXExtBufferID<mfxExtVP9Param> {
   enum { id = MFX_EXTBUFF_VP9_PARAM };
 };
+template <> struct MFXExtBufferID<mfxExtVP9TemporalLayers> {
+  enum { id = MFX_EXTBUFF_VP9_TEMPORAL_LAYERS };
+};
 template <> struct MFXExtBufferID<mfxExtAV1BitstreamParam> {
   enum { id = MFX_EXTBUFF_AV1_BITSTREAM_PARAM };
 };

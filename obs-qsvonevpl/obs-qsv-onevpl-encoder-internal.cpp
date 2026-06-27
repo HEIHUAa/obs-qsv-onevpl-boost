@@ -13,6 +13,158 @@
 
 constexpr mfxU32 BRC_MAX_KBPS_LIMIT = 65535;
 
+// VP9 encoder doesn't populate mfxExtEncodedFrameInfo.QP, so parse the
+// bitstream uncompressed header to extract base_q_idx (8 bits, 0-255).
+// Returns base_q_idx / 4 to map to the 0-63 user-facing QP range.
+// Returns 0 on any parse failure (safe default — matches old behavior).
+static mfxU16 ExtractVP9QP(std::span<const uint8_t> data) {
+  if (data.size() < 4)
+    return 0;
+
+  size_t byte_pos = 0;
+  int bit_pos = 7;
+  const size_t max_size = data.size();
+
+  // MSB-first bit reader (matches VP9 WriteLiteral/WriteBit order)
+  auto read_bits = [&](int n) -> uint32_t {
+    uint32_t val = 0;
+    for (int i = 0; i < n && byte_pos < max_size; i++) {
+      val = (val << 1) | ((data[byte_pos] >> bit_pos) & 1);
+      if (--bit_pos < 0) {
+        bit_pos = 7;
+        byte_pos++;
+      }
+    }
+    return val;
+  };
+
+  // frame_marker (2 bits) must be 0b10
+  if (read_bits(2) != 0x2)
+    return 0;
+
+  // profile: 2 bits; if both are 1, read 1 reserved bit (profile 3)
+  uint32_t pv = read_bits(2);
+  int profile;
+  if (pv == 3) {
+    read_bits(1);  // reserved
+    profile = 3;
+  } else {
+    profile = (pv == 0) ? 0 : (pv == 2) ? 1 : 2;
+  }
+
+  // show_existing_frame — no QP to extract
+  if (read_bits(1))
+    return 0;
+
+  uint32_t frame_type = read_bits(1);     // 0=KEY, 1=INTER
+  uint32_t show_frame = read_bits(1);
+  uint32_t error_resilient = read_bits(1);
+
+  const bool is_key = (frame_type == 0);
+  bool intra_only = false;
+
+  if (is_key) {
+    // sync code 0x49 0x83 0x42
+    if (read_bits(8) != 0x49 || read_bits(8) != 0x83 ||
+        read_bits(8) != 0x42)
+      return 0;
+    // color_config
+    if (profile >= 2)
+      read_bits(1);  // bitDepth
+    uint32_t cs = read_bits(3);
+    if (cs != 7) {  // != SRGB
+      read_bits(1);  // colorRange
+      if (profile == 1 || profile == 3)
+        read_bits(3);  // subsamplingX, subsamplingY, unused
+    } else {
+      read_bits(1);  // unused
+    }
+    // frame_size
+    read_bits(16);  // width-1
+    read_bits(16);  // height-1
+    read_bits(1);   // renderFrameSizeDifferent
+  } else {
+    // INTER frame
+    if (!show_frame)
+      intra_only = read_bits(1);
+
+    if (!error_resilient)
+      read_bits(2);  // resetFrameContext
+
+    read_bits(8);  // refreshFrameMask
+
+    if (intra_only) {
+      if (read_bits(8) != 0x49 || read_bits(8) != 0x83 ||
+          read_bits(8) != 0x42)
+        return 0;
+      if (profile > 0) {
+        if (profile >= 2)
+          read_bits(1);
+        uint32_t cs = read_bits(3);
+        if (cs != 7) {
+          read_bits(1);
+          if (profile == 1 || profile == 3)
+            read_bits(3);
+        } else {
+          read_bits(1);
+        }
+      }
+      read_bits(16);  // width-1
+      read_bits(16);  // height-1
+      read_bits(1);   // renderFrameSizeDifferent
+    } else {
+      // 3 reference frames: refList(3) + refBias(1) each
+      for (int i = 0; i < 3; i++) {
+        read_bits(3);
+        read_bits(1);
+      }
+      // frame_size_with_refs: read "found" flags (up to 3)
+      bool found = false;
+      for (int i = 0; i < 3; i++) {
+        if (read_bits(1)) {
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        read_bits(16);  // width-1
+        read_bits(16);  // height-1
+      }
+      read_bits(1);  // renderFrameSizeDifferent
+      read_bits(1);  // allowHighPrecisionMV
+      // interp_filter
+      if (!read_bits(1))  // isSwitchable
+        read_bits(2);     // filter
+    }
+  }
+
+  // Common suffix after frame-type-specific sections
+  if (!error_resilient) {
+    read_bits(1);  // refreshFrameContext
+    read_bits(1);  // frameParallelDecoding
+  }
+  read_bits(2);  // frameContextIdx
+
+  // loop filter
+  read_bits(6);  // lfLevel
+  read_bits(3);  // sharpness
+  if (read_bits(1)) {  // modeRefDeltaEnabled
+    if (read_bits(1)) {  // modeRefDeltaUpdate
+      // 4 ref deltas + 2 mode deltas = 6 entries
+      for (int i = 0; i < 6; i++) {
+        if (read_bits(1)) {  // update flag
+          read_bits(6);      // abs delta
+          read_bits(1);      // sign
+        }
+      }
+    }
+  }
+
+  // base_q_idx (8 bits) — the actual quantizer index
+  uint32_t base_q = read_bits(8);
+  return static_cast<mfxU16>(base_q / 4);
+}
+
 QSVEncoder::~QSVEncoder() {
   if (QSVEncode || QSVProcessing) {
     ClearData();
@@ -266,6 +418,11 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
   if (Status < MFX_ERR_NONE) {
     auto TemporalLayers =
         QSVEncodeParams.GetExtBuffer<mfxExtTemporalLayers>();
+    // VP9 uses its own temporal layers buffer, check it separately
+    auto VP9TemporalLayers =
+        QSVEncodeParams.GetExtBuffer<mfxExtVP9TemporalLayers>();
+    bool hasVP9TL = VP9TemporalLayers &&
+                     VP9TemporalLayers->Layer[0].FrameRateScale > 0;
     if (TemporalLayers && TemporalLayers->NumLayers > 0) {
       warn("MFXVideoENCODE_Init%s failed with temporal layers (err=%d, "
            "NumLayers=%d, B-frames=%d, NumRefFrame=%d), "
@@ -280,6 +437,19 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
 
       Status = QSVEncode->Init(&QSVEncodeParams);
       info("\tMFXVideoENCODE_Init%s retry (TemporalLayers removed) status: %d",
+           log_prefix, Status);
+    } else if (hasVP9TL) {
+      // VP9 path: strip mfxExtVP9TemporalLayers and retry
+      warn("MFXVideoENCODE_Init%s failed with VP9 temporal layers (err=%d, "
+           "B-frames=%d, NumRefFrame=%d), retrying without temporal layers",
+           log_prefix, Status,
+           QSVEncodeParams.mfx.GopRefDist - 1,
+           QSVEncodeParams.mfx.NumRefFrame);
+      QSVEncode->Close();
+      QSVEncodeParams.RemoveExtBuffer<mfxExtVP9TemporalLayers>();
+
+      Status = QSVEncode->Init(&QSVEncodeParams);
+      info("\tMFXVideoENCODE_Init%s retry (VP9 TemporalLayers removed) status: %d",
            log_prefix, Status);
     }
   }
@@ -1456,7 +1626,14 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       }
     }
 
-    CO2Params->MBBRC = GetCodingOpt(InputParams->MBBRC);
+    // VP9 MBBRC (auto-segmentation) is disabled: oneVPL defaults it OFF for
+    // all platforms and enabling it corrupts the picture. Force OFF even if
+    // stale user settings (from before the UI control was removed) say ON.
+    if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_VP9) {
+      CO2Params->MBBRC = MFX_CODINGOPTION_OFF;
+    } else {
+      CO2Params->MBBRC = GetCodingOpt(InputParams->MBBRC);
+    }
 
     if (InputParams->Trellis.has_value()) {
       switch (InputParams->Trellis.value()) {
@@ -1974,34 +2151,68 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
            InputParams->TemporalLayersNum);
     }
 
-    auto TemporalLayersParams =
-        QSVEncodeParams.AddExtBuffer<mfxExtTemporalLayers>();
-    TemporalLayersParams->Header.BufferId =
-        MFX_EXTBUFF_UNIVERSAL_TEMPORAL_LAYERS;
-    TemporalLayersParams->Header.BufferSz = sizeof(mfxExtTemporalLayers);
-    TemporalLayersParams->NumLayers =
-        static_cast<mfxU16>(InputParams->TemporalLayersNum);
-    TemporalLayersParams->BaseLayerPID = 0;
-    delete[] QSVLayerArray;
-    QSVLayerArray =
-        new mfxTemporalLayer[InputParams->TemporalLayersNum]();
+    if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_VP9) {
+      // VP9 has its own temporal layers buffer (mfxExtVP9TemporalLayers) with
+      // an inline Layer[8] array. Only FrameRateScale + TargetKbps per layer,
+      // no per-layer QP. TargetKbps is ignored under CQP. Universal temporal
+      // layers buffer is NOT supported by VP9 Init (causes -15).
+      auto VP9TLParams =
+          QSVEncodeParams.AddExtBuffer<mfxExtVP9TemporalLayers>();
+      VP9TLParams->Header.BufferId = MFX_EXTBUFF_VP9_TEMPORAL_LAYERS;
+      VP9TLParams->Header.BufferSz = sizeof(mfxExtVP9TemporalLayers);
 
-    {
-      mfxU16 baseQPForLayer = 0;
-      int qpStep = 0;
-      if (InputParams->RateControl == MFX_RATECONTROL_CQP) {
-        baseQPForLayer = static_cast<mfxU16>(std::min({InputParams->QPI, InputParams->QPP, InputParams->QPB}));
-        qpStep = 4;
+      // Clear the inline array so unused layers have FrameRateScale=0
+      // (VPL treats first Layer[i].FrameRateScale==0 as end-of-list).
+      std::fill(std::begin(VP9TLParams->Layer),
+                std::end(VP9TLParams->Layer),
+                mfxVP9TemporalLayer{});
+
+      const int numLayers = std::min<int>(
+          InputParams->TemporalLayersNum, 8);
+      const bool isCQP =
+          InputParams->RateControl == MFX_RATECONTROL_CQP;
+      const mfxU16 totalKbps = QSVEncodeParams.mfx.TargetKbps;
+      for (int i = 0; i < numLayers; i++) {
+        VP9TLParams->Layer[i].FrameRateScale =
+            static_cast<mfxU16>(1 << (numLayers - 1 - i));
+        // Spec: highest layer TargetKbps == mfx.TargetKbps, and each
+        // subsequent layer must be greater than the previous. Distribute
+        // proportionally. CQP ignores TargetKbps, leave 0.
+        VP9TLParams->Layer[i].TargetKbps =
+            isCQP ? 0
+                  : static_cast<mfxU16>(
+                        static_cast<mfxU32>(totalKbps) * (i + 1) / numLayers);
       }
-      for (int i = 0; i < InputParams->TemporalLayersNum; i++) {
-        QSVLayerArray[i].FrameRateScale =
-            1 << (InputParams->TemporalLayersNum - 1 - i);
-        QSVLayerArray[i].QPI = static_cast<mfxU16>(baseQPForLayer + i * qpStep);
-        QSVLayerArray[i].QPP = static_cast<mfxU16>(baseQPForLayer + i * qpStep);
-        QSVLayerArray[i].QPB = static_cast<mfxU16>(baseQPForLayer + i * qpStep);
+    } else {
+      auto TemporalLayersParams =
+          QSVEncodeParams.AddExtBuffer<mfxExtTemporalLayers>();
+      TemporalLayersParams->Header.BufferId =
+          MFX_EXTBUFF_UNIVERSAL_TEMPORAL_LAYERS;
+      TemporalLayersParams->Header.BufferSz = sizeof(mfxExtTemporalLayers);
+      TemporalLayersParams->NumLayers =
+          static_cast<mfxU16>(InputParams->TemporalLayersNum);
+      TemporalLayersParams->BaseLayerPID = 0;
+      delete[] QSVLayerArray;
+      QSVLayerArray =
+          new mfxTemporalLayer[InputParams->TemporalLayersNum]();
+
+      {
+        mfxU16 baseQPForLayer = 0;
+        int qpStep = 0;
+        if (InputParams->RateControl == MFX_RATECONTROL_CQP) {
+          baseQPForLayer = static_cast<mfxU16>(std::min({InputParams->QPI, InputParams->QPP, InputParams->QPB}));
+          qpStep = 4;
+        }
+        for (int i = 0; i < InputParams->TemporalLayersNum; i++) {
+          QSVLayerArray[i].FrameRateScale =
+              1 << (InputParams->TemporalLayersNum - 1 - i);
+          QSVLayerArray[i].QPI = static_cast<mfxU16>(baseQPForLayer + i * qpStep);
+          QSVLayerArray[i].QPP = static_cast<mfxU16>(baseQPForLayer + i * qpStep);
+          QSVLayerArray[i].QPB = static_cast<mfxU16>(baseQPForLayer + i * qpStep);
+        }
       }
+      TemporalLayersParams->Layers = QSVLayerArray;
     }
-    TemporalLayersParams->Layers = QSVLayerArray;
     info("\tTemporalLayers: %d layers enabled",
          InputParams->TemporalLayersNum);
   }
@@ -2020,17 +2231,17 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   // Attaching anything else makes CheckExtBufferHeaders return UNSUPPORTED and
   // Init translates that to MFX_ERR_INVALID_VIDEO_PARAM (-15). Strip every
   // unsupported buffer that the shared setup above may have attached.
-  // QSVLayerArray is owned by the encoder and freed in the destructor, so
-  // removing the TemporalLayers buffer here does not leak it.
+  // Note: VP9 temporal layers now use mfxExtVP9TemporalLayers (added above),
+  // so mfxExtTemporalLayers (universal) is never attached for VP9 and doesn't
+  // need stripping here.
   if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_VP9) {
     QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOption>();
     QSVEncodeParams.RemoveExtBuffer<mfxExtVideoSignalInfo>();
     QSVEncodeParams.RemoveExtBuffer<mfxExtMasteringDisplayColourVolume>();
     QSVEncodeParams.RemoveExtBuffer<mfxExtContentLightLevelInfo>();
-    QSVEncodeParams.RemoveExtBuffer<mfxExtTemporalLayers>();
     QSVEncodeParams.RemoveExtBuffer<mfxExtEncToolsConfig>();
     info("\tVP9: stripped unsupported ext buffers (CO, VideoSignal, "
-         "MasteringDisplay, ContentLight, TemporalLayers, EncTools)");
+         "MasteringDisplay, ContentLight, EncTools)");
   }
 
   // Cache ROI data for per-frame use, only for AVC and HEVC (AV1/VP9 not supported)
@@ -2512,7 +2723,7 @@ void QSVEncoder::LogActualParams() {
 
   auto GetWeightedPredStatus = [](mfxU16 Value) -> std::string {
     switch (Value) {
-    case 0:  return "AUTO (driver decides)";
+    case 0:  return "AUTO";
     case 1:  return "DEFAULT";
     case 2:  return "EXPLICIT";
     case 3:  return "IMPLICIT";
@@ -2755,6 +2966,15 @@ void QSVEncoder::LogActualParams() {
       QSVEncodeParams.GetExtBuffer<mfxExtTemporalLayers>();
   if (TemporalLayers && TemporalLayers->NumLayers > 0) {
     info("\tTemporalLayers: %d layers", TemporalLayers->NumLayers);
+  }
+
+  // VP9 uses a separate temporal layers buffer, log it too
+  auto *VP9TemporalLayers =
+      QSVEncodeParams.GetExtBuffer<mfxExtVP9TemporalLayers>();
+  if (VP9TemporalLayers && VP9TemporalLayers->Layer[0].FrameRateScale > 0) {
+    int n = 0;
+    while (n < 8 && VP9TemporalLayers->Layer[n].FrameRateScale > 0) ++n;
+    info("\tVP9 TemporalLayers: %d layers", n);
   }
 
   auto *MCTF = QSVProcessingParams.GetExtBuffer<mfxExtVppMctf>();
@@ -3002,7 +3222,12 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
     // ─ Extract per-frame QP from the synced bitstream ─
     {
       auto &taskBS = QSVTaskPool[QSVSyncTaskID].Bitstream;
-      if (taskBS.ExtParam && taskBS.NumExtParam > 0) {
+      if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_VP9) {
+        // VP9 encoder doesn't fill mfxExtEncodedFrameInfo.QP; parse bitstream
+        mfxU16 qp = ExtractVP9QP(std::span<const uint8_t>(
+            taskBS.Data + taskBS.DataOffset, taskBS.DataLength));
+        UpdateFrameQPStats(taskBS.FrameType, qp);
+      } else if (taskBS.ExtParam && taskBS.NumExtParam > 0) {
         auto *encInfo =
             reinterpret_cast<mfxExtEncodedFrameInfo *>(taskBS.ExtParam[0]);
         if (encInfo &&
@@ -3667,7 +3892,13 @@ mfxStatus QSVEncoder::Drain() {
           QSVSession, Task.SyncPoint, 5000);
       if (SyncSts >= MFX_ERR_NONE) {
         // Extract QP from this task's bitstream
-        if (Task.Bitstream.ExtParam && Task.Bitstream.NumExtParam > 0) {
+        if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_VP9) {
+          mfxU16 qp = ExtractVP9QP(std::span<const uint8_t>(
+              Task.Bitstream.Data + Task.Bitstream.DataOffset,
+              Task.Bitstream.DataLength));
+          UpdateFrameQPStats(Task.Bitstream.FrameType, qp);
+        } else if (Task.Bitstream.ExtParam &&
+                   Task.Bitstream.NumExtParam > 0) {
           auto *encInfo =
               reinterpret_cast<mfxExtEncodedFrameInfo *>(
                   Task.Bitstream.ExtParam[0]);

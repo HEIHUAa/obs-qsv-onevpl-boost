@@ -405,10 +405,14 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   }
 
   bVisible = bIsCBR || bIsVBR || bIsAVBR || bIsVCM || bIsQVBR || bIsICQ;
+  // "mbbrc" control is not created for VP9 (codec disables MBBRC), so guard
+  // against nullptr here.
   Prop = obs_properties_get(Properties, "mbbrc");
-  obs_property_set_visible(Prop, bVisible);
-  if (!bVisible) {
-    obs_data_set_string(Settings, "mbbrc", "OFF");
+  if (Prop) {
+    obs_property_set_visible(Prop, bVisible);
+    if (!bVisible) {
+      obs_data_set_string(Settings, "mbbrc", "OFF");
+    }
   }
 
   bool bRateControlVisible = !bIsICQ && !bIsCQP;
@@ -644,11 +648,17 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_long_description(Prop, TEXT_LOW_DELAY_BRC_DESC);
 
-  Prop = obs_properties_add_list(RCGroup, "mbbrc", TEXT_MBBRC,
-                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition_tristate);
-  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
-  obs_property_set_long_description(Prop, TEXT_MBBRC_DESC);
+  // MBBRC (macroblock-level BRC, aka auto-segmentation) is disabled for VP9:
+  // oneVPL VP9 encoder defaults it OFF for all platforms and enabling it
+  // triggers BRC_SEGMENTATION which corrupts the picture. Skip the control
+  // entirely for VP9 so users can't turn it on.
+  if (Codec != QSV_CODEC_VP9) {
+    Prop = obs_properties_add_list(RCGroup, "mbbrc", TEXT_MBBRC,
+                                   OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+    AddStrings(Prop, qsv_params_condition_tristate);
+    obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
+    obs_property_set_long_description(Prop, TEXT_MBBRC_DESC);
+  }
 
   obs_properties_t *IFGroup = obs_properties_create();
 
