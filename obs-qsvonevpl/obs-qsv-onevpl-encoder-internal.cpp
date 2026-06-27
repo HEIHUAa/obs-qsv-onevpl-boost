@@ -2354,20 +2354,26 @@ mfxStatus QSVEncoder::ChangeBitstreamSize(mfxU32 NewSize) {
 }
 
 mfxStatus QSVEncoder::GetVideoParam([[maybe_unused]] enum codec_enum Codec) {
-  auto SPSPPSParams = QSVEncodeParams.AddExtBuffer<mfxExtCodingOptionSPSPPS>();
-  SPSPPSParams->Header.BufferId = MFX_EXTBUFF_CODING_OPTION_SPSPPS;
-  SPSPPSParams->Header.BufferSz = sizeof(mfxExtCodingOptionSPSPPS);
-  SPSPPSParams->SPSBuffer = QSVSPSBuffer;
-  SPSPPSParams->PPSBuffer = QSVPPSBuffer;
-  SPSPPSParams->SPSBufSize = 1024;
-  SPSPPSParams->PPSBufSize = 1024;
+  // VP9 has no SPS/PPS/VPS NAL units (it uses an uncompressed frame header
+  // instead). Attaching MFX_EXTBUFF_CODING_OPTION_SPSPPS makes GetVideoParam
+  // return MFX_ERR_UNSUPPORTED (-3), so skip it for VP9. This matches FFmpeg's
+  // qsv_retrieve_enc_vp9_params which only queries VP9_PARAM/CO2/CO3.
+  if (QSVEncodeParams.mfx.CodecId != MFX_CODEC_VP9) {
+    auto SPSPPSParams = QSVEncodeParams.AddExtBuffer<mfxExtCodingOptionSPSPPS>();
+    SPSPPSParams->Header.BufferId = MFX_EXTBUFF_CODING_OPTION_SPSPPS;
+    SPSPPSParams->Header.BufferSz = sizeof(mfxExtCodingOptionSPSPPS);
+    SPSPPSParams->SPSBuffer = QSVSPSBuffer;
+    SPSPPSParams->PPSBuffer = QSVPPSBuffer;
+    SPSPPSParams->SPSBufSize = 1024;
+    SPSPPSParams->PPSBufSize = 1024;
 
-  if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
-    auto VPSParams = QSVEncodeParams.AddExtBuffer<mfxExtCodingOptionVPS>();
-    VPSParams->Header.BufferId = MFX_EXTBUFF_CODING_OPTION_VPS;
-    VPSParams->Header.BufferSz = sizeof(mfxExtCodingOptionVPS);
-    VPSParams->VPSBuffer = QSVVPSBuffer;
-    VPSParams->VPSBufSize = 1024;
+    if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
+      auto VPSParams = QSVEncodeParams.AddExtBuffer<mfxExtCodingOptionVPS>();
+      VPSParams->Header.BufferId = MFX_EXTBUFF_CODING_OPTION_VPS;
+      VPSParams->Header.BufferSz = sizeof(mfxExtCodingOptionVPS);
+      VPSParams->VPSBuffer = QSVVPSBuffer;
+      VPSParams->VPSBufSize = 1024;
+    }
   }
 
   mfxStatus Status = QSVEncode->GetVideoParam(&QSVEncodeParams);
