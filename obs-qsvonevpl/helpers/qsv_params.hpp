@@ -100,7 +100,6 @@ struct encoder_params {
   std::optional<int> MVCostScalingFactor;
   std::optional<int> LookAheadDS;
   std::optional<bool> MotionVectorsOverPicBoundaries;
-  std::optional<int> TuneQualityMode;
   std::optional<int> NumRefFrameLayers;
   std::optional<int> NumRefActiveP;
   std::optional<int> NumRefActiveBL0;

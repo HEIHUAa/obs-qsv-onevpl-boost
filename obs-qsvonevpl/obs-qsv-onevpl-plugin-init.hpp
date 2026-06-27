@@ -71,7 +71,6 @@ struct plugin_context {
 #define TEXT_ADAPTIVE_LTR obs_module_text("AdaptiveLTR")
 #define TEXT_HEVC_SAO obs_module_text("SampleAdaptiveOffset")
 #define TEXT_HEVC_GPB obs_module_text("GPB")
-#define TEXT_TUNE_QUALITY_MODE obs_module_text("TuneQualityMode")
 #define TEXT_ENC_TOOLS obs_module_text("EncTools")
 #define TEXT_ENC_TOOLS_SCENE_CHANGE obs_module_text("EncToolsSceneChange")
 #define TEXT_ENC_TOOLS_ADAPTIVE_REF_P obs_module_text("EncToolsAdaptiveRefP")
@@ -118,7 +117,6 @@ struct plugin_context {
 #define TEXT_QPB obs_module_text("QPB")
 
 #define TEXT_ENC_TOOLS_DESC obs_module_text("EncTools.Tooltip")
-#define TEXT_TUNE_QUALITY_DESC obs_module_text("TuneQuality.Tooltip")
 #define TEXT_HEVC_GPB_DESC obs_module_text("HEVCGPB.Tooltip")
 #define TEXT_B_FRAMES_DESC obs_module_text("BFramesDesc")
 #define TEXT_HRD_CONFORMANCE_DESC obs_module_text("HRDConformanceDesc")
@@ -258,7 +256,6 @@ extern const char *const qsv_params_condition_trellis[];
 extern const char *const qsv_params_condition_hevc_sao[];
 extern const char *const qsv_params_condition_scenario_info[];
 extern const char *const qsv_params_condition_content_info[];
-extern const char *const qsv_params_condition_tune_quality[];
 extern const char *const qsv_params_condition_denoise_mode[];
 extern const char *const qsv_params_condition_av1_interp_filter[];
 

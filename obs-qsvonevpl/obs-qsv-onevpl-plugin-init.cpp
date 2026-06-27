@@ -10,7 +10,7 @@
 // Extern array definitions (declared in obs-qsv-onevpl-plugin-init.hpp)
 const char *const qsv_profile_names_av1[] = {"main", "high", "pro", 0};
 const char *const qsv_profile_names_h264[] = {
-    "high10", "high", "main", "baseline", "extended", "high422",
+    "high10", "high", "main", "baseline", "extended",
     "constrained_baseline", "constrained_high", 0};
 const char *const qsv_profile_names_hevc[] = {"main", "main10", "mainsp", "rext", "scc", 0};
 const char *const qsv_profile_tiers_hevc[] = {"main", "high", 0};
@@ -57,8 +57,6 @@ const char *const qsv_params_condition_scenario_info[] = {
     "GAME_STREAMING", "REMOTE_GAMING", 0};
 const char *const qsv_params_condition_content_info[] = {
     "OFF", "AUTO", "FULL_SCREEN_VIDEO", "NON_VIDEO_SCREEN", "NOISY_VIDEO", 0};
-const char *const qsv_params_condition_tune_quality[] = {
-    "DEFAULT", "PSNR", "SSIM", "MS SSIM", "VMAF", "PERCEPTUAL", "OFF", 0};
 const char *const qsv_params_condition_denoise_mode[] = {
     "DEFAULT", "AUTO | BDRATE | PRE ENCODE", "AUTO | ADJUST | POST ENCODE",
     "AUTO | SUBJECTIVE | PRE ENCODE", "MANUAL | PRE ENCODE",
@@ -89,7 +87,6 @@ struct qsv_feature_info {
 
 static const struct qsv_feature_info qsv_feature_info_list[] = {
     {"enc_tools", MFX_PLATFORM_TIGERLAKE},
-    {"tune_quality", MFX_PLATFORM_TIGERLAKE},
     {"transform_skip", MFX_PLATFORM_ICELAKE},
     {nullptr, 0}};
 
@@ -210,7 +207,6 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(Settings, "low_delay_brc", "OFF");
   obs_data_set_default_string(Settings, "low_delay_hrd", "OFF");
 
-  obs_data_set_default_string(Settings, "tune_quality", "OFF");
   obs_data_set_default_string(Settings, "adaptive_i", "AUTO");
   obs_data_set_default_string(Settings, "adaptive_b", "AUTO");
   obs_data_set_default_string(Settings, "adaptive_ref", "AUTO");
@@ -232,7 +228,7 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_int(Settings, "qvbr_quality", 0);
 
   obs_data_set_default_string(Settings, "lookahead", "OFF");
-  obs_data_set_default_string(Settings, "lookahead_ds", "MEDIUM");
+  obs_data_set_default_string(Settings, "lookahead_ds", "AUTO");
   obs_data_set_default_string(Settings, "enctools", "OFF");
   obs_data_set_default_string(Settings, "enc_tools_scene_change", "ON");
   obs_data_set_default_string(Settings, "enc_tools_adaptive_ref_p", "ON");
@@ -495,8 +491,9 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   obs_property_set_visible(Prop, bVisible);
 
   mfxU16 platformCode = QueryPlatformCodeName();
+  // HEVC High Tier is supported on SKL+ (subject to level >= 4 spec constraint)
   bool hasHighTier = platformCode == 0 ||
-                     platformCode >= MFX_PLATFORM_TIGERLAKE;
+                     platformCode >= MFX_PLATFORM_SKYLAKE;
   bool showTierList = hasHighTier;
   Prop = obs_properties_get(Properties, "hevc_tier");
   if (Prop) {
@@ -529,12 +526,15 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
     const struct qsv_rate_control_info *rcInfo = qsv_rate_control_info_list;
     while (rcInfo->name) {
       if (platformCode == 0 || platformCode >= rcInfo->min_platform) {
-        bool skipForAV1 = Codec == QSV_CODEC_AV1 &&
-                          std::strcmp(rcInfo->name, "VCM") == 0;
-        if (!skipForAV1) {
-          obs_property_list_add_string(Prop, rcInfo->name, rcInfo->name);
-        }
+      // AVCM does not support VCM; HEVC encoder does not support AVBR
+      bool skipForAV1 = Codec == QSV_CODEC_AV1 &&
+                        std::strcmp(rcInfo->name, "VCM") == 0;
+      bool skipForHEVC = Codec == QSV_CODEC_HEVC &&
+                         std::strcmp(rcInfo->name, "AVBR") == 0;
+      if (!skipForAV1 && !skipForHEVC) {
+        obs_property_list_add_string(Prop, rcInfo->name, rcInfo->name);
       }
+    }
       rcInfo++;
     }
   }
@@ -732,13 +732,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   AddStrings(Prop, qsv_params_condition);
   obs_property_set_long_description(Prop, TEXT_ENC_TOOLS_SALIENCY_MAP_HINT_DESC);
 
-  Prop = obs_properties_add_list(ETGroup, "tune_quality",
-                                 TEXT_TUNE_QUALITY_MODE,
-                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition_tune_quality);
-  obs_property_set_long_description(Prop, TEXT_TUNE_QUALITY_DESC);
-  obs_property_set_visible(Prop, IsFeatureSupported("tune_quality"));
-
   Prop = obs_properties_add_list(ETGroup, "adaptive_i", TEXT_ADAPTIVE_I,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_tristate);
@@ -918,17 +911,8 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   if (Codec == QSV_CODEC_AVC) {
     const char *const *profileEntryH264 = qsv_profile_names_h264;
     while (*profileEntryH264) {
-      bool showProfileH264 = true;
-      if (platformCode != 0) {
-        bool isHigh422 = std::strcmp(*profileEntryH264, "high422") == 0;
-        if (isHigh422 && platformCode < MFX_PLATFORM_HASWELL) {
-          showProfileH264 = false;
-        }
-      }
-      if (showProfileH264) {
-        obs_property_list_add_string(Prop, *profileEntryH264,
-                                     *profileEntryH264);
-      }
+      obs_property_list_add_string(Prop, *profileEntryH264,
+                                   *profileEntryH264);
       profileEntryH264++;
     }
   } else if (Codec == QSV_CODEC_AV1) {
@@ -940,7 +924,8 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
       if (platformCode != 0) {
         bool isRext = std::strcmp(*profileEntryHEVC, "rext") == 0;
         bool isSCC = std::strcmp(*profileEntryHEVC, "scc") == 0;
-        if ((isRext || isSCC) && platformCode < MFX_PLATFORM_ICELAKE) {
+        // REXT encoding (12-bit/4:2:2/4:4:4) and SCC encoding require TGL_LP (Gen12)+
+        if ((isRext || isSCC) && platformCode < MFX_PLATFORM_TIGERLAKE) {
           showProfileHEVC = false;
         }
       }
@@ -959,7 +944,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
     obs_property_set_long_description(Prop, TEXT_TIER_DESC);
 
     bool hasHighTier = platformCode == 0 ||
-                       platformCode >= MFX_PLATFORM_TIGERLAKE;
+                       platformCode >= MFX_PLATFORM_SKYLAKE;
     const char *const *tierEntry = qsv_profile_tiers_hevc;
     while (*tierEntry) {
       bool isHigh = std::strcmp(*tierEntry, "high") == 0;
@@ -1307,7 +1292,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       obs_data_get_string(Settings, "transform_skip");
   const char *FadeDetectionData =
       obs_data_get_string(Settings, "fade_detection");
-  const char *TuneQualityData = obs_data_get_string(Settings, "tune_quality");
   const char *AV1CDEFData = obs_data_get_string(Settings, "av1_cdef");
   const char *AV1RestorationData = obs_data_get_string(Settings, "av1_restoration");
   const char *AV1LoopFilterData = obs_data_get_string(Settings, "av1_loop_filter");
@@ -1379,19 +1363,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.TargetUsage = *v;
   }
 
-  // 2. TuneQuality
-  static constexpr std::pair<std::string_view, int> kTuneQualityMap[] = {
-    {"DEFAULT",     0},
-    {"PSNR",        1},
-    {"SSIM",        2},
-    {"MS SSIM",     3},
-    {"VMAF",        4},
-    {"PERCEPTUAL",  5},
-  };
-  if (auto v = MapString(TuneQualityData, kTuneQualityMap)) {
-    Context->EncoderParams.TuneQualityMode = *v;
-  }
-
   Context->EncoderParams.AV1CDEF = ParseAV1Ternary(AV1CDEFData);
   Context->EncoderParams.AV1Restoration = ParseAV1Ternary(AV1RestorationData);
   Context->EncoderParams.AV1LoopFilter = ParseAV1Ternary(AV1LoopFilterData);
@@ -1432,7 +1403,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       {"high",                   MFX_PROFILE_AVC_HIGH},
       {"extended",               MFX_PROFILE_AVC_EXTENDED},
       {"high10",                 MFX_PROFILE_AVC_HIGH10},
-      {"high422",                MFX_PROFILE_AVC_HIGH_422},
       {"constrained_baseline",   MFX_PROFILE_AVC_CONSTRAINED_BASELINE},
       {"constrained_high",       MFX_PROFILE_AVC_CONSTRAINED_HIGH},
     };
@@ -1464,10 +1434,10 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     } else {
       mfxU16 platformCode = QueryPlatformCodeName();
       bool highTierUnsupported = platformCode != 0 &&
-                                 platformCode < MFX_PLATFORM_TIGERLAKE;
+                                 platformCode < MFX_PLATFORM_SKYLAKE;
       if (highTierUnsupported) {
         info("\tHEVC High Tier not supported on this GPU "
-             "(platform < TigerLake), falling back to Main Tier");
+             "(platform < Skylake), falling back to Main Tier");
         Context->EncoderParams.CodecProfileTier = MFX_TIER_HEVC_MAIN;
       } else {
         Context->EncoderParams.CodecProfileTier = MFX_TIER_HEVC_HIGH;
@@ -1926,20 +1896,23 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     if (VOI->format == VIDEO_FORMAT_NV12) {
       Context->EncoderParams.ProcessingEnable = true;
     } else if (VOI->format == VIDEO_FORMAT_P010 ||
-               VOI->format == VIDEO_FORMAT_I444 ||
-               VOI->format == VIDEO_FORMAT_I412  ||
+               VOI->format == VIDEO_FORMAT_I444) {
+      // P010 and AYUV(8-bit 4:4:4) are supported on all platforms
+      Context->EncoderParams.ProcessingEnable = true;
+    } else if (VOI->format == VIDEO_FORMAT_I412 ||
                VOI->format == VIDEO_FORMAT_P416) {
+      // 12/16-bit 4:4:4 (Y410/Y416) requires TGL_LP (Gen12)+
       mfxU16 platformCode = QueryPlatformCodeName();
-      bool nonNV12VPPSupported = platformCode == 0 ||
-                                 platformCode >= MFX_PLATFORM_ICELAKE;
-      if (nonNV12VPPSupported) {
+      bool highBitDepth444Supported = platformCode == 0 ||
+                                      platformCode >= MFX_PLATFORM_TIGERLAKE;
+      if (highBitDepth444Supported) {
         Context->EncoderParams.ProcessingEnable = true;
       } else {
-        warn("VPP with %s is only supported on Ice Lake+",
-             VOI->format == VIDEO_FORMAT_P010 ? "P010" : "4:4:4");
+        warn("VPP with %s is only supported on Tiger Lake+",
+             VOI->format == VIDEO_FORMAT_I412 ? "I412" : "P416");
       }
     } else {
-      warn("VPP is only available with NV12 or P010(ICL+) or 4:4:4(ICL+) color format");
+      warn("VPP is only available with NV12, P010, or 4:4:4 color format");
     }
   }
 
