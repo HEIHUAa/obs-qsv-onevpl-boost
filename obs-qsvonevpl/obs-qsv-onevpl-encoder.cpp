@@ -34,6 +34,18 @@ bool OpenEncoder(std::unique_ptr<QSVEncoder> &EncoderPTR,
             break;
           }
         }
+      } else if (Codec == QSV_CODEC_VP9 &&
+                 !AdaptersInfo[AdapterID].SupportVP9) {
+        for (mfxU32 i = 0; i < MAX_ADAPTERS; i++) {
+          if (!AdaptersInfo[i].IsIntel) {
+            AdapterIDAdjustment++;
+            continue;
+          }
+          if (AdaptersInfo[i].SupportVP9) {
+            AdapterID = i;
+            break;
+          }
+        }
       } else if (!AdaptersInfo[AdapterID].IsIntel) {
         for (mfxU32 i = 0; i < MAX_ADAPTERS; i++) {
           if (AdaptersInfo[i].IsIntel) {
@@ -121,7 +133,9 @@ bool UpdateEncoderParams(void *Data, obs_data_t *Params) {
       int qpi = static_cast<int>(obs_data_get_int(Params, "qpi"));
       int qpp = static_cast<int>(obs_data_get_int(Params, "qpp"));
       int qpb = static_cast<int>(obs_data_get_int(Params, "qpb"));
-      if (Context->Codec == QSV_CODEC_AV1) {
+      // AV1/VP9 use 0-255 QP range internally; user inputs 1-63, scale up
+      if (Context->Codec == QSV_CODEC_AV1 ||
+          Context->Codec == QSV_CODEC_VP9) {
         qpi *= 4;
         qpp *= 4;
         qpb *= 4;
@@ -131,7 +145,8 @@ bool UpdateEncoderParams(void *Data, obs_data_t *Params) {
       Context->EncoderParams.QPB = static_cast<mfxU16>(qpb);
     } else {
       int cqp = static_cast<int>(obs_data_get_int(Params, "cqp"));
-      if (Context->Codec == QSV_CODEC_AV1) {
+      if (Context->Codec == QSV_CODEC_AV1 ||
+          Context->Codec == QSV_CODEC_VP9) {
         cqp *= 4;
       }
       Context->EncoderParams.QPI = static_cast<mfxU16>(cqp);
@@ -214,6 +229,17 @@ void GetVideoInfo(void *Data, video_scale_info *Info) {
     const char *profile = obs_data_get_string(settings, "profile");
     use10bit = (std::strcmp(profile, "main10") == 0);
     use444 = (std::strcmp(profile, "rext") == 0);
+    obs_data_release(settings);
+    break;
+  }
+  case QSV_CODEC_VP9: {
+    obs_data_t *settings = obs_encoder_get_settings(Context->EncoderData);
+    const char *profile = obs_data_get_string(settings, "profile");
+    // VP9 profiles: 0=8bit420, 1=8bit444, 2=10bit420, 3=10bit444
+    use10bit = (std::strcmp(profile, "2") == 0 ||
+                std::strcmp(profile, "3") == 0);
+    use444 = (std::strcmp(profile, "1") == 0 ||
+              std::strcmp(profile, "3") == 0);
     obs_data_release(settings);
     break;
   }
@@ -601,6 +627,13 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
                               Bitstream->DataLength, &NewPacket,
                               &NewPacketSize, &Context->ExtraData.first,
                               &Context->ExtraData.second);
+    } else if (Context->Codec == QSV_CODEC_VP9) {
+      // VP9 has no parameter sets; bitstream is already raw frames.
+      // Just copy through; no extradata needed (mkv/webm containers
+      // don't require VP9 codec private data).
+      NewPacketSize = Bitstream->DataLength;
+      NewPacket = static_cast<uint8_t *>(
+          bmemdup(Bitstream->Data + Bitstream->DataOffset, NewPacketSize));
     }
 
     Context->PacketData.resize(NewPacketSize);
@@ -621,7 +654,8 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
                       Context->CachedFpsNum, Context->CachedFpsDen,
                       Context->CachedTSDiv);
   Packet->dts =
-      (Context->Codec == QSV_CODEC_AV1)
+      (Context->Codec == QSV_CODEC_AV1 ||
+       Context->Codec == QSV_CODEC_VP9)
           ? Packet->pts
           : ConvertTSMFXOBS(Bitstream->DecodeTimeStamp,
                             Context->CachedFpsNum, Context->CachedFpsDen,

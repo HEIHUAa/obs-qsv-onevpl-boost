@@ -9,6 +9,8 @@
 
 // Extern array definitions (declared in obs-qsv-onevpl-plugin-init.hpp)
 const char *const qsv_profile_names_av1[] = {"main", "high", "pro", 0};
+// VP9 profiles: 0=8bit420, 1=8bit444, 2=10bit420, 3=10bit444
+const char *const qsv_profile_names_vp9[] = {"0", "1", "2", "3", 0};
 const char *const qsv_profile_names_h264[] = {
     "high10", "high", "main", "baseline", "extended",
     "constrained_baseline", "constrained_high", 0};
@@ -184,8 +186,11 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_int(Settings, "max_bitrate", 6000);
   obs_data_set_default_bool(Settings, "custom_buffer_size", false);
   obs_data_set_default_int(Settings, "buffer_size", 0);
-  obs_data_set_default_string(Settings, "profile",
-                              Codec == QSV_CODEC_AVC ? "high" : "main");
+  obs_data_set_default_string(
+      Settings, "profile",
+      Codec == QSV_CODEC_AVC ? "high"
+      : Codec == QSV_CODEC_VP9 ? "0"
+                               : "main");
   obs_data_set_default_string(Settings, "hevc_tier", "main");
   obs_data_set_default_string(Settings, "hevc_level", "auto");
   obs_data_set_default_string(Settings, "avc_level", "auto");
@@ -537,12 +542,17 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
     const struct qsv_rate_control_info *rcInfo = qsv_rate_control_info_list;
     while (rcInfo->name) {
       if (platformCode == 0 || platformCode >= rcInfo->min_platform) {
-      // AVCM does not support VCM; HEVC encoder does not support AVBR
+      // AV1/AVCM do not support VCM; HEVC encoder does not support AVBR;
+      // VP9 only supports CBR/VBR/CQP/ICQ (no AVBR/QVBR/VCM)
       bool skipForAV1 = Codec == QSV_CODEC_AV1 &&
                         std::strcmp(rcInfo->name, "VCM") == 0;
       bool skipForHEVC = Codec == QSV_CODEC_HEVC &&
                          std::strcmp(rcInfo->name, "AVBR") == 0;
-      if (!skipForAV1 && !skipForHEVC) {
+      bool skipForVP9 = Codec == QSV_CODEC_VP9 &&
+                        (std::strcmp(rcInfo->name, "AVBR") == 0 ||
+                         std::strcmp(rcInfo->name, "QVBR") == 0 ||
+                         std::strcmp(rcInfo->name, "VCM") == 0);
+      if (!skipForAV1 && !skipForHEVC && !skipForVP9) {
         obs_property_list_add_string(Prop, rcInfo->name, rcInfo->name);
       }
     }
@@ -566,17 +576,17 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
   Prop = obs_properties_add_int_slider(RCGroup, "qpi", TEXT_QPI, 1,
-                         Codec == QSV_CODEC_AV1 ? 63 : 51, 1);
+                         (Codec == QSV_CODEC_AV1 || Codec == QSV_CODEC_VP9) ? 63 : 51, 1);
   obs_property_set_long_description(Prop, TEXT_QP_DESC);
   Prop = obs_properties_add_int_slider(RCGroup, "qpp", TEXT_QPP, 1,
-                         Codec == QSV_CODEC_AV1 ? 63 : 51, 1);
+                         (Codec == QSV_CODEC_AV1 || Codec == QSV_CODEC_VP9) ? 63 : 51, 1);
   obs_property_set_long_description(Prop, TEXT_QP_DESC);
   Prop = obs_properties_add_int_slider(RCGroup, "qpb", TEXT_QPB, 1,
-                         Codec == QSV_CODEC_AV1 ? 63 : 51, 1);
+                         (Codec == QSV_CODEC_AV1 || Codec == QSV_CODEC_VP9) ? 63 : 51, 1);
   obs_property_set_long_description(Prop, TEXT_QP_DESC);
 
   Prop = obs_properties_add_int_slider(RCGroup, "cqp", TEXT_CQP, 1,
-                         Codec == QSV_CODEC_AV1 ? 63 : 51, 1);
+                         (Codec == QSV_CODEC_AV1 || Codec == QSV_CODEC_VP9) ? 63 : 51, 1);
   obs_property_set_long_description(Prop, TEXT_CQP_DESC);
 
   Prop = obs_properties_add_int(RCGroup, "bitrate", TEXT_TARGET_BITRATE, 50,
@@ -928,6 +938,8 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
     }
   } else if (Codec == QSV_CODEC_AV1) {
     AddStrings(Prop, qsv_profile_names_av1);
+  } else if (Codec == QSV_CODEC_VP9) {
+    AddStrings(Prop, qsv_profile_names_vp9);
   } else if (Codec == QSV_CODEC_HEVC) {
     const char *const *profileEntryHEVC = qsv_profile_names_hevc;
     while (*profileEntryHEVC) {
@@ -1054,7 +1066,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 
   obs_properties_t *IRGroup = obs_properties_create();
 
-  if (Codec != QSV_CODEC_AV1) {
+  if (Codec != QSV_CODEC_AV1 && Codec != QSV_CODEC_VP9) {
     Prop = obs_properties_add_list(IRGroup, "intra_ref_encoding",
                                    TEXT_INTRA_REF_ENCODING,
                                    OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -1480,6 +1492,21 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.CodecLevel =
         ParseCodecLevel(CodecLevelDataAV1, kAV1Levels,
                         sizeof(kAV1Levels) / sizeof(kAV1Levels[0]));
+    break;
+  }
+  case QSV_CODEC_VP9: {
+    Codec = "VP9";
+    // VP9 profiles: 0=8bit420, 1=8bit444, 2=10bit420, 3=10bit444
+    static constexpr std::pair<std::string_view, mfxU16> kCodecProfileVP9Map[] = {
+      {"0", MFX_PROFILE_VP9_0},
+      {"1", MFX_PROFILE_VP9_1},
+      {"2", MFX_PROFILE_VP9_2},
+      {"3", MFX_PROFILE_VP9_3},
+    };
+    if (auto v = MapString(CodecProfileData, kCodecProfileVP9Map)) {
+      Context->EncoderParams.CodecProfile = *v;
+    }
+    // VP9 has no codec level concept in OneVPL
     break;
   }
   }
@@ -2024,22 +2051,27 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
 FORWARD_PARAM_PROPS(H264, QSV_CODEC_AVC)
 FORWARD_PARAM_PROPS(AV1, QSV_CODEC_AV1)
 FORWARD_PARAM_PROPS(HEVC, QSV_CODEC_HEVC)
+FORWARD_PARAM_PROPS(VP9, QSV_CODEC_VP9)
 
 FORWARD_FRAME_ENCODER(H264, QSV_CODEC_AVC)
 FORWARD_FRAME_ENCODER(AV1, QSV_CODEC_AV1)
 FORWARD_FRAME_ENCODER(HEVC, QSV_CODEC_HEVC)
+FORWARD_FRAME_ENCODER(VP9, QSV_CODEC_VP9)
 
 FORWARD_TEXTURE_ENCODER(H264, QSV_CODEC_AVC, "obs_qsv_vpl_h264")
 FORWARD_TEXTURE_ENCODER(AV1, QSV_CODEC_AV1, "obs_qsv_vpl_av1")
 FORWARD_TEXTURE_ENCODER(HEVC, QSV_CODEC_HEVC, "obs_qsv_vpl_hevc")
+FORWARD_TEXTURE_ENCODER(VP9, QSV_CODEC_VP9, "obs_qsv_vpl_vp9")
 
 FORWARD_ENCODER_NAME(H264, "QuickSync oneVPL H.264")
 FORWARD_ENCODER_NAME(AV1, "QuickSync oneVPL AV1")
 FORWARD_ENCODER_NAME(HEVC, "QuickSync oneVPL HEVC")
+FORWARD_ENCODER_NAME(VP9, "QuickSync oneVPL VP9")
 
 FORWARD_DEFAULT_PARAMS(H264, QSV_CODEC_AVC)
 FORWARD_DEFAULT_PARAMS(AV1, QSV_CODEC_AV1)
 FORWARD_DEFAULT_PARAMS(HEVC, QSV_CODEC_HEVC)
+FORWARD_DEFAULT_PARAMS(VP9, QSV_CODEC_VP9)
 
 plugin_context *InitPluginContext(enum codec_enum Codec, obs_data_t *Settings,
                                   obs_encoder_t *EncoderData,
@@ -2144,6 +2176,13 @@ static void *InitTextureEncoder(enum codec_enum Codec, obs_data_t *Settings,
   if (Codec == QSV_CODEC_AV1 && !AdaptersInfo[OVI.adapter].SupportAV1) {
     info(">>> cap on different device, fall back to non-texture "
          "sharing AV1 qsv encoder");
+    return obs_encoder_create_rerouted(EncoderData,
+                                       FallbackID);
+  }
+
+  if (Codec == QSV_CODEC_VP9 && !AdaptersInfo[OVI.adapter].SupportVP9) {
+    info(">>> cap on different device, fall back to non-texture "
+         "sharing VP9 qsv encoder");
     return obs_encoder_create_rerouted(EncoderData,
                                        FallbackID);
   }
@@ -2279,3 +2318,36 @@ obs_encoder_info HEVCTextureEncoderInfo = {.id = "obs_qsv_vpl_hevc_tex",
                                                    OBS_ENCODER_CAP_PASS_TEXTURE |
                                                    OBS_ENCODER_CAP_ROI,
                                            .encode_texture2 = EncodeTexture};
+
+// VP9 has no ROI support; omit OBS_ENCODER_CAP_ROI from its caps.
+obs_encoder_info VP9FrameEncoderInfo = {.id = "obs_qsv_vpl_vp9",
+                                        .type = OBS_ENCODER_VIDEO,
+                                        .codec = "vp9",
+                                        .get_name = GetVP9EncoderName,
+                                        .create = InitVP9FrameEncoder,
+                                        .destroy = DestroyPluginContext,
+                                        .encode = EncodeFrame,
+                                        .get_defaults = SetVP9DefaultParams,
+                                        .get_properties = GetVP9ParamProps,
+                                        .update = UpdateEncoderParams,
+                                        .get_extra_data = GetExtraData,
+                                        .get_sei_data = GetSEIData,
+                                        .get_video_info = GetVideoInfo,
+                                        .caps = OBS_ENCODER_CAP_DYN_BITRATE |
+                                                OBS_ENCODER_CAP_INTERNAL};
+
+obs_encoder_info VP9TextureEncoderInfo = {.id = "obs_qsv_vpl_vp9_tex",
+                                          .type = OBS_ENCODER_VIDEO,
+                                          .codec = "vp9",
+                                          .get_name = GetVP9EncoderName,
+                                          .create = InitVP9TextureEncoder,
+                                          .destroy = DestroyPluginContext,
+                                          .get_defaults = SetVP9DefaultParams,
+                                          .get_properties = GetVP9ParamProps,
+                                          .update = UpdateEncoderParams,
+                                          .get_extra_data = GetExtraData,
+                                          .get_sei_data = GetSEIData,
+                                          .get_video_info = GetVideoInfo,
+                                          .caps = OBS_ENCODER_CAP_DYN_BITRATE |
+                                                  OBS_ENCODER_CAP_PASS_TEXTURE,
+                                          .encode_texture2 = EncodeTexture};

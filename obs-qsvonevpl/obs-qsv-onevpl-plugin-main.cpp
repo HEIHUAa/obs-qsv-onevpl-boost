@@ -76,6 +76,9 @@ extern obs_encoder_info AV1TextureEncoderInfo;
 extern obs_encoder_info HEVCFrameEncoderInfo;
 extern obs_encoder_info HEVCTextureEncoderInfo;
 
+extern obs_encoder_info VP9FrameEncoderInfo;
+extern obs_encoder_info VP9TextureEncoderInfo;
+
 mfxLoader GlobalQSVLoader = nullptr;
 std::mutex GlobalLoaderMutex;
 
@@ -123,6 +126,60 @@ void ReleaseGlobalLoader() {
 // recording's Init reuses them — eliminating the ~250 ms delay.
 // Surface-level warm-up is handled by per-recording WarmUpEncoder().
 
+// Probe VP9 encoder support via VPL Query.
+// OBS's bundled obs-qsv-test.exe does not probe VP9, so on Windows the
+// SupportVP9 field from GetAdaptersInfo is always false. We query VPL
+// directly here and patch AdaptersInfo so the rest of the plugin sees
+// the real capability. On Linux, VAAPI already populates the field, so
+// this is a harmless reconfirmation.
+static bool ProbeVP9Support() {
+  mfxLoader Loader = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(GlobalLoaderMutex);
+    Loader = GlobalQSVLoader;
+  }
+  if (!Loader)
+    return false;
+
+  bool anySupportsVP9 = false;
+  // GlobalQSVLoader is filtered to Intel hardware implementations only,
+  // so the impl index maps to the impl-th Intel adapter in AdaptersInfo.
+  for (mfxU32 impl = 0;; impl++) {
+    mfxSession session = nullptr;
+    if (MFXCreateSession(Loader, impl, &session) < MFX_ERR_NONE)
+      break;
+
+    mfxVideoParam params{};
+    params.mfx.CodecId = MFX_CODEC_VP9;
+    params.mfx.FrameInfo.FourCC = MFX_FOURCC_NV12;
+    params.mfx.FrameInfo.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
+    params.mfx.FrameInfo.Width = 1280;
+    params.mfx.FrameInfo.Height = 720;
+
+    MFXVideoENCODE encode(session);
+    mfxStatus sts = encode.Query(&params, &params);
+    encode.Close();
+    MFXClose(session);
+
+    if (sts < MFX_ERR_NONE)
+      continue;
+
+    anySupportsVP9 = true;
+    // Mark the impl-th Intel adapter in AdaptersInfo.
+    mfxU32 intelIdx = 0;
+    for (size_t i = 0; i < AdaptersCount; i++) {
+      if (AdaptersInfo[i].IsIntel) {
+        if (intelIdx == impl) {
+          AdaptersInfo[i].SupportVP9 = true;
+          break;
+        }
+        intelIdx++;
+      }
+    }
+  }
+  return anySupportsVP9;
+}
+
 static void DeepWarmUpVPL() {
   mfxLoader Loader = nullptr;
   {
@@ -150,6 +207,7 @@ static void DeepWarmUpVPL() {
     {MFX_CODEC_AVC,  MFX_PROFILE_AVC_HIGH,  "H264"},
     {MFX_CODEC_HEVC, MFX_PROFILE_HEVC_MAIN,  "HEVC"},
     {MFX_CODEC_AV1,  MFX_PROFILE_AV1_MAIN,   "AV1"},
+    {MFX_CODEC_VP9,  MFX_PROFILE_VP9_0,      "VP9"},
   };
 
   for (const auto &c : Codecs) {
@@ -229,7 +287,19 @@ bool obs_module_load([[maybe_unused]] void) {
     InitGlobalLoader();
   }
 
+  // VP9: obs-qsv-test.exe does not probe VP9, so query VPL directly.
+  bool SupportVP9 = false;
   if (SupportAVC || SupportAV1 || SupportHEVC) {
+    InitGlobalLoader();
+    SupportVP9 = ProbeVP9Support();
+  }
+  if (SupportVP9) {
+    obs_register_encoder(&VP9FrameEncoderInfo);
+    obs_register_encoder(&VP9TextureEncoderInfo);
+    info("QSV VP9 support");
+  }
+
+  if (SupportAVC || SupportAV1 || SupportHEVC || SupportVP9) {
     // Pre-warm the platform name cache so the first ParamsVisibilityModifier
     // call does not create a temporary VPL session.
     QueryPlatformCodeName();

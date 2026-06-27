@@ -82,6 +82,8 @@ void GetAdaptersInfo(struct adapter_info *AdaptersInfo, size_t *AdaptersCount) {
         config_get_bool(Config, CMDSection, "supports_av1");
     AdapterInfo->SupportHEVC =
         config_get_bool(Config, CMDSection, "supports_hevc");
+    AdapterInfo->SupportVP9 =
+        config_get_bool(Config, CMDSection, "supports_vp9");
   }
 
 fail:

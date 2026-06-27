@@ -296,6 +296,9 @@ static void *InitH264TextureEncoder(obs_data_t *Settings,
 static void *InitAV1TextureEncoder(obs_data_t *Settings,
                                    obs_encoder_t *EncoderData);
 
+static void *InitVP9TextureEncoder(obs_data_t *Settings,
+                                   obs_encoder_t *EncoderData);
+
 static void *InitHEVCTextureEncoder(obs_data_t *Settings,
                                     obs_encoder_t *EncoderData);
 
@@ -303,11 +306,15 @@ static const char *GetH264EncoderName(void *);
 
 static const char *GetAV1EncoderName(void *);
 
+static const char *GetVP9EncoderName(void *);
+
 static const char *GetHEVCEncoderName(void *);
 
 static void SetH264DefaultParams(obs_data_t *Settings);
 
 static void SetAV1DefaultParams(obs_data_t *Settings);
+
+static void SetVP9DefaultParams(obs_data_t *Settings);
 
 static void SetHEVCDefaultParams(obs_data_t *Settings);
 

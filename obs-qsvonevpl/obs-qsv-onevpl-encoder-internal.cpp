@@ -1181,6 +1181,9 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   case QSV_CODEC_HEVC:
     QSVEncodeParams.mfx.CodecId = MFX_CODEC_HEVC;
     break;
+  case QSV_CODEC_VP9:
+    QSVEncodeParams.mfx.CodecId = MFX_CODEC_VP9;
+    break;
   case QSV_CODEC_AVC:
   default:
     QSVEncodeParams.mfx.CodecId = MFX_CODEC_AVC;
@@ -1659,7 +1662,8 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
   /*Don't touch it! Magic beyond the control of mere mortals takes place
    * here*/
-  if (QSVEncodeParams.mfx.CodecId != MFX_CODEC_AV1) {
+  if (QSVEncodeParams.mfx.CodecId != MFX_CODEC_AV1 &&
+      QSVEncodeParams.mfx.CodecId != MFX_CODEC_VP9) {
     auto CODDIParams = QSVEncodeParams.AddExtBuffer<mfxExtCodingOptionDDI>();
     CODDIParams->Header.BufferId = MFX_EXTBUFF_DDI;
     CODDIParams->Header.BufferSz = sizeof(mfxExtCodingOptionDDI);
@@ -1881,6 +1885,15 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     }
   }
 
+  if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_VP9) {
+    // VP9 only needs the param buffer to disable IVF container headers
+    // (raw bitstream is what OBS muxers expect)
+    auto VP9Params = QSVEncodeParams.AddExtBuffer<mfxExtVP9Param>();
+    VP9Params->Header.BufferId = MFX_EXTBUFF_VP9_PARAM;
+    VP9Params->Header.BufferSz = sizeof(mfxExtVP9Param);
+    VP9Params->WriteIVFHeaders = MFX_CODINGOPTION_OFF;
+  }
+
 #if defined(_WIN32) || defined(_WIN64)
   auto VideoSignalParams =
       QSVEncodeParams.AddExtBuffer<mfxExtVideoSignalInfo>();
@@ -2001,8 +2014,9 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   QSVEncodeParams.IOPattern = MFX_IOPATTERN_IN_VIDEO_MEMORY;
 #endif
 
-  // Cache ROI data for per-frame use, only for AVC and HEVC (AV1 not supported)
-  if (Codec != QSV_CODEC_AV1 && InputParams->ROIEnabled) {
+  // Cache ROI data for per-frame use, only for AVC and HEVC (AV1/VP9 not supported)
+  if (Codec != QSV_CODEC_AV1 && Codec != QSV_CODEC_VP9 &&
+      InputParams->ROIEnabled) {
     CachedROIRegions = InputParams->ROIRegions;
     CachedROIMode = InputParams->ROIMode;
   } else {
@@ -2549,6 +2563,7 @@ void QSVEncoder::LogActualParams() {
     info("\tLookaheadDepth set to: %d", CO2->LookAheadDepth);
 
     if (QSVEncodeParams.mfx.CodecId != MFX_CODEC_AV1 &&
+        QSVEncodeParams.mfx.CodecId != MFX_CODEC_VP9 &&
         CO2->IntRefType > 0) {
       info("\tIntraRefresh: type=%d, cycle=%d, QP delta=%d",
            CO2->IntRefType, CO2->IntRefCycleSize, CO2->IntRefQPDelta);
@@ -3518,7 +3533,7 @@ void QSVEncoder::AppendQpSeiToBitstream(mfxBitstream &bs) {
   // Determine codec and build the SEI NAL
   mfxU32 codecId = QSVEncodeParams.mfx.CodecId;
   bool isHEVC = (codecId == MFX_CODEC_HEVC);
-  if (codecId == MFX_CODEC_AV1)
+  if (codecId == MFX_CODEC_AV1 || codecId == MFX_CODEC_VP9)
     return;
 
   // start code + NAL header + SEI type + size + uuid + data + trailing

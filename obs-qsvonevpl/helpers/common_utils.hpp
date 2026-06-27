@@ -88,12 +88,13 @@ struct adapter_info {
   bool IsDGPU;
   bool SupportAV1;
   bool SupportHEVC;
+  bool SupportVP9;
 };
 
 extern struct adapter_info AdaptersInfo[MAX_ADAPTERS];
 extern size_t AdaptersCount;
 
-enum codec_enum { QSV_CODEC_AVC, QSV_CODEC_AV1, QSV_CODEC_HEVC };
+enum codec_enum { QSV_CODEC_AVC, QSV_CODEC_AV1, QSV_CODEC_HEVC, QSV_CODEC_VP9 };
 
 void ReleaseSessionData(void *);
 

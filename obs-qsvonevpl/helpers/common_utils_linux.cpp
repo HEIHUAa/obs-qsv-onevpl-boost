@@ -399,7 +399,7 @@ bool check_adapter(void *param, const char *node, uint32_t idx) {
 
   if (adapter->is_intel && adapter->supports_vp9 &&
       default_vp9_device == nullptr)
-    default_vp9_device = strdup(full_path.array);
+    default_vp9_device = strdup(node);
 
   vaapi_close(&device);
   return true;
