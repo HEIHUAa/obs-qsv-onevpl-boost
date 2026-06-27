@@ -2014,6 +2014,25 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   QSVEncodeParams.IOPattern = MFX_IOPATTERN_IN_VIDEO_MEMORY;
 #endif
 
+  // VP9 only accepts a small set of ext buffers (see IsExtBufferSupportedInInit
+  // in mfx_vp9_encode_hw_par.cpp): VP9_PARAM, CODING_OPTION2, CODING_OPTION3,
+  // DDI, VP9_SEGMENTATION, VP9_TEMPORAL_LAYERS, ENCODER_RESET_OPTION.
+  // Attaching anything else makes CheckExtBufferHeaders return UNSUPPORTED and
+  // Init translates that to MFX_ERR_INVALID_VIDEO_PARAM (-15). Strip every
+  // unsupported buffer that the shared setup above may have attached.
+  // QSVLayerArray is owned by the encoder and freed in the destructor, so
+  // removing the TemporalLayers buffer here does not leak it.
+  if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_VP9) {
+    QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOption>();
+    QSVEncodeParams.RemoveExtBuffer<mfxExtVideoSignalInfo>();
+    QSVEncodeParams.RemoveExtBuffer<mfxExtMasteringDisplayColourVolume>();
+    QSVEncodeParams.RemoveExtBuffer<mfxExtContentLightLevelInfo>();
+    QSVEncodeParams.RemoveExtBuffer<mfxExtTemporalLayers>();
+    QSVEncodeParams.RemoveExtBuffer<mfxExtEncToolsConfig>();
+    info("\tVP9: stripped unsupported ext buffers (CO, VideoSignal, "
+         "MasteringDisplay, ContentLight, TemporalLayers, EncTools)");
+  }
+
   // Cache ROI data for per-frame use, only for AVC and HEVC (AV1/VP9 not supported)
   if (Codec != QSV_CODEC_AV1 && Codec != QSV_CODEC_VP9 &&
       InputParams->ROIEnabled) {
