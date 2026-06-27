@@ -213,8 +213,6 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
       ParseCustomCodingOptions(InputParams->CustomCodingOptions);
     }
 
-    ApplyQPLimits(InputParams);
-
     mfxExtCodingOption2 CO2Copy = {};
     mfxExtCodingOption3 CO3Copy = {};
     bool HasCO2 = false, HasCO3 = false;
@@ -235,6 +233,8 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
                            HasCO2, HasCO3);
       Status = MFX_ERR_NONE;
     }
+
+    ApplyQPLimits(InputParams);
 
     // When Query returns MFX_ERR_UNSUPPORTED (-3) on older hardware
     // (e.g. UHD 600 / Apollo Lake), the driver may not support Query
@@ -1094,7 +1094,9 @@ void QSVEncoder::ApplyQPLimits(struct encoder_params *InputParams) {
   mfxU16 bitDepth = InputParams->BitDepth;
   if (bitDepth == 0)
     bitDepth = 8;
-  mfxU8 maxQP = static_cast<mfxU8>((std::min)(255, 51 + 6 * (bitDepth - 8)));
+
+  mfxU8 qpBdOffset = static_cast<mfxU8>(6 * (bitDepth - 8));
+  mfxU8 maxQP8 = 51; // 8-bit max QP
 
   auto ParseQPString = [&](const std::string &qpStr, mfxU8 &qpi,
                            mfxU8 &qpp, mfxU8 &qpb,
@@ -1110,7 +1112,7 @@ void QSVEncoder::ApplyQPLimits(struct encoder_params *InputParams) {
       int val = std::atoi(qpStr.c_str());
       if (val < 0 || val > 255)
         return false;
-      mfxU8 clamped = static_cast<mfxU8>((std::min)(val, (int)maxQP));
+      mfxU8 clamped = static_cast<mfxU8>((std::min)(val, (int)maxQP8));
       qpi = qpp = qpb = clamped;
       return true;
     }
@@ -1126,9 +1128,9 @@ void QSVEncoder::ApplyQPLimits(struct encoder_params *InputParams) {
     if (v1 < 0 || v1 > 255 || v2 < 0 || v2 > 255 || v3 < 0 || v3 > 255)
       return false;
 
-    qpi = static_cast<mfxU8>((std::min)(v1, (int)maxQP));
-    qpp = static_cast<mfxU8>((std::min)(v2, (int)maxQP));
-    qpb = static_cast<mfxU8>((std::min)(v3, (int)maxQP));
+    qpi = static_cast<mfxU8>((std::min)(v1, (int)maxQP8));
+    qpp = static_cast<mfxU8>((std::min)(v2, (int)maxQP8));
+    qpb = static_cast<mfxU8>((std::min)(v3, (int)maxQP8));
     return true;
   };
 
@@ -1137,9 +1139,13 @@ void QSVEncoder::ApplyQPLimits(struct encoder_params *InputParams) {
     mfxU8 minQPI = 0, minQPP = 0, minQPB = 0;
     if (ParseQPString(InputParams->MinQP, minQPI, minQPP, minQPB, skipMin)) {
       if (!skipMin) {
-        CO2->MinQPI = minQPI;
-        CO2->MinQPP = minQPP;
-        CO2->MinQPB = minQPB;
+        CO2->MinQPI = static_cast<mfxU8>(minQPI + qpBdOffset);
+        CO2->MinQPP = static_cast<mfxU8>(minQPP + qpBdOffset);
+        CO2->MinQPB = static_cast<mfxU8>(minQPB + qpBdOffset);
+        info("ApplyQPLimits: MinQP I/P/B = %d/%d/%d (8-bit) -> "
+             "CO2 MinQPI/P/B = %d/%d/%d (internal, +%d offset)",
+             minQPI, minQPP, minQPB,
+             CO2->MinQPI, CO2->MinQPP, CO2->MinQPB, qpBdOffset);
       }
     }
   }
@@ -1149,9 +1155,13 @@ void QSVEncoder::ApplyQPLimits(struct encoder_params *InputParams) {
     mfxU8 maxQPI = 0, maxQPP = 0, maxQPB = 0;
     if (ParseQPString(InputParams->MaxQP, maxQPI, maxQPP, maxQPB, skipMax)) {
       if (!skipMax) {
-        CO2->MaxQPI = maxQPI;
-        CO2->MaxQPP = maxQPP;
-        CO2->MaxQPB = maxQPB;
+        CO2->MaxQPI = static_cast<mfxU8>(maxQPI + qpBdOffset);
+        CO2->MaxQPP = static_cast<mfxU8>(maxQPP + qpBdOffset);
+        CO2->MaxQPB = static_cast<mfxU8>(maxQPB + qpBdOffset);
+        info("ApplyQPLimits: MaxQP I/P/B = %d/%d/%d (8-bit) -> "
+             "CO2 MaxQPI/P/B = %d/%d/%d (internal, +%d offset)",
+             maxQPI, maxQPP, maxQPB,
+             CO2->MaxQPI, CO2->MaxQPP, CO2->MaxQPB, qpBdOffset);
       }
     }
   }
