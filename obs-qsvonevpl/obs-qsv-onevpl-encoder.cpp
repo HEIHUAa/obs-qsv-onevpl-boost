@@ -235,11 +235,12 @@ void GetVideoInfo(void *Data, video_scale_info *Info) {
   case QSV_CODEC_VP9: {
     obs_data_t *settings = obs_encoder_get_settings(Context->EncoderData);
     const char *profile = obs_data_get_string(settings, "profile");
-    // VP9 profiles: 0=8bit420, 1=8bit444, 2=10bit420, 3=10bit444
-    use10bit = (std::strcmp(profile, "2") == 0 ||
-                std::strcmp(profile, "3") == 0);
-    use444 = (std::strcmp(profile, "1") == 0 ||
-              std::strcmp(profile, "3") == 0);
+    // VP9 profiles: "0 (8-bit 4:2:0)", "1 (8-bit 4:4:4)",
+    //               "2 (10-bit 4:2:0)", "3 (10-bit 4:4:4)"
+    // Match by leading digit so both legacy "0" and descriptive forms work.
+    const char vp9p = profile[0];
+    use10bit = (vp9p == '2' || vp9p == '3');
+    use444 = (vp9p == '1' || vp9p == '3');
     obs_data_release(settings);
     break;
   }
@@ -259,6 +260,12 @@ void GetVideoInfo(void *Data, video_scale_info *Info) {
     Info->format = VIDEO_FORMAT_I444;
   else
     Info->format = use10bit ? VIDEO_FORMAT_P010 : VIDEO_FORMAT_NV12;
+
+  // VP9 encoder hardcodes colorRange=0 (limited range) in the bitstream and
+  // doesn't accept mfxExtVideoSignalInfo. Force OBS to convert input to
+  // limited range so the YUV values match the colorRange bit written by VPL.
+  if (Context->Codec == QSV_CODEC_VP9)
+    Info->range = VIDEO_RANGE_PARTIAL;
 }
 
 mfxU64 ConvertTSOBSMFX(int64_t TS, mfxU32 FpsNum) {
@@ -682,6 +689,45 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
   } else {
     Packet->priority = static_cast<int>(OBS_NAL_PRIORITY_DISPOSABLE);
     Packet->drop_priority = static_cast<int>(OBS_NAL_PRIORITY_HIGH);
+  }
+
+  // VP9 encoder hardcodes colorSpace=UNKNOWN (0) in the bitstream (see
+  // InitVp9SeqLevelParam in mfx_vp9_encode_hw_utils.cpp). Patch the colorSpace
+  // bits in keyframe headers so decoders apply the correct YUV->RGB matrix.
+  // colorRange=0 is correct because GetVideoInfo forces limited-range input.
+  if (Context->Codec == QSV_CODEC_VP9 && Packet->keyframe &&
+      Context->PacketData.size() >= 5) {
+    uint8_t *data = Context->PacketData.data();
+    // Verify VP9 keyframe: frame_marker (bit 7-6) == 0b10,
+    // frame_type (bit 2) == 0 (keyframe), sync code bytes 1-3.
+    if ((data[0] & 0xC0) == 0x80 && (data[0] & 0x04) == 0 &&
+        data[1] == 0x49 && data[2] == 0x83 && data[3] == 0x42) {
+      // Map CICP MatrixCoefficients to VP9 colorSpace
+      // 1=BT.709->2, 6=BT.601->1, 9=BT.2020->5, others->0 (UNKNOWN)
+      uint8_t vp9ColorSpace = 0;
+      switch (Context->EncoderParams.MatrixCoefficients) {
+        case 1:  vp9ColorSpace = 2; break;  // BT.709
+        case 6:  vp9ColorSpace = 1; break;  // BT.601
+        case 9:  vp9ColorSpace = 5; break;  // BT.2020
+        default: break;
+      }
+      if (vp9ColorSpace != 0) {
+        const mfxU16 profile = Context->EncoderParams.CodecProfile;
+        if (profile == MFX_PROFILE_VP9_0 || profile == MFX_PROFILE_VP9_1) {
+          // Profile 0/1: colorSpace at byte 4 bits 7-5, colorRange at bit 4
+          uint8_t curColorSpace = (data[4] >> 5) & 0x07;
+          if (curColorSpace != 6 && curColorSpace != vp9ColorSpace)
+            data[4] = (data[4] & 0x1F) | (vp9ColorSpace << 5);
+        } else if (profile == MFX_PROFILE_VP9_2) {
+          // Profile 2: bitDepth at byte 4 bit 7, colorSpace at bits 6-4
+          uint8_t curColorSpace = (data[4] >> 4) & 0x07;
+          if (curColorSpace != 6 && curColorSpace != vp9ColorSpace)
+            data[4] = (data[4] & 0x8F) | (vp9ColorSpace << 4);
+        }
+        // Profile 3 writes a 3-bit profile field causing byte misalignment;
+        // skip patching (rarely used).
+      }
+    }
   }
 
   *ReceivedPacketStatus = true;

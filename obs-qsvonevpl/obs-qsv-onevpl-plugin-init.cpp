@@ -10,7 +10,9 @@
 // Extern array definitions (declared in obs-qsv-onevpl-plugin-init.hpp)
 const char *const qsv_profile_names_av1[] = {"main", "high", "pro", 0};
 // VP9 profiles: 0=8bit420, 1=8bit444, 2=10bit420, 3=10bit444
-const char *const qsv_profile_names_vp9[] = {"0", "1", "2", "3", 0};
+const char *const qsv_profile_names_vp9[] = {
+    "0 (8-bit 4:2:0)", "1 (8-bit 4:4:4)",
+    "2 (10-bit 4:2:0)", "3 (10-bit 4:4:4)", 0};
 const char *const qsv_profile_names_h264[] = {
     "high10", "high", "main", "baseline", "extended",
     "constrained_baseline", "constrained_high", 0};
@@ -189,7 +191,7 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(
       Settings, "profile",
       Codec == QSV_CODEC_AVC ? "high"
-      : Codec == QSV_CODEC_VP9 ? "0"
+      : Codec == QSV_CODEC_VP9 ? "0 (8-bit 4:2:0)"
                                : "main");
   obs_data_set_default_string(Settings, "hevc_tier", "main");
   obs_data_set_default_string(Settings, "hevc_level", "auto");
@@ -1498,10 +1500,10 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Codec = "VP9";
     // VP9 profiles: 0=8bit420, 1=8bit444, 2=10bit420, 3=10bit444
     static constexpr std::pair<std::string_view, mfxU16> kCodecProfileVP9Map[] = {
-      {"0", MFX_PROFILE_VP9_0},
-      {"1", MFX_PROFILE_VP9_1},
-      {"2", MFX_PROFILE_VP9_2},
-      {"3", MFX_PROFILE_VP9_3},
+      {"0 (8-bit 4:2:0)", MFX_PROFILE_VP9_0},
+      {"1 (8-bit 4:4:4)", MFX_PROFILE_VP9_1},
+      {"2 (10-bit 4:2:0)", MFX_PROFILE_VP9_2},
+      {"3 (10-bit 4:4:4)", MFX_PROFILE_VP9_3},
     };
     if (auto v = MapString(CodecProfileData, kCodecProfileVP9Map)) {
       Context->EncoderParams.CodecProfile = *v;
@@ -1979,6 +1981,30 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.ChromaFormat = MFX_CHROMAFORMAT_YUV444;
     Context->EncoderParams.BitDepth = 12;
     break;
+  }
+
+  // VP9 profile is tightly bound to input bit depth + chroma subsampling.
+  // A mismatch (e.g. Profile 3 selected but input is 8-bit 4:2:0) makes the
+  // encoder produce garbled bitstream with wrong chroma layout. Auto-correct
+  // the profile to match the actual input format.
+  if (Context->Codec == QSV_CODEC_VP9) {
+    const bool vp9Is10bit = (Context->EncoderParams.BitDepth >= 10);
+    const bool vp9Is444 =
+        (Context->EncoderParams.ChromaFormat == MFX_CHROMAFORMAT_YUV444);
+    mfxU16 vp9CorrectProfile = MFX_PROFILE_VP9_0;
+    if (!vp9Is10bit && !vp9Is444) vp9CorrectProfile = MFX_PROFILE_VP9_0;
+    else if (!vp9Is10bit && vp9Is444) vp9CorrectProfile = MFX_PROFILE_VP9_1;
+    else if (vp9Is10bit && !vp9Is444) vp9CorrectProfile = MFX_PROFILE_VP9_2;
+    else vp9CorrectProfile = MFX_PROFILE_VP9_3;
+
+    if (Context->EncoderParams.CodecProfile != vp9CorrectProfile) {
+      warn("\tVP9 profile auto-corrected: input is %u-bit %s, "
+           "profile %u -> %u",
+           vp9Is10bit ? 10u : 8u,
+           vp9Is444 ? "4:4:4" : "4:2:0",
+           Context->EncoderParams.CodecProfile, vp9CorrectProfile);
+      Context->EncoderParams.CodecProfile = vp9CorrectProfile;
+    }
   }
 
   info("\tDebug info:");
