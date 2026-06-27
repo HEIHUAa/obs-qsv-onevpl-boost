@@ -1546,9 +1546,9 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CO3Params->LowDelayBRC = GetCodingOpt(InputParams->LowDelayBRC);
 
     CO3Params->WeightedPred =
-        InputParams->WeightedPred.value_or(MFX_WEIGHTED_PRED_DEFAULT);
+        InputParams->WeightedPred.value_or(MFX_WEIGHTED_PRED_UNKNOWN);
     CO3Params->WeightedBiPred =
-        InputParams->WeightedBiPred.value_or(MFX_WEIGHTED_PRED_DEFAULT);
+        InputParams->WeightedBiPred.value_or(MFX_WEIGHTED_PRED_UNKNOWN);
 
     CO3Params->RepartitionCheckEnable = MFX_CODINGOPTION_ON;
 
@@ -1614,6 +1614,9 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       CO3Params->GlobalMotionBiasAdjustment = MFX_CODINGOPTION_ON;
       if (InputParams->MVCostScalingFactor.has_value()) {
         switch (InputParams->MVCostScalingFactor.value()) {
+        case 0:
+          CO3Params->MVCostScalingFactor = 0;
+          break;
         case 1:
           CO3Params->MVCostScalingFactor = 1;
           break;
@@ -2480,7 +2483,7 @@ void QSVEncoder::LogActualParams() {
 
   auto GetWeightedPredStatus = [](mfxU16 Value) -> std::string {
     switch (Value) {
-    case 0:  return "OFF";
+    case 0:  return "AUTO (driver decides)";
     case 1:  return "DEFAULT";
     case 2:  return "EXPLICIT";
     case 3:  return "IMPLICIT";
@@ -2625,9 +2628,13 @@ void QSVEncoder::LogActualParams() {
     info("\tGlobalMotionBiasAdjustment set: %s",
          GetCodingOptStatus(CO3->GlobalMotionBiasAdjustment).c_str());
     if (CO3->GlobalMotionBiasAdjustment == MFX_CODINGOPTION_ON &&
-        CO3->MVCostScalingFactor) {
-      info("\tMVCostScalingFactor set: 1/%d",
-           1 << CO3->MVCostScalingFactor);
+        CO3->MVCostScalingFactor <= 3) {
+      if (CO3->MVCostScalingFactor == 0) {
+        info("\tMVCostScalingFactor set: MV cost = 0");
+      } else {
+        info("\tMVCostScalingFactor set: 1/%d",
+             1 << CO3->MVCostScalingFactor);
+      }
     }
     info("\tDirectBiasAdjustment set: %s",
          GetCodingOptStatus(CO3->DirectBiasAdjustment).c_str());

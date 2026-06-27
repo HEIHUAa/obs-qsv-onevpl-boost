@@ -70,7 +70,6 @@ struct encoder_params {
   std::optional<int> ContentInfo;
 
   bool Lookahead;
-  bool LookaheadLP;
   bool PPyramid;
   bool IntraRefEncoding;
   mfxU16 IntraRefType;

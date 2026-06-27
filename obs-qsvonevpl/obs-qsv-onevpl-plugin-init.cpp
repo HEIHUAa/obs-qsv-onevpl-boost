@@ -270,6 +270,17 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
 
   obs_data_set_default_string(Settings, "min_qp", "-1");
   obs_data_set_default_string(Settings, "max_qp", "-1");
+
+  obs_data_set_default_string(Settings, "weighted_pred", "AUTO");
+  obs_data_set_default_string(Settings, "weighted_bi_pred", "AUTO");
+
+  // AV1 coding options default to AUTO (driver decides)
+  obs_data_set_default_string(Settings, "av1_cdef", "AUTO");
+  obs_data_set_default_string(Settings, "av1_restoration", "AUTO");
+  obs_data_set_default_string(Settings, "av1_loop_filter", "AUTO");
+  obs_data_set_default_string(Settings, "av1_super_res", "AUTO");
+  obs_data_set_default_string(Settings, "av1_error_resilient", "AUTO");
+  obs_data_set_default_string(Settings, "av1_interp_filter", "DEFAULT");
 }
 
 static inline const char *LocaleKey(const char *str) {
@@ -1138,23 +1149,28 @@ template <typename T, size_t N>
 static std::optional<T> MapString(std::string_view key,
                                    const std::pair<std::string_view, T> (&map)[N]);
 
-// Helper: parse AV1 ON/OFF/auto three-state string to 1/0/2
+// Helper: parse AV1 ON/OFF/AUTO three-state string.
+// 2 -> MFX_CODINGOPTION_UNKNOWN (let driver decide)
 static constexpr std::pair<std::string_view, mfxU16> kAV1TernaryMap[] = {
-    {"ON",  1},
-    {"OFF", 0},
+    {"AUTO", 2},
+    {"ON",   1},
+    {"OFF",  0},
 };
 static inline mfxU16 ParseAV1Ternary(const char *Data) {
   return MapString(Data, kAV1TernaryMap).value_or(2);
 }
 
-// Helper: parse WeightedPred/BiPred four-state string to 0/1/2/3
+// Helper: parse WeightedPred/BiPred string. "AUTO" lets the driver decide
+// (MFX_WEIGHTED_PRED_UNKNOWN); unmapped strings also fall back to AUTO.
 static constexpr std::pair<std::string_view, mfxU16> kWeightedPredModeMap[] = {
-    {"OFF",      0},
-    {"DEFAULT",  1},
-    {"EXPLICIT", 2},
+    {"AUTO",     MFX_WEIGHTED_PRED_UNKNOWN},
+    {"OFF",      MFX_WEIGHTED_PRED_UNKNOWN},
+    {"DEFAULT",  MFX_WEIGHTED_PRED_DEFAULT},
+    {"EXPLICIT", MFX_WEIGHTED_PRED_EXPLICIT},
+    {"IMPLICIT", MFX_WEIGHTED_PRED_IMPLICIT},
 };
 static inline mfxU16 ParseWeightedPredMode(const char *Data) {
-  return MapString(Data, kWeightedPredModeMap).value_or(3);
+  return MapString(Data, kWeightedPredModeMap).value_or(MFX_WEIGHTED_PRED_UNKNOWN);
 }
 
 // Codec level lookup tables
@@ -1572,12 +1588,12 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   ParseOptionalBool(DirectBiasAdjustmentData,
                     Context->EncoderParams.DirectBiasAdjustment);
 
-  // 7. MVCostScalingFactor
+  // 7. MVCostScalingFactor. "DEFAULT" sets MV cost to 0; "AUTO" (unmapped)
   static constexpr std::pair<std::string_view, int> kMVCostScalingFactorMap[] = {
-    {"OFF",  0},
-    {"1/2",  1},
-    {"1/4",  2},
-    {"1/8",  3},
+    {"DEFAULT", 0},
+    {"1/2",     1},
+    {"1/4",     2},
+    {"1/8",     3},
   };
   if (auto v = MapString(MVCostScalingFactorData, kMVCostScalingFactorMap)) {
     Context->EncoderParams.MVCostScalingFactor = *v;
@@ -1602,25 +1618,24 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
         Depth = 100;
       Context->EncoderParams.LADepth = static_cast<mfxU16>(Depth);
     }
-
-    // 8. LookaheadDS
-    static constexpr std::pair<std::string_view, int> kLookaheadDSMap[] = {
-      {"1X",    0},
-      {"2X",    1},
-      {"4X",    2},
-    };
-    if (auto v = MapString(LookaheadDSData, kLookaheadDSMap)) {
-      Context->EncoderParams.LookAheadDS = *v;
-    }
   } else if (std::strcmp(LookaheadData, "LP") == 0) {
     if (BFramesData > 0) {
       Context->EncoderParams.Lookahead = true;
-      Context->EncoderParams.LookaheadLP = true;
       Context->EncoderParams.LADepth =
           BFramesData > 7 ? 8 : static_cast<mfxU16>(BFramesData + 1);
     }
   } else {
     Context->EncoderParams.Lookahead = false;
+  }
+
+  // LookAheadDS is parsed in all modes so the user setting is honored in
+  static constexpr std::pair<std::string_view, int> kLookaheadDSMap[] = {
+    {"1X",    0},
+    {"2X",    1},
+    {"4X",    2},
+  };
+  if (auto v = MapString(LookaheadDSData, kLookaheadDSMap)) {
+    Context->EncoderParams.LookAheadDS = *v;
   }
 
   static constexpr std::pair<std::string_view, int> kIntraRefEncodingMap[] = {
@@ -1657,8 +1672,9 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
 
   ParseOptionalBool(RDOData, Context->EncoderParams.RDO);
 
-  // 9. Trellis
+  // 9. Trellis. "AUTO" stays unmapped so Trellis remains nullopt and the
   static constexpr std::pair<std::string_view, int> kTrellisMap[] = {
+    {"OFF", 0},
     {"I",   1},
     {"IP",  2},
     {"IPB", 3},
