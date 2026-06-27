@@ -82,9 +82,6 @@ template <> struct MFXExtBufferID<mfxExtThreadsParam> {
 template <> struct MFXExtBufferID<mfxExtHEVCRefLists> {
   enum { id = MFX_EXTBUFF_HEVC_REFLISTS };
 };
-template <> struct MFXExtBufferID<mfxExtBRC> {
-  enum { id = MFX_EXTBUFF_BRC };
-};
 template <> struct MFXExtBufferID<mfxExtHEVCParam> {
   enum { id = MFX_EXTBUFF_HEVC_PARAM };
 };

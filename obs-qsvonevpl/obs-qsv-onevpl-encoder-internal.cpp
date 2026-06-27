@@ -836,7 +836,7 @@ static constexpr std::array<FieldEntry, 29> CO2_FIELDS{
   FieldEntry{"UseRawRef", offsetof(mfxExtCodingOption2, UseRawRef), FT_U16},
 };
 
-static constexpr std::array<FieldEntry, 76> CO3_FIELDS{
+static constexpr std::array<FieldEntry, 75> CO3_FIELDS{
   FieldEntry{"NumSliceI", offsetof(mfxExtCodingOption3, NumSliceI), FT_U16},
   FieldEntry{"NumSliceP", offsetof(mfxExtCodingOption3, NumSliceP), FT_U16},
   FieldEntry{"NumSliceB", offsetof(mfxExtCodingOption3, NumSliceB), FT_U16},
@@ -909,7 +909,6 @@ static constexpr std::array<FieldEntry, 76> CO3_FIELDS{
   FieldEntry{"RepartitionCheckEnable", offsetof(mfxExtCodingOption3, RepartitionCheckEnable), FT_U16},
   FieldEntry{"EncodedUnitsInfo", offsetof(mfxExtCodingOption3, EncodedUnitsInfo), FT_U16},
   FieldEntry{"EnableNalUnitType", offsetof(mfxExtCodingOption3, EnableNalUnitType), FT_U16},
-  FieldEntry{"ExtBrcAdaptiveLTR", offsetof(mfxExtCodingOption3, ExtBrcAdaptiveLTR), FT_U16},
   FieldEntry{"AdaptiveLTR", offsetof(mfxExtCodingOption3, AdaptiveLTR), FT_U16},
   FieldEntry{"AdaptiveCQM", offsetof(mfxExtCodingOption3, AdaptiveCQM), FT_U16},
   FieldEntry{"AdaptiveRef", offsetof(mfxExtCodingOption3, AdaptiveRef), FT_U16},
