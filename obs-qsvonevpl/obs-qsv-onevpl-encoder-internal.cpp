@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -12,6 +13,21 @@
 #include <string_view>
 
 constexpr mfxU32 BRC_MAX_KBPS_LIMIT = 65535;
+
+// Convert VPL's mfxExtQualityInfoOutput.MSE[0] (luma, U24.8 fixed-point) to
+// PSNR in dB. Formula from mfxstructures.h:
+//   PSNR = 10 * log10(256.0 * (2^bitDepth - 1)^2 / MSE)
+// where MSE is the raw field value (not divided by 256). Returns 0.0 on
+// invalid input (MSE == 0 → log undefined), so caller can skip the sample.
+static double ComputePSNRFromMSE(mfxU32 mseField, mfxU16 bitDepth) {
+  if (mseField == 0)
+    return 0.0;
+  if (bitDepth == 0)
+    bitDepth = 8; // VPL uses 0 to mean default 8-bit
+  double peak = static_cast<double>((1u << bitDepth) - 1);
+  return 10.0 * std::log10(
+      (256.0 * peak * peak) / static_cast<double>(mseField));
+}
 
 // VP9 encoder doesn't populate mfxExtEncodedFrameInfo.QP, so parse the
 // bitstream uncompressed header to extract base_q_idx (8 bits, 0-255).
@@ -356,6 +372,7 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
                                           enum codec_enum Codec,
                                           const char *log_prefix) {
   FrameQPStats = {};
+  FramePSNRStats = {};
 
   mfxStatus Status = SetEncoderParams(InputParams, Codec);
   info("\tSetEncoderParams%s status:  %d", log_prefix, Status);
@@ -2254,6 +2271,23 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CachedROIMode = 0;
   }
 
+  // Attach QualityInfoMode so VPL reports per-frame MSE on the bitstream's
+  // mfxExtQualityInfoOutput buffer. VP9's IsExtBufferSupportedInInit does
+  // not list this buffer, so skip it there to avoid MFX_ERR_UNSUPPORTED.
+  if (InputParams->DebugLogPSNR &&
+      QSVEncodeParams.mfx.CodecId != MFX_CODEC_VP9) {
+    auto QIMode = QSVEncodeParams.AddExtBuffer<mfxExtQualityInfoMode>();
+    QIMode->Header.BufferId = MFX_EXTBUFF_ENCODED_QUALITY_INFO_MODE;
+    QIMode->Header.BufferSz = sizeof(mfxExtQualityInfoMode);
+    QIMode->QualityInfoMode = MFX_QUALITY_INFO_LEVEL_FRAME;
+    PSNRLoggingEnabled = true;
+    info("\tPSNR logging enabled (MFX_EXTBUFF_ENCODED_QUALITY_INFO_MODE, "
+         "frame-level)");
+  } else if (InputParams->DebugLogPSNR) {
+    warn("\tPSNR logging requested but VP9 does not support "
+         "MFX_EXTBUFF_ENCODED_QUALITY_INFO_MODE, skipping");
+  }
+
   return MFX_ERR_NONE;
 }
 
@@ -2403,7 +2437,12 @@ mfxStatus QSVEncoder::InitTaskPool([[maybe_unused]] enum codec_enum Codec) {
 
   // Allocate one mfxExtEncodedFrameInfo per task to retrieve per-frame QP
   QSVTaskEncodedInfo.resize(QSVEncodeParams.AsyncDepth);
-  QSVTaskEncodedExtPtr.resize(QSVEncodeParams.AsyncDepth);
+  QSVTaskBSExtBufs.resize(QSVEncodeParams.AsyncDepth);
+  // When PSNR logging is on, also allocate one mfxExtQualityInfoOutput per
+  // task so VPL fills in per-frame MSE (Y/U/V) after EncodeFrameAsync.
+  if (PSNRLoggingEnabled) {
+    QSVTaskQualityInfo.resize(QSVEncodeParams.AsyncDepth);
+  }
 
   for (int i = 0; i < QSVEncodeParams.AsyncDepth; i++) {
     NewTask.Bitstream.MaxLength =
@@ -2421,13 +2460,27 @@ mfxStatus QSVEncoder::InitTaskPool([[maybe_unused]] enum codec_enum Codec) {
     }
     // Attach mfxExtEncodedFrameInfo to each task's bitstream so the
     // encoder reports back the frame-level QP after EncodeFrameAsync.
+    // Slot 0 is always EncodedFrameInfo; slot 1 is QualityInfoOutput when
+    // PSNR logging is enabled.
     auto &encInfo = QSVTaskEncodedInfo[i];
     memset(&encInfo, 0, sizeof(encInfo));
     encInfo.Header.BufferId = MFX_EXTBUFF_ENCODED_FRAME_INFO;
     encInfo.Header.BufferSz = sizeof(encInfo);
-    NewTask.Bitstream.ExtParam = &QSVTaskEncodedExtPtr[i];
-    QSVTaskEncodedExtPtr[i] = reinterpret_cast<mfxExtBuffer *>(&encInfo);
+
+    auto &extBufs = QSVTaskBSExtBufs[i];
+    extBufs.ptrs[0] = reinterpret_cast<mfxExtBuffer *>(&encInfo);
     NewTask.Bitstream.NumExtParam = 1;
+
+    if (PSNRLoggingEnabled) {
+      auto &qi = QSVTaskQualityInfo[i];
+      memset(&qi, 0, sizeof(qi));
+      qi.Header.BufferId = MFX_EXTBUFF_ENCODED_QUALITY_INFO_OUTPUT;
+      qi.Header.BufferSz = sizeof(mfxExtQualityInfoOutput);
+      extBufs.ptrs[1] = reinterpret_cast<mfxExtBuffer *>(&qi);
+      NewTask.Bitstream.NumExtParam = 2;
+    }
+
+    NewTask.Bitstream.ExtParam = extBufs.ptrs;
 
     QSVTaskPool.push_back(NewTask);
 
@@ -3235,6 +3288,21 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
           UpdateFrameQPStats(taskBS.FrameType, encInfo->QP);
         }
       }
+
+      // PSNR extraction (Debug group). Slot 1 of ExtParam holds
+      // mfxExtQualityInfoOutput when PSNR logging is enabled.
+      if (PSNRLoggingEnabled && taskBS.ExtParam &&
+          taskBS.NumExtParam >= 2) {
+        auto *qi = reinterpret_cast<mfxExtQualityInfoOutput *>(
+            taskBS.ExtParam[1]);
+        if (qi && qi->Header.BufferId ==
+                      MFX_EXTBUFF_ENCODED_QUALITY_INFO_OUTPUT) {
+          double psnr = ComputePSNRFromMSE(
+              qi->MSE[0], QSVEncodeParams.mfx.FrameInfo.BitDepthLuma);
+          if (psnr > 0.0)
+            UpdateFramePSNRStats(taskBS.FrameType, psnr);
+        }
+      }
     }
 
     mfxU8 *DataTemp = QSVBitstream.Data;
@@ -3728,6 +3796,65 @@ void QSVEncoder::LogQPStats() {
   logType("B-frames", FrameQPStats.b);
 }
 
+// Per-frame PSNR tracking (Debug group). Mirrors UpdateFrameQPStats but
+// for luma PSNR (double). Same I/P/B bucketing by MFX_FRAMETYPE flags.
+
+void QSVEncoder::UpdateFramePSNRStats(mfxU16 frameType, double psnr) {
+  FramePSNRStats.totalFrames++;
+
+  PSNRFrameTypeStats *bucket = nullptr;
+  if (frameType & MFX_FRAMETYPE_I || frameType & MFX_FRAMETYPE_IDR ||
+      frameType & MFX_FRAMETYPE_xI || frameType & MFX_FRAMETYPE_xIDR) {
+    bucket = &FramePSNRStats.i;
+  } else if (frameType & MFX_FRAMETYPE_P || frameType & MFX_FRAMETYPE_xP) {
+    bucket = &FramePSNRStats.p;
+  } else if (frameType & MFX_FRAMETYPE_B || frameType & MFX_FRAMETYPE_xB) {
+    bucket = &FramePSNRStats.b;
+  } else {
+    return;
+  }
+
+  bucket->count++;
+  bucket->sumPSNR += psnr;
+  if (psnr < bucket->minPSNR) bucket->minPSNR = psnr;
+  if (psnr > bucket->maxPSNR) bucket->maxPSNR = psnr;
+  bucket->samples.push_back(psnr);
+}
+
+void QSVEncoder::LogPSNRStats() {
+  if (!PSNRLoggingEnabled)
+    return;
+
+  auto logType = [](const char *label, const PSNRFrameTypeStats &s) {
+    if (s.count == 0) {
+      blog(LOG_INFO, "[QSV VPL] PSNRStats: %s — no frames encoded", label);
+      return;
+    }
+    double avg = s.sumPSNR / static_cast<double>(s.count);
+    // median from sorted samples (PSNR is floating-point, so no histogram)
+    double median = 0.0;
+    if (!s.samples.empty()) {
+      std::vector<double> sorted = s.samples;
+      std::sort(sorted.begin(), sorted.end());
+      size_t mid = sorted.size() / 2;
+      median = (sorted.size() % 2 == 0)
+                   ? (sorted[mid - 1] + sorted[mid]) * 0.5
+                   : sorted[mid];
+    }
+    blog(LOG_INFO,
+         "[QSV VPL] PSNRStats: %s  count=%llu  min=%.2f  max=%.2f  avg=%.2f  median=%.2f",
+         label, static_cast<unsigned long long>(s.count),
+         s.minPSNR, s.maxPSNR, avg, median);
+  };
+
+  blog(LOG_INFO,
+       "[QSV VPL] PSNRStats: === Per-frame PSNR summary (total %llu frames, luma) ===",
+       static_cast<unsigned long long>(FramePSNRStats.totalFrames));
+  logType("I-frames", FramePSNRStats.i);
+  logType("P-frames", FramePSNRStats.p);
+  logType("B-frames", FramePSNRStats.b);
+}
+
 // Append a User Data Unregistered SEI NAL with cumulative QP stats.
 // Every frame gets one so the last frame carries the final summary.
 //
@@ -3907,6 +4034,21 @@ mfxStatus QSVEncoder::Drain() {
             UpdateFrameQPStats(Task.Bitstream.FrameType, encInfo->QP);
           }
         }
+
+        // PSNR extraction (Debug group)
+        if (PSNRLoggingEnabled && Task.Bitstream.ExtParam &&
+            Task.Bitstream.NumExtParam >= 2) {
+          auto *qi = reinterpret_cast<mfxExtQualityInfoOutput *>(
+              Task.Bitstream.ExtParam[1]);
+          if (qi && qi->Header.BufferId ==
+                        MFX_EXTBUFF_ENCODED_QUALITY_INFO_OUTPUT) {
+            double psnr = ComputePSNRFromMSE(
+                qi->MSE[0],
+                QSVEncodeParams.mfx.FrameInfo.BitDepthLuma);
+            if (psnr > 0.0)
+              UpdateFramePSNRStats(Task.Bitstream.FrameType, psnr);
+          }
+        }
       } else {
         warn("Drain sync warning: %d", SyncSts);
       }
@@ -3915,6 +4057,7 @@ mfxStatus QSVEncoder::Drain() {
   }
 
   LogQPStats();
+  LogPSNRStats();
 
   // Rebuild the SEI buffer with the final cumulative stats
   AppendQpSeiToBitstream(QSVBitstream);

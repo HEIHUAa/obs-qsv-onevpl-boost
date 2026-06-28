@@ -288,6 +288,9 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(Settings, "av1_super_res", "AUTO");
   obs_data_set_default_string(Settings, "av1_error_resilient", "AUTO");
   obs_data_set_default_string(Settings, "av1_interp_filter", "DEFAULT");
+
+  // Debug group toggle (PSNR via VPL Encoded Quality Info)
+  obs_data_set_default_bool(Settings, "debug_log_psnr", false);
 }
 
 static inline const char *LocaleKey(const char *str) {
@@ -1146,6 +1149,16 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(Prop,
                                     TEXT_CUSTOM_CODING_OPTIONS_DESC);
 
+  // ─ Debug group (bottom of the property list) ─
+  // PSNR toggle: attaches VPL Encoded Quality Info ext buffers so the
+  // encoder reports per-frame MSE, which the plugin converts to PSNR_Y
+  // and aggregates per I/P/B like QPStats.
+  obs_properties_t *DBGGroup = obs_properties_create();
+
+  Prop = obs_properties_add_bool(DBGGroup, "debug_log_psnr",
+                                 TEXT_DEBUG_LOG_PSNR);
+  obs_property_set_long_description(Prop, TEXT_DEBUG_LOG_PSNR_DESC);
+
   obs_properties_add_group(Props, "group_rate_control",
                            TEXT_GROUP_RATE_CONTROL,
                            OBS_GROUP_NORMAL, RCGroup);
@@ -1170,6 +1183,9 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_properties_add_group(Props, "group_misc",
                            TEXT_GROUP_MISC,
                            OBS_GROUP_NORMAL, MXGroup);
+  obs_properties_add_group(Props, "group_debug",
+                           TEXT_GROUP_DEBUG,
+                           OBS_GROUP_NORMAL, DBGGroup);
 
   return Props;
 }
@@ -1951,6 +1967,10 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
 
   Context->EncoderParams.MinQP = MinQPData ? MinQPData : "-1";
   Context->EncoderParams.MaxQP = MaxQPData ? MaxQPData : "-1";
+
+  // Debug group toggle
+  Context->EncoderParams.DebugLogPSNR =
+      obs_data_get_bool(Settings, "debug_log_psnr");
 
   Context->EncoderParams.ProcessingEnable = false;
   if ((Context->EncoderParams.VPPDenoiseMode.has_value() ||
