@@ -1887,7 +1887,7 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     int QPIData = static_cast<int>(obs_data_get_int(Settings, "qpi"));
     int QPPData = static_cast<int>(obs_data_get_int(Settings, "qpp"));
     int QPBData = static_cast<int>(obs_data_get_int(Settings, "qpb"));
-    if (Context->Codec == QSV_CODEC_AV1) {
+    if (Context->Codec == QSV_CODEC_VP9 || Context->Codec == QSV_CODEC_AV1) {
       QPIData *= 4;
       QPPData *= 4;
       QPBData *= 4;
@@ -1896,7 +1896,7 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.QPP = static_cast<mfxU16>(QPPData);
     Context->EncoderParams.QPB = static_cast<mfxU16>(QPBData);
   } else {
-    if (Context->Codec == QSV_CODEC_AV1) {
+    if (Context->Codec == QSV_CODEC_VP9 || Context->Codec == QSV_CODEC_AV1) {
       ActualCQPData *= 4;
     }
     Context->EncoderParams.QPI = static_cast<mfxU16>(ActualCQPData);
