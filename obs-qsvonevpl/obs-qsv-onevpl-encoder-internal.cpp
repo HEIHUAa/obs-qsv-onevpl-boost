@@ -3893,18 +3893,33 @@ bool QSVEncoder::InitPSNRDecoder(mfxU32 codecId, const mfxFrameInfo &frameInfo,
 
   // DecodeHeader is optional per VPL spec. It was returning MFX_ERR_MORE_DATA
   // (-10) because DataFlag=0 sets FLAG_VIDEO_DATA_NOT_FULL_FRAME, blocking the
-  // EOS fallback the header parser needs to accept partial NAL data. The
-  // encoder's FrameInfo already carries correct resolution/bitdepth/chroma,
-  // so use it directly for all codecs (AVC/HEVC/AV1/VP9).
+  // EOS fallback the header parser needs to accept partial NAL data. Use the
+  // encoder's FrameInfo directly, then fix up fields the decoder validates
+  // more strictly than the encoder.
   decParams.mfx.FrameInfo = frameInfo;
 
-  // Ensure FourCC matches bit depth
+  // Decoder outputs NV12/P010 (YUV420). Force chroma format to match —
+  // encoder may have set YUV444 for high-end modes.
+  decParams.mfx.FrameInfo.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
+
+  // HEVC decoder rejects CodecProfile=UNKNOWN (0) — encoder may also have
+  // tier bits (0x100) OR'd in. Derive a clean profile from bit depth so it
+  // matches the FourCC we set below (mirrors MatchProfile in VPL).
+  if (codecId == MFX_CODEC_HEVC) {
+    decParams.mfx.CodecProfile = (PSNRBitDepth > 8)
+                                     ? MFX_PROFILE_HEVC_MAIN10
+                                     : MFX_PROFILE_HEVC_MAIN;
+  }
+
+  // Ensure FourCC and BitDepth match — encoder may leave BitDepth=0
   if (PSNRBitDepth > 8) {
     decParams.mfx.FrameInfo.FourCC = MFX_FOURCC_P010;
     decParams.mfx.FrameInfo.BitDepthLuma = PSNRBitDepth;
     decParams.mfx.FrameInfo.BitDepthChroma = PSNRBitDepth;
   } else {
     decParams.mfx.FrameInfo.FourCC = MFX_FOURCC_NV12;
+    decParams.mfx.FrameInfo.BitDepthLuma = 8;
+    decParams.mfx.FrameInfo.BitDepthChroma = 8;
   }
 
   QSVDecode = std::make_unique<MFXVideoDECODE>(QSVDecodeSession);
