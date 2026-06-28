@@ -3,7 +3,6 @@
 #include "obs-qsv-onevpl-encoder.hpp"
 #include "helpers/ext_buf_manager.hpp"
 #include "helpers/qsv_params.hpp"
-#include <limits>
 
 class QSVEncoder {
 public:
@@ -216,35 +215,8 @@ private:
   // One mfxExtEncodedFrameInfo per task, attached to each task's
   // bitstream so the encoder fills in frame-level QP after encode.
   std::vector<mfxExtEncodedFrameInfo> QSVTaskEncodedInfo;
-  // When PSNR logging is on, one mfxExtQualityInfoOutput per task, so the
-  // encoder fills in per-frame MSE (Y/U/V) which we convert to PSNR.
-  std::vector<mfxExtQualityInfoOutput> QSVTaskQualityInfo;
-  // Each task's bitstream.ExtParam points into the per-task array below.
-  // Slot 0 = mfxExtEncodedFrameInfo (always), slot 1 = QualityInfoOutput (PSNR only).
-  struct TaskBitstreamExtBufs {
-    mfxExtBuffer *ptrs[2] = {};
-  };
-  std::vector<TaskBitstreamExtBufs> QSVTaskBSExtBufs;
-
-  // ─ Per-frame PSNR tracking (Debug group, mirrors QPStats layout) ─
-  // VPL reports MSE in U24.8 fixed point; PSNR = 10*log10(256*(2^bd-1)^2/MSE).
-  // We track luma PSNR only, per I/P/B, with samples stored for median.
-  struct PSNRFrameTypeStats {
-    uint64_t count = 0;
-    double sumPSNR = 0.0;
-    double minPSNR = std::numeric_limits<double>::max();
-    double maxPSNR = 0.0;
-    std::vector<double> samples; // raw per-frame PSNR for median
-  };
-  struct PSNRFrameStats {
-    PSNRFrameTypeStats i, p, b;
-    uint64_t totalFrames = 0;
-  };
-  PSNRFrameStats FramePSNRStats;
-  bool PSNRLoggingEnabled = false;
-  // diagnostics: log the first frame's raw MSE to detect unsupported VPL
-  bool PSNRDiagLogged = false;
-  uint64_t PSNRZeroMSECount = 0; // frames where VPL returned MSE=0
+  // Each task's bitstream.ExtParam points into the array below.
+  std::vector<mfxExtBuffer *> QSVTaskEncodedExtPtr;
 
   // ─ Per-frame QP tracking ─
   static constexpr size_t QSV_SEI_EXTRA = 1024; // extra bytes per task for SEI injection
@@ -260,12 +232,6 @@ private:
 
   void UpdateFrameQPStats(mfxU16 frameType, mfxU16 qp);
   void LogQPStats();
-
-  // PSNR stats (Debug group). UpdateFramePSNRStats is called per encoded
-  // frame with the luma PSNR derived from VPL's mfxExtQualityInfoOutput.
-  // LogPSNRStats prints the summary at session end, mirroring QPStats format.
-  void UpdateFramePSNRStats(mfxU16 frameType, double psnr);
-  void LogPSNRStats();
 
   // QP stats SEI (User Data Unregistered) injection
   // Inserts an SEI NAL with cumulative QP stats so media players can display them.

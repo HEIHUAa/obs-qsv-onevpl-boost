@@ -208,9 +208,6 @@ template <> struct MFXExtBufferID<mfxExtChromaLocInfo> {
 template <> struct MFXExtBufferID<mfxExtCodingOptionVPS> {
   enum { id = MFX_EXTBUFF_CODING_OPTION_VPS };
 };
-template <> struct MFXExtBufferID<mfxExtQualityInfoMode> {
-  enum { id = MFX_EXTBUFF_ENCODED_QUALITY_INFO_MODE };
-};
 template <> struct MFXExtBufferID<mfxExtCodingOptionDDI> {
   enum { id = MFX_EXTBUFF_DDI };
 };

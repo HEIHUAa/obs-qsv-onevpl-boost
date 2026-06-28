@@ -191,10 +191,6 @@ struct plugin_context {
 #define TEXT_GROUP_CODEC_SPECIFIC obs_module_text("Group.CodecSpecific")
 #define TEXT_GROUP_INTRA_REFRESH obs_module_text("Group.IntraRefresh")
 #define TEXT_GROUP_MISC obs_module_text("Group.Misc")
-#define TEXT_GROUP_DEBUG obs_module_text("Group.Debug")
-
-#define TEXT_DEBUG_LOG_PSNR obs_module_text("DebugLogPSNR")
-#define TEXT_DEBUG_LOG_PSNR_DESC obs_module_text("DebugLogPSNRDesc")
 
 #define TEXT_TARGET_USAGE_DESC obs_module_text("TargetUsageDesc")
 #define TEXT_RATE_CONTROL_DESC obs_module_text("RateControlDesc")

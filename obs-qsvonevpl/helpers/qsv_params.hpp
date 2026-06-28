@@ -164,10 +164,5 @@ struct encoder_params {
   std::vector<normalized_roi_region> NormalizedROIRegions;
   mfxU16 ROIMode; // 0 = MFX_ROI_MODE_PRIORITY, 1 = MFX_ROI_MODE_QP_DELTA (matches VPL API)
   bool ROIEnabled = false;
-
-  // Debug group toggle. When ON, attaches mfxExtQualityInfoMode/Output to
-  // the encoder so VPL reports per-frame MSE (Y/U/V), which the plugin
-  // converts to PSNR_Y and aggregates like QPStats (count/min/max/avg/median).
-  bool DebugLogPSNR = false;
 };
 
