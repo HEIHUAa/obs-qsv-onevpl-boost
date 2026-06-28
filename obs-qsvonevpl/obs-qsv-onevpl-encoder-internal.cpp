@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -169,6 +170,7 @@ QSVEncoder::~QSVEncoder() {
   if (QSVEncode || QSVProcessing) {
     ClearData();
   }
+  ShutdownPSNRDecoder();
   delete[] QSVLayerArray;
 #ifdef QSV_UHD600_SUPPORT
   ReleaseSystemMemorySurfacePool();
@@ -698,6 +700,24 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     Status = GetVideoParam(Codec);
     LogActualParams();
 #endif
+
+    // Cache debug toggles for use in Drain (InputParams may be gone by then)
+    QPStatsEnabled = InputParams->QPStatistics;
+
+    if (InputParams->VideoHeaderHexDump) {
+      LogVideoHeaderHexDump();
+    }
+
+    // Lazy-init PSNR decoder if PSNR logging is enabled
+    PSNRLoggingEnabled = InputParams->PSNRLog;
+    if (PSNRLoggingEnabled) {
+      if (!InitPSNRDecoder(QSVEncodeParams.mfx.CodecId,
+                           QSVEncodeParams.mfx.FrameInfo,
+                           InputParams->BitDepth)) {
+        warn("[QSV VPL] PSNR: decoder init failed, PSNR logging disabled");
+        PSNRLoggingEnabled = false;
+      }
+    }
 
     Status = InitBitstreamBuffer(Codec);
 
@@ -3153,6 +3173,30 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
 
   EncodeSurface->Data.TimeStamp = TS;
   LoadFrameData(EncodeSurface, FrameData, FrameLinesize);
+
+  // PSNR: save source frame copy (tight layout, no pitch padding)
+  if (PSNRLoggingEnabled) {
+    const mfxFrameInfo *fi = &EncodeSurface->Info;
+    const mfxU32 fourcc = fi->FourCC;
+    if (fourcc == MFX_FOURCC_NV12 || fourcc == MFX_FOURCC_P010) {
+      const mfxU16 w = fi->CropW ? fi->CropW : fi->Width;
+      const mfxU16 h = fi->CropH ? fi->CropH : fi->Height;
+      const size_t bpp = (PSNRBitDepth > 8) ? 2 : 1;
+      const size_t yRow = static_cast<size_t>(w) * bpp;
+      const size_t uvRow = yRow;
+      const size_t uvH = static_cast<size_t>(h) / 2;
+      auto &task = QSVTaskPool[TaskID];
+      task.SourceY.resize(yRow * h);
+      task.SourceUV.resize(uvRow * uvH);
+      for (size_t row = 0; row < static_cast<size_t>(h); row++)
+        memcpy(task.SourceY.data() + row * yRow,
+               FrameData[0] + row * FrameLinesize[0], yRow);
+      for (size_t row = 0; row < uvH; row++)
+        memcpy(task.SourceUV.data() + row * uvRow,
+               FrameData[1] + row * FrameLinesize[1], uvRow);
+    }
+  }
+
   QSVTaskPool[TaskID].Bitstream.TimeStamp = TS;
 
   bool roiActive = !CachedROIRegions.empty();
@@ -3220,7 +3264,7 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
     }
 
     // ─ Extract per-frame QP from the synced bitstream ─
-    {
+    if (QPStatsEnabled) {
       auto &taskBS = QSVTaskPool[QSVSyncTaskID].Bitstream;
       if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_VP9) {
         // VP9 encoder doesn't fill mfxExtEncodedFrameInfo.QP; parse bitstream
@@ -3234,6 +3278,32 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
             encInfo->Header.BufferId == MFX_EXTBUFF_ENCODED_FRAME_INFO) {
           UpdateFrameQPStats(taskBS.FrameType, encInfo->QP);
         }
+      }
+    }
+
+    // PSNR: decode encoded bitstream and compare against saved source
+    if (PSNRLoggingEnabled && QSVDecodeInited) {
+      auto &task = QSVTaskPool[QSVSyncTaskID];
+      if (!task.SourceY.empty()) {
+        mfxFrameSurface1 *recon = nullptr;
+        if (DecodeFrameForPSNR(task.Bitstream, recon) && recon) {
+          const mfxFrameInfo *fi = &recon->Info;
+          mfxU16 w = fi->CropW ? fi->CropW : fi->Width;
+          mfxU16 h = fi->CropH ? fi->CropH : fi->Height;
+          const size_t bpp = (PSNRBitDepth > 8) ? 2 : 1;
+          UpdateFramePSNRStats(task.Bitstream.FrameType, w, h,
+                               task.SourceY.data(),
+                               static_cast<size_t>(w) * bpp,
+                               task.SourceUV.data(),
+                               static_cast<size_t>(w) * bpp,
+                               recon);
+          recon->FrameInterface->Unmap(recon);
+          recon->FrameInterface->Release(recon);
+        } else {
+          FramePSNRStats.decodeFailures++;
+        }
+        task.SourceY.clear();
+        task.SourceUV.clear();
       }
     }
 
@@ -3518,6 +3588,29 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
   QSVEncodeSurface->Data.TimeStamp = TS;
   LoadFrameData(QSVEncodeSurface, FrameData, FrameLinesize);
 
+  // PSNR: save source frame copy (tight layout, no pitch padding)
+  if (PSNRLoggingEnabled) {
+    const mfxFrameInfo *fi = &QSVEncodeSurface->Info;
+    const mfxU32 fourcc = fi->FourCC;
+    if (fourcc == MFX_FOURCC_NV12 || fourcc == MFX_FOURCC_P010) {
+      const mfxU16 w = fi->CropW ? fi->CropW : fi->Width;
+      const mfxU16 h = fi->CropH ? fi->CropH : fi->Height;
+      const size_t bpp = (PSNRBitDepth > 8) ? 2 : 1;
+      const size_t yRow = static_cast<size_t>(w) * bpp;
+      const size_t uvRow = yRow;
+      const size_t uvH = static_cast<size_t>(h) / 2;
+      auto &task = QSVTaskPool[TaskID];
+      task.SourceY.resize(yRow * h);
+      task.SourceUV.resize(uvRow * uvH);
+      for (size_t row = 0; row < static_cast<size_t>(h); row++)
+        memcpy(task.SourceY.data() + row * yRow,
+               FrameData[0] + row * FrameLinesize[0], yRow);
+      for (size_t row = 0; row < uvH; row++)
+        memcpy(task.SourceUV.data() + row * uvRow,
+               FrameData[1] + row * FrameLinesize[1], uvRow);
+    }
+  }
+
   QSVTaskPool[TaskID].Bitstream.TimeStamp = TS;
 
   Status = QSVEncodeSurface->FrameInterface->Unmap(QSVEncodeSurface);
@@ -3728,6 +3821,359 @@ void QSVEncoder::LogQPStats() {
   logType("B-frames", FrameQPStats.b);
 }
 
+// Dump SPS/PPS/VPS raw bytes as hex for debugging bitstream header issues.
+void QSVEncoder::LogVideoHeaderHexDump() {
+  // VP9 has no SPS/PPS/VPS NAL units (uses uncompressed frame header)
+  if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_VP9) {
+    blog(LOG_INFO, "[QSV VPL] VideoHeader: VP9 has no SPS/PPS/VPS "
+                   "(uncompressed frame header)");
+    return;
+  }
+
+  auto dumpBuffer = [](const char *name, const mfxU8 *buf, mfxU16 size) {
+    if (!buf || size == 0) {
+      blog(LOG_INFO, "[QSV VPL] VideoHeader: %s empty", name);
+      return;
+    }
+    blog(LOG_INFO, "[QSV VPL] VideoHeader: %s (%u bytes):", name,
+         static_cast<unsigned>(size));
+    for (mfxU16 off = 0; off < size; off += 16) {
+      char hex[80];
+      int pos = snprintf(hex, sizeof(hex), "  %04x: ", off);
+      for (mfxU16 i = off; i < std::min<mfxU16>(off + 16, size); i++) {
+        pos += snprintf(hex + pos, sizeof(hex) - pos, "%02x ", buf[i]);
+      }
+      blog(LOG_INFO, "%s", hex);
+    }
+  };
+
+  auto *SPSPPS = QSVEncodeParams.GetExtBuffer<mfxExtCodingOptionSPSPPS>();
+  if (SPSPPS) {
+    dumpBuffer("SPS", SPSPPS->SPSBuffer, SPSPPS->SPSBufSize);
+    dumpBuffer("PPS", SPSPPS->PPSBuffer, SPSPPS->PPSBufSize);
+  }
+
+  if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
+    auto *VPS = QSVEncodeParams.GetExtBuffer<mfxExtCodingOptionVPS>();
+    if (VPS) {
+      dumpBuffer("VPS", VPS->VPSBuffer, VPS->VPSBufSize);
+    }
+  }
+}
+
+// ── PSNR decoder: decodes encoded bitstream to reconstruct frames ──
+// Used for PSNR computation when PSNRLog is enabled. Creates a separate VPL
+// decode session that outputs to system memory for pixel comparison.
+
+bool QSVEncoder::InitPSNRDecoder(mfxU32 codecId, const mfxFrameInfo &frameInfo,
+                                 mfxU16 bitDepth) {
+  PSNRBitDepth = bitDepth > 0 ? bitDepth : 8;
+
+  // Reuse the global VPL loader (same as encoder session)
+  mfxLoader Loader = nullptr;
+  {
+    std::lock_guard<std::mutex> Lock(GlobalLoaderMutex);
+    if (GlobalQSVLoader) {
+      Loader = GlobalQSVLoader;
+    }
+  }
+  if (!Loader) {
+    return false;
+  }
+
+  mfxStatus sts = MFXCreateSession(Loader, 0, &QSVDecodeSession);
+  if (sts < MFX_ERR_NONE) {
+    warn("[QSV VPL] PSNR: MFXCreateSession failed (sts=%d)", sts);
+    return false;
+  }
+
+  mfxVideoParam decParams = {};
+  decParams.mfx.CodecId = codecId;
+  decParams.IOPattern = MFX_IOPATTERN_OUT_SYSTEM_MEMORY;
+
+  // VP9 has no SPS/PPS NALUs; use encoder FrameInfo directly.
+  // AVC/HEVC/AV1: run DecodeHeader on concatenated VPS+SPS+PPS buffers.
+  if (codecId != MFX_CODEC_VP9) {
+    auto *SPSPPS = QSVEncodeParams.GetExtBuffer<mfxExtCodingOptionSPSPPS>();
+    if (!SPSPPS || !SPSPPS->SPSBuffer || SPSPPS->SPSBufSize == 0) {
+      MFXClose(QSVDecodeSession);
+      QSVDecodeSession = nullptr;
+      return false;
+    }
+
+    size_t totalSize = SPSPPS->SPSBufSize + SPSPPS->PPSBufSize;
+    mfxExtCodingOptionVPS *VPS = nullptr;
+    if (codecId == MFX_CODEC_HEVC) {
+      VPS = QSVEncodeParams.GetExtBuffer<mfxExtCodingOptionVPS>();
+      if (VPS && VPS->VPSBuffer && VPS->VPSBufSize > 0) {
+        totalSize += VPS->VPSBufSize;
+      }
+    }
+
+    QSVDecodeBSBuf.assign(totalSize, 0);
+    size_t offset = 0;
+    if (VPS && VPS->VPSBuffer && VPS->VPSBufSize > 0) {
+      memcpy(QSVDecodeBSBuf.data() + offset, VPS->VPSBuffer,
+             VPS->VPSBufSize);
+      offset += VPS->VPSBufSize;
+    }
+    memcpy(QSVDecodeBSBuf.data() + offset, SPSPPS->SPSBuffer,
+           SPSPPS->SPSBufSize);
+    offset += SPSPPS->SPSBufSize;
+    memcpy(QSVDecodeBSBuf.data() + offset, SPSPPS->PPSBuffer,
+           SPSPPS->PPSBufSize);
+
+    QSVDecodeBS.Data = QSVDecodeBSBuf.data();
+    QSVDecodeBS.DataLength = static_cast<mfxU32>(totalSize);
+    QSVDecodeBS.DataOffset = 0;
+    QSVDecodeBS.MaxLength = static_cast<mfxU32>(totalSize);
+    QSVDecodeBS.CodecId = codecId;
+
+    sts = MFXVideoDECODE_DecodeHeader(QSVDecodeSession, &QSVDecodeBS,
+                                      &decParams);
+    if (sts < MFX_ERR_NONE) {
+      warn("[QSV VPL] PSNR: DecodeHeader failed (sts=%d)", sts);
+      MFXClose(QSVDecodeSession);
+      QSVDecodeSession = nullptr;
+      return false;
+    }
+
+    // Reset bitstream for actual frame decoding
+    QSVDecodeBS.DataLength = 0;
+    QSVDecodeBS.DataOffset = 0;
+  } else {
+    // VP9: copy FrameInfo from encoder
+    decParams.mfx.FrameInfo = frameInfo;
+  }
+
+  // Ensure FourCC matches bit depth
+  if (PSNRBitDepth > 8) {
+    decParams.mfx.FrameInfo.FourCC = MFX_FOURCC_P010;
+    decParams.mfx.FrameInfo.BitDepthLuma = PSNRBitDepth;
+    decParams.mfx.FrameInfo.BitDepthChroma = PSNRBitDepth;
+  } else {
+    decParams.mfx.FrameInfo.FourCC = MFX_FOURCC_NV12;
+  }
+
+  QSVDecode = std::make_unique<MFXVideoDECODE>(QSVDecodeSession);
+  sts = QSVDecode->Init(&decParams);
+  if (sts < MFX_ERR_NONE) {
+    warn("[QSV VPL] PSNR: decoder Init failed (sts=%d)", sts);
+    QSVDecode.reset();
+    MFXClose(QSVDecodeSession);
+    QSVDecodeSession = nullptr;
+    return false;
+  }
+
+  QSVDecodeInited = true;
+  info("[QSV VPL] PSNR: decoder initialized (codec=%c%c%c%c, bitDepth=%u)",
+       static_cast<char>((codecId >> 24) & 0xFF),
+       static_cast<char>((codecId >> 16) & 0xFF),
+       static_cast<char>((codecId >> 8) & 0xFF),
+       static_cast<char>(codecId & 0xFF), PSNRBitDepth);
+  return true;
+}
+
+void QSVEncoder::ShutdownPSNRDecoder() {
+  if (QSVDecode) {
+    QSVDecode->Close();
+    QSVDecode.reset();
+  }
+  if (QSVDecodeSession) {
+    MFXClose(QSVDecodeSession);
+    QSVDecodeSession = nullptr;
+  }
+  QSVDecodeBSBuf.clear();
+  QSVDecodeBS = {};
+  QSVDecodeInited = false;
+}
+
+// Decode one encoded frame via the PSNR decoder session and return the
+// reconstructed surface (mapped for read). Caller must Unmap + Release.
+bool QSVEncoder::DecodeFrameForPSNR(const mfxBitstream &encodedBS,
+                                    mfxFrameSurface1 *&outSurface) {
+  outSurface = nullptr;
+  if (!QSVDecode || !QSVDecodeInited) return false;
+
+  // Copy encoded bitstream into decoder's buffer (decoder modifies bitstream state)
+  const size_t needed = encodedBS.DataOffset + encodedBS.DataLength;
+  if (needed == 0) return false;
+  if (QSVDecodeBSBuf.size() < needed) {
+    QSVDecodeBSBuf.resize(needed);
+  }
+  // Always refresh Data/MaxLength: VP9 path in InitPSNRDecoder never sets them
+  QSVDecodeBS.Data = QSVDecodeBSBuf.data();
+  QSVDecodeBS.MaxLength = static_cast<mfxU32>(QSVDecodeBSBuf.size());
+  memcpy(QSVDecodeBSBuf.data() + encodedBS.DataOffset,
+         encodedBS.Data + encodedBS.DataOffset, encodedBS.DataLength);
+  QSVDecodeBS.DataLength = encodedBS.DataLength;
+  QSVDecodeBS.DataOffset = encodedBS.DataOffset;
+  QSVDecodeBS.CodecId = QSVEncodeParams.mfx.CodecId;
+
+  mfxSyncPoint syncPoint = nullptr;
+  mfxStatus sts = MFX_ERR_NONE;
+
+  for (int attempt = 0; attempt < 16; attempt++) {
+    mfxFrameSurface1 *decSurface = nullptr;
+    sts = QSVDecode->GetSurface(&decSurface);
+    if (sts < MFX_ERR_NONE || !decSurface) return false;
+
+    mfxFrameSurface1 *outSurf = nullptr;
+    sts = QSVDecode->DecodeFrameAsync(&QSVDecodeBS, decSurface,
+                                       &outSurf, &syncPoint);
+    if (sts == MFX_ERR_MORE_SURFACE) continue;
+    if (sts == MFX_ERR_MORE_DATA) return false;
+    if (sts < MFX_ERR_NONE || !outSurf) return false;
+
+    sts = MFXVideoCORE_SyncOperation(QSVDecodeSession, syncPoint, 5000);
+    if (sts < MFX_ERR_NONE) {
+      outSurf->FrameInterface->Release(outSurf);
+      return false;
+    }
+    sts = outSurf->FrameInterface->Map(outSurf, MFX_MAP_READ);
+    if (sts < MFX_ERR_NONE) {
+      outSurf->FrameInterface->Release(outSurf);
+      return false;
+    }
+    outSurface = outSurf;
+    return true;
+  }
+  return false;
+}
+
+// Compute per-plane PSNR (Y/U/V) by comparing source NV12/P010 data against
+// the reconstructed surface, accumulate into FramePSNRStats.
+void QSVEncoder::UpdateFramePSNRStats(mfxU16 frameType, mfxU16 width,
+                                       mfxU16 height,
+                                       const uint8_t *srcY, size_t srcPitchY,
+                                       const uint8_t *srcUV, size_t srcPitchUV,
+                                       const mfxFrameSurface1 *recon) {
+  PSNRFrameTypeStats *bucket = nullptr;
+  if (frameType & MFX_FRAMETYPE_I || frameType & MFX_FRAMETYPE_xI) {
+    bucket = &FramePSNRStats.i;
+  } else if (frameType & MFX_FRAMETYPE_P || frameType & MFX_FRAMETYPE_xP) {
+    bucket = &FramePSNRStats.p;
+  } else if (frameType & MFX_FRAMETYPE_B || frameType & MFX_FRAMETYPE_xB) {
+    bucket = &FramePSNRStats.b;
+  } else {
+    return;
+  }
+
+  const mfxFrameData *rd = &recon->Data;
+  const mfxU16 reconPitch = rd->Pitch;
+  const mfxU16 rh =
+      recon->Info.CropH ? recon->Info.CropH : recon->Info.Height;
+  const mfxU16 rw =
+      recon->Info.CropW ? recon->Info.CropW : recon->Info.Width;
+
+  const size_t w = std::min<size_t>(width, rw);
+  const size_t h = std::min<size_t>(height, rh);
+  if (w == 0 || h == 0) return;
+
+  const bool is10 = (PSNRBitDepth > 8);
+  const double maxVal = is10 ? 1023.0 : 255.0;
+  const double maxSq = maxVal * maxVal;
+
+  // Y plane MSE
+  uint64_t sumSqY = 0;
+  if (is10) {
+    auto *s = reinterpret_cast<const uint16_t *>(srcY);
+    auto *r = reinterpret_cast<const uint16_t *>(rd->Y);
+    size_t sp = srcPitchY / 2, rp = reconPitch / 2;
+    for (size_t row = 0; row < h; row++)
+      for (size_t col = 0; col < w; col++) {
+        int d = static_cast<int>(s[row * sp + col]) -
+                static_cast<int>(r[row * rp + col]);
+        sumSqY += static_cast<uint64_t>(d * d);
+      }
+  } else {
+    for (size_t row = 0; row < h; row++)
+      for (size_t col = 0; col < w; col++) {
+        int d = static_cast<int>(srcY[row * srcPitchY + col]) -
+                static_cast<int>(rd->Y[row * reconPitch + col]);
+        sumSqY += static_cast<uint64_t>(d * d);
+      }
+  }
+  double mseY = static_cast<double>(sumSqY) / static_cast<double>(w * h);
+
+  // UV plane (NV12/P010 interleaved: U0 V0 U1 V1 ...)
+  const size_t uvH = h / 2, uvW = w;
+  uint64_t sumSqU = 0, sumSqV = 0;
+  if (is10) {
+    auto *s = reinterpret_cast<const uint16_t *>(srcUV);
+    auto *r = reinterpret_cast<const uint16_t *>(rd->UV);
+    size_t sp = srcPitchUV / 2, rp = reconPitch / 2;
+    for (size_t row = 0; row < uvH; row++)
+      for (size_t col = 0; col < uvW; col++) {
+        size_t si = row * sp + col * 2, ri = row * rp + col * 2;
+        int dU = static_cast<int>(s[si]) - static_cast<int>(r[ri]);
+        int dV = static_cast<int>(s[si + 1]) - static_cast<int>(r[ri + 1]);
+        sumSqU += static_cast<uint64_t>(dU * dU);
+        sumSqV += static_cast<uint64_t>(dV * dV);
+      }
+  } else {
+    for (size_t row = 0; row < uvH; row++)
+      for (size_t col = 0; col < uvW; col++) {
+        size_t si = row * srcPitchUV + col * 2, ri = row * reconPitch + col * 2;
+        int dU = static_cast<int>(srcUV[si]) - static_cast<int>(rd->UV[ri]);
+        int dV = static_cast<int>(srcUV[si + 1]) -
+                 static_cast<int>(rd->UV[ri + 1]);
+        sumSqU += static_cast<uint64_t>(dU * dU);
+        sumSqV += static_cast<uint64_t>(dV * dV);
+      }
+  }
+  size_t uvN = uvW * uvH;
+  double mseU = uvN ? static_cast<double>(sumSqU) / uvN : 0.0;
+  double mseV = uvN ? static_cast<double>(sumSqV) / uvN : 0.0;
+
+  auto toPSNR = [maxSq](double mse) -> double {
+    if (mse < 1e-10) return 100.0;
+    return 10.0 * std::log10(maxSq / mse);
+  };
+  double pY = toPSNR(mseY), pU = toPSNR(mseU), pV = toPSNR(mseV);
+
+  bucket->count++;
+  bucket->sumPSNR_Y += pY;
+  bucket->sumPSNR_U += pU;
+  bucket->sumPSNR_V += pV;
+  if (pY < bucket->minPSNR_Y) bucket->minPSNR_Y = pY;
+  if (pY > bucket->maxPSNR_Y) bucket->maxPSNR_Y = pY;
+  if (pU < bucket->minPSNR_U) bucket->minPSNR_U = pU;
+  if (pU > bucket->maxPSNR_U) bucket->maxPSNR_U = pU;
+  if (pV < bucket->minPSNR_V) bucket->minPSNR_V = pV;
+  if (pV > bucket->maxPSNR_V) bucket->maxPSNR_V = pV;
+  FramePSNRStats.totalFrames++;
+}
+
+void QSVEncoder::LogPSNRStats() {
+  auto logType = [](const char *label, const PSNRFrameTypeStats &s) {
+    if (s.count == 0) {
+      blog(LOG_INFO, "[QSV VPL] PSNRStats: %s — no frames", label);
+      return;
+    }
+    double avgY = s.sumPSNR_Y / static_cast<double>(s.count);
+    double avgU = s.sumPSNR_U / static_cast<double>(s.count);
+    double avgV = s.sumPSNR_V / static_cast<double>(s.count);
+    blog(LOG_INFO,
+         "[QSV VPL] PSNRStats: %s  count=%llu  "
+         "Y[min=%.2f avg=%.2f max=%.2f]  U[min=%.2f avg=%.2f max=%.2f]  "
+         "V[min=%.2f avg=%.2f max=%.2f]",
+         label, static_cast<unsigned long long>(s.count),
+         s.minPSNR_Y, avgY, s.maxPSNR_Y,
+         s.minPSNR_U, avgU, s.maxPSNR_U,
+         s.minPSNR_V, avgV, s.maxPSNR_V);
+  };
+
+  blog(LOG_INFO,
+       "[QSV VPL] PSNRStats: === Per-frame PSNR summary "
+       "(total %llu frames, %llu decode failures) ===",
+       static_cast<unsigned long long>(FramePSNRStats.totalFrames),
+       static_cast<unsigned long long>(FramePSNRStats.decodeFailures));
+  logType("I-frames", FramePSNRStats.i);
+  logType("P-frames", FramePSNRStats.p);
+  logType("B-frames", FramePSNRStats.b);
+}
+
 // Append a User Data Unregistered SEI NAL with cumulative QP stats.
 // Every frame gets one so the last frame carries the final summary.
 //
@@ -3892,20 +4338,46 @@ mfxStatus QSVEncoder::Drain() {
           QSVSession, Task.SyncPoint, 5000);
       if (SyncSts >= MFX_ERR_NONE) {
         // Extract QP from this task's bitstream
-        if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_VP9) {
-          mfxU16 qp = ExtractVP9QP(std::span<const uint8_t>(
-              Task.Bitstream.Data + Task.Bitstream.DataOffset,
-              Task.Bitstream.DataLength));
-          UpdateFrameQPStats(Task.Bitstream.FrameType, qp);
-        } else if (Task.Bitstream.ExtParam &&
-                   Task.Bitstream.NumExtParam > 0) {
-          auto *encInfo =
-              reinterpret_cast<mfxExtEncodedFrameInfo *>(
-                  Task.Bitstream.ExtParam[0]);
-          if (encInfo &&
-              encInfo->Header.BufferId == MFX_EXTBUFF_ENCODED_FRAME_INFO) {
-            UpdateFrameQPStats(Task.Bitstream.FrameType, encInfo->QP);
+        if (QPStatsEnabled) {
+          if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_VP9) {
+            mfxU16 qp = ExtractVP9QP(std::span<const uint8_t>(
+                Task.Bitstream.Data + Task.Bitstream.DataOffset,
+                Task.Bitstream.DataLength));
+            UpdateFrameQPStats(Task.Bitstream.FrameType, qp);
+          } else if (Task.Bitstream.ExtParam &&
+                     Task.Bitstream.NumExtParam > 0) {
+            auto *encInfo =
+                reinterpret_cast<mfxExtEncodedFrameInfo *>(
+                    Task.Bitstream.ExtParam[0]);
+            if (encInfo &&
+                encInfo->Header.BufferId == MFX_EXTBUFF_ENCODED_FRAME_INFO) {
+              UpdateFrameQPStats(Task.Bitstream.FrameType, encInfo->QP);
+            }
           }
+        }
+
+        // PSNR for remaining pending tasks
+        if (PSNRLoggingEnabled && QSVDecodeInited &&
+            !Task.SourceY.empty()) {
+          mfxFrameSurface1 *recon = nullptr;
+          if (DecodeFrameForPSNR(Task.Bitstream, recon) && recon) {
+            const mfxFrameInfo *fi = &recon->Info;
+            mfxU16 w = fi->CropW ? fi->CropW : fi->Width;
+            mfxU16 h = fi->CropH ? fi->CropH : fi->Height;
+            const size_t bpp = (PSNRBitDepth > 8) ? 2 : 1;
+            UpdateFramePSNRStats(Task.Bitstream.FrameType, w, h,
+                                 Task.SourceY.data(),
+                                 static_cast<size_t>(w) * bpp,
+                                 Task.SourceUV.data(),
+                                 static_cast<size_t>(w) * bpp,
+                                 recon);
+            recon->FrameInterface->Unmap(recon);
+            recon->FrameInterface->Release(recon);
+          } else {
+            FramePSNRStats.decodeFailures++;
+          }
+          Task.SourceY.clear();
+          Task.SourceUV.clear();
         }
       } else {
         warn("Drain sync warning: %d", SyncSts);
@@ -3914,7 +4386,14 @@ mfxStatus QSVEncoder::Drain() {
     }
   }
 
-  LogQPStats();
+  if (QPStatsEnabled) {
+    LogQPStats();
+  }
+
+  if (PSNRLoggingEnabled) {
+    LogPSNRStats();
+    ShutdownPSNRDecoder();
+  }
 
   // Rebuild the SEI buffer with the final cumulative stats
   AppendQpSeiToBitstream(QSVBitstream);

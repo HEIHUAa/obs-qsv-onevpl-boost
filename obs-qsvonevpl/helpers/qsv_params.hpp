@@ -74,6 +74,10 @@ struct encoder_params {
   bool IntraRefEncoding;
   mfxU16 IntraRefType;
   bool CustomBufferSize;
+  // Debug group toggles
+  bool PSNRLog = false;
+  bool QPStatistics = true; // default ON to preserve existing behavior
+  bool VideoHeaderHexDump = false;
   bool EncTools;
   std::optional<bool> EncToolsSceneChange;
   std::optional<bool> EncToolsAdaptiveRefP;

@@ -288,6 +288,11 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(Settings, "av1_super_res", "AUTO");
   obs_data_set_default_string(Settings, "av1_error_resilient", "AUTO");
   obs_data_set_default_string(Settings, "av1_interp_filter", "DEFAULT");
+
+  // Debug group defaults
+  obs_data_set_default_bool(Settings, "psnr_log", false);
+  obs_data_set_default_bool(Settings, "qp_statistics", true);
+  obs_data_set_default_bool(Settings, "video_header_hex_dump", false);
 }
 
 static inline const char *LocaleKey(const char *str) {
@@ -1171,6 +1176,19 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                            TEXT_GROUP_MISC,
                            OBS_GROUP_NORMAL, MXGroup);
 
+  // Debug group (bottom)
+  obs_properties_t *DBGGroup = obs_properties_create();
+  Prop = obs_properties_add_bool(DBGGroup, "psnr_log", TEXT_PSNR_LOG);
+  obs_property_set_long_description(Prop, TEXT_PSNR_LOG_DESC);
+  Prop = obs_properties_add_bool(DBGGroup, "qp_statistics", TEXT_QP_STATS);
+  obs_property_set_long_description(Prop, TEXT_QP_STATS_DESC);
+  Prop = obs_properties_add_bool(DBGGroup, "video_header_hex_dump",
+                                 TEXT_VIDEO_HEADER_DUMP);
+  obs_property_set_long_description(Prop, TEXT_VIDEO_HEADER_DUMP_DESC);
+  obs_properties_add_group(Props, "group_debug",
+                           TEXT_GROUP_DEBUG,
+                           OBS_GROUP_NORMAL, DBGGroup);
+
   return Props;
 }
 
@@ -1951,6 +1969,14 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
 
   Context->EncoderParams.MinQP = MinQPData ? MinQPData : "-1";
   Context->EncoderParams.MaxQP = MaxQPData ? MaxQPData : "-1";
+
+  // Debug group toggles
+  Context->EncoderParams.PSNRLog =
+      obs_data_get_bool(Settings, "psnr_log");
+  Context->EncoderParams.QPStatistics =
+      obs_data_get_bool(Settings, "qp_statistics");
+  Context->EncoderParams.VideoHeaderHexDump =
+      obs_data_get_bool(Settings, "video_header_hex_dump");
 
   Context->EncoderParams.ProcessingEnable = false;
   if ((Context->EncoderParams.VPPDenoiseMode.has_value() ||

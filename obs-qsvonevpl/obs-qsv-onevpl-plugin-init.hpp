@@ -191,6 +191,15 @@ struct plugin_context {
 #define TEXT_GROUP_CODEC_SPECIFIC obs_module_text("Group.CodecSpecific")
 #define TEXT_GROUP_INTRA_REFRESH obs_module_text("Group.IntraRefresh")
 #define TEXT_GROUP_MISC obs_module_text("Group.Misc")
+#define TEXT_GROUP_DEBUG obs_module_text("Group.Debug")
+
+// Debug group toggles
+#define TEXT_PSNR_LOG obs_module_text("PSNRLog")
+#define TEXT_PSNR_LOG_DESC obs_module_text("PSNRLog.Tooltip")
+#define TEXT_QP_STATS obs_module_text("QPStatistics")
+#define TEXT_QP_STATS_DESC obs_module_text("QPStatistics.Tooltip")
+#define TEXT_VIDEO_HEADER_DUMP obs_module_text("VideoHeaderHexDump")
+#define TEXT_VIDEO_HEADER_DUMP_DESC obs_module_text("VideoHeaderHexDump.Tooltip")
 
 #define TEXT_TARGET_USAGE_DESC obs_module_text("TargetUsageDesc")
 #define TEXT_RATE_CONTROL_DESC obs_module_text("RateControlDesc")

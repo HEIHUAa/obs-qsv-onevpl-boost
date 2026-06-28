@@ -33,6 +33,9 @@ public:
     mfxBitstream Bitstream{};
     mfxSyncPoint SyncPoint{};
     mfxFrameSurface1 *Surface{};
+    // PSNR: source frame NV12 copy (system memory), filled when PSNR logging on
+    std::vector<uint8_t> SourceY;
+    std::vector<uint8_t> SourceUV;
   };
 
   mfxStatus CreateSession(enum codec_enum Codec, [[maybe_unused]] void **Data,
@@ -212,6 +215,33 @@ private:
 
   QPFrameStats FrameQPStats;
 
+  // ─ Per-frame PSNR tracking ─
+  // Tracks PSNR stats per I/P/B frame type for diagnostic logging.
+  // Computed by decoding the encoded bitstream and comparing against source.
+  struct PSNRFrameTypeStats {
+    uint64_t count = 0;
+    double sumPSNR_Y = 0, sumPSNR_U = 0, sumPSNR_V = 0;
+    double minPSNR_Y = 1e9, maxPSNR_Y = 0;
+    double minPSNR_U = 1e9, maxPSNR_U = 0;
+    double minPSNR_V = 1e9, maxPSNR_V = 0;
+  };
+  struct PSNRFrameStats {
+    PSNRFrameTypeStats i, p, b;
+    uint64_t totalFrames = 0;
+    uint64_t decodeFailures = 0;
+  };
+  PSNRFrameStats FramePSNRStats;
+
+  // PSNR decoder state (lazy inited when PSNRLog enabled)
+  std::unique_ptr<MFXVideoDECODE> QSVDecode;
+  mfxSession QSVDecodeSession{};
+  mfxBitstream QSVDecodeBS{};
+  std::vector<uint8_t> QSVDecodeBSBuf;
+  bool QSVDecodeInited = false;
+  bool PSNRLoggingEnabled = false;
+  bool QPStatsEnabled = true; // cached from InputParams for Drain path
+  mfxU16 PSNRBitDepth = 8;   // 8 or 10, cached at init
+
   // One mfxExtEncodedFrameInfo per task, attached to each task's
   // bitstream so the encoder fills in frame-level QP after encode.
   std::vector<mfxExtEncodedFrameInfo> QSVTaskEncodedInfo;
@@ -232,6 +262,19 @@ private:
 
   void UpdateFrameQPStats(mfxU16 frameType, mfxU16 qp);
   void LogQPStats();
+
+  // PSNR decoder + computation
+  bool InitPSNRDecoder(mfxU32 codecId, const mfxFrameInfo &frameInfo,
+                       mfxU16 bitDepth);
+  void ShutdownPSNRDecoder();
+  bool DecodeFrameForPSNR(const mfxBitstream &encodedBS,
+                          mfxFrameSurface1 *&outSurface);
+  void UpdateFramePSNRStats(mfxU16 frameType, mfxU16 width, mfxU16 height,
+                            const uint8_t *srcY, size_t srcPitchY,
+                            const uint8_t *srcUV, size_t srcPitchUV,
+                            const mfxFrameSurface1 *recon);
+  void LogPSNRStats();
+  void LogVideoHeaderHexDump();
 
   // QP stats SEI (User Data Unregistered) injection
   // Inserts an SEI NAL with cumulative QP stats so media players can display them.
