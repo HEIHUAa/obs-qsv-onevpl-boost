@@ -242,6 +242,9 @@ private:
   };
   PSNRFrameStats FramePSNRStats;
   bool PSNRLoggingEnabled = false;
+  // diagnostics: log the first frame's raw MSE to detect unsupported VPL
+  bool PSNRDiagLogged = false;
+  uint64_t PSNRZeroMSECount = 0; // frames where VPL returned MSE=0
 
   // ─ Per-frame QP tracking ─
   static constexpr size_t QSV_SEI_EXTRA = 1024; // extra bytes per task for SEI injection

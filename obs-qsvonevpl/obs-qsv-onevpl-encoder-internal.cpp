@@ -373,6 +373,8 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
                                           const char *log_prefix) {
   FrameQPStats = {};
   FramePSNRStats = {};
+  PSNRDiagLogged = false;
+  PSNRZeroMSECount = 0;
 
   mfxStatus Status = SetEncoderParams(InputParams, Codec);
   info("\tSetEncoderParams%s status:  %d", log_prefix, Status);
@@ -401,6 +403,29 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
       LogCO2CO3Corrections(log_prefix, QSVEncodeParams, &CO2Copy, &CO3Copy,
                            HasCO2, HasCO3);
       Status = MFX_ERR_NONE;
+    }
+
+    // VPL's Query may silently downgrade QualityInfoMode to DISABLE when
+    // the hardware/driver doesn't support it, or when CropW/CropH are not
+    // multiples of 16 (e.g. 1920x1080 has CropH=1080, 1080%16=8). Detect
+    // that and turn PSNR logging off so we don't attach a dead buffer.
+    if (PSNRLoggingEnabled) {
+      auto *QIM = QSVEncodeParams.GetExtBuffer<mfxExtQualityInfoMode>();
+      if (QIM && QIM->QualityInfoMode != MFX_QUALITY_INFO_LEVEL_FRAME) {
+        mfxU16 crW = QSVEncodeParams.mfx.FrameInfo.CropW
+                         ? QSVEncodeParams.mfx.FrameInfo.CropW
+                         : QSVEncodeParams.mfx.FrameInfo.Width;
+        mfxU16 crH = QSVEncodeParams.mfx.FrameInfo.CropH
+                         ? QSVEncodeParams.mfx.FrameInfo.CropH
+                         : QSVEncodeParams.mfx.FrameInfo.Height;
+        warn("\tPSNR logging disabled by VPL Query (QualityInfoMode "
+             "downgraded to %d). CropW=%u CropH=%u (W%%16=%d H%%16=%d). "
+             "H.264 requires both to be 16-aligned, so 1920x1080 (CropH="
+             "1080) is unsupported. Try 1280x720, 1920x1088, or 3840x2160.",
+             QIM->QualityInfoMode, crW, crH, crW % 16, crH % 16);
+        PSNRLoggingEnabled = false;
+        QSVEncodeParams.RemoveExtBuffer<mfxExtQualityInfoMode>();
+      }
     }
 
     ApplyQPLimits(InputParams);
@@ -2272,20 +2297,31 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   }
 
   // Attach QualityInfoMode so VPL reports per-frame MSE on the bitstream's
-  // mfxExtQualityInfoOutput buffer. VP9's IsExtBufferSupportedInInit does
-  // not list this buffer, so skip it there to avoid MFX_ERR_UNSUPPORTED.
+  // mfxExtQualityInfoOutput buffer. As of vpl-gpu-rt 26.1.5 only H.264 has a
+  // full implementation (Query validation + MSE fill at encode time). HEVC
+  // has no implementation at all, AV1 only declares the buffer ID in
+  // IsExtBufferSupportedInInit but does not fill MSE, and VP9 does not even
+  // declare it. Restrict to H.264 to avoid attaching a dead buffer.
   if (InputParams->DebugLogPSNR &&
-      QSVEncodeParams.mfx.CodecId != MFX_CODEC_VP9) {
+      QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC) {
     auto QIMode = QSVEncodeParams.AddExtBuffer<mfxExtQualityInfoMode>();
     QIMode->Header.BufferId = MFX_EXTBUFF_ENCODED_QUALITY_INFO_MODE;
     QIMode->Header.BufferSz = sizeof(mfxExtQualityInfoMode);
     QIMode->QualityInfoMode = MFX_QUALITY_INFO_LEVEL_FRAME;
     PSNRLoggingEnabled = true;
     info("\tPSNR logging enabled (MFX_EXTBUFF_ENCODED_QUALITY_INFO_MODE, "
-         "frame-level)");
+         "frame-level, H.264 only)");
   } else if (InputParams->DebugLogPSNR) {
-    warn("\tPSNR logging requested but VP9 does not support "
-         "MFX_EXTBUFF_ENCODED_QUALITY_INFO_MODE, skipping");
+    const char *codecName = "unknown";
+    switch (QSVEncodeParams.mfx.CodecId) {
+    case MFX_CODEC_HEVC: codecName = "HEVC"; break;
+    case MFX_CODEC_AV1:  codecName = "AV1"; break;
+    case MFX_CODEC_VP9:  codecName = "VP9"; break;
+    default: break;
+    }
+    warn("\tPSNR logging requested but %s does not support "
+         "MFX_EXTBUFF_ENCODED_QUALITY_INFO_MODE (only H.264 has a full "
+         "implementation in vpl-gpu-rt), skipping", codecName);
   }
 
   return MFX_ERR_NONE;
@@ -3291,16 +3327,47 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
 
       // PSNR extraction (Debug group). Slot 1 of ExtParam holds
       // mfxExtQualityInfoOutput when PSNR logging is enabled.
-      if (PSNRLoggingEnabled && taskBS.ExtParam &&
-          taskBS.NumExtParam >= 2) {
-        auto *qi = reinterpret_cast<mfxExtQualityInfoOutput *>(
-            taskBS.ExtParam[1]);
-        if (qi && qi->Header.BufferId ==
-                      MFX_EXTBUFF_ENCODED_QUALITY_INFO_OUTPUT) {
-          double psnr = ComputePSNRFromMSE(
-              qi->MSE[0], QSVEncodeParams.mfx.FrameInfo.BitDepthLuma);
-          if (psnr > 0.0)
-            UpdateFramePSNRStats(taskBS.FrameType, psnr);
+      if (PSNRLoggingEnabled) {
+        if (taskBS.ExtParam && taskBS.NumExtParam >= 2) {
+          auto *qi = reinterpret_cast<mfxExtQualityInfoOutput *>(
+              taskBS.ExtParam[1]);
+          if (qi && qi->Header.BufferId ==
+                        MFX_EXTBUFF_ENCODED_QUALITY_INFO_OUTPUT) {
+            // one-shot diagnostic: dump raw MSE of the first frame so we
+            // can tell whether VPL actually fills QualityInfo
+            if (!PSNRDiagLogged) {
+              PSNRDiagLogged = true;
+              info("[QSV VPL] PSNRStats: first-frame diagnostics — "
+                   "NumExtParam=%d MSE[Y=%u U=%u V=%u] FrameOrder=%u "
+                   "BitDepthLuma=%d",
+                   taskBS.NumExtParam, qi->MSE[0], qi->MSE[1], qi->MSE[2],
+                   qi->FrameOrder,
+                   QSVEncodeParams.mfx.FrameInfo.BitDepthLuma);
+            }
+            if (qi->MSE[0] == 0) {
+              // VPL returned empty MSE — implementation does not support
+              // quality info, so nothing to aggregate. Count for reporting.
+              PSNRZeroMSECount++;
+            } else {
+              double psnr = ComputePSNRFromMSE(
+                  qi->MSE[0],
+                  QSVEncodeParams.mfx.FrameInfo.BitDepthLuma);
+              if (psnr > 0.0)
+                UpdateFramePSNRStats(taskBS.FrameType, psnr);
+            }
+          } else if (!PSNRDiagLogged) {
+            PSNRDiagLogged = true;
+            warn("[QSV VPL] PSNRStats: ExtParam[1] is not "
+                 "mfxExtQualityInfoOutput (got BufferId=0x%X), "
+                 "NumExtParam=%d",
+                 qi ? qi->Header.BufferId : 0, taskBS.NumExtParam);
+          }
+        } else if (!PSNRDiagLogged) {
+          PSNRDiagLogged = true;
+          warn("[QSV VPL] PSNRStats: bitstream has NumExtParam=%d "
+               "(expected >=2), ExtParam=%p — QualityInfoOutput not "
+               "attached",
+               taskBS.NumExtParam, (void *)taskBS.ExtParam);
         }
       }
     }
@@ -3853,6 +3920,18 @@ void QSVEncoder::LogPSNRStats() {
   logType("I-frames", FramePSNRStats.i);
   logType("P-frames", FramePSNRStats.p);
   logType("B-frames", FramePSNRStats.b);
+
+  // If VPL returned MSE=0 for every frame, the runtime implementation does
+  // not actually support MFX_EXTBUFF_ENCODED_QUALITY_INFO_OUTPUT. Report
+  // it clearly so the user knows the feature is unavailable on this driver.
+  if (FramePSNRStats.totalFrames == 0 && PSNRZeroMSECount > 0) {
+    blog(LOG_WARNING,
+         "[QSV VPL] PSNRStats: %llu frames had MSE=0 — the VPL runtime "
+         "did not fill mfxExtQualityInfoOutput. The installed Intel GPU "
+         "driver / oneVPL implementation does not support quality info. "
+         "Update the driver or use a newer oneVPL runtime.",
+         static_cast<unsigned long long>(PSNRZeroMSECount));
+  }
 }
 
 // Append a User Data Unregistered SEI NAL with cumulative QP stats.
@@ -4042,11 +4121,24 @@ mfxStatus QSVEncoder::Drain() {
               Task.Bitstream.ExtParam[1]);
           if (qi && qi->Header.BufferId ==
                         MFX_EXTBUFF_ENCODED_QUALITY_INFO_OUTPUT) {
-            double psnr = ComputePSNRFromMSE(
-                qi->MSE[0],
-                QSVEncodeParams.mfx.FrameInfo.BitDepthLuma);
-            if (psnr > 0.0)
-              UpdateFramePSNRStats(Task.Bitstream.FrameType, psnr);
+            if (!PSNRDiagLogged) {
+              PSNRDiagLogged = true;
+              info("[QSV VPL] PSNRStats: first-frame diagnostics (drain) — "
+                   "NumExtParam=%d MSE[Y=%u U=%u V=%u] FrameOrder=%u "
+                   "BitDepthLuma=%d",
+                   Task.Bitstream.NumExtParam, qi->MSE[0], qi->MSE[1],
+                   qi->MSE[2], qi->FrameOrder,
+                   QSVEncodeParams.mfx.FrameInfo.BitDepthLuma);
+            }
+            if (qi->MSE[0] == 0) {
+              PSNRZeroMSECount++;
+            } else {
+              double psnr = ComputePSNRFromMSE(
+                  qi->MSE[0],
+                  QSVEncodeParams.mfx.FrameInfo.BitDepthLuma);
+              if (psnr > 0.0)
+                UpdateFramePSNRStats(Task.Bitstream.FrameType, psnr);
+            }
           }
         }
       } else {
