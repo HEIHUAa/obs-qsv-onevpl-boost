@@ -741,6 +741,25 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     LogActualParams();
 #endif
 
+    // Second-layer check: after Init+GetVideoParam, verify the encoder
+    // actually accepted QualityInfoMode. H.264's Init() may silently
+    // downgrade it to DISABLE when the DDI/hardware doesn't support
+    // frame-level quality info (m_caps.ddi_caps.QualityInfoSupportFlags.
+    // fields.enable_frame == false). GetVideoParam reflects the internal
+    // state, so we can detect that here.
+    if (PSNRLoggingEnabled) {
+      auto *QIM = QSVEncodeParams.GetExtBuffer<mfxExtQualityInfoMode>();
+      if (QIM && QIM->QualityInfoMode != MFX_QUALITY_INFO_LEVEL_FRAME) {
+        warn("\tPSNR logging disabled by encoder Init: QualityInfoMode was "
+             "downgraded to %d. The installed Intel GPU driver / hardware "
+             "does not support frame-level quality info "
+             "(QualityInfoSupportFlags.enable_frame == false). Update the "
+             "GPU driver or use a newer vpl-gpu-rt runtime.",
+             QIM->QualityInfoMode);
+        PSNRLoggingEnabled = false;
+      }
+    }
+
     Status = InitBitstreamBuffer(Codec);
 
     Status = InitTaskPool(Codec);
@@ -2304,13 +2323,31 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   // declare it. Restrict to H.264 to avoid attaching a dead buffer.
   if (InputParams->DebugLogPSNR &&
       QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC) {
-    auto QIMode = QSVEncodeParams.AddExtBuffer<mfxExtQualityInfoMode>();
-    QIMode->Header.BufferId = MFX_EXTBUFF_ENCODED_QUALITY_INFO_MODE;
-    QIMode->Header.BufferSz = sizeof(mfxExtQualityInfoMode);
-    QIMode->QualityInfoMode = MFX_QUALITY_INFO_LEVEL_FRAME;
-    PSNRLoggingEnabled = true;
-    info("\tPSNR logging enabled (MFX_EXTBUFF_ENCODED_QUALITY_INFO_MODE, "
-         "frame-level, H.264 only)");
+    // H.264's Init() checks CropW/CropH are multiples of 16 (see
+    // mfx_h264_encode_hw.cpp L1221-1226 in vpl-gpu-rt). 1920x1080 has
+    // CropH=1080, 1080%16=8, so Init would silently disable QualityInfo.
+    // Reject early so the user sees the reason immediately.
+    mfxU16 crW = QSVEncodeParams.mfx.FrameInfo.CropW
+                     ? QSVEncodeParams.mfx.FrameInfo.CropW
+                     : QSVEncodeParams.mfx.FrameInfo.Width;
+    mfxU16 crH = QSVEncodeParams.mfx.FrameInfo.CropH
+                     ? QSVEncodeParams.mfx.FrameInfo.CropH
+                     : QSVEncodeParams.mfx.FrameInfo.Height;
+    if (crW % 16 != 0 || crH % 16 != 0) {
+      warn("\tPSNR logging disabled: H.264 requires CropW/CropH to be "
+           "multiples of 16, got CropW=%u CropH=%u (W%%16=%d H%%16=%d). "
+           "1920x1080 (CropH=1080) is unsupported. Use 1280x720, "
+           "1920x1088, or 3840x2160.",
+           crW, crH, crW % 16, crH % 16);
+    } else {
+      auto QIMode = QSVEncodeParams.AddExtBuffer<mfxExtQualityInfoMode>();
+      QIMode->Header.BufferId = MFX_EXTBUFF_ENCODED_QUALITY_INFO_MODE;
+      QIMode->Header.BufferSz = sizeof(mfxExtQualityInfoMode);
+      QIMode->QualityInfoMode = MFX_QUALITY_INFO_LEVEL_FRAME;
+      PSNRLoggingEnabled = true;
+      info("\tPSNR logging enabled (MFX_EXTBUFF_ENCODED_QUALITY_INFO_MODE, "
+           "frame-level, H.264 only, CropW=%u CropH=%u)", crW, crH);
+    }
   } else if (InputParams->DebugLogPSNR) {
     const char *codecName = "unknown";
     switch (QSVEncodeParams.mfx.CodecId) {
