@@ -3891,60 +3891,12 @@ bool QSVEncoder::InitPSNRDecoder(mfxU32 codecId, const mfxFrameInfo &frameInfo,
   decParams.mfx.CodecId = codecId;
   decParams.IOPattern = MFX_IOPATTERN_OUT_SYSTEM_MEMORY;
 
-  // VP9 has no SPS/PPS NALUs; use encoder FrameInfo directly.
-  // AVC/HEVC/AV1: run DecodeHeader on concatenated VPS+SPS+PPS buffers.
-  if (codecId != MFX_CODEC_VP9) {
-    auto *SPSPPS = QSVEncodeParams.GetExtBuffer<mfxExtCodingOptionSPSPPS>();
-    if (!SPSPPS || !SPSPPS->SPSBuffer || SPSPPS->SPSBufSize == 0) {
-      MFXClose(QSVDecodeSession);
-      QSVDecodeSession = nullptr;
-      return false;
-    }
-
-    size_t totalSize = SPSPPS->SPSBufSize + SPSPPS->PPSBufSize;
-    mfxExtCodingOptionVPS *VPS = nullptr;
-    if (codecId == MFX_CODEC_HEVC) {
-      VPS = QSVEncodeParams.GetExtBuffer<mfxExtCodingOptionVPS>();
-      if (VPS && VPS->VPSBuffer && VPS->VPSBufSize > 0) {
-        totalSize += VPS->VPSBufSize;
-      }
-    }
-
-    QSVDecodeBSBuf.assign(totalSize, 0);
-    size_t offset = 0;
-    if (VPS && VPS->VPSBuffer && VPS->VPSBufSize > 0) {
-      memcpy(QSVDecodeBSBuf.data() + offset, VPS->VPSBuffer,
-             VPS->VPSBufSize);
-      offset += VPS->VPSBufSize;
-    }
-    memcpy(QSVDecodeBSBuf.data() + offset, SPSPPS->SPSBuffer,
-           SPSPPS->SPSBufSize);
-    offset += SPSPPS->SPSBufSize;
-    memcpy(QSVDecodeBSBuf.data() + offset, SPSPPS->PPSBuffer,
-           SPSPPS->PPSBufSize);
-
-    QSVDecodeBS.Data = QSVDecodeBSBuf.data();
-    QSVDecodeBS.DataLength = static_cast<mfxU32>(totalSize);
-    QSVDecodeBS.DataOffset = 0;
-    QSVDecodeBS.MaxLength = static_cast<mfxU32>(totalSize);
-    QSVDecodeBS.CodecId = codecId;
-
-    sts = MFXVideoDECODE_DecodeHeader(QSVDecodeSession, &QSVDecodeBS,
-                                      &decParams);
-    if (sts < MFX_ERR_NONE) {
-      warn("[QSV VPL] PSNR: DecodeHeader failed (sts=%d)", sts);
-      MFXClose(QSVDecodeSession);
-      QSVDecodeSession = nullptr;
-      return false;
-    }
-
-    // Reset bitstream for actual frame decoding
-    QSVDecodeBS.DataLength = 0;
-    QSVDecodeBS.DataOffset = 0;
-  } else {
-    // VP9: copy FrameInfo from encoder
-    decParams.mfx.FrameInfo = frameInfo;
-  }
+  // DecodeHeader is optional per VPL spec. It was returning MFX_ERR_MORE_DATA
+  // (-10) because DataFlag=0 sets FLAG_VIDEO_DATA_NOT_FULL_FRAME, blocking the
+  // EOS fallback the header parser needs to accept partial NAL data. The
+  // encoder's FrameInfo already carries correct resolution/bitdepth/chroma,
+  // so use it directly for all codecs (AVC/HEVC/AV1/VP9).
+  decParams.mfx.FrameInfo = frameInfo;
 
   // Ensure FourCC matches bit depth
   if (PSNRBitDepth > 8) {
@@ -4001,7 +3953,7 @@ bool QSVEncoder::DecodeFrameForPSNR(const mfxBitstream &encodedBS,
   if (QSVDecodeBSBuf.size() < needed) {
     QSVDecodeBSBuf.resize(needed);
   }
-  // Always refresh Data/MaxLength: VP9 path in InitPSNRDecoder never sets them
+  // Always refresh Data/MaxLength: InitPSNRDecoder no longer sets them
   QSVDecodeBS.Data = QSVDecodeBSBuf.data();
   QSVDecodeBS.MaxLength = static_cast<mfxU32>(QSVDecodeBSBuf.size());
   memcpy(QSVDecodeBSBuf.data() + encodedBS.DataOffset,
