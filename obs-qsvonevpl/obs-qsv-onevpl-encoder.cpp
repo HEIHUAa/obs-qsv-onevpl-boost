@@ -153,8 +153,13 @@ bool UpdateEncoderParams(void *Data, obs_data_t *Params) {
       Context->EncoderParams.QPB = static_cast<mfxU16>(cqp);
     }
   } else if (isICQ) {
-    Context->EncoderParams.ICQQuality =
-        static_cast<mfxU16>(obs_data_get_int(Params, "icq_quality"));
+    int icq = static_cast<int>(obs_data_get_int(Params, "icq_quality"));
+    // VP9 ICQQuality internally uses 0-255 range (MAX_ICQ_QUALITY_INDEX).
+    // UI exposes 1-63, scale x4 to match the internal range.
+    if (Context->Codec == QSV_CODEC_VP9) {
+      icq *= 4;
+    }
+    Context->EncoderParams.ICQQuality = static_cast<mfxU16>(icq);
   }
 
   if (Context->EncoderPTR->UpdateParams(&Context->EncoderParams)) {

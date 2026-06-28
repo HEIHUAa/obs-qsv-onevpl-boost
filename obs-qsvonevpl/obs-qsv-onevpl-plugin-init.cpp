@@ -572,9 +572,15 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(Prop,
                                     obs_module_text("QVBRQuality.Tooltip"));
 
-  Prop = obs_properties_add_int_slider(RCGroup, "icq_quality",
-                                       TEXT_ICQ_QUALITY, 1, 51, 1);
-  obs_property_set_long_description(Prop, TEXT_ICQ_QUALITY_DESC);
+  // VP9 ICQQuality internally uses 0-255 range (matches base_q_idx).
+  // Expose 1-63 in UI (same as CQP QP) and scale x4 internally to 0-252.
+  // Higher value = worse quality (same direction as H264/HEVC ICQ).
+  {
+    int icqMax = (Codec == QSV_CODEC_VP9) ? 63 : 51;
+    Prop = obs_properties_add_int_slider(RCGroup, "icq_quality",
+                                         TEXT_ICQ_QUALITY, 1, icqMax, 1);
+    obs_property_set_long_description(Prop, TEXT_ICQ_QUALITY_DESC);
+  }
 
   Prop = obs_properties_add_bool(RCGroup, "cqp_separate_ipb",
                                  TEXT_SEPARATE_IPB_QP);
@@ -1282,6 +1288,11 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   int CQPData = static_cast<int>(obs_data_get_int(Settings, "cqp"));
   int ICQQualityData =
       static_cast<int>(obs_data_get_int(Settings, "icq_quality"));
+  // VP9 ICQQuality internally uses 0-255 range (MAX_ICQ_QUALITY_INDEX).
+  // UI exposes 1-63, scale x4 to match the internal range.
+  if (Context->Codec == QSV_CODEC_VP9) {
+    ICQQualityData *= 4;
+  }
   int KeyIntervalData =
       static_cast<int>(obs_data_get_int(Settings, "keyint_sec"));
   int BFramesData =
