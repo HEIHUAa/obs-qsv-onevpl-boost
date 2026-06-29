@@ -3960,6 +3960,14 @@ void QSVEncoder::FeedPSNRDecoder(mfxBitstream &encodedBS) {
   auto mapIt = PSNRSourceFrames.find(encodedBS.TimeStamp);
   if (mapIt != PSNRSourceFrames.end()) {
     mapIt->second.frameType = encodedBS.FrameType;
+  } else {
+    // Log missed feed — this is expected when decoder hasn't consumed prior
+    // frames yet (decoder internal delay), but if it happens late in the
+    // stream it suggests a timestamp mismatch.
+    info("[QSV VPL] PSNR: feed ts=%llu NOT in map (already consumed or stale) "
+         "map_size=%zu dataLen=%u frameType=%u",
+         encodedBS.TimeStamp, PSNRSourceFrames.size(),
+         encodedBS.DataLength, encodedBS.FrameType);
   }
 
   // Copy encoded bitstream into decoder's buffer (decoder consumes in place
@@ -3990,12 +3998,27 @@ void QSVEncoder::FeedPSNRDecoder(mfxBitstream &encodedBS) {
 // — count as decode failures.
 void QSVEncoder::FlushPSNRDecoder() {
   if (!QSVDecode || !QSVDecodeInited) return;
-  info("[QSV VPL] PSNR: FlushPSNRDecoder start (remaining=%zu)",
-       PSNRSourceFrames.size());
+  size_t before = PSNRSourceFrames.size();
+  info("[QSV VPL] PSNR: FlushPSNRDecoder start (remaining=%zu)", before);
   DrainPSNROutput(true);
-  FramePSNRStats.decodeFailures += PSNRSourceFrames.size();
+  size_t unmatched = PSNRSourceFrames.size();
+  if (unmatched > 0) {
+    // Log first/last few timestamps of unmatched frames for debugging
+    std::string tsSample;
+    size_t n = 0;
+    for (const auto &entry : PSNRSourceFrames) {
+      if (n >= 5 && n < unmatched - 5) { ++n; continue; }
+      tsSample += std::to_string(entry.first) + "(" +
+                  std::to_string(entry.second.frameType) + ") ";
+      ++n;
+    }
+    info("[QSV VPL] PSNR: unmatched frames=%zu ts_sample=[%s]",
+         unmatched, tsSample.c_str());
+  }
+  FramePSNRStats.decodeFailures += unmatched;
   PSNRSourceFrames.clear();
-  info("[QSV VPL] PSNR: FlushPSNRDecoder done");
+  info("[QSV VPL] PSNR: FlushPSNRDecoder done (before=%zu matched=%zu)",
+       before, before - unmatched);
 }
 
 // Internal decode loop. Uses GetSurface + explicit work surface (VPL example 6
@@ -4069,6 +4092,9 @@ void QSVEncoder::DrainPSNROutput(bool flushing) {
     // Look up source by decoder-propagated timestamp.
     mfxU64 decodedTS = outSurf->Data.TimeStamp;
     auto mapIt = PSNRSourceFrames.find(decodedTS);
+    info("[QSV VPL] PSNR: DrainPSNROutput decoded ts=%llu matched=%d map_size=%zu",
+         decodedTS, mapIt != PSNRSourceFrames.end() ? 1 : 0,
+         PSNRSourceFrames.size());
     if (mapIt != PSNRSourceFrames.end()) {
       const auto &src = mapIt->second;
       const mfxFrameInfo *fi = &outSurf->Info;
@@ -4096,7 +4122,10 @@ void QSVEncoder::DrainPSNROutput(bool flushing) {
                            outSurf);
       PSNRSourceFrames.erase(mapIt);
     } else {
-      info("[QSV VPL] PSNR: unmatched decoded frame (ts=%llu)", decodedTS);
+      info("[QSV VPL] PSNR: unmatched decoded frame (ts=%llu) — 1st map key=%llu last key=%llu",
+           decodedTS,
+           PSNRSourceFrames.empty() ? 0 : PSNRSourceFrames.begin()->first,
+           PSNRSourceFrames.empty() ? 0 : PSNRSourceFrames.rbegin()->first);
     }
 
     outSurf->FrameInterface->Unmap(outSurf);
