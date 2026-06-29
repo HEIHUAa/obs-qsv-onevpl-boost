@@ -651,6 +651,14 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
   }
 #endif
 
+  // Retry chain Inits don't normalize MFX_WRN_INCOMPATIBLE_VIDEO_PARAM (=5)
+  // like the initial Init does at L406-410. status=5 means Init succeeded
+  // with adjusted params, so normalize to MFX_ERR_NONE to keep downstream
+  // code (GetSurface test, InitTexturePool, etc.) on the success path.
+  if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
+    Status = MFX_ERR_NONE;
+  }
+
   if (Status < MFX_ERR_NONE) {
     QSVEncode->Close();
   }
@@ -1494,6 +1502,16 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       InputParams->BitDepth > 8 ? 1 : 0;
 
   QSVEncodeParams.mfx.LowPower = GetCodingOpt(InputParams->Lowpower);
+
+#ifdef QSV_UHD600_SUPPORT
+  // UHD600 runs legacy libmfx 1.x which doesn't accept LowPower=ON for HEVC
+  // (Init returns -15 INVALID_VIDEO_PARAM). Force OFF here so we skip the
+  // whole -15 retry chain. Verified: with LowPower=OFF the legacy runtime
+  // accepts HEVC Init (returns status=5, normalized to 0 in retry chain).
+  if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
+    QSVEncodeParams.mfx.LowPower = MFX_CODINGOPTION_OFF;
+  }
+#endif
 
   QSVEncodeParams.mfx.RateControlMethod =
       static_cast<mfxU16>(InputParams->RateControl);
