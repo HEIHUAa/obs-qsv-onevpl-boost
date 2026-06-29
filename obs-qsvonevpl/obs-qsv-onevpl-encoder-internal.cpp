@@ -474,6 +474,42 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
   }
 
 #ifdef QSV_UHD600_SUPPORT
+  // UHD600 runs legacy libmfx 1.x. BRCParamMultiplier is a oneVPL 2.x field
+  // near the tail of mfxInfoMFX; the legacy runtime may not recognize it and
+  // just use the already-divided Kbps values as-is, which are 100x too low.
+  // OBS passes raw bitrate with BRCParamMultiplier=0, so drop the multiplier
+  // and restore raw values to match.
+  if (Status < MFX_ERR_NONE &&
+      QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC &&
+      QSVEncodeParams.mfx.BRCParamMultiplier != 0) {
+    warn("MFXVideoENCODE_Init%s failed (err=%d), "
+         "retrying without BRCParamMultiplier (restore raw bitrate)",
+         log_prefix, Status);
+    QSVEncode->Close();
+    const mfxU16 mult = QSVEncodeParams.mfx.BRCParamMultiplier;
+    QSVEncodeParams.mfx.BRCParamMultiplier = 0;
+    if (QSVEncodeParams.mfx.TargetKbps) {
+      QSVEncodeParams.mfx.TargetKbps = static_cast<mfxU16>(
+          QSVEncodeParams.mfx.TargetKbps * mult);
+    }
+    if (QSVEncodeParams.mfx.MaxKbps) {
+      QSVEncodeParams.mfx.MaxKbps = static_cast<mfxU16>(
+          QSVEncodeParams.mfx.MaxKbps * mult);
+    }
+    if (QSVEncodeParams.mfx.BufferSizeInKB) {
+      QSVEncodeParams.mfx.BufferSizeInKB = static_cast<mfxU16>(
+          QSVEncodeParams.mfx.BufferSizeInKB * mult);
+    }
+    if (QSVEncodeParams.mfx.InitialDelayInKB) {
+      QSVEncodeParams.mfx.InitialDelayInKB = static_cast<mfxU16>(
+          QSVEncodeParams.mfx.InitialDelayInKB * mult);
+    }
+    Status = QSVEncode->Init(&QSVEncodeParams);
+    info("\tMFXVideoENCODE_Init%s retry "
+         "(without BRCParamMultiplier) status: %d",
+         log_prefix, Status);
+  }
+
   // UHD600 (Apollo Lake / Gemini Lake) HEVC runs on legacy libmfx 1.x which
   // only copies 4 fields from mfxExtCodingOption (PicTimingSEI,
   // VuiNalHrdParameters, NalHrdConformance, AUDelimiter). The AVC-style
