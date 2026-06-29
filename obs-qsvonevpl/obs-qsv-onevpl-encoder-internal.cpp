@@ -3926,17 +3926,25 @@ bool QSVEncoder::InitPSNRDecoder(mfxU32 codecId, const mfxFrameInfo &frameInfo,
 }
 
 void QSVEncoder::ShutdownPSNRDecoder() {
+  if (!QSVDecodeInited && !QSVDecode && !QSVDecodeSession) return;
+  info("[QSV VPL] PSNR: ShutdownPSNRDecoder start");
   if (QSVDecode) {
+    info("[QSV VPL] PSNR: decoder Close");
     QSVDecode->Close();
+    info("[QSV VPL] PSNR: decoder Closed");
     QSVDecode.reset();
   }
   if (QSVDecodeSession) {
-    MFXClose(QSVDecodeSession);
+    info("[QSV VPL] PSNR: MFXClose session");
+    mfxStatus sts = MFXClose(QSVDecodeSession);
+    info("[QSV VPL] PSNR: MFXClose done (sts=%d)", static_cast<int>(sts));
     QSVDecodeSession = nullptr;
   }
   QSVDecodeBSBuf.clear();
   QSVDecodeBS = {};
   QSVDecodeInited = false;
+  PSNRSourceQueue.clear();
+  info("[QSV VPL] PSNR: ShutdownPSNRDecoder done");
 }
 
 // Feed one encoded bitstream + its source frame to the PSNR decoder.
@@ -3982,16 +3990,19 @@ void QSVEncoder::FeedPSNRDecoder(mfxBitstream &encodedBS,
 // produced output — count as failures.
 void QSVEncoder::FlushPSNRDecoder() {
   if (!QSVDecode || !QSVDecodeInited) return;
+  info("[QSV VPL] PSNR: FlushPSNRDecoder start (queued=%zu)",
+       PSNRSourceQueue.size());
   DrainPSNROutput(true);
   FramePSNRStats.decodeFailures += PSNRSourceQueue.size();
   PSNRSourceQueue.clear();
+  info("[QSV VPL] PSNR: FlushPSNRDecoder done");
 }
 
-// Internal decode loop. Uses NULL work surface — VPL 2.x allocates
-// internally (per programming_guide/VPL_prg_decoding.rst example 1).
+// Internal decode loop. Uses GetSurface + explicit work surface (VPL example 6
+// pattern). Work surface is released immediately after DecodeFrameAsync per
+// VPL spec — decoder holds its own refcount if needed.
 // |flushing| true → pass NULL bitstream to drain EOS frames.
 void QSVEncoder::DrainPSNROutput(bool flushing) {
-  mfxSyncPoint syncPoint = nullptr;
   mfxStatus sts = MFX_ERR_NONE;
   mfxBitstream *bs = flushing ? nullptr : &QSVDecodeBS;
 
@@ -3999,12 +4010,28 @@ void QSVEncoder::DrainPSNROutput(bool flushing) {
   // (break), or hits MORE_SURFACE (continue without consuming bitstream).
   // 32 is a generous upper bound for AsyncDepth + reorder buffer.
   for (int attempt = 0; attempt < 32; attempt++) {
+    // Use GetSurface + explicit work surface (VPL example 6 pattern) instead
+    // of NULL work surface — some VPL decoder implementations crash on NULL
+    // work surface in certain codec states. Per VPL spec, the work surface
+    // must be released immediately after DecodeFrameAsync regardless of the
+    // return status (the decoder increments refcount internally if needed).
+    mfxFrameSurface1 *workSurf = nullptr;
+    sts = QSVDecode->GetSurface(&workSurf);
+    if (sts < MFX_ERR_NONE || !workSurf) {
+      warn("[QSV VPL] PSNR: GetSurface failed (sts=%d)",
+           static_cast<int>(sts));
+      break;
+    }
+
     mfxFrameSurface1 *outSurf = nullptr;
-    sts = QSVDecode->DecodeFrameAsync(bs, nullptr, &outSurf, &syncPoint);
+    mfxSyncPoint syncPoint = nullptr;
+    sts = QSVDecode->DecodeFrameAsync(bs, workSurf, &outSurf, &syncPoint);
+
+    // Release work surface immediately — decoder already grabbed it if it
+    // needed to keep a reference. Skipping this leaks one surface per call.
+    workSurf->FrameInterface->Release(workSurf);
 
     // MORE_SURFACE: decoder needs another work surface to produce output.
-    // With NULL work surface this shouldn't normally trigger, but handle
-    // it by retrying (VPL examples do the same).
     if (sts == MFX_ERR_MORE_SURFACE) continue;
 
     // MORE_DATA: decoder consumed input but needs more for the next frame.
@@ -4014,6 +4041,8 @@ void QSVEncoder::DrainPSNROutput(bool flushing) {
     // Any other error (or NULL output with non-success status) is a real
     // decode failure for one source frame.
     if (sts < MFX_ERR_NONE || !outSurf) {
+      warn("[QSV VPL] PSNR: DecodeFrameAsync failed (sts=%d, flushing=%d)",
+           static_cast<int>(sts), flushing ? 1 : 0);
       if (sts < MFX_ERR_NONE && !PSNRSourceQueue.empty()) {
         PSNRSourceQueue.pop_front();
         FramePSNRStats.decodeFailures++;
@@ -4022,8 +4051,11 @@ void QSVEncoder::DrainPSNROutput(bool flushing) {
     }
 
     // Frame ready — sync, map, compare with oldest queued source.
-    sts = MFXVideoCORE_SyncOperation(QSVDecodeSession, syncPoint, 5000);
+    // Use Synchronize (VPL 2.x preferred) instead of SyncOperation for
+    // safer surface lifecycle handling.
+    sts = outSurf->FrameInterface->Synchronize(outSurf, 10000);
     if (sts < MFX_ERR_NONE) {
+      warn("[QSV VPL] PSNR: Synchronize failed (sts=%d)", static_cast<int>(sts));
       outSurf->FrameInterface->Release(outSurf);
       if (!PSNRSourceQueue.empty()) {
         PSNRSourceQueue.pop_front();
@@ -4033,6 +4065,7 @@ void QSVEncoder::DrainPSNROutput(bool flushing) {
     }
     sts = outSurf->FrameInterface->Map(outSurf, MFX_MAP_READ);
     if (sts < MFX_ERR_NONE) {
+      warn("[QSV VPL] PSNR: Map failed (sts=%d)", static_cast<int>(sts));
       outSurf->FrameInterface->Release(outSurf);
       if (!PSNRSourceQueue.empty()) {
         PSNRSourceQueue.pop_front();
@@ -4115,7 +4148,9 @@ void QSVEncoder::UpdateFramePSNRStats(mfxU16 frameType, mfxU16 width,
   double mseY = static_cast<double>(sumSqY) / static_cast<double>(w * h);
 
   // UV plane (NV12/P010 interleaved: U0 V0 U1 V1 ...)
-  const size_t uvH = h / 2, uvW = w;
+  // Each row has w/2 U-V pairs. Loop iterates per-pair, accessing col*2
+  // and col*2+1, so uvW must be w/2 — using w would read 2x past each row.
+  const size_t uvH = h / 2, uvW = w / 2;
   uint64_t sumSqU = 0, sumSqV = 0;
   if (is10) {
     auto *s = reinterpret_cast<const uint16_t *>(srcUV);
@@ -4391,9 +4426,13 @@ mfxStatus QSVEncoder::Drain() {
   }
 
   if (PSNRLoggingEnabled) {
+    info("[QSV VPL] PSNR: Drain final flush start");
     FlushPSNRDecoder();
+    info("[QSV VPL] PSNR: Drain LogPSNRStats");
     LogPSNRStats();
+    info("[QSV VPL] PSNR: Drain ShutdownPSNRDecoder");
     ShutdownPSNRDecoder();
+    info("[QSV VPL] PSNR: Drain final flush done");
   }
 
   // Rebuild the SEI buffer with the final cumulative stats
