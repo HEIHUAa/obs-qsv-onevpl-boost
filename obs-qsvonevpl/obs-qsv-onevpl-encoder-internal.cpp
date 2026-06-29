@@ -4028,6 +4028,10 @@ void QSVEncoder::ShutdownPSNRDecoder() {
   QSVDecodeBS = {};
   QSVDecodeInited = false;
   PSNRSourceFrames.clear();
+  // reset debug logging counters so a fresh PSNR run starts clean
+  psnrDrainDebugLogs = 0;
+  psnrFeedMissLogs = 0;
+  psnrLastFrameWasLow = false;
   info("[QSV VPL] PSNR: ShutdownPSNRDecoder done");
 }
 
@@ -4042,10 +4046,14 @@ void QSVEncoder::FeedPSNRDecoder(mfxBitstream &encodedBS) {
   auto mapIt = PSNRSourceFrames.find(encodedBS.TimeStamp);
   if (mapIt != PSNRSourceFrames.end()) {
     mapIt->second.frameType = encodedBS.FrameType;
-    // trace first 20 feeds: confirms the TS the encoder stamped on the
-    // bitstream matches what we saved the surface under. If this TS doesn't
-    // later show up in drain[], decoding is reordering/changing TS.
-    if (FramePSNRStats.totalFrames < 20) {
+    // trace first 20 feeds, plus any feed where map is already large (sign
+    // that prior frames are stuck — typical when decoder output TS diverges
+    // from source TS at IDR boundaries). Limited to 30 extra logs to avoid
+    // flooding the log file.
+    bool logFeed = (FramePSNRStats.totalFrames < 20) ||
+                   (PSNRSourceFrames.size() > 20 && psnrFeedMissLogs < 30);
+    if (logFeed) {
+      if (PSNRSourceFrames.size() > 20) psnrFeedMissLogs++;
       info("[QSV VPL] PSNR: feed[%llu] ts=%llu type=0x%04x dataLen=%u "
            "map_size=%zu",
            static_cast<unsigned long long>(FramePSNRStats.totalFrames),
@@ -4055,13 +4063,19 @@ void QSVEncoder::FeedPSNRDecoder(mfxBitstream &encodedBS) {
            PSNRSourceFrames.size());
     }
   } else {
-    // Log missed feed — this is expected when decoder hasn't consumed prior
-    // frames yet (decoder internal delay), but if it happens late in the
-    // stream it suggests a timestamp mismatch.
-    info("[QSV VPL] PSNR: feed ts=%llu NOT in map (already consumed or stale) "
-         "map_size=%zu dataLen=%u frameType=%u",
-         encodedBS.TimeStamp, PSNRSourceFrames.size(),
-         encodedBS.DataLength, encodedBS.FrameType);
+    // Missed feed: encoder bitstream TS doesn't match any saved source TS.
+    // This shouldn't happen in normal flow — EncodeFrame always saves the
+    // source before encode, and encoder preserves input surface TS in the
+    // bitstream. A miss here means TS handling is broken somewhere.
+    if (psnrFeedMissLogs < 30) {
+      psnrFeedMissLogs++;
+      info("[QSV VPL] PSNR: feed ts=%llu NOT in map (already consumed or stale) "
+           "map_size=%zu dataLen=%u frameType=%u",
+           static_cast<unsigned long long>(encodedBS.TimeStamp),
+           PSNRSourceFrames.size(),
+           static_cast<unsigned>(encodedBS.DataLength),
+           static_cast<unsigned>(encodedBS.FrameType));
+    }
   }
 
   // Copy encoded bitstream into decoder's buffer (decoder consumes in place
@@ -4189,7 +4203,13 @@ void QSVEncoder::DrainPSNROutput(bool flushing) {
     // keep this log always-on for the first 20 frames so we can see TS match
     // state and (critically) whether srcW != reconW — a mismatch means the
     // tight-layout source pitch we pass below is wrong for the source buffer.
-    bool logDetail = (FramePSNRStats.totalFrames < 20);
+    // Also log when map is abnormally large (>20): this happens when decoder
+    // output TS diverges from source TS (typical at IDR boundaries where the
+    // decoder may reset its PTS counter). Limited to 30 extra logs.
+    bool logDetail = (FramePSNRStats.totalFrames < 20) ||
+                     (PSNRSourceFrames.size() > 20 &&
+                      psnrDrainDebugLogs < 30);
+    if (logDetail && PSNRSourceFrames.size() > 20) psnrDrainDebugLogs++;
     if (logDetail) {
       info("[QSV VPL] PSNR: drain[%llu] ts=%llu matched=%d map_size=%zu",
            static_cast<unsigned long long>(FramePSNRStats.totalFrames),
@@ -4204,15 +4224,31 @@ void QSVEncoder::DrainPSNROutput(bool flushing) {
       mfxU16 h = fi->CropH ? fi->CropH : fi->Height;
       const size_t bpp = (PSNRBitDepth > 8) ? 2 : 1;
 
-      // sample Y[0] from both sides to sanity-check pixel alignment
+      // sample Y[0] from both sides to sanity-check pixel alignment.
+      // If src and recon came from the same source frame (lossless QP=1),
+      // these must be equal — a mismatch means the decoder output TS doesn't
+      // correspond to the source frame we matched it to (TS drift).
       int s0 = (bpp > 1)
         ? static_cast<int>(reinterpret_cast<const uint16_t*>(src.Y.data())[0])
         : static_cast<int>(src.Y.data()[0]);
       int r0 = (bpp > 1)
         ? static_cast<int>(reinterpret_cast<const uint16_t*>(outSurf->Data.Y)[0])
         : static_cast<int>(outSurf->Data.Y[0]);
+      bool pixelMismatch = (s0 != r0);
 
-      if (logDetail) {
+      // print frame[] details when: first 20 frames, OR map abnormally large,
+      // OR srcY[0] != reconY[0] (TS drift sign), OR previous frame had low
+      // PSNR (captures the frame right after the first drop). Limited to 30
+      // extra logs to avoid flooding.
+      bool logFrame = logDetail ||
+                      (pixelMismatch && psnrDrainDebugLogs < 30) ||
+                      (psnrLastFrameWasLow && psnrDrainDebugLogs < 30);
+      if ((pixelMismatch || psnrLastFrameWasLow) && !logDetail &&
+          psnrDrainDebugLogs < 30)
+        psnrDrainDebugLogs++;
+      // consume the flag — only log the immediately following frame
+      psnrLastFrameWasLow = false;
+      if (logFrame) {
         info("[QSV VPL] PSNR: frame[%llu] ts=%llu type=0x%04x "
              "src[w=%u h=%u] recon[w=%u h=%u cropW=%u cropH=%u "
              "pitch=%u fourcc=0x%08x] bpp=%zu "
@@ -4355,6 +4391,11 @@ void QSVEncoder::UpdateFramePSNRStats(mfxU16 frameType, mfxU16 width,
     return 10.0 * std::log10(maxSq / mse);
   };
   double pY = toPSNR(mseY), pU = toPSNR(mseU), pV = toPSNR(mseV);
+
+  // flag low-PSNR frames so the next drain[] iteration logs frame[] details.
+  // Lossless QP=1 should be 50+ dB; <30 means src/recon didn't line up (TS
+  // drift). The flag is consumed by DrainPSNROutput on the next frame.
+  if (pY < 30.0) psnrLastFrameWasLow = true;
 
   // per-frame PSNR trace: first 20 frames always, after that only flag
   // suspiciously-low values (lossless QP=1 should be 50+ dB, anything <30

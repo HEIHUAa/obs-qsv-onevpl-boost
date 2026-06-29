@@ -241,6 +241,14 @@ private:
   bool PSNRLoggingEnabled = false;
   bool QPStatsEnabled = true; // cached from InputParams for Drain path
   mfxU16 PSNRBitDepth = 8;   // 8 or 10, cached at init
+  // counters to limit debug logging when map grows abnormally (e.g. IDR frames
+  // stuck in the map because decoder output TS doesn't match source TS).
+  uint32_t psnrDrainDebugLogs = 0;  // drain[]/frame[] logs after map_size > 20
+  uint32_t psnrFeedMissLogs = 0;    // feed[] miss logs (TS not in map)
+  // set when the most recently computed PSNR was < 30 dB (lossless QP=1 should
+  // be 50+). Used to enable frame[] logging on the *next* drain so we capture
+  // the TS/pixel details right after the first drop.
+  bool psnrLastFrameWasLow = false;
 
   // PSNR source frame map indexed by timestamp. Decoder reorders B-frames to
   // display order, so output order != feed order. Using a map avoids this
