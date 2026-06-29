@@ -5,6 +5,7 @@
 #include "helpers/qsv_params.hpp"
 
 #include <deque>
+#include <map>
 
 class QSVEncoder {
 public:
@@ -35,9 +36,6 @@ public:
     mfxBitstream Bitstream{};
     mfxSyncPoint SyncPoint{};
     mfxFrameSurface1 *Surface{};
-    // PSNR: source frame NV12 copy (system memory), filled when PSNR logging on
-    std::vector<uint8_t> SourceY;
-    std::vector<uint8_t> SourceUV;
   };
 
   mfxStatus CreateSession(enum codec_enum Codec, [[maybe_unused]] void **Data,
@@ -244,16 +242,17 @@ private:
   bool QPStatsEnabled = true; // cached from InputParams for Drain path
   mfxU16 PSNRBitDepth = 8;   // 8 or 10, cached at init
 
-  // PSNR source frame queue — decoder reorders B-frames to display order, so
-  // decoded output order != submission order. Match by timeStamp instead of
-  // FIFO to handle reordering correctly.
+  // PSNR source frame map indexed by timestamp. Decoder reorders B-frames to
+  // display order, so output order != feed order. Using a map avoids this
+  // entirely — all sources are inserted in EncodeFrame() via |TS|, and
+  // drained output is looked up by |outSurf->Data.TimeStamp| regardless of
+  // the order the bitstream was fed to the decoder.
   struct PSNRSourceFrame {
-    mfxU64 timeStamp;
     std::vector<uint8_t> Y;
     std::vector<uint8_t> UV;
     mfxU16 frameType;
   };
-  std::deque<PSNRSourceFrame> PSNRSourceQueue;
+  std::map<mfxU64, PSNRSourceFrame> PSNRSourceFrames;
 
   // One mfxExtEncodedFrameInfo per task, attached to each task's
   // bitstream so the encoder fills in frame-level QP after encode.
@@ -280,12 +279,10 @@ private:
   bool InitPSNRDecoder(mfxU32 codecId, const mfxFrameInfo &frameInfo,
                        mfxU16 bitDepth);
   void ShutdownPSNRDecoder();
-  // Feed one encoded bitstream + its source frame to the decoder. Source is
-  // queued (decoder has latency); decoded outputs are drained immediately
-  // when ready. srcY/srcUV are moved out (cleared) on return.
-  void FeedPSNRDecoder(mfxBitstream &encodedBS,
-                       std::vector<uint8_t> &srcY,
-                       std::vector<uint8_t> &srcUV);
+  // Feed one encoded bitstream to the PSNR decoder. Source frames were
+  // already saved by timestamp in |PSNRSourceFrames| during EncodeFrame(),
+  // so this only copies the bitstream and drains ready outputs.
+  void FeedPSNRDecoder(mfxBitstream &encodedBS);
   // Drain remaining cached frames by passing NULL bitstream. Unmatched
   // sources still in the queue are counted as decode failures.
   void FlushPSNRDecoder();
