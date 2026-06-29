@@ -474,6 +474,30 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
   }
 
 #ifdef QSV_UHD600_SUPPORT
+  // UHD600 (Apollo Lake / Gemini Lake) HEVC runs on legacy libmfx 1.x which
+  // only copies 4 fields from mfxExtCodingOption (PicTimingSEI,
+  // VuiNalHrdParameters, NalHrdConformance, AUDelimiter). The AVC-style
+  // fields we set (RefPicListReordering, RefPicMarkRep, MaxDecFrameBuffering,
+  // FieldOutput, ResetRefList, ...) have no HEVC semantics and may trigger
+  // MFX_ERR_INVALID_VIDEO_PARAM on the legacy path. OBS's bundled QSV encoder
+  // doesn't attach CO1 for HEVC at all, so drop it first thing.
+  if (Status < MFX_ERR_NONE &&
+      QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
+    auto COParams =
+        QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
+    if (COParams) {
+      warn("MFXVideoENCODE_Init%s failed (err=%d), "
+           "retrying without CodingOption (CO1)",
+           log_prefix, Status);
+      QSVEncode->Close();
+      QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOption>();
+      Status = QSVEncode->Init(&QSVEncodeParams);
+      info("\tMFXVideoENCODE_Init%s retry "
+           "(without CO1) status: %d",
+           log_prefix, Status);
+    }
+  }
+
   if (Status < MFX_ERR_NONE &&
       QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
     auto HevcTiles =
