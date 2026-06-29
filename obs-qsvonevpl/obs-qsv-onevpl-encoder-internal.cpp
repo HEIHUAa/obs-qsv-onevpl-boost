@@ -3288,7 +3288,7 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
     // PSNR: feed encoded bitstream to decoder. Source frames were
     // already saved in |PSNRSourceFrames| during EncodeFrame().
     if (PSNRLoggingEnabled && QSVDecodeInited) {
-      FeedPSNRDecoder(task.Bitstream);
+      FeedPSNRDecoder(QSVTaskPool[QSVSyncTaskID].Bitstream);
     }
 
     mfxU8 *DataTemp = QSVBitstream.Data;
@@ -3949,10 +3949,10 @@ void QSVEncoder::ShutdownPSNRDecoder() {
   info("[QSV VPL] PSNR: ShutdownPSNRDecoder done");
 }
 
-// Feed one encoded bitstream + its source frame to the PSNR decoder.
-// Source is queued with the bitstream timestamp (decoder reorders B-frames
-// to display order, so timestamp-based matching is used instead of FIFO);
-// decoded outputs are drained immediately via DrainPSNROutput(false).
+// Feed one encoded bitstream to the PSNR decoder. Source was already saved
+// in |PSNRSourceFrames| during EncodeFrame(); we just copy the bitstream
+// and drain ready outputs. Decoder reorders B-frames to display order, but
+// the map lookup by timestamp handles this correctly.
 void QSVEncoder::FeedPSNRDecoder(mfxBitstream &encodedBS) {
   if (!QSVDecode || !QSVDecodeInited) return;
 
