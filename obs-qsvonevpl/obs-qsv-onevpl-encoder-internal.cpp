@@ -3269,6 +3269,8 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
       sf.Y.resize(yRow * h);
       sf.UV.resize(uvRow * uvH);
       sf.frameType = 0; // filled later from bitstream
+      sf.srcW = w;
+      sf.srcH = h;
       for (size_t row = 0; row < static_cast<size_t>(h); row++)
         memcpy(sf.Y.data() + row * yRow,
                FrameData[0] + row * FrameLinesize[0], yRow);
@@ -3665,6 +3667,8 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
       sf.Y.resize(yRow * h);
       sf.UV.resize(uvRow * uvH);
       sf.frameType = 0;
+      sf.srcW = w;
+      sf.srcH = h;
       for (size_t row = 0; row < static_cast<size_t>(h); row++)
         memcpy(sf.Y.data() + row * yRow,
                FrameData[0] + row * FrameLinesize[0], yRow);
@@ -4038,6 +4042,18 @@ void QSVEncoder::FeedPSNRDecoder(mfxBitstream &encodedBS) {
   auto mapIt = PSNRSourceFrames.find(encodedBS.TimeStamp);
   if (mapIt != PSNRSourceFrames.end()) {
     mapIt->second.frameType = encodedBS.FrameType;
+    // trace first 20 feeds: confirms the TS the encoder stamped on the
+    // bitstream matches what we saved the surface under. If this TS doesn't
+    // later show up in drain[], decoding is reordering/changing TS.
+    if (FramePSNRStats.totalFrames < 20) {
+      info("[QSV VPL] PSNR: feed[%llu] ts=%llu type=0x%04x dataLen=%u "
+           "map_size=%zu",
+           static_cast<unsigned long long>(FramePSNRStats.totalFrames),
+           static_cast<unsigned long long>(encodedBS.TimeStamp),
+           static_cast<unsigned>(encodedBS.FrameType),
+           static_cast<unsigned>(encodedBS.DataLength),
+           PSNRSourceFrames.size());
+    }
   } else {
     // Log missed feed — this is expected when decoder hasn't consumed prior
     // frames yet (decoder internal delay), but if it happens late in the
@@ -4170,9 +4186,17 @@ void QSVEncoder::DrainPSNROutput(bool flushing) {
     // Look up source by decoder-propagated timestamp.
     mfxU64 decodedTS = outSurf->Data.TimeStamp;
     auto mapIt = PSNRSourceFrames.find(decodedTS);
-    info("[QSV VPL] PSNR: DrainPSNROutput decoded ts=%llu matched=%d map_size=%zu",
-         decodedTS, mapIt != PSNRSourceFrames.end() ? 1 : 0,
-         PSNRSourceFrames.size());
+    // keep this log always-on for the first 20 frames so we can see TS match
+    // state and (critically) whether srcW != reconW — a mismatch means the
+    // tight-layout source pitch we pass below is wrong for the source buffer.
+    bool logDetail = (FramePSNRStats.totalFrames < 20);
+    if (logDetail) {
+      info("[QSV VPL] PSNR: drain[%llu] ts=%llu matched=%d map_size=%zu",
+           static_cast<unsigned long long>(FramePSNRStats.totalFrames),
+           static_cast<unsigned long long>(decodedTS),
+           mapIt != PSNRSourceFrames.end() ? 1 : 0,
+           PSNRSourceFrames.size());
+    }
     if (mapIt != PSNRSourceFrames.end()) {
       const auto &src = mapIt->second;
       const mfxFrameInfo *fi = &outSurf->Info;
@@ -4180,18 +4204,42 @@ void QSVEncoder::DrainPSNROutput(bool flushing) {
       mfxU16 h = fi->CropH ? fi->CropH : fi->Height;
       const size_t bpp = (PSNRBitDepth > 8) ? 2 : 1;
 
-      // DEBUG: log first-match pixel sample to verify data integrity
-      if (FramePSNRStats.totalFrames == 0) {
-        int s0 = (bpp > 1)
-          ? static_cast<int>(reinterpret_cast<const uint16_t*>(src.Y.data())[0])
-          : static_cast<int>(src.Y.data()[0]);
-        int r0 = (bpp > 1)
-          ? static_cast<int>(reinterpret_cast<const uint16_t*>(outSurf->Data.Y)[0])
-          : static_cast<int>(outSurf->Data.Y[0]);
-        info("[QSV VPL] PSNR: first-match ts=%llu bpp=%zu "
-             "src[0]=%d recon[0]=%d diff=%d w=%u h=%u fourcc=%08x",
-             decodedTS, bpp, s0, r0, s0 - r0, w, h,
-             static_cast<unsigned>(fi->FourCC));
+      // sample Y[0] from both sides to sanity-check pixel alignment
+      int s0 = (bpp > 1)
+        ? static_cast<int>(reinterpret_cast<const uint16_t*>(src.Y.data())[0])
+        : static_cast<int>(src.Y.data()[0]);
+      int r0 = (bpp > 1)
+        ? static_cast<int>(reinterpret_cast<const uint16_t*>(outSurf->Data.Y)[0])
+        : static_cast<int>(outSurf->Data.Y[0]);
+
+      if (logDetail) {
+        info("[QSV VPL] PSNR: frame[%llu] ts=%llu type=0x%04x "
+             "src[w=%u h=%u] recon[w=%u h=%u cropW=%u cropH=%u "
+             "pitch=%u fourcc=0x%08x] bpp=%zu "
+             "srcY[0]=%d reconY[0]=%d diff=%d",
+             static_cast<unsigned long long>(FramePSNRStats.totalFrames),
+             static_cast<unsigned long long>(decodedTS),
+             static_cast<unsigned>(src.frameType),
+             static_cast<unsigned>(src.srcW),
+             static_cast<unsigned>(src.srcH),
+             static_cast<unsigned>(w), static_cast<unsigned>(h),
+             static_cast<unsigned>(fi->CropW),
+             static_cast<unsigned>(fi->CropH),
+             static_cast<unsigned>(outSurf->Data.Pitch),
+             static_cast<unsigned>(fi->FourCC), bpp, s0, r0, s0 - r0);
+      }
+      // detect the pitch-mismatch failure mode: source was stored with a
+      // tight pitch of srcW*bpp, but UpdateFramePSNRStats is called with
+      // recon w as the source pitch. If they differ, every row after the
+      // first reads from the wrong offset and PSNR collapses.
+      if (src.srcW != w) {
+        warn("[QSV VPL] PSNR: pitch mismatch frame[%llu] srcW=%u reconW=%u "
+             "— source stored tight pitch=%u but compare uses %u, "
+             "PSNR will be wrong for this frame",
+             static_cast<unsigned long long>(FramePSNRStats.totalFrames),
+             static_cast<unsigned>(src.srcW), static_cast<unsigned>(w),
+             static_cast<unsigned>(src.srcW) * static_cast<unsigned>(bpp),
+             static_cast<unsigned>(w) * static_cast<unsigned>(bpp));
       }
 
       UpdateFramePSNRStats(src.frameType, w, h,
@@ -4219,7 +4267,11 @@ void QSVEncoder::UpdateFramePSNRStats(mfxU16 frameType, mfxU16 width,
                                        const uint8_t *srcUV, size_t srcPitchUV,
                                        const mfxFrameSurface1 *recon) {
   PSNRFrameTypeStats *bucket = nullptr;
-  if (frameType & MFX_FRAMETYPE_I || frameType & MFX_FRAMETYPE_xI) {
+  // match UpdateFrameQPStats: IDR frames must count as I, otherwise pure-IDR
+  // frames (FrameType has only MFX_FRAMETYPE_IDR, no MFX_FRAMETYPE_I) fall
+  // through and get silently dropped from PSNR stats.
+  if (frameType & MFX_FRAMETYPE_I || frameType & MFX_FRAMETYPE_IDR ||
+      frameType & MFX_FRAMETYPE_xI || frameType & MFX_FRAMETYPE_xIDR) {
     bucket = &FramePSNRStats.i;
   } else if (frameType & MFX_FRAMETYPE_P || frameType & MFX_FRAMETYPE_xP) {
     bucket = &FramePSNRStats.p;
@@ -4303,6 +4355,21 @@ void QSVEncoder::UpdateFramePSNRStats(mfxU16 frameType, mfxU16 width,
     return 10.0 * std::log10(maxSq / mse);
   };
   double pY = toPSNR(mseY), pU = toPSNR(mseU), pV = toPSNR(mseV);
+
+  // per-frame PSNR trace: first 20 frames always, after that only flag
+  // suspiciously-low values (lossless QP=1 should be 50+ dB, anything <30
+  // means src/recon didn't line up). This is what tells us whether the
+  // max=71 frames are the rule or the exception.
+  if (FramePSNRStats.totalFrames < 20 || pY < 30.0) {
+    info("[QSV VPL] PSNR: result[%llu] type=0x%04x "
+         "Y=%.2f U=%.2f V=%.2f mse[Y=%.1f U=%.1f V=%.1f] "
+         "w=%u h=%u srcPitch=%zu reconPitch=%u",
+         static_cast<unsigned long long>(FramePSNRStats.totalFrames),
+         static_cast<unsigned>(frameType),
+         pY, pU, pV, mseY, mseU, mseV,
+         static_cast<unsigned>(width), static_cast<unsigned>(height),
+         srcPitchY, static_cast<unsigned>(reconPitch));
+  }
 
   bucket->count++;
   bucket->sumPSNR_Y += pY;

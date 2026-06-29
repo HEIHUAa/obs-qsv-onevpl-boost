@@ -251,6 +251,7 @@ private:
     std::vector<uint8_t> Y;
     std::vector<uint8_t> UV;
     mfxU16 frameType;
+    mfxU16 srcW = 0, srcH = 0;  // saved w/h at capture, for pitch validation
   };
   std::map<mfxU64, PSNRSourceFrame> PSNRSourceFrames;
 
