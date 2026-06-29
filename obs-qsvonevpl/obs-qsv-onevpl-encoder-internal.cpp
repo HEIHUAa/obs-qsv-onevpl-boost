@@ -3948,16 +3948,19 @@ void QSVEncoder::ShutdownPSNRDecoder() {
 }
 
 // Feed one encoded bitstream + its source frame to the PSNR decoder.
-// Source is queued (decoder has latency); decoded outputs are drained
-// immediately via DrainPSNROutput(false).
+// Source is queued with the bitstream timestamp (decoder reorders B-frames
+// to display order, so timestamp-based matching is used instead of FIFO);
+// decoded outputs are drained immediately via DrainPSNROutput(false).
 void QSVEncoder::FeedPSNRDecoder(mfxBitstream &encodedBS,
                                  std::vector<uint8_t> &srcY,
                                  std::vector<uint8_t> &srcUV) {
   if (!QSVDecode || !QSVDecodeInited) return;
 
-  // Queue source frame first — decoder output is delayed.
+  // Queue source frame — decoder may reorder B-frames, so save the bitstream
+  // timestamp for matching instead of relying on FIFO order.
   PSNRSourceQueue.push_back(
-      {std::move(srcY), std::move(srcUV), encodedBS.FrameType});
+      {encodedBS.TimeStamp, std::move(srcY), std::move(srcUV),
+       encodedBS.FrameType});
   srcY.clear();
   srcUV.clear();
 
@@ -3984,10 +3987,11 @@ void QSVEncoder::FeedPSNRDecoder(mfxBitstream &encodedBS,
 }
 
 // Drain remaining cached frames by passing NULL bitstream (per VPL spec:
-// "continuously calls DecodeFrameAsync with a NULL bitstream pointer to
-// drain any remaining frames cached within the decoder until the function
-// returns MFX_ERR_MORE_DATA"). Any sources still queued afterward never
-// produced output — count as failures.
+  // "continuously calls DecodeFrameAsync with a NULL bitstream pointer to
+  // drain any remaining frames cached within the decoder until the function
+  // returns MFX_ERR_MORE_DATA"). Sources still in queue after drain never
+  // produced output — count as failures. Matching is by timestamp (handles
+  // B-frame reorder correctly).
 void QSVEncoder::FlushPSNRDecoder() {
   if (!QSVDecode || !QSVDecodeInited) return;
   info("[QSV VPL] PSNR: FlushPSNRDecoder start (queued=%zu)",
@@ -4038,21 +4042,34 @@ void QSVEncoder::DrainPSNROutput(bool flushing) {
     // Normal — NOT a failure. On flush it means "no more cached frames".
     if (sts == MFX_ERR_MORE_DATA) break;
 
-    // Any other error (or NULL output with non-success status) is a real
-    // decode failure for one source frame.
-    if (sts < MFX_ERR_NONE || !outSurf) {
-      warn("[QSV VPL] PSNR: DecodeFrameAsync failed (sts=%d, flushing=%d)",
-           static_cast<int>(sts), flushing ? 1 : 0);
-      if (sts < MFX_ERR_NONE && !PSNRSourceQueue.empty()) {
+    // MFX_WRN_VIDEO_PARAM_CHANGED (sts=3) with NULL outSurf: decoder
+    // consumed the bitstream internally but didn't produce output. Still
+    // need to pop the front source to keep queue alignment — the decoder's
+    // internal state has advanced but this frame's data is gone.
+    if (sts == MFX_WRN_VIDEO_PARAM_CHANGED && !outSurf) {
+      if (!PSNRSourceQueue.empty()) {
         PSNRSourceQueue.pop_front();
         FramePSNRStats.decodeFailures++;
       }
       break;
     }
 
-    // Frame ready — sync, map, compare with oldest queued source.
-    // Use Synchronize (VPL 2.x preferred) instead of SyncOperation for
-    // safer surface lifecycle handling.
+    // Any other error (or NULL output with non-success status) is a real
+    // decode failure for one source frame.
+    if (sts < MFX_ERR_NONE || !outSurf) {
+      warn("[QSV VPL] PSNR: DecodeFrameAsync failed (sts=%d, flushing=%d)",
+           static_cast<int>(sts), flushing ? 1 : 0);
+      if (!PSNRSourceQueue.empty()) {
+        PSNRSourceQueue.pop_front();
+        FramePSNRStats.decodeFailures++;
+      }
+      break;
+    }
+
+    // Frame ready — sync, map, compare with matching source by timestamp.
+    // VPL decoder reorders B-frames to display order, so FIFO match would
+    // compare wrong frames. Use the surface timestamp (propagated from the
+    // bitstream by the decoder) to find the correct source.
     sts = outSurf->FrameInterface->Synchronize(outSurf, 10000);
     if (sts < MFX_ERR_NONE) {
       warn("[QSV VPL] PSNR: Synchronize failed (sts=%d)", static_cast<int>(sts));
@@ -4074,8 +4091,18 @@ void QSVEncoder::DrainPSNROutput(bool flushing) {
       break;
     }
 
-    if (!PSNRSourceQueue.empty()) {
-      const auto &src = PSNRSourceQueue.front();
+    // Find matching source by timestamp (decoder propagates bitstream
+    // timestamp to outSurf->Data.TimeStamp). If not found, discard frame.
+    mfxU64 decodedTS = outSurf->Data.TimeStamp;
+    auto matchIt = PSNRSourceQueue.end();
+    for (auto it = PSNRSourceQueue.begin(); it != PSNRSourceQueue.end(); ++it) {
+      if (it->timeStamp == decodedTS) {
+        matchIt = it;
+        break;
+      }
+    }
+    if (matchIt != PSNRSourceQueue.end()) {
+      const auto &src = *matchIt;
       const mfxFrameInfo *fi = &outSurf->Info;
       mfxU16 w = fi->CropW ? fi->CropW : fi->Width;
       mfxU16 h = fi->CropH ? fi->CropH : fi->Height;
@@ -4084,7 +4111,10 @@ void QSVEncoder::DrainPSNROutput(bool flushing) {
                            src.Y.data(), static_cast<size_t>(w) * bpp,
                            src.UV.data(), static_cast<size_t>(w) * bpp,
                            outSurf);
-      PSNRSourceQueue.pop_front();
+      PSNRSourceQueue.erase(matchIt);
+    } else {
+      // No matching source found — could be an internal ref frame
+      // that the decoder cached but wasn't fed as input.
     }
 
     outSurf->FrameInterface->Unmap(outSurf);

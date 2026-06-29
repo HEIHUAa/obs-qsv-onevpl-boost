@@ -244,11 +244,11 @@ private:
   bool QPStatsEnabled = true; // cached from InputParams for Drain path
   mfxU16 PSNRBitDepth = 8;   // 8 or 10, cached at init
 
-  // PSNR source frame queue — decoder has latency (B-frame reorder, header
-  // parsing), so a decoded output corresponds to an EARLIER input, not the
-  // one just fed. Queue sources in submission order and match them with
-  // decoded outputs FIFO.
+  // PSNR source frame queue — decoder reorders B-frames to display order, so
+  // decoded output order != submission order. Match by timeStamp instead of
+  // FIFO to handle reordering correctly.
   struct PSNRSourceFrame {
+    mfxU64 timeStamp;
     std::vector<uint8_t> Y;
     std::vector<uint8_t> UV;
     mfxU16 frameType;
