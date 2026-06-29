@@ -3281,29 +3281,13 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
       }
     }
 
-    // PSNR: decode encoded bitstream and compare against saved source
+    // PSNR: feed encoded bitstream + source to decoder. Decoded output is
+    // delayed — FeedPSNRDecoder queues the source and drains any ready
+    // outputs. Final flush happens in Drain().
     if (PSNRLoggingEnabled && QSVDecodeInited) {
       auto &task = QSVTaskPool[QSVSyncTaskID];
       if (!task.SourceY.empty()) {
-        mfxFrameSurface1 *recon = nullptr;
-        if (DecodeFrameForPSNR(task.Bitstream, recon) && recon) {
-          const mfxFrameInfo *fi = &recon->Info;
-          mfxU16 w = fi->CropW ? fi->CropW : fi->Width;
-          mfxU16 h = fi->CropH ? fi->CropH : fi->Height;
-          const size_t bpp = (PSNRBitDepth > 8) ? 2 : 1;
-          UpdateFramePSNRStats(task.Bitstream.FrameType, w, h,
-                               task.SourceY.data(),
-                               static_cast<size_t>(w) * bpp,
-                               task.SourceUV.data(),
-                               static_cast<size_t>(w) * bpp,
-                               recon);
-          recon->FrameInterface->Unmap(recon);
-          recon->FrameInterface->Release(recon);
-        } else {
-          FramePSNRStats.decodeFailures++;
-        }
-        task.SourceY.clear();
-        task.SourceUV.clear();
+        FeedPSNRDecoder(task.Bitstream, task.SourceY, task.SourceUV);
       }
     }
 
@@ -3955,57 +3939,124 @@ void QSVEncoder::ShutdownPSNRDecoder() {
   QSVDecodeInited = false;
 }
 
-// Decode one encoded frame via the PSNR decoder session and return the
-// reconstructed surface (mapped for read). Caller must Unmap + Release.
-bool QSVEncoder::DecodeFrameForPSNR(const mfxBitstream &encodedBS,
-                                    mfxFrameSurface1 *&outSurface) {
-  outSurface = nullptr;
-  if (!QSVDecode || !QSVDecodeInited) return false;
+// Feed one encoded bitstream + its source frame to the PSNR decoder.
+// Source is queued (decoder has latency); decoded outputs are drained
+// immediately via DrainPSNROutput(false).
+void QSVEncoder::FeedPSNRDecoder(mfxBitstream &encodedBS,
+                                 std::vector<uint8_t> &srcY,
+                                 std::vector<uint8_t> &srcUV) {
+  if (!QSVDecode || !QSVDecodeInited) return;
 
-  // Copy encoded bitstream into decoder's buffer (decoder modifies bitstream state)
-  const size_t needed = encodedBS.DataOffset + encodedBS.DataLength;
-  if (needed == 0) return false;
+  // Queue source frame first — decoder output is delayed.
+  PSNRSourceQueue.push_back(
+      {std::move(srcY), std::move(srcUV), encodedBS.FrameType});
+  srcY.clear();
+  srcUV.clear();
+
+  // Copy encoded bitstream into decoder's buffer (decoder consumes in place
+  // and updates DataOffset/DataLength). Normalize offset to 0 so the
+  // decoder's parser sees a clean contiguous buffer.
+  const size_t needed = encodedBS.DataLength;
+  if (needed == 0) {
+    DrainPSNROutput(false);
+    return;
+  }
   if (QSVDecodeBSBuf.size() < needed) {
     QSVDecodeBSBuf.resize(needed);
   }
-  // Always refresh Data/MaxLength: InitPSNRDecoder no longer sets them
   QSVDecodeBS.Data = QSVDecodeBSBuf.data();
   QSVDecodeBS.MaxLength = static_cast<mfxU32>(QSVDecodeBSBuf.size());
-  memcpy(QSVDecodeBSBuf.data() + encodedBS.DataOffset,
+  memcpy(QSVDecodeBSBuf.data(),
          encodedBS.Data + encodedBS.DataOffset, encodedBS.DataLength);
   QSVDecodeBS.DataLength = encodedBS.DataLength;
-  QSVDecodeBS.DataOffset = encodedBS.DataOffset;
+  QSVDecodeBS.DataOffset = 0;
   QSVDecodeBS.CodecId = QSVEncodeParams.mfx.CodecId;
 
+  DrainPSNROutput(false);
+}
+
+// Drain remaining cached frames by passing NULL bitstream (per VPL spec:
+// "continuously calls DecodeFrameAsync with a NULL bitstream pointer to
+// drain any remaining frames cached within the decoder until the function
+// returns MFX_ERR_MORE_DATA"). Any sources still queued afterward never
+// produced output — count as failures.
+void QSVEncoder::FlushPSNRDecoder() {
+  if (!QSVDecode || !QSVDecodeInited) return;
+  DrainPSNROutput(true);
+  FramePSNRStats.decodeFailures += PSNRSourceQueue.size();
+  PSNRSourceQueue.clear();
+}
+
+// Internal decode loop. Uses NULL work surface — VPL 2.x allocates
+// internally (per programming_guide/VPL_prg_decoding.rst example 1).
+// |flushing| true → pass NULL bitstream to drain EOS frames.
+void QSVEncoder::DrainPSNROutput(bool flushing) {
   mfxSyncPoint syncPoint = nullptr;
   mfxStatus sts = MFX_ERR_NONE;
+  mfxBitstream *bs = flushing ? nullptr : &QSVDecodeBS;
 
-  for (int attempt = 0; attempt < 16; attempt++) {
-    mfxFrameSurface1 *decSurface = nullptr;
-    sts = QSVDecode->GetSurface(&decSurface);
-    if (sts < MFX_ERR_NONE || !decSurface) return false;
-
+  // Bounded loop: each iteration either produces a frame, hits MORE_DATA
+  // (break), or hits MORE_SURFACE (continue without consuming bitstream).
+  // 32 is a generous upper bound for AsyncDepth + reorder buffer.
+  for (int attempt = 0; attempt < 32; attempt++) {
     mfxFrameSurface1 *outSurf = nullptr;
-    sts = QSVDecode->DecodeFrameAsync(&QSVDecodeBS, decSurface,
-                                       &outSurf, &syncPoint);
-    if (sts == MFX_ERR_MORE_SURFACE) continue;
-    if (sts == MFX_ERR_MORE_DATA) return false;
-    if (sts < MFX_ERR_NONE || !outSurf) return false;
+    sts = QSVDecode->DecodeFrameAsync(bs, nullptr, &outSurf, &syncPoint);
 
+    // MORE_SURFACE: decoder needs another work surface to produce output.
+    // With NULL work surface this shouldn't normally trigger, but handle
+    // it by retrying (VPL examples do the same).
+    if (sts == MFX_ERR_MORE_SURFACE) continue;
+
+    // MORE_DATA: decoder consumed input but needs more for the next frame.
+    // Normal — NOT a failure. On flush it means "no more cached frames".
+    if (sts == MFX_ERR_MORE_DATA) break;
+
+    // Any other error (or NULL output with non-success status) is a real
+    // decode failure for one source frame.
+    if (sts < MFX_ERR_NONE || !outSurf) {
+      if (sts < MFX_ERR_NONE && !PSNRSourceQueue.empty()) {
+        PSNRSourceQueue.pop_front();
+        FramePSNRStats.decodeFailures++;
+      }
+      break;
+    }
+
+    // Frame ready — sync, map, compare with oldest queued source.
     sts = MFXVideoCORE_SyncOperation(QSVDecodeSession, syncPoint, 5000);
     if (sts < MFX_ERR_NONE) {
       outSurf->FrameInterface->Release(outSurf);
-      return false;
+      if (!PSNRSourceQueue.empty()) {
+        PSNRSourceQueue.pop_front();
+        FramePSNRStats.decodeFailures++;
+      }
+      break;
     }
     sts = outSurf->FrameInterface->Map(outSurf, MFX_MAP_READ);
     if (sts < MFX_ERR_NONE) {
       outSurf->FrameInterface->Release(outSurf);
-      return false;
+      if (!PSNRSourceQueue.empty()) {
+        PSNRSourceQueue.pop_front();
+        FramePSNRStats.decodeFailures++;
+      }
+      break;
     }
-    outSurface = outSurf;
-    return true;
+
+    if (!PSNRSourceQueue.empty()) {
+      const auto &src = PSNRSourceQueue.front();
+      const mfxFrameInfo *fi = &outSurf->Info;
+      mfxU16 w = fi->CropW ? fi->CropW : fi->Width;
+      mfxU16 h = fi->CropH ? fi->CropH : fi->Height;
+      const size_t bpp = (PSNRBitDepth > 8) ? 2 : 1;
+      UpdateFramePSNRStats(src.frameType, w, h,
+                           src.Y.data(), static_cast<size_t>(w) * bpp,
+                           src.UV.data(), static_cast<size_t>(w) * bpp,
+                           outSurf);
+      PSNRSourceQueue.pop_front();
+    }
+
+    outSurf->FrameInterface->Unmap(outSurf);
+    outSurf->FrameInterface->Release(outSurf);
   }
-  return false;
 }
 
 // Compute per-plane PSNR (Y/U/V) by comparing source NV12/P010 data against
@@ -4326,25 +4377,7 @@ mfxStatus QSVEncoder::Drain() {
         // PSNR for remaining pending tasks
         if (PSNRLoggingEnabled && QSVDecodeInited &&
             !Task.SourceY.empty()) {
-          mfxFrameSurface1 *recon = nullptr;
-          if (DecodeFrameForPSNR(Task.Bitstream, recon) && recon) {
-            const mfxFrameInfo *fi = &recon->Info;
-            mfxU16 w = fi->CropW ? fi->CropW : fi->Width;
-            mfxU16 h = fi->CropH ? fi->CropH : fi->Height;
-            const size_t bpp = (PSNRBitDepth > 8) ? 2 : 1;
-            UpdateFramePSNRStats(Task.Bitstream.FrameType, w, h,
-                                 Task.SourceY.data(),
-                                 static_cast<size_t>(w) * bpp,
-                                 Task.SourceUV.data(),
-                                 static_cast<size_t>(w) * bpp,
-                                 recon);
-            recon->FrameInterface->Unmap(recon);
-            recon->FrameInterface->Release(recon);
-          } else {
-            FramePSNRStats.decodeFailures++;
-          }
-          Task.SourceY.clear();
-          Task.SourceUV.clear();
+          FeedPSNRDecoder(Task.Bitstream, Task.SourceY, Task.SourceUV);
         }
       } else {
         warn("Drain sync warning: %d", SyncSts);
@@ -4358,6 +4391,7 @@ mfxStatus QSVEncoder::Drain() {
   }
 
   if (PSNRLoggingEnabled) {
+    FlushPSNRDecoder();
     LogPSNRStats();
     ShutdownPSNRDecoder();
   }

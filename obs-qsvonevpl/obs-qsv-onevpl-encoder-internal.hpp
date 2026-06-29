@@ -4,6 +4,8 @@
 #include "helpers/ext_buf_manager.hpp"
 #include "helpers/qsv_params.hpp"
 
+#include <deque>
+
 class QSVEncoder {
 public:
   QSVEncoder() = default;
@@ -242,6 +244,17 @@ private:
   bool QPStatsEnabled = true; // cached from InputParams for Drain path
   mfxU16 PSNRBitDepth = 8;   // 8 or 10, cached at init
 
+  // PSNR source frame queue — decoder has latency (B-frame reorder, header
+  // parsing), so a decoded output corresponds to an EARLIER input, not the
+  // one just fed. Queue sources in submission order and match them with
+  // decoded outputs FIFO.
+  struct PSNRSourceFrame {
+    std::vector<uint8_t> Y;
+    std::vector<uint8_t> UV;
+    mfxU16 frameType;
+  };
+  std::deque<PSNRSourceFrame> PSNRSourceQueue;
+
   // One mfxExtEncodedFrameInfo per task, attached to each task's
   // bitstream so the encoder fills in frame-level QP after encode.
   std::vector<mfxExtEncodedFrameInfo> QSVTaskEncodedInfo;
@@ -267,8 +280,19 @@ private:
   bool InitPSNRDecoder(mfxU32 codecId, const mfxFrameInfo &frameInfo,
                        mfxU16 bitDepth);
   void ShutdownPSNRDecoder();
-  bool DecodeFrameForPSNR(const mfxBitstream &encodedBS,
-                          mfxFrameSurface1 *&outSurface);
+  // Feed one encoded bitstream + its source frame to the decoder. Source is
+  // queued (decoder has latency); decoded outputs are drained immediately
+  // when ready. srcY/srcUV are moved out (cleared) on return.
+  void FeedPSNRDecoder(mfxBitstream &encodedBS,
+                       std::vector<uint8_t> &srcY,
+                       std::vector<uint8_t> &srcUV);
+  // Drain remaining cached frames by passing NULL bitstream. Unmatched
+  // sources still in the queue are counted as decode failures.
+  void FlushPSNRDecoder();
+  // Internal decode loop. |flushing| true → pass NULL bitstream to drain.
+  // Handles MFX_ERR_MORE_DATA (break, normal) and MFX_ERR_MORE_SURFACE
+  // (continue, needs another work surface).
+  void DrainPSNROutput(bool flushing);
   void UpdateFramePSNRStats(mfxU16 frameType, mfxU16 width, mfxU16 height,
                             const uint8_t *srcY, size_t srcPitchY,
                             const uint8_t *srcUV, size_t srcPitchUV,
