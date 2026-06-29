@@ -4108,6 +4108,21 @@ void QSVEncoder::DrainPSNROutput(bool flushing) {
       mfxU16 w = fi->CropW ? fi->CropW : fi->Width;
       mfxU16 h = fi->CropH ? fi->CropH : fi->Height;
       const size_t bpp = (PSNRBitDepth > 8) ? 2 : 1;
+
+      // DEBUG: log first-match pixel sample to verify data integrity
+      if (FramePSNRStats.totalFrames == 0) {
+        int s0 = (bpp > 1)
+          ? static_cast<int>(reinterpret_cast<const uint16_t*>(src.Y.data())[0])
+          : static_cast<int>(src.Y.data()[0]);
+        int r0 = (bpp > 1)
+          ? static_cast<int>(reinterpret_cast<const uint16_t*>(outSurf->Data.Y)[0])
+          : static_cast<int>(outSurf->Data.Y[0]);
+        info("[QSV VPL] PSNR: first-match ts=%llu bpp=%zu "
+             "src[0]=%d recon[0]=%d diff=%d w=%u h=%u fourcc=%08x",
+             decodedTS, bpp, s0, r0, s0 - r0, w, h,
+             static_cast<unsigned>(fi->FourCC));
+      }
+
       UpdateFramePSNRStats(src.frameType, w, h,
                            src.Y.data(), static_cast<size_t>(w) * bpp,
                            src.UV.data(), static_cast<size_t>(w) * bpp,
