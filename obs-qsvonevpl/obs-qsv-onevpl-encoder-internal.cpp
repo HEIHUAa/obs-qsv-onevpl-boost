@@ -3981,6 +3981,7 @@ void QSVEncoder::FeedPSNRDecoder(mfxBitstream &encodedBS,
          encodedBS.Data + encodedBS.DataOffset, encodedBS.DataLength);
   QSVDecodeBS.DataLength = encodedBS.DataLength;
   QSVDecodeBS.DataOffset = 0;
+  QSVDecodeBS.TimeStamp  = encodedBS.TimeStamp;
   QSVDecodeBS.CodecId = QSVEncodeParams.mfx.CodecId;
 
   DrainPSNROutput(false);
@@ -4114,7 +4115,9 @@ void QSVEncoder::DrainPSNROutput(bool flushing) {
       PSNRSourceQueue.erase(matchIt);
     } else {
       // No matching source found — could be an internal ref frame
-      // that the decoder cached but wasn't fed as input.
+      // that the decoder cached but wasn't fed as input. Log briefly
+      // at info level so timestamp mismatches are visible.
+      info("[QSV VPL] PSNR: unmatched decoded frame (ts=%llu)", decodedTS);
     }
 
     outSurf->FrameInterface->Unmap(outSurf);
