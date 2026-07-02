@@ -2,7 +2,7 @@
 
 ## Intel QSV encoder plugin for OBS Studio based on libVPL library
 
----
+***
 
 ## 中文
 
@@ -20,7 +20,6 @@
 
 - 修复语言文件（locale）加载问题，并且添加中文翻译
 - 添加更多编码参数可见项
-- 工作流支持 Release / Debug 双版本编译
 - 其他 bug 修复和优化
 
 ### obq-qsvonevpl-boost 是什么
@@ -29,18 +28,18 @@ obq-qsvonevpl-boost 是 obq-qsvonevpl 增强版本 —— OBS Studio（30 及以
 
 ### 原始项目
 
-原始项目地址：https://github.com/ma3uk/obs-qsv-onevpl
+原始项目地址：<https://github.com/ma3uk/obs-qsv-onevpl>
 
 ### 下载
 
-前往本仓库的 Releases 最新稳定发布版：https://github.com/HEIHUAa/obs-qsv-onevpl-boost/releases
-或者前往本仓库的 Actions 页面下载最新构建：https://github.com/HEIHUAa/obs-qsv-onevpl-boost/actions
+前往本仓库的 Releases 最新稳定发布版：<https://github.com/HEIHUAa/obs-qsv-onevpl-boost/releases>
+或者前往本仓库的 Actions 页面下载最新构建：<https://github.com/HEIHUAa/obs-qsv-onevpl-boost/actions>
 
 ### 安装方法
 
 将下载下来的zip当中的`data`，`obs-plugins`文件夹解压到OBS Studio主目录下，也就是看得见`bin`，`data`，`obs-plugins`这三个文件的文件夹下
 
----
+***
 
 ## English
 
@@ -58,7 +57,6 @@ This project was originally created with a focus on UHD 700 (since that is the I
 
 - Fixed locale loading issues and added Chinese translations
 - Added more visible encoding parameters
-- Workflow supports building both Release and Debug configurations
 - Other bug fixes and optimizations
 
 ### What is obq-qsvonevpl-boost
@@ -67,13 +65,13 @@ obq-qsvonevpl-boost is an enhanced version of obq-qsvonevpl – a plugin for OBS
 
 ### Original Project
 
-Original repository: https://github.com/ma3uk/obs-qsv-onevpl
+Original repository: <https://github.com/ma3uk/obs-qsv-onevpl>
 
 ### Download
 
-Go to the Releases page of this repository for the latest stable release: https://github.com/HEIHUAa/obs-qsv-onevpl-boost/releases  
+Go to the Releases page of this repository for the latest stable release: <https://github.com/HEIHUAa/obs-qsv-onevpl-boost/releases>
 
-Or go to the Actions page of this repository to download the latest build: https://github.com/HEIHUAa/obs-qsv-onevpl-boost/actions
+Or go to the Actions page of this repository to download the latest build: <https://github.com/HEIHUAa/obs-qsv-onevpl-boost/actions>
 
 ### Installation
 
