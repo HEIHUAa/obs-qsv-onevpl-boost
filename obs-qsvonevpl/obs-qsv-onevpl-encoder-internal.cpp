@@ -4362,10 +4362,19 @@ void QSVEncoder::DrainPSNROutput(bool flushing) {
              static_cast<unsigned>(w) * static_cast<unsigned>(bpp));
       }
 
-      UpdateFramePSNRStats(src.frameType, decodedTS, tsOriginal, w, h,
-                           src.Y.data(), static_cast<size_t>(w) * bpp,
-                           src.UV.data(), static_cast<size_t>(w) * bpp,
-                           outSurf);
+      if (!flushing) {
+        UpdateFramePSNRStats(src.frameType, decodedTS, tsOriginal, w, h,
+                             src.Y.data(), static_cast<size_t>(w) * bpp,
+                             src.UV.data(), static_cast<size_t>(w) * bpp,
+                             outSurf);
+      } else {
+        // During EOS flush the decoder may output partially decoded or
+        // zero-filled surfaces. Don't include them in PSNR statistics, but
+        // remove them from the map so they aren't counted as decode failures.
+        info("[QSV VPL] PSNR: skip flushed frame ts=%llu type=0x%04x",
+             static_cast<unsigned long long>(decodedTS),
+             static_cast<unsigned>(src.frameType));
+      }
       PSNRSourceFrames.erase(mapIt);
     } else {
       // unmatched: decoder output a frame whose TS doesn't match any saved
