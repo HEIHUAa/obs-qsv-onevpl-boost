@@ -4155,7 +4155,8 @@ void QSVEncoder::FeedPSNRDecoder(mfxBitstream &encodedBS) {
          encodedBS.Data + encodedBS.DataOffset, encodedBS.DataLength);
   QSVDecodeBS.DataLength = encodedBS.DataLength;
   QSVDecodeBS.DataOffset = 0;
-  QSVDecodeBS.TimeStamp  = encodedBS.TimeStamp;
+  QSVDecodeBS.TimeStamp       = encodedBS.TimeStamp;
+  QSVDecodeBS.DecodeTimeStamp = encodedBS.DecodeTimeStamp;
   QSVDecodeBS.CodecId = QSVEncodeParams.mfx.CodecId;
 
   DrainPSNROutput(false);
@@ -4209,8 +4210,10 @@ void QSVEncoder::DrainPSNROutput(bool flushing) {
 
   // Bounded loop: each iteration either produces a frame, hits MORE_DATA
   // (break), or hits MORE_SURFACE (continue without consuming bitstream).
-  // 32 is a generous upper bound for AsyncDepth + reorder buffer.
-  for (int attempt = 0; attempt < 32; attempt++) {
+  // AsyncDepth + 32 ensures the loop can drain the entire in-flight queue
+  // when AsyncDepth is set to values like 120.
+  const int maxAttempts = QSVEncodeParams.AsyncDepth + 32;
+  for (int attempt = 0; attempt < maxAttempts; attempt++) {
     // Use GetSurface + explicit work surface (VPL example 6 pattern) instead
     // of NULL work surface — some VPL decoder implementations crash on NULL
     // work surface in certain codec states. Per VPL spec, the work surface
@@ -4245,9 +4248,10 @@ void QSVEncoder::DrainPSNROutput(bool flushing) {
     // the decoder can finish the IDR slice. Breaking here drops IDR frames,
     // leaving subsequent P/B frames without a reference and collapsing PSNR.
     if (sts == MFX_WRN_VIDEO_PARAM_CHANGED && !outSurf) {
+      mfxU64 feedTS = bs ? bs->TimeStamp : 0;
       info("[QSV VPL] PSNR: DecodeFrameAsync VIDEO_PARAM_CHANGED, "
            "continue loop (feed ts=%llu)",
-           static_cast<unsigned long long>(bs->TimeStamp));
+           static_cast<unsigned long long>(feedTS));
       continue;
     }
 
@@ -4394,6 +4398,25 @@ void QSVEncoder::UpdateFramePSNRStats(mfxU16 frameType, mfxU64 ts,
                                        const uint8_t *srcY, size_t srcPitchY,
                                        const uint8_t *srcUV, size_t srcPitchUV,
                                        const mfxFrameSurface1 *recon) {
+  const mfxFrameData *rd = &recon->Data;
+  const bool is10 = (PSNRBitDepth > 8);
+
+  // Sanity-check pixel alignment: with B-frame reordering or IDR timestamp
+  // resets the decoder may output a frame whose timestamp still hits the map
+  // but whose content belongs to a different source frame. For lossless QP=1
+  // the first pixel must match; skip any frame where it doesn't.
+  int s0 = is10
+    ? static_cast<int>(reinterpret_cast<const uint16_t *>(srcY)[0])
+    : static_cast<int>(srcY[0]);
+  int r0 = is10
+    ? static_cast<int>(reinterpret_cast<const uint16_t *>(rd->Y)[0])
+    : static_cast<int>(rd->Y[0]);
+  if (s0 != r0) {
+    info("[QSV VPL] PSNR: skip mismatched frame ts=%llu srcY[0]=%d reconY[0]=%d",
+         static_cast<unsigned long long>(ts), s0, r0);
+    return;
+  }
+
   PSNRFrameTypeStats *bucket = nullptr;
   // match UpdateFrameQPStats: IDR frames must count as I, otherwise pure-IDR
   // frames (FrameType has only MFX_FRAMETYPE_IDR, no MFX_FRAMETYPE_I) fall
@@ -4409,7 +4432,6 @@ void QSVEncoder::UpdateFramePSNRStats(mfxU16 frameType, mfxU64 ts,
     return;
   }
 
-  const mfxFrameData *rd = &recon->Data;
   const mfxU16 reconPitch = rd->Pitch;
   const mfxU16 rh =
       recon->Info.CropH ? recon->Info.CropH : recon->Info.Height;
@@ -4419,8 +4441,6 @@ void QSVEncoder::UpdateFramePSNRStats(mfxU16 frameType, mfxU64 ts,
   const size_t w = std::min<size_t>(width, rw);
   const size_t h = std::min<size_t>(height, rh);
   if (w == 0 || h == 0) return;
-
-  const bool is10 = (PSNRBitDepth > 8);
   const double maxVal = is10 ? 1023.0 : 255.0;
   const double maxSq = maxVal * maxVal;
 
