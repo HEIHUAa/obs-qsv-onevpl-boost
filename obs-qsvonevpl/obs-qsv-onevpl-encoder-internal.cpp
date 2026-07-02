@@ -4183,10 +4183,20 @@ void QSVEncoder::FlushPSNRDecoder() {
     info("[QSV VPL] PSNR: unmatched frames=%zu ts_sample=[%s]",
          unmatched, tsSample.c_str());
   }
-  FramePSNRStats.decodeFailures += unmatched;
+  // Only count sources that were actually fed to the decoder as decode
+  // failures. Entries with frameType==0 were saved by EncodeFrame() but never
+  // synced/feed (encoder dropped the frame), so they are encoder skips, not
+  // decoder failures.
+  size_t realFailures = 0;
+  for (const auto &entry : PSNRSourceFrames) {
+    if (entry.second.frameType != 0)
+      realFailures++;
+  }
+  FramePSNRStats.decodeFailures += realFailures;
   PSNRSourceFrames.clear();
-  info("[QSV VPL] PSNR: FlushPSNRDecoder done (before=%zu matched=%zu)",
-       before, before - unmatched);
+  info("[QSV VPL] PSNR: FlushPSNRDecoder done (before=%zu matched=%zu "
+       "realFailures=%zu encoderSkips=%zu)",
+       before, before - unmatched, realFailures, unmatched - realFailures);
 }
 
 // Internal decode loop. Uses GetSurface + explicit work surface (VPL example 6
@@ -4229,11 +4239,15 @@ void QSVEncoder::DrainPSNROutput(bool flushing) {
     // Normal — NOT a failure. On flush it means "no more cached frames".
     if (sts == MFX_ERR_MORE_DATA) break;
 
-    // MFX_WRN_VIDEO_PARAM_CHANGED (sts=3) with NULL outSurf: decoder
-    // consumed the bitstream internally but didn't produce output.
-    // With the map-based approach, the source stays in |PSNRSourceFrames|
-    // and will be counted as unmatched at flush. No alignment to maintain.
-    if (sts == MFX_WRN_VIDEO_PARAM_CHANGED && !outSurf) break;
+    // MFX_WRN_VIDEO_PARAM_CHANGED (sts=3) with NULL outSurf: decoder parsed
+    // a new sequence header (SPS/PPS, typical at IDR) but hasn't output the
+    // frame yet. Keep looping with the same (partially consumed) bitstream so
+    // the decoder can finish the IDR slice. Breaking here drops IDR frames,
+    // leaving subsequent P/B frames without a reference and collapsing PSNR.
+    if (sts == MFX_WRN_VIDEO_PARAM_CHANGED && !outSurf) {
+      info("[QSV VPL] PSNR: DecodeFrameAsync VIDEO_PARAM_CHANGED, continue loop");
+      continue;
+    }
 
     // Any other error (or NULL output with non-success status). Source
     // stays in the map — counted as unmatched at flush time.
