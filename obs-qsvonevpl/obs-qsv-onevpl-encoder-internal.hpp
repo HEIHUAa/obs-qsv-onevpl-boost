@@ -299,7 +299,8 @@ private:
   // Handles MFX_ERR_MORE_DATA (break, normal) and MFX_ERR_MORE_SURFACE
   // (continue, needs another work surface).
   void DrainPSNROutput(bool flushing);
-  void UpdateFramePSNRStats(mfxU16 frameType, mfxU16 width, mfxU16 height,
+  void UpdateFramePSNRStats(mfxU16 frameType, mfxU64 ts, bool tsOriginal,
+                            mfxU16 width, mfxU16 height,
                             const uint8_t *srcY, size_t srcPitchY,
                             const uint8_t *srcUV, size_t srcPitchUV,
                             const mfxFrameSurface1 *recon);

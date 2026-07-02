@@ -4245,7 +4245,9 @@ void QSVEncoder::DrainPSNROutput(bool flushing) {
     // the decoder can finish the IDR slice. Breaking here drops IDR frames,
     // leaving subsequent P/B frames without a reference and collapsing PSNR.
     if (sts == MFX_WRN_VIDEO_PARAM_CHANGED && !outSurf) {
-      info("[QSV VPL] PSNR: DecodeFrameAsync VIDEO_PARAM_CHANGED, continue loop");
+      info("[QSV VPL] PSNR: DecodeFrameAsync VIDEO_PARAM_CHANGED, "
+           "continue loop (feed ts=%llu)",
+           static_cast<unsigned long long>(bs->TimeStamp));
       continue;
     }
 
@@ -4309,25 +4311,23 @@ void QSVEncoder::DrainPSNROutput(bool flushing) {
         ? static_cast<int>(reinterpret_cast<const uint16_t*>(outSurf->Data.Y)[0])
         : static_cast<int>(outSurf->Data.Y[0]);
       bool pixelMismatch = (s0 != r0);
+      bool tsOriginal = (outSurf->Data.DataFlag &
+                         MFX_FRAMEDATA_ORIGINAL_TIMESTAMP) != 0;
 
       // print frame[] details when: first 20 frames, OR map abnormally large,
       // OR srcY[0] != reconY[0] (TS drift sign), OR previous frame had low
-      // PSNR (captures the frame right after the first drop). Limited to 30
-      // extra logs to avoid flooding.
+      // PSNR (captures the frame right after the first drop). Keep the 30-log
+      // budget only for pixelMismatch; always log the frame following a low-PSNR
+      // frame so we can see whether the decoder recovers.
       bool logFrame = logDetail ||
                       (pixelMismatch && psnrDrainDebugLogs < 30) ||
-                      (psnrLastFrameWasLow && psnrDrainDebugLogs < 30);
+                      psnrLastFrameWasLow;
       if ((pixelMismatch || psnrLastFrameWasLow) && !logDetail &&
           psnrDrainDebugLogs < 30)
         psnrDrainDebugLogs++;
       // consume the flag — only log the immediately following frame
       psnrLastFrameWasLow = false;
       if (logFrame) {
-        // DataFlag & MFX_FRAMEDATA_ORIGINAL_TIMESTAMP: 1 = decoder used
-        // bitstream TS (pass-through), 0 = fallback to internal counter
-        // (bitstream TS was INVALID). This is the key signal for TS drift.
-        bool tsOriginal = (outSurf->Data.DataFlag &
-                           MFX_FRAMEDATA_ORIGINAL_TIMESTAMP) != 0;
         info("[QSV VPL] PSNR: frame[%llu] ts=%llu type=0x%04x "
              "src[w=%u h=%u] recon[w=%u h=%u cropW=%u cropH=%u "
              "pitch=%u fourcc=0x%08x] bpp=%zu "
@@ -4358,7 +4358,7 @@ void QSVEncoder::DrainPSNROutput(bool flushing) {
              static_cast<unsigned>(w) * static_cast<unsigned>(bpp));
       }
 
-      UpdateFramePSNRStats(src.frameType, w, h,
+      UpdateFramePSNRStats(src.frameType, decodedTS, tsOriginal, w, h,
                            src.Y.data(), static_cast<size_t>(w) * bpp,
                            src.UV.data(), static_cast<size_t>(w) * bpp,
                            outSurf);
@@ -4388,7 +4388,8 @@ void QSVEncoder::DrainPSNROutput(bool flushing) {
 
 // Compute per-plane PSNR (Y/U/V) by comparing source NV12/P010 data against
 // the reconstructed surface, accumulate into FramePSNRStats.
-void QSVEncoder::UpdateFramePSNRStats(mfxU16 frameType, mfxU16 width,
+void QSVEncoder::UpdateFramePSNRStats(mfxU16 frameType, mfxU64 ts,
+                                       bool tsOriginal, mfxU16 width,
                                        mfxU16 height,
                                        const uint8_t *srcY, size_t srcPitchY,
                                        const uint8_t *srcUV, size_t srcPitchUV,
@@ -4493,10 +4494,11 @@ void QSVEncoder::UpdateFramePSNRStats(mfxU16 frameType, mfxU16 width,
   // means src/recon didn't line up). This is what tells us whether the
   // max=71 frames are the rule or the exception.
   if (FramePSNRStats.totalFrames < 20 || pY < 30.0) {
-    info("[QSV VPL] PSNR: result[%llu] type=0x%04x "
+    info("[QSV VPL] PSNR: result[%llu] ts=%llu tsOrig=%d type=0x%04x "
          "Y=%.2f U=%.2f V=%.2f mse[Y=%.1f U=%.1f V=%.1f] "
          "w=%u h=%u srcPitch=%zu reconPitch=%u",
          static_cast<unsigned long long>(FramePSNRStats.totalFrames),
+         static_cast<unsigned long long>(ts), tsOriginal ? 1 : 0,
          static_cast<unsigned>(frameType),
          pY, pU, pV, mseY, mseU, mseV,
          static_cast<unsigned>(width), static_cast<unsigned>(height),
