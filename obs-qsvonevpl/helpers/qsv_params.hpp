@@ -75,7 +75,6 @@ struct encoder_params {
   mfxU16 IntraRefType;
   bool CustomBufferSize;
   // Debug group toggles
-  bool PSNRLog = false;
   bool QPStatistics = true; // default ON to preserve existing behavior
   bool VideoHeaderHexDump = false;
   bool EncTools;

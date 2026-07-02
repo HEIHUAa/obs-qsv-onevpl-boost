@@ -4,9 +4,6 @@
 #include "helpers/ext_buf_manager.hpp"
 #include "helpers/qsv_params.hpp"
 
-#include <deque>
-#include <map>
-
 class QSVEncoder {
 public:
   QSVEncoder() = default;
@@ -214,54 +211,7 @@ private:
   };
 
   QPFrameStats FrameQPStats;
-
-  // ─ Per-frame PSNR tracking ─
-  // Tracks PSNR stats per I/P/B frame type for diagnostic logging.
-  // Computed by decoding the encoded bitstream and comparing against source.
-  struct PSNRFrameTypeStats {
-    uint64_t count = 0;
-    double sumPSNR_Y = 0, sumPSNR_U = 0, sumPSNR_V = 0;
-    double minPSNR_Y = 1e9, maxPSNR_Y = 0;
-    double minPSNR_U = 1e9, maxPSNR_U = 0;
-    double minPSNR_V = 1e9, maxPSNR_V = 0;
-  };
-  struct PSNRFrameStats {
-    PSNRFrameTypeStats i, p, b;
-    uint64_t totalFrames = 0;
-    uint64_t decodeFailures = 0;
-  };
-  PSNRFrameStats FramePSNRStats;
-
-  // PSNR decoder state (lazy inited when PSNRLog enabled)
-  std::unique_ptr<MFXVideoDECODE> QSVDecode;
-  mfxSession QSVDecodeSession{};
-  mfxBitstream QSVDecodeBS{};
-  std::vector<uint8_t> QSVDecodeBSBuf;
-  bool QSVDecodeInited = false;
-  bool PSNRLoggingEnabled = false;
   bool QPStatsEnabled = true; // cached from InputParams for Drain path
-  mfxU16 PSNRBitDepth = 8;   // 8 or 10, cached at init
-  // counters to limit debug logging when map grows abnormally (e.g. IDR frames
-  // stuck in the map because decoder output TS doesn't match source TS).
-  uint32_t psnrDrainDebugLogs = 0;  // drain[]/frame[] logs after map_size > 20
-  uint32_t psnrFeedMissLogs = 0;    // feed[] miss logs (TS not in map)
-  // set when the most recently computed PSNR was < 30 dB (lossless QP=1 should
-  // be 50+). Used to enable frame[] logging on the *next* drain so we capture
-  // the TS/pixel details right after the first drop.
-  bool psnrLastFrameWasLow = false;
-
-  // PSNR source frame map indexed by timestamp. Decoder reorders B-frames to
-  // display order, so output order != feed order. Using a map avoids this
-  // entirely — all sources are inserted in EncodeFrame() via |TS|, and
-  // drained output is looked up by |outSurf->Data.TimeStamp| regardless of
-  // the order the bitstream was fed to the decoder.
-  struct PSNRSourceFrame {
-    std::vector<uint8_t> Y;
-    std::vector<uint8_t> UV;
-    mfxU16 frameType;
-    mfxU16 srcW = 0, srcH = 0;  // saved w/h at capture, for pitch validation
-  };
-  std::map<mfxU64, PSNRSourceFrame> PSNRSourceFrames;
 
   // One mfxExtEncodedFrameInfo per task, attached to each task's
   // bitstream so the encoder fills in frame-level QP after encode.
@@ -283,28 +233,6 @@ private:
 
   void UpdateFrameQPStats(mfxU16 frameType, mfxU16 qp);
   void LogQPStats();
-
-  // PSNR decoder + computation
-  bool InitPSNRDecoder(mfxU32 codecId, const mfxFrameInfo &frameInfo,
-                       mfxU16 bitDepth);
-  void ShutdownPSNRDecoder();
-  // Feed one encoded bitstream to the PSNR decoder. Source frames were
-  // already saved by timestamp in |PSNRSourceFrames| during EncodeFrame(),
-  // so this only copies the bitstream and drains ready outputs.
-  void FeedPSNRDecoder(mfxBitstream &encodedBS);
-  // Drain remaining cached frames by passing NULL bitstream. Unmatched
-  // sources still in the queue are counted as decode failures.
-  void FlushPSNRDecoder();
-  // Internal decode loop. |flushing| true → pass NULL bitstream to drain.
-  // Handles MFX_ERR_MORE_DATA (break, normal) and MFX_ERR_MORE_SURFACE
-  // (continue, needs another work surface).
-  void DrainPSNROutput(bool flushing);
-  void UpdateFramePSNRStats(mfxU16 frameType, mfxU64 ts, bool tsOriginal,
-                            mfxU16 width, mfxU16 height,
-                            const uint8_t *srcY, size_t srcPitchY,
-                            const uint8_t *srcUV, size_t srcPitchUV,
-                            const mfxFrameSurface1 *recon);
-  void LogPSNRStats();
   void LogVideoHeaderHexDump();
 
   // QP stats SEI (User Data Unregistered) injection
