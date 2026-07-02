@@ -4249,10 +4249,15 @@ void QSVEncoder::DrainPSNROutput(bool flushing) {
       // consume the flag — only log the immediately following frame
       psnrLastFrameWasLow = false;
       if (logFrame) {
+        // DataFlag & MFX_FRAMEDATA_ORIGINAL_TIMESTAMP: 1 = decoder used
+        // bitstream TS (pass-through), 0 = fallback to internal counter
+        // (bitstream TS was INVALID). This is the key signal for TS drift.
+        bool tsOriginal = (outSurf->Data.DataFlag &
+                           MFX_FRAMEDATA_ORIGINAL_TIMESTAMP) != 0;
         info("[QSV VPL] PSNR: frame[%llu] ts=%llu type=0x%04x "
              "src[w=%u h=%u] recon[w=%u h=%u cropW=%u cropH=%u "
              "pitch=%u fourcc=0x%08x] bpp=%zu "
-             "srcY[0]=%d reconY[0]=%d diff=%d",
+             "srcY[0]=%d reconY[0]=%d diff=%d tsOrig=%d",
              static_cast<unsigned long long>(FramePSNRStats.totalFrames),
              static_cast<unsigned long long>(decodedTS),
              static_cast<unsigned>(src.frameType),
@@ -4262,7 +4267,8 @@ void QSVEncoder::DrainPSNROutput(bool flushing) {
              static_cast<unsigned>(fi->CropW),
              static_cast<unsigned>(fi->CropH),
              static_cast<unsigned>(outSurf->Data.Pitch),
-             static_cast<unsigned>(fi->FourCC), bpp, s0, r0, s0 - r0);
+             static_cast<unsigned>(fi->FourCC), bpp, s0, r0, s0 - r0,
+             tsOriginal ? 1 : 0);
       }
       // detect the pitch-mismatch failure mode: source was stored with a
       // tight pitch of srcW*bpp, but UpdateFramePSNRStats is called with
@@ -4284,8 +4290,19 @@ void QSVEncoder::DrainPSNROutput(bool flushing) {
                            outSurf);
       PSNRSourceFrames.erase(mapIt);
     } else {
-      info("[QSV VPL] PSNR: unmatched decoded frame (ts=%llu) — 1st map key=%llu last key=%llu",
-           decodedTS,
+      // unmatched: decoder output a frame whose TS doesn't match any saved
+      // source. Log DataFlag to see if TS came from bitstream (tsOrig=1) or
+      // fallback counter (tsOrig=0), plus reconY[0] for content fingerprint.
+      bool tsOriginal = (outSurf->Data.DataFlag &
+                         MFX_FRAMEDATA_ORIGINAL_TIMESTAMP) != 0;
+      const size_t bpp = (PSNRBitDepth > 8) ? 2 : 1;
+      int r0 = (bpp > 1)
+        ? static_cast<int>(reinterpret_cast<const uint16_t*>(outSurf->Data.Y)[0])
+        : static_cast<int>(outSurf->Data.Y[0]);
+      info("[QSV VPL] PSNR: unmatched decoded frame (ts=%llu tsOrig=%d reconY[0]=%d) "
+           "— 1st map key=%llu last key=%llu",
+           static_cast<unsigned long long>(decodedTS),
+           tsOriginal ? 1 : 0, r0,
            PSNRSourceFrames.empty() ? 0 : PSNRSourceFrames.begin()->first,
            PSNRSourceFrames.empty() ? 0 : PSNRSourceFrames.rbegin()->first);
     }
