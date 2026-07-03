@@ -125,8 +125,6 @@ struct encoder_params {
 
   int ScreenContentTools;
 
-  int TemporalLayersNum;
-
   std::string CustomCodingOptions;
 
   // Min/Max QP constraints: "-1" = driver default, "12" = all IPB=12,

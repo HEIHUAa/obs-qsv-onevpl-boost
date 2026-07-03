@@ -162,8 +162,6 @@ private:
   mfxU16 QSVSystemMemPoolSize{};
 #endif
 
-  mfxTemporalLayer *QSVLayerArray{};
-
   bool QSVIsTextureEncoder{};
   mfxMemoryInterface *QSVMemoryInterface{};
 

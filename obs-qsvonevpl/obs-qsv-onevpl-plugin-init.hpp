@@ -108,8 +108,6 @@ struct plugin_context {
 
 #define TEXT_SCREEN_CONTENT_TOOLS obs_module_text("ScreenContentTools")
 
-#define TEXT_TEMPORAL_LAYERS obs_module_text("TemporalLayers")
-
 #define TEXT_SEPARATE_IPB_QP obs_module_text("SeparateIPBQP")
 #define TEXT_CQP obs_module_text("CQP")
 #define TEXT_QPI obs_module_text("QPI")

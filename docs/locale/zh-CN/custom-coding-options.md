@@ -215,8 +215,6 @@ CODDI.DDI.InterPredBlockSize=64
 | `Hme` | 三态 | ON | 分层运动估计。使用多级搜索获得更好的精度。 |
 | `WriteIVFHeaders` | 三态 | OFF | 写入 IVF 容器头。OFF = 正常码流输出。 |
 | `RefreshFrameContext` | 三态 | ON | 刷新编码器帧上下文以改善画质。 |
-| `ChangeFrameContextIdxForTS` | 三态 | ON | 为时间可扩展性改变帧上下文索引。 |
-| `SuperFrameForTS` | 三态 | ON | 用于时间可扩展性的超级帧模式。 |
 | `QpAdjust` | 三态 | ON | 启用 SPS 级 QP 调整。 |
 | `TMVP` | 三态 | ON | 时间运动矢量预测。提高压缩效率。 |
 | `DDI.IntraPredBlockSize` | 数值 | 1 (4x4) | DDI 级帧内预测块大小。1=4x4, 2=8x8, 4=16x16, 8=PCM。 |

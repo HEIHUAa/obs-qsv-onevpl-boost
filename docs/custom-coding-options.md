@@ -215,8 +215,6 @@ Low-level driver tuning parameters. **"Magic beyond the control of mere mortals.
 | `Hme` | tri-state | ON | Hierarchical Motion Estimation. Uses multi-level search for better accuracy. |
 | `WriteIVFHeaders` | tri-state | OFF | Write IVF container headers. OFF = normal bitstream output. |
 | `RefreshFrameContext` | tri-state | ON | Refresh encoder frame context for improved quality. |
-| `ChangeFrameContextIdxForTS` | tri-state | ON | Change frame context index for temporal scalability. |
-| `SuperFrameForTS` | tri-state | ON | Super-frame mode for temporal scalability. |
 | `QpAdjust` | tri-state | ON | Enable SPS-level QP adjustment. |
 | `TMVP` | tri-state | ON | Temporal Motion Vector Prediction. Improves compression efficiency. |
 | `DDI.IntraPredBlockSize` | numeric | 1 (4x4) | DDI-level intra prediction block size. 1=4x4, 2=8x8, 4=16x16, 8=PCM. |

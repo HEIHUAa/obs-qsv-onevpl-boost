@@ -288,8 +288,6 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
 
   obs_data_set_default_string(Settings, "screen_content_tools", "AUTO");
 
-  obs_data_set_default_int(Settings, "temporal_layers", 0);
-
   obs_data_set_default_int(Settings, "gpu_number", 0);
 
   obs_data_set_default_string(Settings, "min_qp", "-1");
@@ -1160,11 +1158,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   AddStrings(Prop, qsv_params_condition_content_info);
   obs_property_set_long_description(Prop, TEXT_CONTENT_INFO_DESC);
 
-  Prop = obs_properties_add_int_slider(MXGroup, "temporal_layers",
-                                       TEXT_TEMPORAL_LAYERS, 0, 8, 1);
-  obs_property_set_long_description(Prop,
-                                    obs_module_text("TemporalLayers.Desc"));
-
   Prop = obs_properties_add_text(MXGroup, "custom_coding_options",
                                  TEXT_CUSTOM_CODING_OPTIONS,
                                  OBS_TEXT_MULTILINE);
@@ -1403,9 +1396,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
 
   const char *ScreenContentToolsData =
       obs_data_get_string(Settings, "screen_content_tools");
-
-  int TemporalLayersData =
-      static_cast<int>(obs_data_get_int(Settings, "temporal_layers"));
 
   const char *MinQPData = obs_data_get_string(Settings, "min_qp");
   const char *MaxQPData = obs_data_get_string(Settings, "max_qp");
@@ -1978,9 +1968,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   if (auto v = MapString(ScreenContentToolsData, kScreenContentToolsMap)) {
     Context->EncoderParams.ScreenContentTools = *v;
   }
-
-  Context->EncoderParams.TemporalLayersNum =
-      static_cast<mfxU16>(TemporalLayersData);
 
   const char *CustomCodingOptionsData =
       obs_data_get_string(Settings, "custom_coding_options");

@@ -169,7 +169,6 @@ QSVEncoder::~QSVEncoder() {
   if (QSVEncode || QSVProcessing) {
     ClearData();
   }
-  delete[] QSVLayerArray;
 #ifdef QSV_UHD600_SUPPORT
   ReleaseSystemMemorySurfacePool();
 #endif
@@ -413,68 +412,6 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
   // On older hardware (especially UHD600), certain ext buffers and
   // parameters may not be supported. Each retry removes one feature
   // and re-attempts Init until it succeeds or all fallbacks are exhausted.
-
-  // Retry without Temporal Layers if Init still failed
-  if (Status < MFX_ERR_NONE) {
-    auto AvcTemporalLayers =
-        QSVEncodeParams.GetExtBuffer<mfxExtAvcTemporalLayers>();
-    auto TemporalLayers =
-        QSVEncodeParams.GetExtBuffer<mfxExtTemporalLayers>();
-    auto VP9TemporalLayers =
-        QSVEncodeParams.GetExtBuffer<mfxExtVP9TemporalLayers>();
-
-    bool hasAvcTL = AvcTemporalLayers &&
-                    AvcTemporalLayers->Layer[0].Scale > 0;
-    bool hasUniversalTL = TemporalLayers && TemporalLayers->NumLayers > 0;
-    bool hasVP9TL = VP9TemporalLayers &&
-                    VP9TemporalLayers->Layer[0].FrameRateScale > 0;
-
-    if (hasAvcTL) {
-      warn("MFXVideoENCODE_Init%s failed with AVC/HEVC temporal layers "
-           "(err=%d, B-frames=%d, NumRefFrame=%d), "
-           "retrying without temporal layers",
-           log_prefix, Status,
-           QSVEncodeParams.mfx.GopRefDist - 1,
-           QSVEncodeParams.mfx.NumRefFrame);
-      QSVEncode->Close();
-      delete[] QSVLayerArray;
-      QSVLayerArray = nullptr;
-      QSVEncodeParams.RemoveExtBuffer<mfxExtAvcTemporalLayers>();
-    } else if (hasUniversalTL) {
-      warn("MFXVideoENCODE_Init%s failed with universal temporal layers "
-           "(err=%d, NumLayers=%d, B-frames=%d, NumRefFrame=%d), "
-           "retrying without temporal layers",
-           log_prefix, Status, TemporalLayers->NumLayers,
-           QSVEncodeParams.mfx.GopRefDist - 1,
-           QSVEncodeParams.mfx.NumRefFrame);
-      QSVEncode->Close();
-      delete[] QSVLayerArray;
-      QSVLayerArray = nullptr;
-      QSVEncodeParams.RemoveExtBuffer<mfxExtTemporalLayers>();
-    } else if (hasVP9TL) {
-      // VP9 path: strip mfxExtVP9TemporalLayers and retry
-      warn("MFXVideoENCODE_Init%s failed with VP9 temporal layers (err=%d, "
-           "B-frames=%d, NumRefFrame=%d), retrying without temporal layers",
-           log_prefix, Status,
-           QSVEncodeParams.mfx.GopRefDist - 1,
-           QSVEncodeParams.mfx.NumRefFrame);
-      QSVEncode->Close();
-      QSVEncodeParams.RemoveExtBuffer<mfxExtVP9TemporalLayers>();
-    }
-
-    if (hasAvcTL || hasUniversalTL || hasVP9TL) {
-      // Restore GopRefDist to the user's original B-frames setting; it may
-      // have been raised above to satisfy the temporal layer hierarchy.
-      QSVEncodeParams.mfx.GopRefDist =
-          InputParams->BFrames > 0
-              ? static_cast<mfxU16>(InputParams->BFrames + 1)
-              : 0;
-
-      Status = QSVEncode->Init(&QSVEncodeParams);
-      info("\tMFXVideoENCODE_Init%s retry (TemporalLayers removed) status: %d",
-           log_prefix, Status);
-    }
-  }
 
   // Retry with simplified CO params if still failed
   if (Status < MFX_ERR_NONE) {
@@ -1181,7 +1118,7 @@ static constexpr std::array<FieldEntry, 75> CO3_FIELDS{
   FieldEntry{"AdaptiveRef", offsetof(mfxExtCodingOption3, AdaptiveRef), FT_U16},
 };
 
-static constexpr std::array<FieldEntry, 46> CODDI_FIELDS{
+static constexpr std::array<FieldEntry, 44> CODDI_FIELDS{
   FieldEntry{"IntraPredCostType", offsetof(mfxExtCodingOptionDDI, IntraPredCostType), FT_U16},
   FieldEntry{"MEInterpolationMethod", offsetof(mfxExtCodingOptionDDI, MEInterpolationMethod), FT_U16},
   FieldEntry{"MEFractionalSearchType", offsetof(mfxExtCodingOptionDDI, MEFractionalSearchType), FT_U16},
@@ -1224,8 +1161,6 @@ static constexpr std::array<FieldEntry, 46> CODDI_FIELDS{
   FieldEntry{"Hme", offsetof(mfxExtCodingOptionDDI, Hme), FT_U16},
   FieldEntry{"WriteIVFHeaders", offsetof(mfxExtCodingOptionDDI, WriteIVFHeaders), FT_U16},
   FieldEntry{"RefreshFrameContext", offsetof(mfxExtCodingOptionDDI, RefreshFrameContext), FT_U16},
-  FieldEntry{"ChangeFrameContextIdxForTS", offsetof(mfxExtCodingOptionDDI, ChangeFrameContextIdxForTS), FT_U16},
-  FieldEntry{"SuperFrameForTS", offsetof(mfxExtCodingOptionDDI, SuperFrameForTS), FT_U16},
   FieldEntry{"QpAdjust", offsetof(mfxExtCodingOptionDDI, QpAdjust), FT_U16},
   FieldEntry{"TMVP", offsetof(mfxExtCodingOptionDDI, TMVP), FT_U16},
 };
@@ -1981,8 +1916,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CODDIParams->Transform8x8Mode = MFX_CODINGOPTION_ON;
     CODDIParams->EarlySkip = 0;
     CODDIParams->RefreshFrameContext = MFX_CODINGOPTION_ON;
-    CODDIParams->ChangeFrameContextIdxForTS = MFX_CODINGOPTION_ON;
-    CODDIParams->SuperFrameForTS = MFX_CODINGOPTION_ON;
   }
 #endif
 
@@ -2238,121 +2171,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
         static_cast<mfxU16>(InputParams->MaxPicAverageLightLevel);
   }
 
-  if (InputParams->TemporalLayersNum > 1) {
-    mfxU16 minGopDist = 1 << (InputParams->TemporalLayersNum - 1);
-    if (QSVEncodeParams.mfx.GopRefDist < minGopDist) {
-      info("\tB-frames adjusted from %d to %d for temporal layers (%d layers require B-frames>=%d)",
-           QSVEncodeParams.mfx.GopRefDist - 1, minGopDist - 1,
-           InputParams->TemporalLayersNum, minGopDist - 1);
-      QSVEncodeParams.mfx.GopRefDist = minGopDist;
-    } else {
-      info("\tB-frames=%d is sufficient for temporal layers=%d (requires B-frames>=%d)",
-           QSVEncodeParams.mfx.GopRefDist - 1,
-           InputParams->TemporalLayersNum, minGopDist - 1);
-    }
-
-    if (QSVEncodeParams.mfx.NumRefFrame < QSVEncodeParams.mfx.GopRefDist) {
-      warn("\tNumRefFrame=%d may be too low for B-frames=%d with temporal layers=%d, encoder Init may fail",
-           QSVEncodeParams.mfx.NumRefFrame,
-           QSVEncodeParams.mfx.GopRefDist - 1,
-           InputParams->TemporalLayersNum);
-    }
-
-    if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_VP9) {
-      // VP9 has its own temporal layers buffer (mfxExtVP9TemporalLayers) with
-      // an inline Layer[8] array. Only FrameRateScale + TargetKbps per layer,
-      // no per-layer QP. TargetKbps is ignored under CQP. Universal temporal
-      // layers buffer is NOT supported by VP9 Init (causes -15).
-      auto VP9TLParams =
-          QSVEncodeParams.AddExtBuffer<mfxExtVP9TemporalLayers>();
-      VP9TLParams->Header.BufferId = MFX_EXTBUFF_VP9_TEMPORAL_LAYERS;
-      VP9TLParams->Header.BufferSz = sizeof(mfxExtVP9TemporalLayers);
-
-      // Clear the inline array so unused layers have FrameRateScale=0
-      // (VPL treats first Layer[i].FrameRateScale==0 as end-of-list).
-      std::fill(std::begin(VP9TLParams->Layer),
-                std::end(VP9TLParams->Layer),
-                mfxVP9TemporalLayer{});
-
-      const int numLayers = std::min<int>(
-          InputParams->TemporalLayersNum, 8);
-      const bool isCQP =
-          InputParams->RateControl == MFX_RATECONTROL_CQP;
-      const mfxU16 totalKbps = QSVEncodeParams.mfx.TargetKbps;
-      for (int i = 0; i < numLayers; i++) {
-        VP9TLParams->Layer[i].FrameRateScale =
-            static_cast<mfxU16>(1 << (numLayers - 1 - i));
-        // Spec: highest layer TargetKbps == mfx.TargetKbps, and each
-        // subsequent layer must be greater than the previous. Distribute
-        // proportionally. CQP ignores TargetKbps, leave 0.
-        VP9TLParams->Layer[i].TargetKbps =
-            isCQP ? 0
-                  : static_cast<mfxU16>(
-                        static_cast<mfxU32>(totalKbps) * (i + 1) / numLayers);
-      }
-    } else if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC ||
-               QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
-      // AVC/HEVC use the legacy temporal layers buffer (mfxExtAvcTemporalLayers)
-      // with an inline Layer[8] array. Older GPUs such as UHD730 do not support
-      // the universal mfxExtTemporalLayers buffer and return -15.
-      // The base layer (Layer[0]) must have Scale == 1 and each subsequent
-      // layer must be a multiple of the previous one. HEVC additionally
-      // requires Layer[7].Scale == 0, so HEVC is limited to 7 layers.
-      auto AvcTLParams =
-          QSVEncodeParams.AddExtBuffer<mfxExtAvcTemporalLayers>();
-      AvcTLParams->Header.BufferId = MFX_EXTBUFF_AVC_TEMPORAL_LAYERS;
-      AvcTLParams->Header.BufferSz = sizeof(mfxExtAvcTemporalLayers);
-      AvcTLParams->BaseLayerPID = 0;
-
-      const int maxLayers = QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC
-                                ? 7
-                                : 8;
-      if (InputParams->TemporalLayersNum > maxLayers) {
-        warn("\tTemporalLayers clamped from %d to %d for %s",
-             InputParams->TemporalLayersNum, maxLayers,
-             QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC ? "HEVC"
-                                                           : "AVC");
-      }
-      const int numLayers =
-          std::min<int>(InputParams->TemporalLayersNum, maxLayers);
-      for (int i = 0; i < numLayers; i++) {
-        AvcTLParams->Layer[i].Scale = static_cast<mfxU16>(1 << i);
-      }
-    } else {
-      // AV1 and any future codec: use the universal temporal layers buffer.
-      auto TemporalLayersParams =
-          QSVEncodeParams.AddExtBuffer<mfxExtTemporalLayers>();
-      TemporalLayersParams->Header.BufferId =
-          MFX_EXTBUFF_UNIVERSAL_TEMPORAL_LAYERS;
-      TemporalLayersParams->Header.BufferSz = sizeof(mfxExtTemporalLayers);
-      TemporalLayersParams->NumLayers =
-          static_cast<mfxU16>(InputParams->TemporalLayersNum);
-      TemporalLayersParams->BaseLayerPID = 0;
-      delete[] QSVLayerArray;
-      QSVLayerArray =
-          new mfxTemporalLayer[InputParams->TemporalLayersNum]();
-
-      {
-        mfxU16 baseQPForLayer = 0;
-        int qpStep = 0;
-        if (InputParams->RateControl == MFX_RATECONTROL_CQP) {
-          baseQPForLayer = static_cast<mfxU16>(std::min({InputParams->QPI, InputParams->QPP, InputParams->QPB}));
-          qpStep = 4;
-        }
-        for (int i = 0; i < InputParams->TemporalLayersNum; i++) {
-          QSVLayerArray[i].FrameRateScale =
-              1 << (InputParams->TemporalLayersNum - 1 - i);
-          QSVLayerArray[i].QPI = static_cast<mfxU16>(baseQPForLayer + i * qpStep);
-          QSVLayerArray[i].QPP = static_cast<mfxU16>(baseQPForLayer + i * qpStep);
-          QSVLayerArray[i].QPB = static_cast<mfxU16>(baseQPForLayer + i * qpStep);
-        }
-      }
-      TemporalLayersParams->Layers = QSVLayerArray;
-    }
-    info("\tTemporalLayers: %d layers enabled",
-         InputParams->TemporalLayersNum);
-  }
-
 #ifdef QSV_UHD600_SUPPORT
   QSVEncodeParams.IOPattern = QSVUseSystemMemoryPath
                                  ? MFX_IOPATTERN_IN_SYSTEM_MEMORY
@@ -2363,13 +2181,10 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
   // VP9 only accepts a small set of ext buffers (see IsExtBufferSupportedInInit
   // in mfx_vp9_encode_hw_par.cpp): VP9_PARAM, CODING_OPTION2, CODING_OPTION3,
-  // DDI, VP9_SEGMENTATION, VP9_TEMPORAL_LAYERS, ENCODER_RESET_OPTION.
+  // DDI, VP9_SEGMENTATION, ENCODER_RESET_OPTION.
   // Attaching anything else makes CheckExtBufferHeaders return UNSUPPORTED and
   // Init translates that to MFX_ERR_INVALID_VIDEO_PARAM (-15). Strip every
   // unsupported buffer that the shared setup above may have attached.
-  // Note: VP9 temporal layers now use mfxExtVP9TemporalLayers (added above),
-  // so mfxExtTemporalLayers (universal) is never attached for VP9 and doesn't
-  // need stripping here.
   if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_VP9) {
     QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOption>();
     QSVEncodeParams.RemoveExtBuffer<mfxExtVideoSignalInfo>();
@@ -3096,30 +2911,6 @@ void QSVEncoder::LogActualParams() {
       info("\tSAO set: %s",
            GetSAOStatus(HEVC->SampleAdaptiveOffset).c_str());
     }
-  }
-
-  auto *TemporalLayers =
-      QSVEncodeParams.GetExtBuffer<mfxExtTemporalLayers>();
-  if (TemporalLayers && TemporalLayers->NumLayers > 0) {
-    info("\tTemporalLayers: %d layers", TemporalLayers->NumLayers);
-  }
-
-  // AVC/HEVC use the legacy temporal layers buffer
-  auto *AvcTemporalLayers =
-      QSVEncodeParams.GetExtBuffer<mfxExtAvcTemporalLayers>();
-  if (AvcTemporalLayers && AvcTemporalLayers->Layer[0].Scale > 0) {
-    int n = 0;
-    while (n < 8 && AvcTemporalLayers->Layer[n].Scale > 0) ++n;
-    info("\tAVC/HEVC TemporalLayers: %d layers", n);
-  }
-
-  // VP9 uses a separate temporal layers buffer, log it too
-  auto *VP9TemporalLayers =
-      QSVEncodeParams.GetExtBuffer<mfxExtVP9TemporalLayers>();
-  if (VP9TemporalLayers && VP9TemporalLayers->Layer[0].FrameRateScale > 0) {
-    int n = 0;
-    while (n < 8 && VP9TemporalLayers->Layer[n].FrameRateScale > 0) ++n;
-    info("\tVP9 TemporalLayers: %d layers", n);
   }
 
   auto *MCTF = QSVProcessingParams.GetExtBuffer<mfxExtVppMctf>();
