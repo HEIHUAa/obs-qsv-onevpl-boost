@@ -239,9 +239,11 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
 
   obs_data_set_default_string(Settings, "adaptive_i", "AUTO");
   obs_data_set_default_string(Settings, "adaptive_b", "AUTO");
+#ifndef QSV_UHD600_SUPPORT
   obs_data_set_default_string(Settings, "adaptive_ref", "AUTO");
   obs_data_set_default_string(Settings, "adaptive_cqm", "AUTO");
   obs_data_set_default_string(Settings, "adaptive_ltr", "AUTO");
+#endif
   obs_data_set_default_string(Settings, "use_raw_ref", "AUTO");
   obs_data_set_default_string(Settings, "rdo", "AUTO");
   obs_data_set_default_string(Settings, "hrd_conformance", "AUTO");
@@ -286,6 +288,10 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_int(Settings, "detail_factor", 50);
   obs_data_set_default_string(Settings, "image_stab_mode", "OFF");
   obs_data_set_default_string(Settings, "scaling_mode", "OFF");
+#ifndef QSV_UHD600_SUPPORT
+  obs_data_set_default_string(Settings, "vpp_mctf", "OFF");
+  obs_data_set_default_int(Settings, "vpp_mctf_strength", 0);
+#endif
   obs_data_set_default_int(Settings, "vpp_out_width", 0);
   obs_data_set_default_int(Settings, "vpp_out_height", 0);
   obs_data_set_default_string(Settings, "perc_enc_prefilter", "OFF");
@@ -515,12 +521,14 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   obs_property_set_visible(Prop, bVisibleVPP && bScalingModeActive);
   Prop = obs_properties_get(Properties, "vpp_out_height");
   obs_property_set_visible(Prop, bVisibleVPP && bScalingModeActive);
+#ifndef QSV_UHD600_SUPPORT
   Prop = obs_properties_get(Properties, "vpp_mctf");
   obs_property_set_visible(Prop, bVisibleVPP);
 
   const char *vpp_mctf_val = obs_data_get_string(Settings, "vpp_mctf");
   bool vpp_mctf_strength_visible = bVisibleVPP && (std::strcmp(vpp_mctf_val, "ON") == 0);
   obs_property_set_visible(obs_properties_get(Properties, "vpp_mctf_strength"), vpp_mctf_strength_visible);
+#endif
 
   const char *denoise_mode = obs_data_get_string(Settings, "denoise_mode");
   bVisible = std::strcmp(denoise_mode, "MANUAL | PRE ENCODE") == 0 ||
@@ -836,6 +844,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_long_description(Prop, TEXT_ADAPTIVE_B_DESC);
 
+#ifndef QSV_UHD600_SUPPORT
   Prop = obs_properties_add_list(ETGroup, "adaptive_ref", TEXT_ADAPTIVE_REF,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_tristate);
@@ -856,6 +865,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(Prop, TEXT_ADAPTIVE_LTR_DESC);
   obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC ||
                            Codec == QSV_CODEC_HEVC);
+#endif
 
   Prop = obs_properties_add_list(ETGroup, "trellis", TEXT_TRELLIS,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -1013,6 +1023,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(Prop, TEXT_PERC_ENC_PREFILTER_DESC);
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
+#ifndef QSV_UHD600_SUPPORT
   Prop = obs_properties_add_list(VFGroup, "vpp_mctf", TEXT_VPP_MCTF,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition);
@@ -1022,6 +1033,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   Prop = obs_properties_add_int_slider(VFGroup, "vpp_mctf_strength",
                                        TEXT_VPP_MCTF_STRENGTH, 0, 20, 1);
   obs_property_set_long_description(Prop, TEXT_VPP_MCTF_STRENGTH_DESC);
+#endif
 
   obs_properties_t *CSGroup = obs_properties_create();
 
@@ -1418,9 +1430,11 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
 
   const char *AdaptiveIData = obs_data_get_string(Settings, "adaptive_i");
   const char *AdaptiveBData = obs_data_get_string(Settings, "adaptive_b");
+#ifndef QSV_UHD600_SUPPORT
   const char *AdaptiveRefData = obs_data_get_string(Settings, "adaptive_ref");
   const char *AdaptiveCQMData = obs_data_get_string(Settings, "adaptive_cqm");
   const char *AdaptiveLTRData = obs_data_get_string(Settings, "adaptive_ltr");
+#endif
   const char *LowPowerData = obs_data_get_string(Settings, "low_power");
   const char *UseRawRefData = obs_data_get_string(Settings, "use_raw_ref");
   const char *RDOData = obs_data_get_string(Settings, "rdo");
@@ -1466,8 +1480,10 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   const char *WeightedPredData = obs_data_get_string(Settings, "weighted_pred");
   const char *WeightedBiPredData = obs_data_get_string(Settings, "weighted_bi_pred");
   int AdaptiveMaxFrameSizeData = static_cast<int>(obs_data_get_int(Settings, "adaptive_max_frame_size"));
+#ifndef QSV_UHD600_SUPPORT
   const char *VPPMCTFData = obs_data_get_string(Settings, "vpp_mctf");
   int VPPMCTFStrengthData = static_cast<int>(obs_data_get_int(Settings, "vpp_mctf_strength"));
+#endif
   const char *PPyramidData = obs_data_get_string(Settings, "p_pyramid");
   const char *EncToolsData = obs_data_get_string(Settings, "enctools");
   const char *IntraRefEncodingData =
@@ -1578,11 +1594,13 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.RepartitionCheckEnable = true;
   }
 
+#ifndef QSV_UHD600_SUPPORT
   if (strcmp(VPPMCTFData, "ON") == 0)
     Context->EncoderParams.VPPMCTFMode = 1;
   else
     Context->EncoderParams.VPPMCTFMode = 0;
   Context->EncoderParams.VPPMCTFStrength = static_cast<mfxU16>(VPPMCTFStrengthData);
+#endif
 
   switch (Context->Codec) {
   case QSV_CODEC_AVC: {
@@ -1842,15 +1860,17 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.IntraRefType = MFX_REFRESH_HORIZONTAL;
   }
 
-  ParseOptionalBool(AdaptiveCQMData, Context->EncoderParams.AdaptiveCQM);
-
-  ParseOptionalBool(AdaptiveLTRData, Context->EncoderParams.AdaptiveLTR);
-
   ParseOptionalBool(AdaptiveIData, Context->EncoderParams.AdaptiveI);
 
   ParseOptionalBool(AdaptiveBData, Context->EncoderParams.AdaptiveB);
 
+#ifndef QSV_UHD600_SUPPORT
   ParseOptionalBool(AdaptiveRefData, Context->EncoderParams.AdaptiveRef);
+
+  ParseOptionalBool(AdaptiveCQMData, Context->EncoderParams.AdaptiveCQM);
+
+  ParseOptionalBool(AdaptiveLTRData, Context->EncoderParams.AdaptiveLTR);
+#endif
 
   static constexpr std::pair<std::string_view, bool> kLowPowerMap[] = {
     {"ON",  true},

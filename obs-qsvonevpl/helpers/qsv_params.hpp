@@ -48,9 +48,11 @@ struct encoder_params {
   std::optional<bool> MBBRC;
   std::optional<bool> AdaptiveI;
   std::optional<bool> AdaptiveB;
+#ifndef QSV_UHD600_SUPPORT
   std::optional<bool> AdaptiveRef;
   std::optional<bool> AdaptiveCQM;
   std::optional<bool> AdaptiveLTR;
+#endif
   mfxU32 AdaptiveMaxFrameSize;
   std::optional<bool> RDO;
   std::optional<bool> RawRef;
@@ -106,6 +108,10 @@ struct encoder_params {
   std::optional<int> NumRefActiveP;
   std::optional<int> NumRefActiveBL0;
   std::optional<int> NumRefActiveBL1;
+#ifndef QSV_UHD600_SUPPORT
+  std::optional<int> VPPMCTFMode;
+  mfxU16 VPPMCTFStrength;
+#endif
   std::optional<int> SAO;
   std::optional<int> AV1CDEF;
   std::optional<int> AV1Restoration;
@@ -116,8 +122,6 @@ struct encoder_params {
   std::optional<int> SkipFrame;
   std::optional<bool> RepartitionCheckEnable;
   std::optional<int> AV1Segmentation;
-  std::optional<int> VPPMCTFMode;
-  mfxU16 VPPMCTFStrength;
   mfxU32 TuneQuality = 0;
   std::optional<mfxU16> VPPOutWidth;
   std::optional<mfxU16> VPPOutHeight;

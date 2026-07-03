@@ -926,12 +926,14 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
     PercEncPrefilterParams->Header.BufferSz = sizeof(mfxExtVPPPercEncPrefilter);
   }
 
+#ifndef QSV_UHD600_SUPPORT
   if (InputParams->VPPMCTFMode.has_value() && InputParams->VPPMCTFMode.value() == 1) {
     auto MCTFParams = QSVProcessingParams.AddExtBuffer<mfxExtVppMctf>();
     MCTFParams->Header.BufferId = MFX_EXTBUFF_VPP_MCTF;
     MCTFParams->Header.BufferSz = sizeof(mfxExtVppMctf);
     MCTFParams->FilterStrength = static_cast<mfxU16>(InputParams->VPPMCTFStrength);
   }
+#endif
 
   QSVProcessingParams.IOPattern =
       MFX_IOPATTERN_IN_VIDEO_MEMORY | MFX_IOPATTERN_OUT_VIDEO_MEMORY;
@@ -1067,7 +1069,11 @@ static constexpr std::array<FieldEntry, 29> CO2_FIELDS{
   FieldEntry{"UseRawRef", offsetof(mfxExtCodingOption2, UseRawRef), FT_U16},
 };
 
+#ifdef QSV_UHD600_SUPPORT
+static constexpr std::array<FieldEntry, 72> CO3_FIELDS{
+#else
 static constexpr std::array<FieldEntry, 75> CO3_FIELDS{
+#endif
   FieldEntry{"NumSliceI", offsetof(mfxExtCodingOption3, NumSliceI), FT_U16},
   FieldEntry{"NumSliceP", offsetof(mfxExtCodingOption3, NumSliceP), FT_U16},
   FieldEntry{"NumSliceB", offsetof(mfxExtCodingOption3, NumSliceB), FT_U16},
@@ -1140,9 +1146,11 @@ static constexpr std::array<FieldEntry, 75> CO3_FIELDS{
   FieldEntry{"RepartitionCheckEnable", offsetof(mfxExtCodingOption3, RepartitionCheckEnable), FT_U16},
   FieldEntry{"EncodedUnitsInfo", offsetof(mfxExtCodingOption3, EncodedUnitsInfo), FT_U16},
   FieldEntry{"EnableNalUnitType", offsetof(mfxExtCodingOption3, EnableNalUnitType), FT_U16},
+#ifndef QSV_UHD600_SUPPORT
   FieldEntry{"AdaptiveLTR", offsetof(mfxExtCodingOption3, AdaptiveLTR), FT_U16},
   FieldEntry{"AdaptiveCQM", offsetof(mfxExtCodingOption3, AdaptiveCQM), FT_U16},
   FieldEntry{"AdaptiveRef", offsetof(mfxExtCodingOption3, AdaptiveRef), FT_U16},
+#endif
 };
 
 static constexpr std::array<FieldEntry, 44> CODDI_FIELDS{
@@ -1860,11 +1868,13 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       if (CO2Pyramid) CO2Pyramid->BRefType = MFX_B_REF_UNKNOWN;
     }
 
+#ifndef QSV_UHD600_SUPPORT
     CO3Params->AdaptiveCQM = GetCodingOpt(InputParams->AdaptiveCQM);
 
     CO3Params->AdaptiveRef = GetCodingOpt(InputParams->AdaptiveRef);
 
     CO3Params->AdaptiveLTR = GetCodingOpt(InputParams->AdaptiveLTR);
+#endif
 
     CO3Params->MotionVectorsOverPicBoundaries =
         GetCodingOpt(InputParams->MotionVectorsOverPicBoundaries);
@@ -1906,10 +1916,14 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     EncToolsParams->SceneChange = GetCodingOpt(InputParams->EncToolsSceneChange);
     EncToolsParams->AdaptiveRefP = GetCodingOpt(InputParams->EncToolsAdaptiveRefP);
     EncToolsParams->AdaptiveRefB = GetCodingOpt(InputParams->EncToolsAdaptiveRefB);
+#ifndef QSV_UHD600_SUPPORT
     EncToolsParams->AdaptiveLTR = GetCodingOpt(InputParams->AdaptiveLTR);
+#endif
     EncToolsParams->AdaptivePyramidQuantP = GetCodingOpt(InputParams->EncToolsAdaptivePyramidQuantP);
     EncToolsParams->AdaptivePyramidQuantB = GetCodingOpt(InputParams->EncToolsAdaptivePyramidQuantB);
+#ifndef QSV_UHD600_SUPPORT
     EncToolsParams->AdaptiveQuantMatrices = GetCodingOpt(InputParams->AdaptiveCQM);
+#endif
     // ExtBRC is always OFF now, so AdaptiveMBQP and BRC can freely use user
     // settings — they work with the driver's built-in BRC, not ExtBRC.
     EncToolsParams->AdaptiveMBQP = GetCodingOpt(InputParams->EncToolsAdaptiveMBQP);
@@ -2897,12 +2911,14 @@ void QSVEncoder::LogActualParams() {
                ? "OFF"
                : "AUTO");
     }
+#ifndef QSV_UHD600_SUPPORT
     info("\tAdaptiveCQM set: %s",
          GetCodingOptStatus(CO3->AdaptiveCQM).c_str());
     info("\tAdaptiveRef set: %s",
          GetCodingOptStatus(CO3->AdaptiveRef).c_str());
     info("\tAdaptiveLTR set: %s",
          GetCodingOptStatus(CO3->AdaptiveLTR).c_str());
+#endif
     info("\tMotionVectorsOverPicBoundaries set: %s",
          GetCodingOptStatus(CO3->MotionVectorsOverPicBoundaries).c_str());
     info("\tGlobalMotionBiasAdjustment set: %s",
