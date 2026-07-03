@@ -70,6 +70,10 @@ const char *const qsv_params_condition_denoise_mode[] = {
 const char *const qsv_params_condition_av1_interp_filter[] = {
     "DEFAULT", "EIGHTTAP", "EIGHTTAP_SMOOTH", "EIGHTTAP_SHARP", "BILINEAR",
     "SWITCHABLE", 0};
+#ifdef ONEVPL_EXPERIMENTAL
+const char *const qsv_params_tune_quality[] = {
+    "OFF", "VMAF", "PERCEPTUAL", "VMAF+PERCEPTUAL", 0};
+#endif
 
 struct qsv_rate_control_info {
     const char *name;
@@ -230,6 +234,8 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(Settings, "intra_ref_encoding", "OFF");
   obs_data_set_default_string(Settings, "low_delay_brc", "OFF");
   obs_data_set_default_string(Settings, "low_delay_hrd", "OFF");
+  obs_data_set_default_string(Settings, "skip_frame", "AUTO");
+  obs_data_set_default_string(Settings, "repartition_check", "AUTO");
 
   obs_data_set_default_string(Settings, "adaptive_i", "AUTO");
   obs_data_set_default_string(Settings, "adaptive_b", "AUTO");
@@ -253,6 +259,9 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
 
   obs_data_set_default_string(Settings, "lookahead", "OFF");
   obs_data_set_default_string(Settings, "lookahead_ds", "AUTO");
+#ifdef ONEVPL_EXPERIMENTAL
+  obs_data_set_default_string(Settings, "tune_quality", "OFF");
+#endif
   obs_data_set_default_string(Settings, "enctools", "OFF");
   obs_data_set_default_string(Settings, "enc_tools_scene_change", "ON");
   obs_data_set_default_string(Settings, "enc_tools_adaptive_ref_p", "ON");
@@ -302,6 +311,7 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(Settings, "av1_loop_filter", "AUTO");
   obs_data_set_default_string(Settings, "av1_super_res", "AUTO");
   obs_data_set_default_string(Settings, "av1_error_resilient", "AUTO");
+  obs_data_set_default_string(Settings, "av1_segmentation", "OFF");
   obs_data_set_default_string(Settings, "av1_interp_filter", "DEFAULT");
 
   // Debug group defaults
@@ -454,7 +464,9 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   bVisible = bRateControlVisible && (std::strcmp(hrd_conformance, "ON") == 0 ||
              std::strcmp(hrd_conformance, "AUTO") == 0);
   Prop = obs_properties_get(Properties, "low_delay_hrd");
-  obs_property_set_visible(Prop, bVisible);
+  if (Prop) {
+    obs_property_set_visible(Prop, bVisible);
+  }
 
   bVisible = bIsVBR || bIsVCM || bIsQVBR;
   Prop = obs_properties_get(Properties, "low_delay_brc");
@@ -671,11 +683,19 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_long_description(Prop, TEXT_LOW_DELAY_HRD_DESC);
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
+  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC);
 
   Prop = obs_properties_add_list(RCGroup, "low_delay_brc", TEXT_LOW_DELAY_BRC,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_long_description(Prop, TEXT_LOW_DELAY_BRC_DESC);
+
+  Prop = obs_properties_add_list(RCGroup, "skip_frame", TEXT_SKIP_FRAME,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition_tristate);
+  obs_property_set_long_description(Prop, TEXT_SKIP_FRAME_DESC);
+  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC ||
+                           Codec == QSV_CODEC_HEVC);
 
   // MBBRC (macroblock-level BRC, aka auto-segmentation) is disabled for VP9:
   // oneVPL VP9 encoder defaults it OFF for all platforms and enabling it
@@ -725,13 +745,25 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition);
   obs_property_set_long_description(Prop, TEXT_PYRAMID_DESC);
+  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC ||
+                           Codec == QSV_CODEC_HEVC);
 
   Prop = obs_properties_add_list(IFGroup, "use_raw_ref", TEXT_USE_RAW_REF,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_long_description(Prop, TEXT_USE_RAW_REF_DESC);
+  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC ||
+                           Codec == QSV_CODEC_HEVC);
 
   obs_properties_t *ETGroup = obs_properties_create();
+
+#ifdef ONEVPL_EXPERIMENTAL
+  Prop = obs_properties_add_list(ETGroup, "tune_quality", TEXT_TUNE_QUALITY,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_tune_quality);
+  obs_property_set_long_description(Prop, TEXT_TUNE_QUALITY_DESC);
+  obs_property_set_visible(Prop, Codec == QSV_CODEC_AV1);
+#endif
 
   Prop = obs_properties_add_list(ETGroup, "enctools", TEXT_ENC_TOOLS,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -808,21 +840,35 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_long_description(Prop, TEXT_ADAPTIVE_REF_DESC);
+  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC ||
+                           Codec == QSV_CODEC_HEVC);
 
   Prop = obs_properties_add_list(ETGroup, "adaptive_cqm", TEXT_ADAPTIVE_CQM,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_long_description(Prop, TEXT_ADAPTIVE_CQM_DESC);
+  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC ||
+                           Codec == QSV_CODEC_HEVC);
 
   Prop = obs_properties_add_list(ETGroup, "adaptive_ltr", TEXT_ADAPTIVE_LTR,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_long_description(Prop, TEXT_ADAPTIVE_LTR_DESC);
+  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC ||
+                           Codec == QSV_CODEC_HEVC);
 
   Prop = obs_properties_add_list(ETGroup, "trellis", TEXT_TRELLIS,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_trellis);
   obs_property_set_long_description(Prop, TEXT_TRELLIS_DESC);
+  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC);
+
+  Prop = obs_properties_add_list(ETGroup, "repartition_check",
+                                 TEXT_REPARTITION_CHECK,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition_tristate);
+  obs_property_set_long_description(Prop, TEXT_REPARTITION_CHECK_DESC);
+  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC);
 
   Prop = obs_properties_add_list(ETGroup, "rdo", TEXT_RDO,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -834,6 +880,8 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_long_description(Prop, TEXT_FADE_DETECTION_DESC);
+  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC ||
+                           Codec == QSV_CODEC_HEVC);
 
   Prop = obs_properties_add_list(ETGroup, "transform_skip",
                                  TEXT_TRANSFORM_SKIP,
@@ -845,12 +893,15 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 
   obs_properties_t *RMGroup = obs_properties_create();
 
+  const bool bIsAVCOrHEVC = Codec == QSV_CODEC_AVC || Codec == QSV_CODEC_HEVC;
+
   Prop = obs_properties_add_list(RMGroup, "global_motion_bias_adjustment",
                                  TEXT_GLOBAL_MOTION_BIAS_ADJUSTMENT,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
   obs_property_set_long_description(Prop, TEXT_GLOBAL_MOTION_BIAS_DESC);
+  obs_property_set_visible(Prop, bIsAVCOrHEVC);
 
   Prop = obs_properties_add_list(RMGroup, "mv_cost_scaling_factor",
                                  TEXT_MV_COST_SCALING_FACTOR,
@@ -858,12 +909,14 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   AddStrings(Prop, qsv_params_condition_mv_cost_scaling);
   obs_property_set_long_description(Prop,
                                     obs_module_text("MVCostScalingFactor.Tooltip"));
+  obs_property_set_visible(Prop, bIsAVCOrHEVC);
 
   Prop = obs_properties_add_list(RMGroup, "direct_bias_adjustment",
                                  TEXT_DIRECT_BIAS_ADJUSTMENT,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_long_description(Prop, TEXT_DIRECT_BIAS_DESC);
+  obs_property_set_visible(Prop, bIsAVCOrHEVC);
 
   Prop = obs_properties_add_list(RMGroup, "mv_overpic_boundaries",
                                  TEXT_MV_OVER_PIC_BOUNDARIES,
@@ -871,30 +924,36 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_long_description(
       Prop, TEXT_MV_OVER_PIC_BOUNDARIES_DESC);
+  obs_property_set_visible(Prop, bIsAVCOrHEVC);
 
   Prop = obs_properties_add_list(RMGroup, "weighted_pred",
                                  TEXT_WEIGHTED_PRED,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_weighted_pred_options);
   obs_property_set_long_description(Prop, TEXT_WEIGHTED_PRED_DESC);
+  obs_property_set_visible(Prop, bIsAVCOrHEVC);
 
   Prop = obs_properties_add_list(RMGroup, "weighted_bi_pred",
                                  TEXT_WEIGHTED_BI_PRED,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_weighted_pred_options);
   obs_property_set_long_description(Prop, TEXT_WEIGHTED_BI_PRED_DESC);
+  obs_property_set_visible(Prop, bIsAVCOrHEVC);
 
   Prop = obs_properties_add_int(RMGroup, "num_ref_active_p",
                                 TEXT_NUM_REF_ACTIVE_P, 0, 65535, 1);
   obs_property_set_long_description(Prop, TEXT_NUM_REF_ACTIVE_P_DESC);
+  obs_property_set_visible(Prop, bIsAVCOrHEVC);
 
   Prop = obs_properties_add_int(RMGroup, "num_ref_active_bl0",
                                 TEXT_NUM_REF_ACTIVE_BL0, 0, 65535, 1);
   obs_property_set_long_description(Prop, TEXT_NUM_REF_ACTIVE_BL0_DESC);
+  obs_property_set_visible(Prop, bIsAVCOrHEVC);
 
   Prop = obs_properties_add_int(RMGroup, "num_ref_active_bl1",
                                 TEXT_NUM_REF_ACTIVE_BL1, 0, 65535, 1);
   obs_property_set_long_description(Prop, TEXT_NUM_REF_ACTIVE_BL1_DESC);
+  obs_property_set_visible(Prop, bIsAVCOrHEVC);
 
   obs_properties_t *VFGroup = obs_properties_create();
 
@@ -1103,6 +1162,12 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                    OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
     AddStrings(Prop, qsv_params_condition_tristate);
     obs_property_set_long_description(Prop, TEXT_AV1_ERROR_RESILIENT_DESC);
+
+    Prop = obs_properties_add_list(CSGroup, "av1_segmentation",
+                                   TEXT_AV1_SEGMENTATION,
+                                   OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+    AddStrings(Prop, qsv_params_condition_tristate);
+    obs_property_set_long_description(Prop, TEXT_AV1_SEGMENTATION_DESC);
   }
 
   obs_properties_t *IRGroup = obs_properties_create();
@@ -1232,6 +1297,19 @@ static inline mfxU16 ParseWeightedPredMode(const char *Data) {
   return MapString(Data, kWeightedPredModeMap).value_or(MFX_WEIGHTED_PRED_UNKNOWN);
 }
 
+#ifdef ONEVPL_EXPERIMENTAL
+// Parse TuneQuality string for mfxExtTuneEncodeQuality (AV1 only, experimental).
+static constexpr std::pair<std::string_view, mfxU32> kTuneQualityMap[] = {
+    {"OFF",             0},
+    {"VMAF",            MFX_ENCODE_TUNE_VMAF},
+    {"PERCEPTUAL",      MFX_ENCODE_TUNE_PERCEPTUAL},
+    {"VMAF+PERCEPTUAL", MFX_ENCODE_TUNE_VMAF | MFX_ENCODE_TUNE_PERCEPTUAL},
+};
+static inline mfxU32 ParseTuneQuality(const char *Data) {
+  return MapString(Data, kTuneQualityMap).value_or(0);
+}
+#endif
+
 // Codec level lookup tables
 // Replace large if-else chains with data-driven lookup.
 
@@ -1332,6 +1410,9 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
 
   const char *LowDelayHRDData = obs_data_get_string(Settings, "low_delay_hrd");
   const char *LowDelayBRCData = obs_data_get_string(Settings, "low_delay_brc");
+  const char *SkipFrameData = obs_data_get_string(Settings, "skip_frame");
+  const char *RepartitionCheckData =
+      obs_data_get_string(Settings, "repartition_check");
 
   const char *MBBRCData = obs_data_get_string(Settings, "mbbrc");
 
@@ -1378,6 +1459,10 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   const char *AV1SuperResData = obs_data_get_string(Settings, "av1_super_res");
   const char *AV1InterpFilterData = obs_data_get_string(Settings, "av1_interp_filter");
   const char *AV1ErrorResilientData = obs_data_get_string(Settings, "av1_error_resilient");
+  const char *AV1SegmentationData = obs_data_get_string(Settings, "av1_segmentation");
+#ifdef ONEVPL_EXPERIMENTAL
+  const char *TuneQualityData = obs_data_get_string(Settings, "tune_quality");
+#endif
   const char *WeightedPredData = obs_data_get_string(Settings, "weighted_pred");
   const char *WeightedBiPredData = obs_data_get_string(Settings, "weighted_bi_pred");
   int AdaptiveMaxFrameSizeData = static_cast<int>(obs_data_get_int(Settings, "adaptive_max_frame_size"));
@@ -1449,6 +1534,18 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   Context->EncoderParams.AV1SuperRes = ParseAV1Ternary(AV1SuperResData);
   Context->EncoderParams.AV1ErrorResilient = ParseAV1Ternary(AV1ErrorResilientData);
 
+  if (std::strcmp(AV1SegmentationData, "ON") == 0) {
+    Context->EncoderParams.AV1Segmentation = 1;
+  } else if (std::strcmp(AV1SegmentationData, "OFF") == 0) {
+    Context->EncoderParams.AV1Segmentation = 0;
+  }
+  // AUTO leaves AV1Segmentation unset so the driver chooses.
+
+#ifdef ONEVPL_EXPERIMENTAL
+  Context->EncoderParams.TuneQuality =
+      (Context->Codec == QSV_CODEC_AV1) ? ParseTuneQuality(TuneQualityData) : 0;
+#endif
+
   // 3. AV1InterpFilter
   static constexpr std::pair<std::string_view, mfxU16> kAV1InterpFilterMap[] = {
     {"DEFAULT",          0},
@@ -1466,6 +1563,20 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   Context->EncoderParams.WeightedBiPred = ParseWeightedPredMode(WeightedBiPredData);
 
   Context->EncoderParams.AdaptiveMaxFrameSize = AdaptiveMaxFrameSizeData;
+
+  // SkipFrame: ON maps to the safest BRC-only mode; OFF disables skipping.
+  if (std::strcmp(SkipFrameData, "OFF") == 0) {
+    Context->EncoderParams.SkipFrame = MFX_SKIPFRAME_NO_SKIP;
+  } else if (std::strcmp(SkipFrameData, "ON") == 0) {
+    Context->EncoderParams.SkipFrame = MFX_SKIPFRAME_BRC_ONLY;
+  }
+  // AUTO leaves SkipFrame unset so the driver chooses.
+
+  if (std::strcmp(RepartitionCheckData, "OFF") == 0) {
+    Context->EncoderParams.RepartitionCheckEnable = false;
+  } else if (std::strcmp(RepartitionCheckData, "ON") == 0) {
+    Context->EncoderParams.RepartitionCheckEnable = true;
+  }
 
   if (strcmp(VPPMCTFData, "ON") == 0)
     Context->EncoderParams.VPPMCTFMode = 1;

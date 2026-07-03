@@ -113,8 +113,12 @@ struct encoder_params {
   std::optional<int> AV1SuperRes;
   std::optional<int> AV1InterpFilter;
   std::optional<int> AV1ErrorResilient;
+  std::optional<int> SkipFrame;
+  std::optional<bool> RepartitionCheckEnable;
+  std::optional<int> AV1Segmentation;
   std::optional<int> VPPMCTFMode;
   mfxU16 VPPMCTFStrength;
+  mfxU32 TuneQuality = 0;
   std::optional<mfxU16> VPPOutWidth;
   std::optional<mfxU16> VPPOutHeight;
 

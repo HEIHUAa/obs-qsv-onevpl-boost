@@ -190,6 +190,10 @@ private:
   // ROI log per encoder instance (not shared across instances)
   bool ROIFirstLogDone = false;
 
+  // Static AV1 segmentation map. Kept alive for the encoder instance because
+  // mfxExtAV1Segmentation::SegmentIds points into this buffer during Init.
+  std::vector<mfxU8> AV1SegmentationMap;
+
   // ─ Per-frame QP tracking ─
   // Tracks QP stats per I/P/B frame type for diagnostic logging.
   // Uses a histogram (0-100) for O(1) median computation.

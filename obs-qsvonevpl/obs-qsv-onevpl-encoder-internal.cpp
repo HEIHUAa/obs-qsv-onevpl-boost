@@ -1733,6 +1733,11 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
     CO2Params->UseRawRef = GetCodingOpt(InputParams->RawRef);
 
+    if (InputParams->SkipFrame.has_value()) {
+      CO2Params->SkipFrame =
+          static_cast<mfxU16>(InputParams->SkipFrame.value());
+    }
+
     CO2Params->MaxFrameSize = InputParams->AdaptiveMaxFrameSize;
   }
 
@@ -1771,7 +1776,14 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CO3Params->WeightedBiPred =
         InputParams->WeightedBiPred.value_or(MFX_WEIGHTED_PRED_UNKNOWN);
 
-    CO3Params->RepartitionCheckEnable = MFX_CODINGOPTION_ON;
+    if (InputParams->RepartitionCheckEnable.has_value()) {
+      CO3Params->RepartitionCheckEnable =
+          InputParams->RepartitionCheckEnable.value()
+              ? MFX_CODINGOPTION_ON
+              : MFX_CODINGOPTION_OFF;
+    } else {
+      CO3Params->RepartitionCheckEnable = MFX_CODINGOPTION_UNKNOWN;
+    }
 
     if (InputParams->NumRefActiveP.has_value() &&
         InputParams->NumRefActiveP > 0) {
@@ -1991,6 +2003,13 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     AV1BitstreamParams->Header.BufferSz = sizeof(mfxExtAV1BitstreamParam);
     AV1BitstreamParams->WriteIVFHeaders = MFX_CODINGOPTION_OFF;
 
+#ifdef ONEVPL_EXPERIMENTAL
+    auto *TuneParams = QSVEncodeParams.AddExtBuffer<mfxExtTuneEncodeQuality>();
+    TuneParams->Header.BufferId = MFX_EXTBUFF_TUNE_ENCODE_QUALITY;
+    TuneParams->Header.BufferSz = sizeof(mfxExtTuneEncodeQuality);
+    TuneParams->TuneQuality = InputParams->TuneQuality;
+#endif
+
     auto AV1TileParams = QSVEncodeParams.AddExtBuffer<mfxExtAV1TileParam>();
     AV1TileParams->Header.BufferId = MFX_EXTBUFF_AV1_TILE_PARAM;
     AV1TileParams->Header.BufferSz = sizeof(mfxExtAV1TileParam);
@@ -2001,6 +2020,44 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     } else {
       AV1TileParams->NumTileColumns = 1;
       AV1TileParams->NumTileRows = 1;
+    }
+
+    if (InputParams->AV1Segmentation.has_value() &&
+        InputParams->AV1Segmentation.value() == 1) {
+      constexpr mfxU16 BlockSize = 32;
+      const mfxU32 BlocksX =
+          (InputParams->Width + BlockSize - 1) / BlockSize;
+      const mfxU32 BlocksY =
+          (InputParams->Height + BlockSize - 1) / BlockSize;
+      const mfxU32 MapSize = BlocksX * BlocksY;
+      if (MapSize > 0) {
+        AV1SegmentationMap.assign(MapSize, 0);
+        const mfxU32 xStart = BlocksX / 4;
+        const mfxU32 xEnd = (BlocksX * 3) / 4;
+        const mfxU32 yStart = BlocksY / 4;
+        const mfxU32 yEnd = (BlocksY * 3) / 4;
+        for (mfxU32 y = 0; y < BlocksY; ++y) {
+          for (mfxU32 x = 0; x < BlocksX; ++x) {
+            if (x >= xStart && x < xEnd && y >= yStart && y < yEnd) {
+              AV1SegmentationMap[y * BlocksX + x] = 1;
+            }
+          }
+        }
+
+        auto AV1SegParams = QSVEncodeParams.AddExtBuffer<mfxExtAV1Segmentation>();
+        AV1SegParams->Header.BufferId = MFX_EXTBUFF_AV1_SEGMENTATION;
+        AV1SegParams->Header.BufferSz = sizeof(mfxExtAV1Segmentation);
+        AV1SegParams->NumSegments = 2;
+        AV1SegParams->Segment[0].FeatureEnabled = 0;
+        AV1SegParams->Segment[1].FeatureEnabled =
+            MFX_AV1_SEGMENT_FEATURE_ALT_QINDEX;
+        AV1SegParams->Segment[1].AltQIndex = -10;
+        AV1SegParams->SegmentIdBlockSize = BlockSize;
+        AV1SegParams->NumSegmentIdAlloc = MapSize;
+        AV1SegParams->SegmentIds = AV1SegmentationMap.data();
+        info("\tAV1 Segmentation: 2 segments, center region (segment 1) "
+             "AltQIndex=-10, map %ux%u blocks", BlocksX, BlocksY);
+      }
     }
 
     if (InputParams->AV1CDEF.has_value() || InputParams->AV1Restoration.has_value() ||
@@ -2867,6 +2924,13 @@ void QSVEncoder::LogActualParams() {
   }
 
   if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1) {
+#ifdef ONEVPL_EXPERIMENTAL
+    auto *TuneParams = QSVEncodeParams.GetExtBuffer<mfxExtTuneEncodeQuality>();
+    if (TuneParams && TuneParams->TuneQuality != 0) {
+      info("\tTuneQuality set: 0x%x", TuneParams->TuneQuality);
+    }
+#endif
+
     auto *AV1AuxData = QSVEncodeParams.GetExtBuffer<mfxExtAV1AuxData>();
     if (AV1AuxData) {
       info("\tAV1 CDEF set: %s",

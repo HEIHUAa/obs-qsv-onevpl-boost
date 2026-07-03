@@ -130,6 +130,9 @@ template <> struct MFXExtBufferID<mfxExtAV1TileParam> {
 template <> struct MFXExtBufferID<mfxExtAV1ScreenContentTools> {
   enum { id = MFX_EXTBUFF_AV1_SCREEN_CONTENT_TOOLS };
 };
+template <> struct MFXExtBufferID<mfxExtAV1Segmentation> {
+  enum { id = MFX_EXTBUFF_AV1_SEGMENTATION };
+};
 template <> struct MFXExtBufferID<mfxExtVideoSignalInfo> {
   enum { id = MFX_EXTBUFF_VIDEO_SIGNAL_INFO };
 };
