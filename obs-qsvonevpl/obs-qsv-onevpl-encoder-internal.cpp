@@ -3275,6 +3275,23 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
         mfxU16 qp = ExtractVP9QP(std::span<const uint8_t>(
             taskBS.Data + taskBS.DataOffset, taskBS.DataLength));
         UpdateFrameQPStats(taskBS.FrameType, qp);
+      } else if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1) {
+        // oneVPL GPU RT AV1 encoder doesn't fill mfxExtEncodedFrameInfo.QP
+        // (EncodedInfoAv1.QpY is never set — driver bug).
+        // Use encoder params: accurate for CQP, initial QP for VBR/CBR.
+        mfxU16 qp = 0;
+        if (taskBS.FrameType & MFX_FRAMETYPE_I ||
+            taskBS.FrameType & MFX_FRAMETYPE_IDR ||
+            taskBS.FrameType & MFX_FRAMETYPE_xI ||
+            taskBS.FrameType & MFX_FRAMETYPE_xIDR) {
+          qp = QSVEncodeParams.mfx.QPI;
+        } else if (taskBS.FrameType & MFX_FRAMETYPE_P ||
+                   taskBS.FrameType & MFX_FRAMETYPE_xP) {
+          qp = QSVEncodeParams.mfx.QPP;
+        } else {
+          qp = QSVEncodeParams.mfx.QPB;
+        }
+        UpdateFrameQPStats(taskBS.FrameType, qp);
       } else if (taskBS.ExtParam && taskBS.NumExtParam > 0) {
         auto *encInfo =
             reinterpret_cast<mfxExtEncodedFrameInfo *>(taskBS.ExtParam[0]);
@@ -3985,6 +4002,21 @@ mfxStatus QSVEncoder::Drain() {
             mfxU16 qp = ExtractVP9QP(std::span<const uint8_t>(
                 Task.Bitstream.Data + Task.Bitstream.DataOffset,
                 Task.Bitstream.DataLength));
+            UpdateFrameQPStats(Task.Bitstream.FrameType, qp);
+          } else if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1) {
+            // oneVPL GPU RT AV1 encoder doesn't fill mfxExtEncodedFrameInfo.QP
+            mfxU16 qp = 0;
+            if (Task.Bitstream.FrameType & MFX_FRAMETYPE_I ||
+                Task.Bitstream.FrameType & MFX_FRAMETYPE_IDR ||
+                Task.Bitstream.FrameType & MFX_FRAMETYPE_xI ||
+                Task.Bitstream.FrameType & MFX_FRAMETYPE_xIDR) {
+              qp = QSVEncodeParams.mfx.QPI;
+            } else if (Task.Bitstream.FrameType & MFX_FRAMETYPE_P ||
+                       Task.Bitstream.FrameType & MFX_FRAMETYPE_xP) {
+              qp = QSVEncodeParams.mfx.QPP;
+            } else {
+              qp = QSVEncodeParams.mfx.QPB;
+            }
             UpdateFrameQPStats(Task.Bitstream.FrameType, qp);
           } else if (Task.Bitstream.ExtParam &&
                      Task.Bitstream.NumExtParam > 0) {
