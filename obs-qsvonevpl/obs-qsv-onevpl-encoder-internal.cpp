@@ -13,11 +13,8 @@
 
 constexpr mfxU32 BRC_MAX_KBPS_LIMIT = 65535;
 
-// VP9 encoder doesn't populate mfxExtEncodedFrameInfo.QP, so parse the
-// bitstream uncompressed header to extract base_q_idx (8 bits, 0-255).
-// VP9's QPI is used directly as base_q_idx (no *4 scaling at init time),
-// so we return base_q_idx as-is — it already matches the user-facing 0-63 range.
-// Returns 0 on any parse failure (safe default — matches old behavior).
+// VP9 doesn't fill mfxExtEncodedFrameInfo.QP, so pull base_q_idx from the bitstream header.
+// Returns 0 on parse failure.
 static mfxU16 ExtractVP9QP(std::span<const uint8_t> data) {
   if (data.size() < 4)
     return 0;
@@ -387,10 +384,7 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
 
     ApplyQPLimits(InputParams);
 
-    // When Query returns MFX_ERR_UNSUPPORTED (-3) on older hardware
-    // (e.g. UHD 600 / Apollo Lake), the driver may not support Query
-    // with extended coding option buffers (CO2/CO3).  Init may still
-    // succeed with the same parameters, so we attempt it directly.
+    // Older HW may reject Query with CO2/CO3 but accept Init
     if (Status >= MFX_ERR_NONE || Status == MFX_ERR_UNSUPPORTED) {
       if (Status == MFX_ERR_UNSUPPORTED) {
         warn("MFXVideoENCODE_Query%s returned UNSUPPORTED, "
@@ -408,12 +402,6 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
     }
   }
 
-  // Fallback retry chain:
-  // On older hardware (especially UHD600), certain ext buffers and
-  // parameters may not be supported. Each retry removes one feature
-  // and re-attempts Init until it succeeds or all fallbacks are exhausted.
-
-  // Retry with simplified CO params if still failed
   if (Status < MFX_ERR_NONE) {
     auto COParams =
         QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
@@ -431,12 +419,7 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
   }
 
 #ifdef QSV_UHD600_SUPPORT
-  // UHD600 runs legacy libmfx 1.x. BRCParamMultiplier is a oneVPL 2.x field
-  // near the tail of mfxInfoMFX; the legacy runtime may not recognize it and
-  // just use the already-divided Kbps values as-is, which are 100x too low.
-  // Drop the scaling multiplier (set it to the neutral value 1) and restore
-  // the raw Kbps values so both the runtime and downstream allocations see
-  // the intended bitrate.
+  // UHD600 legacy libmfx doesn't know about BRCParamMultiplier — it'd use scaled-down Kbps as-is
   if (Status < MFX_ERR_NONE &&
       QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC &&
       QSVEncodeParams.mfx.BRCParamMultiplier != 0) {
@@ -468,13 +451,7 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
          log_prefix, Status);
   }
 
-  // UHD600 (Apollo Lake / Gemini Lake) HEVC runs on legacy libmfx 1.x which
-  // only copies 4 fields from mfxExtCodingOption (PicTimingSEI,
-  // VuiNalHrdParameters, NalHrdConformance, AUDelimiter). The AVC-style
-  // fields we set (RefPicListReordering, RefPicMarkRep, MaxDecFrameBuffering,
-  // FieldOutput, ResetRefList, ...) have no HEVC semantics and may trigger
-  // MFX_ERR_INVALID_VIDEO_PARAM on the legacy path. OBS's bundled QSV encoder
-  // doesn't attach CO1 for HEVC at all, so drop it first thing.
+  // Legacy libmfx only copies 4 HEVC fields from CO1; AVC-only fields trigger errors
   if (Status < MFX_ERR_NONE &&
       QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
     auto COParams =
@@ -2650,8 +2627,6 @@ mfxStatus QSVEncoder::GetVideoParam([[maybe_unused]] enum codec_enum Codec) {
   return Status;
 }
 
-/* ── HEVC SPS parser: extract actual CTU size from driver-generated SPS ── */
-
 static mfxU16 parse_hevc_sps_ctb_size(const mfxU8 *sps_data,
                                        mfxU16 sps_size) {
   if (!sps_data || sps_size < 2)
@@ -3345,17 +3320,12 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
       break;
     }
 
-    // ── MFX_WRN_DEVICE_BUSY: always retry, regardless of sync point ──
-    // Some drivers (especially with EncTools) may set the sync
-    // point pointer even when returning DEVICE_BUSY.  The old code
-    // required !SyncPoint to enter the DEVICE_BUSY path, so a non-null
-    // sync point would fall through to the "async submit" branch below
-    // and break out of the retry loop with a stale/invalid sync point.
-    // That later caused MFX_ERR_NULL_PTR in SyncAndSwapPendingTask.
+    // MFX_WRN_DEVICE_BUSY: always retry. Some drivers set SyncPoint even on BUSY,
+    // which would fall through to the async-submit branch with a stale sync point
+    // and later cause MFX_ERR_NULL_PTR in SyncAndSwapPendingTask.
     if (MFX_WRN_DEVICE_BUSY == Status) [[unlikely]] {
       QSVTaskPool[TaskID].SyncPoint = nullptr;
-      // Exponential backoff: yield for YIELD_THRESHOLD attempts, then
-      // sleep for (1,2,4,8,...,MAX_BACKOFF_MS) to avoid busy-waiting
+      // Exponential backoff: yield first, then sleep 1,2,4,8,...ms to avoid busy-waiting
       if (EncodeRetryCount <= YIELD_THRESHOLD) {
         Sleep(0);
       } else {
@@ -3368,7 +3338,7 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
       continue;
     }
 
-    // ── Warnings (> MFX_ERR_NONE) other than DEVICE_BUSY with sync point → async submit ──
+    // Warnings other than DEVICE_BUSY with SyncPoint → accept as async submit
     if (MFX_ERR_NONE < Status && QSVTaskPool[TaskID].SyncPoint) [[likely]] {
       debug("EncodeFrameAsync[%d] sync=0x%p warning=0x%x (async submit)", TaskID,
             (void *)QSVTaskPool[TaskID].SyncPoint, Status);
@@ -3376,20 +3346,17 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
       break;
     }
 
-    // Non-BUSY warning without sync point – driver should not do this, but
-    // handle gracefully: reset sync point and retry.
+    // Non-BUSY warning without sync point — driver shouldn't do this, but reset and retry.
     if (MFX_ERR_NONE < Status) [[unlikely]] {
       debug("EncodeFrameAsync[%d] warning=0x%x no sync point, retrying", TaskID, Status);
       QSVTaskPool[TaskID].SyncPoint = nullptr;
       continue;
     }
 
-    // ── Buffer too small → grow and retry ──
+    // Buffer too small → grow and retry
     if (MFX_ERR_NOT_ENOUGH_BUFFER == Status ||
         MFX_ERR_MORE_BITSTREAM == Status) [[unlikely]] {
-      // ChangeBitstreamSize modifies QSVBitstream which is shared state
-      // (swapped between QSVBitstream and task bitstreams in
-      // SyncAndSwapPendingTask). Lock to prevent concurrent swap.
+      // ChangeBitstreamSize touches shared QSVBitstream — lock to avoid racing with SyncAndSwapPendingTask
       mfxU32 newSize;
       {
         std::lock_guard<std::mutex> lock(QSVTaskPoolMutex);
@@ -3457,8 +3424,7 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
     HWManager->CopyTexture(Texture, TextureHandle, LockKey,
                            static_cast<mfxU64 *>(NextKey));
   } catch (const std::exception &e) {
-    // Note: the exception occurred during CopyTexture, Status has not been
-    // assigned yet, so do not output a meaningless "Error code: 0"
+    // Exception happened during CopyTexture, Status hasn't been assigned yet — don't log "Error code: 0"
     error("Encode(): CopyTexture failed: %s", e.what());
     throw;
   }
@@ -3661,11 +3627,8 @@ void QSVEncoder::SetupROIEncodeCtrl() {
   auto roiCount = static_cast<mfxU16>(
       std::min(CachedROIRegions.size(), static_cast<size_t>(256)));
 
-  // mfxExtEncoderROI ends with ROI[1] (flexible array member).
-  // sizeof() only accounts for 1 ROI slot. We must allocate extra space
-  // for the remaining ROIs, otherwise writing ROI[1..N] corrupts the heap.
-  // Note: mfxROI may not be a named type in all oneVPL versions (some define
-  // the ROI member as anonymous struct), so derive entry size from the member.
+  // mfxExtEncoderROI has a flexible array member — sizeof only covers 1 slot.
+  // Derive entry size from the member in case mfxROI is an anonymous struct.
   constexpr mfxU32 roiEntrySize =
       sizeof(((mfxExtEncoderROI *)nullptr)->ROI[0]);
   mfxU32 requiredSize = sizeof(mfxExtEncoderROI) +
@@ -3833,11 +3796,8 @@ void QSVEncoder::LogVideoHeaderHexDump() {
   }
 }
 
-// Append a User Data Unregistered SEI NAL with cumulative QP stats.
-// Every frame gets one so the last frame carries the final summary.
-//
-// AVC:  [00 00 00 01] 06 05 <size> <uuid> <data> 80
-// HEVC: [00 00 00 01] 4E 01 05 <size> <uuid> <data> 80
+// Append a user_data_unregistered SEI NAL with cumulative QP stats.
+// AVC uses NAL type 6, HEVC uses type 39 (PREFIX_SEI).
 
 void QSVEncoder::AppendQpSeiToBitstream(mfxBitstream &bs) {
   mfxU32 freeSpace = bs.MaxLength - bs.DataOffset - bs.DataLength;
@@ -4047,13 +4007,7 @@ mfxStatus QSVEncoder::Drain() {
   return Status;
 }
 
-// Submit a dummy frame surface during initialization so the GPU driver
-// allocates internal resources (shaders, command buffers, HW state) now
-// rather than on the first real frame, eliminating the visible stutter.
-//
-// IMPORTANT: Must NOT call EncodeFrameAsync. Doing so would consume the
-// first IDR slot (with SPS/PPS), causing the first real frame to be a
-// P/B-frame without headers — the decoder sees a green screen.
+// Don't call EncodeFrameAsync here — it'd eat the first IDR slot
 void QSVEncoder::WarmUpEncoder() {
   // Texture-encoder path
   if (QSVIsTextureEncoder && HWManager) {

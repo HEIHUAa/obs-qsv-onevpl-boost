@@ -75,9 +75,6 @@ public:
 
   void DisableVPP();
 
-  // Submit a dummy frame during Init to force the driver to allocate internal
-  // GPU resources (shaders, command buffers, hardware state) ahead of time.
-  // Eliminates the visible stutter on first encode.
   void WarmUpEncoder();
 
   template <typename T>
@@ -190,13 +187,9 @@ private:
   // ROI log per encoder instance (not shared across instances)
   bool ROIFirstLogDone = false;
 
-  // Static AV1 segmentation map. Kept alive for the encoder instance because
-  // mfxExtAV1Segmentation::SegmentIds points into this buffer during Init.
+  // AV1 segmentation map. Must stay alive — mfxExtAV1Segmentation::SegmentIds points into it.
   std::vector<mfxU8> AV1SegmentationMap;
 
-  // ─ Per-frame QP tracking ─
-  // Tracks QP stats per I/P/B frame type for diagnostic logging.
-  // Uses a histogram (0-100) for O(1) median computation.
   static constexpr size_t QP_HISTOGRAM_SIZE = 101;
 
   struct QPFrameTypeStats {
@@ -237,20 +230,13 @@ private:
   void LogQPStats();
   void LogVideoHeaderHexDump();
 
-  // QP stats SEI (User Data Unregistered) injection
-  // Inserts an SEI NAL with cumulative QP stats so media players can display them.
-  // UUID for this plugin's SEI user_data_unregistered messages.
+  // QP stats SEI injection — appends user_data_unregistered SEI per frame
   static constexpr uint8_t QP_SEI_UUID[16] = {
       0xe7, 0xa5, 0xa8, 0xd0, 0x6b, 0x3c, 0x4c, 0x2e,
       0x9f, 0x1d, 0x8a, 0x5b, 0x7c, 0x9d, 0x3f, 0x1a};
 
-  // Appends a User Data Unregistered SEI NAL with current QP stats to |bs|.
-  // Handles AVC (NAL type 6) and HEVC (NAL type 39).
-  // Assumes |bs| has at least QSV_SEI_EXTRA bytes headroom beyond |DataLength|.
   void AppendQpSeiToBitstream(mfxBitstream &bs);
 
-  // Returns the most recently appended SEI NAL data, or nullptr if none written.
-  // Caller owns the returned buffer.
   void GetQpStatsSei(uint8_t **data, size_t *size);
   std::vector<uint8_t> QpStatsSeiBuffer; // last appended SEI NAL
   std::string QpSeiPayload;              // reused buffer for SEI payload

@@ -80,12 +80,10 @@ private:
   obs_display_t *PreviewDisplay;
   QTimer *RefreshTimer;       // periodic preview refresh
 
-  // Prevents re-entrant textChanged → UpdatePreviewFromText while
-  // SetUIFromGlobalConfig is holding GlobalROIConfigMutex
+  // Prevents re-entrant textChanged → UpdatePreviewFromText while SetUIFromGlobalConfig holds the mutex
   bool m_IsSettingText = false;
 
-  // Cached grid computation for DrawROIOverlay optimization.
-  // Grid is only recomputed when ROI data or output dimensions change.
+  // Cached gradient grid for DrawROIOverlay. Rebuilt when ROI data or output dims change.
   std::vector<encoder_params::roi_region> m_CachedDrawRects;
   bool m_CachedUseSegmented = false;
   size_t m_GridCacheHash = 0;

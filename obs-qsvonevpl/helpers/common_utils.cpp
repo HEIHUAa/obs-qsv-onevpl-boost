@@ -85,10 +85,7 @@ std::vector<encoder_params::roi_region> NormalizeROIToPixel(
   return result;
 }
 
-// Expand gradient regions into sub-rectangles
-// Each region is subdivided into a (2*N+1)×(2*N+1) grid where N = GradientSteps.
-// The core cell keeps the original DeltaQP; surrounding cells get interpolated QP
-// that fades to 0 at the gradient boundary.
+// Subdivide into (2*N+1)x(2*N+1) grid; core keeps original DeltaQP, edges fade to 0
 std::vector<encoder_params::roi_region> ExpandGradientRegions(
     const std::vector<encoder_params::roi_region> &Input,
     mfxU16 OutWidth, mfxU16 OutHeight) {
@@ -492,11 +489,7 @@ plugin_context *LookupEncoderData(obs_encoder_t *Encoder) {
   return (it != EncoderDataMap.end()) ? it->second : nullptr;
 }
 
-// Per-profile ROI config persistence
-// Uses obs_frontend_get_current_profile_path() to store ROI settings
-// in each OBS profile's own config file, so different profiles can have
-// different ROI configurations.
-// Location: <profile_path>/obs-qsv-onevpl-roi.ini
+// Per-profile ROI config stored in <profile>/obs-qsv-onevpl-roi.ini
 
 static const char *kROIConfigFile = "obs-qsv-onevpl-roi.ini";
 

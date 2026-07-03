@@ -119,19 +119,11 @@ void ReleaseGlobalLoader() {
   }
 }
 
-// Deep VPL warm-up:
-// For each supported codec, create a throwaway VPL session and call
-// MFXVideoENCODE_Init to trigger GPU shader JIT compilation. The
-// compiled shaders are cached by the driver, so the first real
-// recording's Init reuses them — eliminating the ~250 ms delay.
-// Surface-level warm-up is handled by per-recording WarmUpEncoder().
+// Deep VPL warm-up: trigger GPU shader JIT per codec so the first recording doesn't pay the ~250ms cost.
+// Surface-level warm-up is done by per-recording WarmUpEncoder().
 
-// Probe VP9 encoder support via VPL Query.
-// OBS's bundled obs-qsv-test.exe does not probe VP9, so on Windows the
-// SupportVP9 field from GetAdaptersInfo is always false. We query VPL
-// directly here and patch AdaptersInfo so the rest of the plugin sees
-// the real capability. On Linux, VAAPI already populates the field, so
-// this is a harmless reconfirmation.
+// Probe VP9 via VPL Query. obs-qsv-test.exe doesn't check VP9 on Windows,
+// so SupportVP9 is always false. We query directly and patch AdaptersInfo.
 static bool ProbeVP9Support() {
   mfxLoader Loader = nullptr;
   {

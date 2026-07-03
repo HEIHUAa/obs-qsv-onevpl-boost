@@ -271,10 +271,7 @@ public:
         ExtParam(const_cast<MFXExtBufferDoublePTR &>(Buffer.Data.ExtParam)) {}
 };
 
-/** ExtBufManager is an utility class which
- *  provide interface for mfxExtBuffer objects management in any mfx structure
- * (e.g. mfxVideoParam)
- */
+// Manages mfxExtBuffer objects attached to any mfx structure (e.g. mfxVideoParam)
 template <typename T> class ExtBufManager : public T {
 public:
   ExtBufManager() : T() { MFXExtBufferPool.reserve(MaxNumExtBuffers); }

@@ -106,8 +106,6 @@ extern std::mutex GlobalLoaderMutex;
 void InitGlobalLoader();
 void ReleaseGlobalLoader();
 
-// Encoder data registry - maps obs_encoder_t* to plugin_context*
-// Used by ROI editor to look up encoder data without using internal OBS APIs
 struct plugin_context;
 extern std::unordered_map<obs_encoder_t *, plugin_context *> EncoderDataMap;
 extern std::mutex EncoderDataMapMutex;
@@ -116,8 +114,7 @@ void RegisterEncoderData(obs_encoder_t *Encoder, plugin_context *Context);
 void UnregisterEncoderData(obs_encoder_t *Encoder);
 plugin_context *LookupEncoderData(obs_encoder_t *Encoder);
 
-// Pending ROI config - applied when an encoder of matching type is created
-// Key: encoder type ID (e.g. "obs_qsv_vpl_h264")
+// Pending ROI config, applied when a matching encoder type is created
 struct pending_roi_config {
   std::vector<encoder_params::roi_region> Regions;   // pixel values (legacy / cache)
   std::vector<encoder_params::normalized_roi_region> NormalizedRegions; // 0-1 fractions
@@ -127,46 +124,37 @@ struct pending_roi_config {
 extern std::unordered_map<std::string, pending_roi_config> PendingROIConfig;
 extern std::mutex PendingROIMutex;
 
-// Single global ROI config (replaces per-type/PendingROIConfig[""] indirection)
 extern pending_roi_config GlobalROIConfig;
 extern std::mutex GlobalROIConfigMutex;
 
-// Format a double with minimal precision (no scientific notation, trimmed trailing zeros)
+// Format a double with minimal precision, no scientific notation, trimmed trailing zeros
 std::string FormatROIDouble(double Value);
 
-// Serialize normalized ROI regions to pipe+comma format: "l,t,r,b,dqp|l,t,r,b,dqp"
-// This is the format used for persistent storage (file & encoder settings).
+// Serialize/deserialize normalized ROI regions: "l,t,r,b,dqp|l,t,r,b,dqp"
 std::string SerializeROIRegions(
     const std::vector<encoder_params::normalized_roi_region> &Regions);
 
-// Deserialize normalized ROI regions from pipe+comma format.
 std::vector<encoder_params::normalized_roi_region> DeserializeROIRegions(
     const std::string &Str);
 
-// Apply normalized ROI config to a single encoder instance.
-// Handles QP Delta→Priority mode fallback for non-CQP rate control internally.
+// Apply normalized ROI config to a single encoder. Handles QP Delta→Priority fallback for non-CQP.
 void ApplyROIConfigToEncoder(
     plugin_context *Context,
     const std::vector<encoder_params::normalized_roi_region> &NormRegions,
     mfxU16 Mode, bool Enabled);
 
-// Convert 0-1 normalized ROI coordinates to pixel values using given output dimensions.
-// If Alignment > 0, coordinates are rounded to the nearest Alignment boundary.
+// Convert 0-1 normalized ROI coords to pixel values. If Alignment>0, rounds to nearest boundary.
 std::vector<encoder_params::roi_region> NormalizeROIToPixel(
     const std::vector<encoder_params::normalized_roi_region> &NormRegions,
     mfxU16 OutWidth, mfxU16 OutHeight,
     mfxU16 Alignment = 0);
 
-// Expand gradient ROI regions into multiple non-overlapping sub-rectangles.
-// Each sub-rectangle gets interpolated DeltaQP for a smooth falloff.
-// Non-gradient regions are passed through unchanged.
-// Each region's GradientSteps field controls subdivision count per side.
+// Expand gradient ROI regions into sub-rectangles with interpolated DeltaQP falloff
 std::vector<encoder_params::roi_region> ExpandGradientRegions(
     const std::vector<encoder_params::roi_region> &Input,
     mfxU16 OutWidth, mfxU16 OutHeight);
 
-// Return the ROI coordinate alignment requirement for the given codec.
-// AVC/H.264 requires 16-pixel (macroblock) alignment; HEVC requires 32-pixel alignment.
+// ROI coordinate alignment: AVC=16px (macroblock), HEVC=32px, AV1=16px
 constexpr inline mfxU16 GetCodecAlignment(enum codec_enum Codec) {
   switch (Codec) {
   case QSV_CODEC_HEVC:
@@ -178,17 +166,11 @@ constexpr inline mfxU16 GetCodecAlignment(enum codec_enum Codec) {
   }
 }
 
-// Save GlobalROIConfig to a specific encoder's obs_data_t settings
 void SaveROIToEncoderSettings(plugin_context *Context);
-// Load ROI from encoder's obs_data_t settings into GlobalROIConfig and apply
 void LoadROIFromEncoderSettings(plugin_context *Context);
 
-// Save GlobalROIConfig to per-profile INI config file in the current
-// OBS profile directory (<profile>/obs-qsv-onevpl-roi.ini).
-// Falls back to obs_module_config_path if frontend API is unavailable.
+// Save/load GlobalROIConfig to/from per-profile INI (<profile>/obs-qsv-onevpl-roi.ini)
 void SaveROIConfigToFile();
-// Load GlobalROIConfig from the per-profile INI config file.
-// Returns true if a config was loaded, false otherwise.
 bool LoadROIConfigFromFile();
 
 #if defined(_WIN32) || defined(_WIN64)

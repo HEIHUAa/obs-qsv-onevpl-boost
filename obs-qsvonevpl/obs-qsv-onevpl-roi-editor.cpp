@@ -530,11 +530,9 @@ void ROIDialog::SetUIFromGlobalConfig() {
   m_IsSettingText = false;
 }
 
-// Parse text input into normalized ROI regions
-// Format: "Left Top Right Bottom DeltaQP" (no gradient)
-//      or: "Left Top Right Bottom DeltaQP GradL GradT GradR GradB [Steps]" (with gradient)
-// Values in 0.0 ~ 1.0, Gradients are forced to positive (outward only).
-// Steps: optional integer for sub-division count per side (default 3 → 7×7 grid).
+// Parse text into normalized ROI regions.
+// Format: "L T R B DQP" or "L T R B DQP GradL GradT GradR GradB [Steps]"
+// Values 0.0~1.0. Gradients are outward only. Default Steps=3 (7x7 grid).
 static std::vector<encoder_params::normalized_roi_region> ParseROIText(
     const std::string &Text) {
   std::vector<encoder_params::normalized_roi_region> result;
@@ -582,9 +580,8 @@ static std::vector<encoder_params::normalized_roi_region> ParseROIText(
 
 // ROI data load / save
 void ROIDialog::UpdatePreviewFromText() {
-  // Suppress re-entrant calls triggered by SetUIFromGlobalConfig →
-  // setPlainText → textChanged. The mutex is already held by SetUIFromGlobalConfig,
-  // so attempting to lock it again would deadlock or throw.
+  // Suppress re-entrant calls: SetUIFromGlobalConfig → setPlainText → textChanged.
+// The mutex is already held, so re-locking would deadlock.
   if (m_IsSettingText)
     return;
 
