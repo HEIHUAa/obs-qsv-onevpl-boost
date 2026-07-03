@@ -229,13 +229,6 @@ std::vector<encoder_params::roi_region> ExpandGradientRegions(
 void RegisterEncoderData(obs_encoder_t *Encoder, plugin_context *Context) {
   const char *enc_id = obs_encoder_get_id(Encoder);
 
-  blog(LOG_INFO,
-       "[QSV VPL] RegisterEncoderData: encoder=%s, width=%d, height=%d, rc=%d",
-       enc_id ? enc_id : "null",
-       Context->EncoderParams.Width,
-       Context->EncoderParams.Height,
-       Context->EncoderParams.RateControl);
-
   {
     std::lock_guard<std::mutex> lock(EncoderDataMapMutex);
     EncoderDataMap[Encoder] = Context;
@@ -278,16 +271,6 @@ void RegisterEncoderData(obs_encoder_t *Encoder, plugin_context *Context) {
            "(enabled=%d, regions=%zu)",
            enc_id ? enc_id : "null", (int)GlobalROIConfig.Enabled,
            GlobalROIConfig.NormalizedRegions.size());
-
-    } else {
-      // GlobalROIConfig is empty - try loading from file
-      blog(LOG_INFO,
-           "[QSV VPL] RegisterEncoderData: GlobalROIConfig empty, trying "
-           "file fallback for encoder: %s",
-           enc_id ? enc_id : "null");
-
-      // Release the mutex before calling LoadROIConfigFromFile (which takes
-      // its own lock) to avoid deadlock
     }
   }
 
@@ -314,18 +297,16 @@ void RegisterEncoderData(obs_encoder_t *Encoder, plugin_context *Context) {
                enc_id ? enc_id : "null");
         }
       }
-    } else {
-      blog(LOG_INFO,
-           "[QSV VPL] RegisterEncoderData: file fallback not needed for encoder: %s",
-           enc_id ? enc_id : "null");
     }
   }
 
-  // Log final ROI state for this encoder
-  blog(LOG_INFO,
-       "[QSV VPL] RegisterEncoderData: done for encoder=%s, roiEnabled=%d",
-       enc_id ? enc_id : "null",
-       (int)Context->EncoderParams.ROIEnabled);
+  // Only log final ROI state when ROI is actually enabled
+  if (Context->EncoderParams.ROIEnabled) {
+    blog(LOG_INFO,
+         "[QSV VPL] RegisterEncoderData: done for encoder=%s, roiEnabled=%d",
+         enc_id ? enc_id : "null",
+         (int)Context->EncoderParams.ROIEnabled);
+  }
 }
 
 // Serialize helper: format a double without scientific notation and with minimal precision
@@ -468,12 +449,6 @@ void LoadROIFromEncoderSettings(plugin_context *Context) {
     return;
   }
 
-  const char *enc_id = obs_encoder_get_id(Context->EncoderData);
-  blog(LOG_INFO,
-       "[QSV VPL] LoadROIFromEncoderSettings: checking encoder=%s, has_roi_enabled=%d",
-       enc_id ? enc_id : "null",
-       obs_data_has_user_value(settings, "roi_enabled"));
-
   if (!obs_data_has_user_value(settings, "roi_enabled")) {
     obs_data_release(settings);
     return;
@@ -491,15 +466,14 @@ void LoadROIFromEncoderSettings(plugin_context *Context) {
                   : std::vector<encoder_params::normalized_roi_region>();
   }
 
-  blog(LOG_INFO,
-       "[QSV VPL] ROI loaded from encoder settings: enabled=%d, mode=%d, regions=%zu, "
-       "region_str='%s'",
-       (int)GlobalROIConfig.Enabled, (int)GlobalROIConfig.Mode,
-       GlobalROIConfig.NormalizedRegions.size(),
-       obs_data_get_string(settings, "roi_regions"));
-
   // Apply to this encoder if enabled and there are active regions
   if (GlobalROIConfig.Enabled && !GlobalROIConfig.NormalizedRegions.empty()) {
+    blog(LOG_INFO,
+         "[QSV VPL] ROI loaded from encoder settings: enabled=%d, mode=%d, "
+         "regions=%zu, region_str='%s'",
+         (int)GlobalROIConfig.Enabled, (int)GlobalROIConfig.Mode,
+         GlobalROIConfig.NormalizedRegions.size(),
+         obs_data_get_string(settings, "roi_regions"));
     ApplyROIConfigToEncoder(Context, GlobalROIConfig.NormalizedRegions,
                             GlobalROIConfig.Mode, true);
   }
@@ -539,9 +513,6 @@ static config_t *OpenROIConfig(bool ForWrite) {
       os_mkdirs(profile_path);
     } else {
       if (!os_file_exists(config_path.array)) {
-        blog(LOG_INFO,
-             "[QSV VPL] OpenROIConfig: profile file not found '%s'",
-             config_path.array);
         bfree(profile_path);
         dstr_free(&config_path);
         goto try_module_path;
@@ -570,9 +541,6 @@ try_module_path:
   }
 
   if (!ForWrite && !os_file_exists(config_path)) {
-    blog(LOG_INFO,
-         "[QSV VPL] OpenROIConfig: no module config file at '%s'",
-         config_path);
     bfree(config_path);
     return nullptr;
   }
