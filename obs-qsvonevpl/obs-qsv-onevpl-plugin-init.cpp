@@ -34,6 +34,9 @@ const char *const qsv_usage_names[] = {
     "TU5 (Fast)",     "TU6 (Faster)", "TU7 (Veryfast)", 0};
 const char *const qsv_usage_names_simple[] = {
     "Best Quality (TU1-TU2)", "Balanced (TU3-TU5)", "Fastest (TU6-TU7)", 0};
+const char *const qsv_usage_names_five[] = {
+    "TU1 (Veryslow)", "TU2 (Slower)", "TU4 (Balanced)",
+    "TU6 (Faster)",   "TU7 (Veryfast)", 0};
 const char *const qsv_latency_names[] = {"ultra-low", "low", "normal", 0};
 const char *const qsv_params_condition[] = {"ON", "OFF", 0};
 const char *const qsv_params_condition_tristate[] = {"ON", "OFF", "AUTO", 0};
@@ -187,19 +190,43 @@ mfxU16 QueryPlatformCodeName() {
     return 0;
 }
 
-// TU collapsing detection: Gen12+ platforms (TigerLake+) collapse the 7
-// TargetUsage values into 3 effective quality tiers via oneVPL's CheckTU.
-// On these platforms, show a simplified 3-option dropdown instead of 7.
-static bool ShouldSimplifyTargetUsage() {
+enum class TargetUsageUIMode {
+    Full,   // all 7 TU entries
+    Three,  // collapsed to effective TU1/TU4/TU7
+    Five,   // extended HEVC: effective TU1/TU2/TU4/TU6/TU7
+};
+
+// Decide how many TargetUsage choices the UI should expose so that every
+// visible option maps to a distinct internal quality level.
+static TargetUsageUIMode GetTargetUsageUIMode(enum codec_enum Codec) {
     mfxU16 platformCode = QueryPlatformCodeName();
     if (platformCode == 0)
-        return false;
-    return platformCode >= MFX_PLATFORM_TIGERLAKE;
+        return TargetUsageUIMode::Full;
+
+    switch (Codec) {
+    case QSV_CODEC_VP9:
+        // VP9 encoder maps 1-2->1, 3-5->4, 6-7->7 for every platform.
+        return TargetUsageUIMode::Three;
+    case QSV_CODEC_HEVC: {
+        bool isBmgOrNewer = platformCode >= MFX_PLATFORM_BATTLEMAGE &&
+                            platformCode != MFX_PLATFORM_ALDERLAKE_N;
+        if (platformCode < MFX_PLATFORM_TIGERLAKE)
+            return TargetUsageUIMode::Full;
+        if (isBmgOrNewer)
+            return TargetUsageUIMode::Five;
+        return TargetUsageUIMode::Three;
+    }
+    default:
+        // AV1 does not collapse. AVC behavior is not exposed in this GPU RT source;
+        // stay conservative and show the full 7-option list.
+        return TargetUsageUIMode::Full;
+    }
 }
 
 static void SetDefaultEncoderParams(obs_data_t *Settings,
                                     enum codec_enum Codec) {
-  if (ShouldSimplifyTargetUsage()) {
+  auto mode = GetTargetUsageUIMode(Codec);
+  if (mode == TargetUsageUIMode::Three) {
     obs_data_set_default_string(Settings, "target_usage",
                                 "Balanced (TU3-TU5)");
   } else {
@@ -577,9 +604,14 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 
   Prop = obs_properties_add_list(RCGroup, "target_usage", TEXT_SPEED,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  if (ShouldSimplifyTargetUsage()) {
+  switch (GetTargetUsageUIMode(Codec)) {
+  case TargetUsageUIMode::Three:
     AddStrings(Prop, qsv_usage_names_simple);
-  } else {
+    break;
+  case TargetUsageUIMode::Five:
+    AddStrings(Prop, qsv_usage_names_five);
+    break;
+  default:
     AddStrings(Prop, qsv_usage_names);
   }
   obs_property_set_long_description(Prop, TEXT_TARGET_USAGE_DESC);
