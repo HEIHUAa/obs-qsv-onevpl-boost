@@ -434,8 +434,9 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
   // UHD600 runs legacy libmfx 1.x. BRCParamMultiplier is a oneVPL 2.x field
   // near the tail of mfxInfoMFX; the legacy runtime may not recognize it and
   // just use the already-divided Kbps values as-is, which are 100x too low.
-  // OBS passes raw bitrate with BRCParamMultiplier=0, so drop the multiplier
-  // and restore raw values to match.
+  // Drop the scaling multiplier (set it to the neutral value 1) and restore
+  // the raw Kbps values so both the runtime and downstream allocations see
+  // the intended bitrate.
   if (Status < MFX_ERR_NONE &&
       QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC &&
       QSVEncodeParams.mfx.BRCParamMultiplier != 0) {
@@ -444,7 +445,7 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
          log_prefix, Status);
     QSVEncode->Close();
     const mfxU16 mult = QSVEncodeParams.mfx.BRCParamMultiplier;
-    QSVEncodeParams.mfx.BRCParamMultiplier = 0;
+    QSVEncodeParams.mfx.BRCParamMultiplier = 1;
     if (QSVEncodeParams.mfx.TargetKbps) {
       QSVEncodeParams.mfx.TargetKbps = static_cast<mfxU16>(
           QSVEncodeParams.mfx.TargetKbps * mult);
@@ -640,6 +641,32 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     }
 
     Status = CreateSession(Codec, nullptr, InputParams->GPUNum);
+
+#if defined(_WIN32) || defined(_WIN64)
+    if (QSVIsTextureEncoder) {
+      // Texture sharing needs a D3D11 device; create it once and hand it to
+      // the VPL session so internal texture allocations and imports use the
+      // same device.
+      if (HWManager->HWDeviceHandle == nullptr) {
+        Status = HWManager->CreateDevice(QSVImpl);
+        if (Status < MFX_ERR_NONE) {
+          error("Error code: %d", Status);
+          throw std::runtime_error("Init(): CreateDevice error");
+        }
+      }
+
+      if (HWManager->HWDeviceHandle == nullptr) {
+        throw std::runtime_error("Init(): Handled device is nullptr");
+      }
+
+      Status = MFXVideoCORE_SetHandle(QSVSession, MFX_HANDLE_D3D11_DEVICE,
+                                      HWManager->HWDeviceHandle);
+      if (Status < MFX_ERR_NONE) {
+        error("Error code: %d", Status);
+        throw std::runtime_error("Init(): SetHandle error");
+      }
+    }
+#endif
 
     QSVEncode = std::make_unique<MFXVideoENCODE>(QSVSession);
 
@@ -2387,9 +2414,11 @@ mfxStatus QSVEncoder::InitTexturePool() {
 
 mfxStatus
 QSVEncoder::InitBitstreamBuffer([[maybe_unused]] enum codec_enum Codec) {
+  mfxU16 brcM = QSVEncodeParams.mfx.BRCParamMultiplier;
+  if (brcM == 0)
+    brcM = 1;
   QSVBitstream.MaxLength =
-      static_cast<mfxU32>(QSVEncodeParams.mfx.BufferSizeInKB * 1000 *
-                          QSVEncodeParams.mfx.BRCParamMultiplier);
+      static_cast<mfxU32>(QSVEncodeParams.mfx.BufferSizeInKB * 1000 * brcM);
 
   QSVBitstream.DataOffset = 0;
   QSVBitstream.DataLength = 0;
@@ -2414,9 +2443,11 @@ mfxStatus QSVEncoder::InitTaskPool([[maybe_unused]] enum codec_enum Codec) {
   QSVTaskEncodedExtPtr.resize(QSVEncodeParams.AsyncDepth);
 
   for (int i = 0; i < QSVEncodeParams.AsyncDepth; i++) {
+    mfxU16 brcM = QSVEncodeParams.mfx.BRCParamMultiplier;
+    if (brcM == 0)
+      brcM = 1;
     NewTask.Bitstream.MaxLength =
-        static_cast<mfxU32>(QSVEncodeParams.mfx.BufferSizeInKB * 1000 *
-                            QSVEncodeParams.mfx.BRCParamMultiplier) +
+        static_cast<mfxU32>(QSVEncodeParams.mfx.BufferSizeInKB * 1000 * brcM) +
         QSV_SEI_EXTRA;
 
     NewTask.Bitstream.DataOffset = 0;

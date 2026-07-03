@@ -162,6 +162,11 @@ mfxStatus HWManager::AllocateTexturePool(MFXVideoParam &EncodeParams) {
 
   ID3D11Texture2D *Texture2D = nullptr;
 
+  if (!HWDevice) {
+    throw std::runtime_error(
+        "AllocateHWTexturePool(): D3D11 device not created");
+  }
+
   size_t Texture2DPoolSize = static_cast<size_t>(
       static_cast<int>((std::ceil(EncodeParams.mfx.FrameInfo.FrameRateExtN /
                                  EncodeParams.mfx.FrameInfo.FrameRateExtD)) +
