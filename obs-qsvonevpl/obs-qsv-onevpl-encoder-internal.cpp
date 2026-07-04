@@ -1571,6 +1571,28 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   QSVEncodeParams.mfx.RateControlMethod =
       static_cast<mfxU16>(InputParams->RateControl);
 
+  // When lookahead is enabled, promote plain VBR/ICQ to the actual
+  // lookahead-aware rate control algorithms. oneVPL ignores LookAheadDepth
+  // unless the rate control method itself is an LA variant.
+  // Verified in vpl-gpu-rt-intel-onevpl-26.1.5: LA/LA_ICQ/LA_HRD are only
+  // implemented for AVC; HEVC and AV1 return MFX_ERR_UNSUPPORTED for them.
+  if (InputParams->Lookahead &&
+      QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC) {
+    if (QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_VBR) {
+      if (InputParams->HRDConformance.value_or(false)) {
+        QSVEncodeParams.mfx.RateControlMethod = MFX_RATECONTROL_LA_HRD;
+        info("\tRate control promoted: VBR + Lookahead + HRD -> LA_HRD");
+      } else {
+        QSVEncodeParams.mfx.RateControlMethod = MFX_RATECONTROL_LA;
+        info("\tRate control promoted: VBR + Lookahead -> LA");
+      }
+    } else if (QSVEncodeParams.mfx.RateControlMethod ==
+               MFX_RATECONTROL_ICQ) {
+      QSVEncodeParams.mfx.RateControlMethod = MFX_RATECONTROL_LA_ICQ;
+      info("\tRate control promoted: ICQ + Lookahead -> LA_ICQ");
+    }
+  }
+
   if (InputParams->NumRefFrame > 0) {
     QSVEncodeParams.mfx.NumRefFrame =
         static_cast<mfxU16>(InputParams->NumRefFrame);
@@ -1773,7 +1795,10 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
         QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_VBR ||
         QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_AVBR ||
         QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_ICQ ||
-        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_QVBR) {
+        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_QVBR ||
+        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_LA ||
+        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_LA_ICQ ||
+        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_LA_HRD) {
       if (InputParams->Lookahead == true) {
         CO2Params->LookAheadDepth = InputParams->LADepth;
       }
@@ -1825,7 +1850,10 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
         InputParams->RateControl == MFX_RATECONTROL_VBR ||
         InputParams->RateControl == MFX_RATECONTROL_AVBR ||
         InputParams->RateControl == MFX_RATECONTROL_ICQ ||
-        InputParams->RateControl == MFX_RATECONTROL_QVBR) {
+        InputParams->RateControl == MFX_RATECONTROL_QVBR ||
+        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_LA ||
+        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_LA_ICQ ||
+        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_LA_HRD) {
       CO2Params->LookAheadDS = MFX_LOOKAHEAD_DS_OFF;
       if (InputParams->LookAheadDS) {
         switch (*InputParams->LookAheadDS) {
@@ -2816,11 +2844,14 @@ static const char *GetRateControlMethodName(mfxU16 method) {
   case MFX_RATECONTROL_VBR:  return "VBR";
   case MFX_RATECONTROL_CQP:  return "CQP";
   case MFX_RATECONTROL_AVBR: return "AVBR";
-  case MFX_RATECONTROL_ICQ:  return "ICQ";
-  case MFX_RATECONTROL_QVBR: return "QVBR";
+  case MFX_RATECONTROL_ICQ:    return "ICQ";
+  case MFX_RATECONTROL_QVBR:   return "QVBR";
+  case MFX_RATECONTROL_LA:     return "LA";
+  case MFX_RATECONTROL_LA_ICQ: return "LA_ICQ";
+  case MFX_RATECONTROL_LA_HRD: return "LA_HRD";
   case MFX_RATECONTROL_LA_EXT: return "LA_EXT";
-  case MFX_RATECONTROL_VME:  return "VME";
-  default:                   return "UNKNOWN";
+  case MFX_RATECONTROL_VME:    return "VME";
+  default:                     return "UNKNOWN";
   }
 }
 
@@ -2874,47 +2905,13 @@ void QSVEncoder::LogActualParams() {
     }
   };
 
-  // ─ Basic encode params ─
-  info("\tTargetUsage: %d", QSVEncodeParams.mfx.TargetUsage);
-  info("\tAsyncDepth: %d", QSVEncodeParams.AsyncDepth);
+  // ─ Basic encode params (driver-corrected values) ─
   info("\tLowpower set: %s",
        GetCodingOptStatus(QSVEncodeParams.mfx.LowPower).c_str());
   info("\tNumRefFrame set to: %d",
        QSVEncodeParams.mfx.NumRefFrame);
   info("\tB-frames: %d",
        QSVEncodeParams.mfx.GopRefDist - 1);
-
-  // Rate control
-  info("\tRateControl: %s (method %d)",
-       GetRateControlMethodName(QSVEncodeParams.mfx.RateControlMethod),
-       QSVEncodeParams.mfx.RateControlMethod);
-
-  if (QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_ICQ &&
-      QSVEncodeParams.mfx.ICQQuality > 0) {
-    info("\tICQQuality: %d", QSVEncodeParams.mfx.ICQQuality);
-  }
-
-  // Codec info
-  if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
-    mfxU16 profileBase = QSVEncodeParams.mfx.CodecProfile & 0x00FF;
-    mfxU16 tier = (QSVEncodeParams.mfx.CodecProfile >> 8) & 0xFF;
-    info("\tCodecProfile: %d (tier %s)", profileBase,
-         tier == (MFX_TIER_HEVC_HIGH >> 8) ? "high" : "main");
-  } else {
-    info("\tCodecProfile: %d",
-         QSVEncodeParams.mfx.CodecProfile);
-  }
-
-  if (QSVEncodeParams.mfx.CodecLevel) {
-    info("\tCodecLevel: %d",
-         QSVEncodeParams.mfx.CodecLevel);
-  }
-
-  if (QSVEncodeParams.mfx.GopOptFlag & MFX_GOP_STRICT) {
-    info("\tGopOptFlag set: STRICT");
-  } else if (QSVEncodeParams.mfx.GopOptFlag & MFX_GOP_CLOSED) {
-    info("\tGopOptFlag set: CLOSED");
-  }
 
   // ─ CO (mfxExtCodingOption) ─
   auto *CO = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
