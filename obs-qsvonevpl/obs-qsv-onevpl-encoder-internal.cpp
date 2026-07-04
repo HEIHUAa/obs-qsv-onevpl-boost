@@ -341,12 +341,18 @@ void QSVEncoder::DisableVPP() {
 }
 
 // Forward declaration — defined after CO_FIELDS tables
-static void LogCO2CO3Corrections(
+static void LogDriverCorrections(
     const char *Prefix,
     MFXVideoParam &Params,
+    const mfxExtCodingOption *COBefore,
     const mfxExtCodingOption2 *CO2Before,
     const mfxExtCodingOption3 *CO3Before,
-    bool HasCO2, bool HasCO3);
+    const mfxExtCodingOptionDDI *CODDIBefore,
+    const mfxExtEncToolsConfig *EncToolsBefore,
+    const mfxExtAV1AuxData *AV1AuxBefore,
+    const mfxExtHEVCParam *HEVCBefore,
+    bool HasCO, bool HasCO2, bool HasCO3, bool HasCODDI,
+    bool HasEncTools, bool HasAV1Aux, bool HasHEVC);
 
 mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
                                           enum codec_enum Codec,
@@ -361,24 +367,53 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
       ParseCustomCodingOptions(InputParams->CustomCodingOptions);
     }
 
+    // Save before-copies for all extension buffers to diff against
+    // post-Query/Init driver corrections.
+    mfxExtCodingOption COCopy = {};
     mfxExtCodingOption2 CO2Copy = {};
     mfxExtCodingOption3 CO3Copy = {};
-    bool HasCO2 = false, HasCO3 = false;
+    mfxExtCodingOptionDDI CODDICopy = {};
+    mfxExtEncToolsConfig EncToolsCopy = {};
+    mfxExtAV1AuxData AV1AuxCopy = {};
+    mfxExtHEVCParam HEVCCopy = {};
+    bool HasCO = false, HasCO2 = false, HasCO3 = false, HasCODDI = false;
+    bool HasEncTools = false, HasAV1Aux = false, HasHEVC = false;
+    if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>()) {
+      COCopy = *p; HasCO = true;
+    }
     if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>()) {
-      CO2Copy = *p;
-      HasCO2 = true;
+      CO2Copy = *p; HasCO2 = true;
     }
     if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>()) {
-      CO3Copy = *p;
-      HasCO3 = true;
+      CO3Copy = *p; HasCO3 = true;
+    }
+    if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtCodingOptionDDI>()) {
+      CODDICopy = *p; HasCODDI = true;
+    }
+    if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtEncToolsConfig>()) {
+      EncToolsCopy = *p; HasEncTools = true;
+    }
+    if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtAV1AuxData>()) {
+      AV1AuxCopy = *p; HasAV1Aux = true;
+    }
+    if (auto p = QSVEncodeParams.GetExtBuffer<mfxExtHEVCParam>()) {
+      HEVCCopy = *p; HasHEVC = true;
     }
 
     Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
     info("\tMFXVideoENCODE_Query%s status: %d", log_prefix, Status);
 
     if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
-      LogCO2CO3Corrections(log_prefix, QSVEncodeParams, &CO2Copy, &CO3Copy,
-                           HasCO2, HasCO3);
+      LogDriverCorrections(log_prefix, QSVEncodeParams,
+                           HasCO ? &COCopy : nullptr,
+                           HasCO2 ? &CO2Copy : nullptr,
+                           HasCO3 ? &CO3Copy : nullptr,
+                           HasCODDI ? &CODDICopy : nullptr,
+                           HasEncTools ? &EncToolsCopy : nullptr,
+                           HasAV1Aux ? &AV1AuxCopy : nullptr,
+                           HasHEVC ? &HEVCCopy : nullptr,
+                           HasCO, HasCO2, HasCO3, HasCODDI,
+                           HasEncTools, HasAV1Aux, HasHEVC);
       Status = MFX_ERR_NONE;
     }
 
@@ -395,8 +430,16 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
       info("\tMFXVideoENCODE_Init%s status: %d", log_prefix, Status);
 
       if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
-        LogCO2CO3Corrections(log_prefix, QSVEncodeParams, &CO2Copy,
-                             &CO3Copy, HasCO2, HasCO3);
+        LogDriverCorrections(log_prefix, QSVEncodeParams,
+                             HasCO ? &COCopy : nullptr,
+                             HasCO2 ? &CO2Copy : nullptr,
+                             HasCO3 ? &CO3Copy : nullptr,
+                             HasCODDI ? &CODDICopy : nullptr,
+                             HasEncTools ? &EncToolsCopy : nullptr,
+                             HasAV1Aux ? &AV1AuxCopy : nullptr,
+                             HasHEVC ? &HEVCCopy : nullptr,
+                             HasCO, HasCO2, HasCO3, HasCODDI,
+                             HasEncTools, HasAV1Aux, HasHEVC);
         Status = MFX_ERR_NONE;
       }
     }
@@ -1177,16 +1220,64 @@ static constexpr std::array<FieldEntry, 44> CODDI_FIELDS{
   FieldEntry{"TMVP", offsetof(mfxExtCodingOptionDDI, TMVP), FT_U16},
 };
 
+// ─ EncTools field table ─
+static constexpr std::array<FieldEntry, 13> ENCTOOLS_FIELDS{
+  FieldEntry{"AdaptiveI", offsetof(mfxExtEncToolsConfig, AdaptiveI), FT_U16},
+  FieldEntry{"AdaptiveB", offsetof(mfxExtEncToolsConfig, AdaptiveB), FT_U16},
+  FieldEntry{"AdaptiveRefP", offsetof(mfxExtEncToolsConfig, AdaptiveRefP), FT_U16},
+  FieldEntry{"AdaptiveRefB", offsetof(mfxExtEncToolsConfig, AdaptiveRefB), FT_U16},
+  FieldEntry{"SceneChange", offsetof(mfxExtEncToolsConfig, SceneChange), FT_U16},
+  FieldEntry{"AdaptiveLTR", offsetof(mfxExtEncToolsConfig, AdaptiveLTR), FT_U16},
+  FieldEntry{"AdaptivePyramidQuantP", offsetof(mfxExtEncToolsConfig, AdaptivePyramidQuantP), FT_U16},
+  FieldEntry{"AdaptivePyramidQuantB", offsetof(mfxExtEncToolsConfig, AdaptivePyramidQuantB), FT_U16},
+  FieldEntry{"AdaptiveQuantMatrices", offsetof(mfxExtEncToolsConfig, AdaptiveQuantMatrices), FT_U16},
+  FieldEntry{"AdaptiveMBQP", offsetof(mfxExtEncToolsConfig, AdaptiveMBQP), FT_U16},
+  FieldEntry{"BRCBufferHints", offsetof(mfxExtEncToolsConfig, BRCBufferHints), FT_U16},
+  FieldEntry{"BRC", offsetof(mfxExtEncToolsConfig, BRC), FT_U16},
+  FieldEntry{"SaliencyMapHint", offsetof(mfxExtEncToolsConfig, SaliencyMapHint), FT_U16},
+};
+
+// ─ AV1AuxData basic field table (flat fields only) ─
+static constexpr std::array<FieldEntry, 11> AV1AUX_FIELDS{
+  FieldEntry{"EnableCdef", offsetof(mfxExtAV1AuxData, EnableCdef), FT_U16},
+  FieldEntry{"EnableRestoration", offsetof(mfxExtAV1AuxData, EnableRestoration), FT_U16},
+  FieldEntry{"EnableLoopFilter", offsetof(mfxExtAV1AuxData, EnableLoopFilter), FT_U16},
+  FieldEntry{"LoopFilterSharpness", offsetof(mfxExtAV1AuxData, LoopFilterSharpness), FT_U8},
+  FieldEntry{"EnableSuperres", offsetof(mfxExtAV1AuxData, EnableSuperres), FT_U16},
+  FieldEntry{"SuperresScaleDenominator", offsetof(mfxExtAV1AuxData, SuperresScaleDenominator), FT_U8},
+  FieldEntry{"SegmentationMode", offsetof(mfxExtAV1AuxData, SegmentationMode), FT_U8},
+  FieldEntry{"InterpFilter", offsetof(mfxExtAV1AuxData, InterpFilter), FT_U8},
+  FieldEntry{"ErrorResilientMode", offsetof(mfxExtAV1AuxData, ErrorResilientMode), FT_U16},
+  FieldEntry{"DisableCdfUpdate", offsetof(mfxExtAV1AuxData, DisableCdfUpdate), FT_U16},
+  FieldEntry{"DisableFrameEndUpdateCdf", offsetof(mfxExtAV1AuxData, DisableFrameEndUpdateCdf), FT_U16},
+};
+
+// ─ HEVCParam field table ─
+static constexpr std::array<FieldEntry, 1> HEVC_FIELDS{
+  FieldEntry{"SampleAdaptiveOffset", offsetof(mfxExtHEVCParam, SampleAdaptiveOffset), FT_U16},
+};
+
 // Log driver-corrected fields by diffing before/after state using field tables.
 // Only emits output when the driver actually changed something.
-static void LogCO2CO3Corrections(
+static void LogDriverCorrections(
     const char *Prefix,
     MFXVideoParam &Params,
+    const mfxExtCodingOption *COBefore,
     const mfxExtCodingOption2 *CO2Before,
     const mfxExtCodingOption3 *CO3Before,
-    bool HasCO2, bool HasCO3) {
+    const mfxExtCodingOptionDDI *CODDIBefore,
+    const mfxExtEncToolsConfig *EncToolsBefore,
+    const mfxExtAV1AuxData *AV1AuxBefore,
+    const mfxExtHEVCParam *HEVCBefore,
+    bool HasCO, bool HasCO2, bool HasCO3, bool HasCODDI,
+    bool HasEncTools, bool HasAV1Aux, bool HasHEVC) {
+  auto COAfter = Params.GetExtBuffer<mfxExtCodingOption>();
   auto CO2After = Params.GetExtBuffer<mfxExtCodingOption2>();
   auto CO3After = Params.GetExtBuffer<mfxExtCodingOption3>();
+  auto CODDIAfter = Params.GetExtBuffer<mfxExtCodingOptionDDI>();
+  auto EncToolsAfter = Params.GetExtBuffer<mfxExtEncToolsConfig>();
+  auto AV1AuxAfter = Params.GetExtBuffer<mfxExtAV1AuxData>();
+  auto HEVCAfter = Params.GetExtBuffer<mfxExtHEVCParam>();
 
   // Collect diffs first; skip the header if nothing changed
   std::vector<std::string> diffs;
@@ -1203,10 +1294,18 @@ static void LogCO2CO3Corrections(
       }
     }
   };
-  collectDiffs(CO2Before, CO2After, CO2_FIELDS);
-  collectDiffs(CO3Before, CO3After, CO3_FIELDS);
+  if (HasCO)   collectDiffs(COBefore, COAfter, CO_FIELDS);
+  if (HasCO2)  collectDiffs(CO2Before, CO2After, CO2_FIELDS);
+  if (HasCO3)  collectDiffs(CO3Before, CO3After, CO3_FIELDS);
+  if (HasCODDI) collectDiffs(CODDIBefore, CODDIAfter, CODDI_FIELDS);
+  if (HasEncTools) collectDiffs(EncToolsBefore, EncToolsAfter, ENCTOOLS_FIELDS);
+  if (HasAV1Aux) collectDiffs(AV1AuxBefore, AV1AuxAfter, AV1AUX_FIELDS);
+  if (HasHEVC) collectDiffs(HEVCBefore, HEVCAfter, HEVC_FIELDS);
 
   if (diffs.empty()) return;
+
+  // Sort alphabetically by field name
+  std::sort(diffs.begin(), diffs.end());
 
   info("\tDriver auto-corrected parameters%s:", Prefix);
   for (const auto &d : diffs)
@@ -2711,6 +2810,20 @@ static mfxU16 parse_hevc_sps_ctb_size(const mfxU8 *sps_data,
   return 0;
 }
 
+static const char *GetRateControlMethodName(mfxU16 method) {
+  switch (method) {
+  case MFX_RATECONTROL_CBR:  return "CBR";
+  case MFX_RATECONTROL_VBR:  return "VBR";
+  case MFX_RATECONTROL_CQP:  return "CQP";
+  case MFX_RATECONTROL_AVBR: return "AVBR";
+  case MFX_RATECONTROL_ICQ:  return "ICQ";
+  case MFX_RATECONTROL_QVBR: return "QVBR";
+  case MFX_RATECONTROL_LA_EXT: return "LA_EXT";
+  case MFX_RATECONTROL_VME:  return "VME";
+  default:                   return "UNKNOWN";
+  }
+}
+
 void QSVEncoder::LogActualParams() {
   info("\tActual encoder driver params:");
 
@@ -2761,6 +2874,9 @@ void QSVEncoder::LogActualParams() {
     }
   };
 
+  // ─ Basic encode params ─
+  info("\tTargetUsage: %d", QSVEncodeParams.mfx.TargetUsage);
+  info("\tAsyncDepth: %d", QSVEncodeParams.AsyncDepth);
   info("\tLowpower set: %s",
        GetCodingOptStatus(QSVEncodeParams.mfx.LowPower).c_str());
   info("\tNumRefFrame set to: %d",
@@ -2768,6 +2884,17 @@ void QSVEncoder::LogActualParams() {
   info("\tB-frames: %d",
        QSVEncodeParams.mfx.GopRefDist - 1);
 
+  // Rate control
+  info("\tRateControl: %s (method %d)",
+       GetRateControlMethodName(QSVEncodeParams.mfx.RateControlMethod),
+       QSVEncodeParams.mfx.RateControlMethod);
+
+  if (QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_ICQ &&
+      QSVEncodeParams.mfx.ICQQuality > 0) {
+    info("\tICQQuality: %d", QSVEncodeParams.mfx.ICQQuality);
+  }
+
+  // Codec info
   if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
     mfxU16 profileBase = QSVEncodeParams.mfx.CodecProfile & 0x00FF;
     mfxU16 tier = (QSVEncodeParams.mfx.CodecProfile >> 8) & 0xFF;
@@ -2812,9 +2939,12 @@ void QSVEncoder::LogActualParams() {
     info("\tUseRawRef set: %s",
          GetCodingOptStatus(CO2->UseRawRef).c_str());
     if (CO2->MaxFrameSize > 0) {
-      info("\tAdaptiveMaxFrameSize set: %d bytes", CO2->MaxFrameSize);
+      info("\tAdaptiveMaxFrameSize (CO2) set: %d bytes", CO2->MaxFrameSize);
     } else {
-      info("\tAdaptiveMaxFrameSize set: AUTO");
+      info("\tAdaptiveMaxFrameSize (CO2) set: AUTO");
+    }
+    if (CO2->SkipFrame > 0) {
+      info("\tSkipFrame set: %d", CO2->SkipFrame);
     }
     {
       static constexpr std::string_view kLookaheadDSNames[] = {
@@ -2850,6 +2980,11 @@ void QSVEncoder::LogActualParams() {
          GetCodingOptStatus(CO3->LowDelayHrd).c_str());
     info("\tLowDelayBRC set: %s",
          GetCodingOptStatus(CO3->LowDelayBRC).c_str());
+
+    // RepartitionCheckEnable (UI: RepartitionCheck)
+    info("\tRepartitionCheck set: %s",
+         GetCodingOptStatus(CO3->RepartitionCheckEnable).c_str());
+
     if (CO3->NumRefActiveP[0]) {
       info("\tNumRefActiveP set: %d",
            CO3->NumRefActiveP[0]);
@@ -2920,6 +3055,9 @@ void QSVEncoder::LogActualParams() {
     if (CO3->ScenarioInfo) {
       info("\tScenarioInfo set: %d", CO3->ScenarioInfo);
     }
+    if (CO3->AdaptiveMaxFrameSize > 0) {
+      info("\tAdaptiveMaxFrameSize (CO3) set: %d", CO3->AdaptiveMaxFrameSize);
+    }
   }
 
   auto *EncTools = QSVEncodeParams.GetExtBuffer<mfxExtEncToolsConfig>();
@@ -2976,6 +3114,16 @@ void QSVEncoder::LogActualParams() {
            GetCodingOptStatus(AV1ScreenTools->Palette).c_str(),
            GetCodingOptStatus(AV1ScreenTools->IntraBlockCopy).c_str());
     }
+
+    auto *AV1Seg = QSVEncodeParams.GetExtBuffer<mfxExtAV1Segmentation>();
+    if (AV1Seg && AV1Seg->NumSegments > 0) {
+      info("\tAV1 Segmentation: %d segments", AV1Seg->NumSegments);
+      for (mfxU16 s = 0; s < AV1Seg->NumSegments; ++s) {
+        if (AV1Seg->Segment[s].FeatureEnabled & MFX_AV1_SEGMENT_FEATURE_ALT_QINDEX) {
+          info("\t  Segment[%d]: AltQIndex=%d", s, AV1Seg->Segment[s].AltQIndex);
+        }
+      }
+    }
   }
 
   if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
@@ -2999,12 +3147,94 @@ void QSVEncoder::LogActualParams() {
     }
   }
 
-  auto *MCTF = QSVProcessingParams.GetExtBuffer<mfxExtVppMctf>();
-  if (MCTF) {
-    info("\tMCTF set: ON | Strength %d",
-         MCTF->FilterStrength);
-  } else {
-    info("\tMCTF set: OFF");
+  // ─ Pre-processing / VPP filters ─
+  {
+    auto *MCTF = QSVProcessingParams.GetExtBuffer<mfxExtVppMctf>();
+    if (MCTF) {
+      info("\tMCTF set: ON | Strength %d",
+           MCTF->FilterStrength);
+    } else {
+      info("\tMCTF set: OFF");
+    }
+  }
+  {
+    auto *Denoise = QSVProcessingParams.GetExtBuffer<mfxExtVPPDenoise2>();
+    if (Denoise) {
+      static constexpr std::string_view kDenoiseModeNames[] = {
+        "UNKNOWN", "HVS_AUTO_BDRATE", "HVS_AUTO_ADJUST",
+        "HVS_AUTO_SUBJECTIVE", "HVS_PRE_MANUAL", "HVS_POST_MANUAL"
+      };
+      auto mode_idx = Denoise->Mode <= 5 ? Denoise->Mode : 0;
+      info("\tDenoise: mode=%s (%d), strength=%d",
+           kDenoiseModeNames[mode_idx].data(), Denoise->Mode, Denoise->Strength);
+    } else {
+      info("\tDenoise: OFF");
+    }
+  }
+  {
+    auto *Detail = QSVProcessingParams.GetExtBuffer<mfxExtVPPDetail>();
+    if (Detail) {
+      info("\tDetail Enhancement: factor=%d", Detail->DetailFactor);
+    } else {
+      info("\tDetail Enhancement: OFF");
+    }
+  }
+  {
+    auto *Scaling = QSVProcessingParams.GetExtBuffer<mfxExtVPPScaling>();
+    if (Scaling) {
+      info("\tScaling mode: %d", Scaling->ScalingMode);
+    } else {
+      info("\tScaling: OFF (passthrough)");
+    }
+  }
+  {
+    auto *ImageStab = QSVProcessingParams.GetExtBuffer<mfxExtVPPImageStab>();
+    if (ImageStab) {
+      info("\tImageStab: mode=%d", ImageStab->Mode);
+    } else {
+      info("\tImageStab: OFF");
+    }
+  }
+  {
+    auto *PercEnc = QSVProcessingParams.GetExtBuffer<mfxExtVPPPercEncPrefilter>();
+    if (PercEnc) {
+      info("\tPercEncPrefilter: ON");
+    } else {
+      info("\tPercEncPrefilter: OFF");
+    }
+  }
+
+  // ─ VideoSignalInfo / HDR ─
+  {
+    auto *VSI = QSVEncodeParams.GetExtBuffer<mfxExtVideoSignalInfo>();
+    if (VSI) {
+      info("\tVideoSignalInfo: VideoFormat=%d, VideoFullRange=%d, "
+           "ColourPrimaries=%d, TransferCharacteristics=%d, "
+           "MatrixCoefficients=%d",
+           VSI->VideoFormat, VSI->VideoFullRange,
+           VSI->ColourPrimaries, VSI->TransferCharacteristics,
+           VSI->MatrixCoefficients);
+    }
+  }
+  {
+    auto *MDCV = QSVEncodeParams.GetExtBuffer<mfxExtMasteringDisplayColourVolume>();
+    if (MDCV) {
+      info("\tHDR MasteringDisplay: R=(%d,%d) G=(%d,%d) B=(%d,%d) "
+           "WP=(%d,%d) max=%d min=%d",
+           MDCV->DisplayPrimariesX[0], MDCV->DisplayPrimariesY[0],
+           MDCV->DisplayPrimariesX[1], MDCV->DisplayPrimariesY[1],
+           MDCV->DisplayPrimariesX[2], MDCV->DisplayPrimariesY[2],
+           MDCV->WhitePointX, MDCV->WhitePointY,
+           MDCV->MaxDisplayMasteringLuminance,
+           MDCV->MinDisplayMasteringLuminance);
+    }
+  }
+  {
+    auto *CLL = QSVEncodeParams.GetExtBuffer<mfxExtContentLightLevelInfo>();
+    if (CLL) {
+      info("\tHDR ContentLightLevel: MaxCLL=%d, MaxFALL=%d",
+           CLL->MaxContentLightLevel, CLL->MaxPicAverageLightLevel);
+    }
   }
 
   // ─ Custom Coding Options (deferred from ParseCustomCodingOptions) ─
