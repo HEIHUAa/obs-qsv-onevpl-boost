@@ -677,17 +677,15 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   Prop = obs_properties_add_text(RCGroup, "min_qp", TEXT_MIN_QP,
                                  OBS_TEXT_DEFAULT);
   obs_property_set_long_description(Prop, TEXT_MIN_QP_DESC);
-  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
+
   Prop = obs_properties_add_text(RCGroup, "max_qp", TEXT_MAX_QP,
                                  OBS_TEXT_DEFAULT);
   obs_property_set_long_description(Prop, TEXT_MAX_QP_DESC);
-  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
   Prop = obs_properties_add_int(RCGroup, "adaptive_max_frame_size",
                                 TEXT_ADAPTIVE_MAX_FRAME_SIZE, 0, 2147483647, 100);
   obs_property_set_long_description(Prop, TEXT_ADAPTIVE_MAX_FRAME_SIZE_DESC);
   obs_property_int_set_suffix(Prop, " bytes");
-  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
   // VBV settings at bottom of Rate Control group
   Prop = obs_properties_add_list(RCGroup, "hrd_conformance",
