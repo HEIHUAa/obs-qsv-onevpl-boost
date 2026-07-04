@@ -140,7 +140,7 @@ bool UpdateEncoderParams(void *Data, obs_data_t *Params) {
         qpp = static_cast<double>(obs_data_get_int(Params, "qpp"));
         qpb = static_cast<double>(obs_data_get_int(Params, "qpb"));
       }
-      // VP9/AV1 uses 0-255 QP range internally; UI 1.0-63.0, scale x4.
+      // VP9/AV1 uses 0-255 QP range internally; UI 0.0-63.0, scale x4.
       if (Context->Codec == QSV_CODEC_AV1 || Context->Codec == QSV_CODEC_VP9) {
         qpi *= 4.0;
         qpp *= 4.0;
@@ -156,7 +156,7 @@ bool UpdateEncoderParams(void *Data, obs_data_t *Params) {
       } else {
         cqp = static_cast<double>(obs_data_get_int(Params, "cqp"));
       }
-      // VP9/AV1 uses 0-255 QP range internally; UI 1.0-63.0, scale x4.
+      // VP9/AV1 uses 0-255 QP range internally; UI 0.0-63.0, scale x4.
       if (Context->Codec == QSV_CODEC_AV1 || Context->Codec == QSV_CODEC_VP9) {
         cqp *= 4.0;
       }

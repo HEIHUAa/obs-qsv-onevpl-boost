@@ -649,16 +649,17 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
   if (Codec == QSV_CODEC_AV1 || Codec == QSV_CODEC_VP9) {
-    // VP9/AV1 support fractional QP (0.25 increments). Internal range 0-255,
-    // UI exposes 1.0-63.0 with 0.25 step → *4 gives 4-252 (fits mfxU8).
-    Prop = obs_properties_add_float_slider(RCGroup, "qpi", TEXT_QPI, 1.0, 63.0, 0.25);
+    // VP9/AV1 support fractional QP (0.25 increments). Internal base_q_idx
+    // range 0-255; UI exposes 0.0-63.0 with 0.25 step → *4 gives 0-252.
+    // QP=0 means lossless in AV1 (base_q_idx=0).
+    Prop = obs_properties_add_float_slider(RCGroup, "qpi", TEXT_QPI, 0.0, 63.0, 0.25);
     obs_property_set_long_description(Prop, TEXT_QP_DESC);
-    Prop = obs_properties_add_float_slider(RCGroup, "qpp", TEXT_QPP, 1.0, 63.0, 0.25);
+    Prop = obs_properties_add_float_slider(RCGroup, "qpp", TEXT_QPP, 0.0, 63.0, 0.25);
     obs_property_set_long_description(Prop, TEXT_QP_DESC);
-    Prop = obs_properties_add_float_slider(RCGroup, "qpb", TEXT_QPB, 1.0, 63.0, 0.25);
+    Prop = obs_properties_add_float_slider(RCGroup, "qpb", TEXT_QPB, 0.0, 63.0, 0.25);
     obs_property_set_long_description(Prop, TEXT_QP_DESC);
 
-    Prop = obs_properties_add_float_slider(RCGroup, "cqp", TEXT_CQP, 1.0, 63.0, 0.25);
+    Prop = obs_properties_add_float_slider(RCGroup, "cqp", TEXT_CQP, 0.0, 63.0, 0.25);
     obs_property_set_long_description(Prop, TEXT_CQP_DESC);
   } else {
     Prop = obs_properties_add_int_slider(RCGroup, "qpi", TEXT_QPI, 1, 51, 1);

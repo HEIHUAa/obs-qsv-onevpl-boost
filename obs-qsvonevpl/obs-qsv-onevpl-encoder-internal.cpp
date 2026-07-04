@@ -1417,7 +1417,7 @@ void QSVEncoder::ApplyQPLimits(struct encoder_params *InputParams) {
   bool isVp9OrAv1 = QSVEncodeParams.mfx.CodecId == MFX_CODEC_VP9 ||
                     QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1;
 
-  // For VP9/AV1, MinQP/MaxQP text values are in UI scale (1.0-63.0, 0.25 step),
+  // For VP9/AV1, MinQP/MaxQP text values are in UI scale (0.0-63.0, 0.25 step),
   // same as the CQP slider. Scale x4 internally to match 0-255 base_q_idx range.
   auto ParseQPString = [&](const std::string &qpStr, mfxU8 &qpi,
                            mfxU8 &qpp, mfxU8 &qpb,
@@ -1432,7 +1432,7 @@ void QSVEncoder::ApplyQPLimits(struct encoder_params *InputParams) {
       if (val < 0.0 || val > 255.0)
         return false;
       if (isVp9OrAv1) {
-        // Scale UI value (1.0-63.0) to internal (4-252), round to nearest
+        // Scale UI value (0.0-63.0) to internal (0-252), round to nearest
         int scaled = static_cast<int>(val * 4.0 + 0.5);
         out = static_cast<mfxU8>((std::min)(scaled, 255));
       } else {
