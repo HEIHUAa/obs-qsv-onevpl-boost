@@ -1951,17 +1951,13 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       CO3Params->ScenarioInfo = static_cast<mfxU16>(InputParams->ScenarioInfo.value());
     }
 
-    // HEVC/AV1 hardware EncTools lookahead is only triggered when
-    // ScenarioInfo == GAME_STREAMING and LookAheadDepth > 0. If the user left
-    // ScenarioInfo on AUTO/OFF/UNKNOWN, promote it automatically so lookahead
-    // actually does something on these codecs.
+    // HEVC/AV1 hardware EncTools lookahead requires ScenarioInfo ==
+    // GAME_STREAMING to work. Force it when lookahead is enabled.
     if (InputParams->Lookahead &&
         (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC ||
-         QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1) &&
-        (!InputParams->ScenarioInfo.has_value() ||
-         InputParams->ScenarioInfo.value() == MFX_SCENARIO_UNKNOWN)) {
+         QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1)) {
       CO3Params->ScenarioInfo = MFX_SCENARIO_GAME_STREAMING;
-      info("\tScenarioInfo auto-promoted to GAME_STREAMING for HEVC/AV1 lookahead");
+      info("\tScenarioInfo forced to GAME_STREAMING for HEVC/AV1 lookahead");
     }
 
     if (QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_CQP) {
