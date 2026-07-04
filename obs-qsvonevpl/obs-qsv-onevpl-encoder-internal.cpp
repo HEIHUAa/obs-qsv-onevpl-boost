@@ -3687,6 +3687,15 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
             &QSVProcessingSyncPoint);
         if (MFX_ERR_NONE == Status) {
           break;
+        } else if (MFX_ERR_MORE_DATA == Status) {
+          // VPP consumed input but needs more frames to produce an
+          // output (e.g. MCTF temporal filtering).  Release surfaces
+          // and skip encode — OBS will send the next frame.
+          QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
+          QSVEncodeSurface = nullptr;
+          QSVProcessingSurface->FrameInterface->Release(QSVProcessingSurface);
+          QSVProcessingSurface = nullptr;
+          return Status;
         } else if (Status < MFX_ERR_NONE) {
           error("Error code: %d", Status);
           throw std::runtime_error("Encode(): VPP processing error");
@@ -3810,7 +3819,16 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
       Status = QSVProcessing->RunFrameVPPAsync(QSVEncodeSurface,
                                                QSVProcessingSurface, nullptr,
                                                &QSVProcessingSyncPoint);
-      if (Status < MFX_ERR_NONE && Status != MFX_ERR_MORE_SURFACE) {
+      if (MFX_ERR_MORE_DATA == Status) {
+        // VPP consumed input but needs more frames to produce an
+        // output (e.g. MCTF temporal filtering).  Release surfaces
+        // and skip encode — OBS will send the next frame.
+        QSVProcessingSurface->FrameInterface->Release(QSVProcessingSurface);
+        QSVProcessingSurface = nullptr;
+        QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
+        QSVEncodeSurface = nullptr;
+        return Status;
+      } else if (Status < MFX_ERR_NONE && Status != MFX_ERR_MORE_SURFACE) {
         error("Processing error: %d", Status);
         QSVProcessingSurface->FrameInterface->Release(QSVProcessingSurface);
         QSVProcessingSurface = nullptr;
