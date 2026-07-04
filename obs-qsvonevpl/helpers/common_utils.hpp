@@ -50,13 +50,8 @@ extern "C" {
 #include <util/platform.h>
 }
 
-#ifndef __QSV_VPL_HWManager_H__
 #include "hw_d3d11.hpp"
-#endif
-
-#ifndef __QSV_VPL_ENCODER_PARAMS_H__
 #include "qsv_params.hpp"
-#endif
 
 #ifndef do_log
 #define do_log(level, format, ...)                                             \

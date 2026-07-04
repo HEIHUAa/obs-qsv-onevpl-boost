@@ -355,7 +355,7 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
 static inline const char *LocaleKey(const char *str) {
   static thread_local char buf[128];
   size_t i;
-  if (strcmp(str, "AUTO") == 0)
+  if (std::string_view(str) == "AUTO")
     return "AUTO_";
   for (i = 0; str[i] && i < sizeof(buf) - 1; i++) {
     char c = str[i];
@@ -380,87 +380,64 @@ static inline void AddStrings(obs_property_t *List,
 static bool ParamsVisibilityModifier(obs_properties_t *Properties,
                                      obs_property_t *Prop,
                                      obs_data_t *Settings) {
+  // quick helper to set a property's visibility (null-safe)
+  auto SetVisible = [&](const char *name, bool visible) {
+    if (auto *p = obs_properties_get(Properties, name))
+      obs_property_set_visible(p, visible);
+  };
+
+  auto sv = [](const char *s) { return std::string_view(s); };
   const char *rate_control = obs_data_get_string(Settings, "rate_control");
 
-  bool bIsCBR = std::strcmp(rate_control, "CBR") == 0;
-  bool bIsVBR = std::strcmp(rate_control, "VBR") == 0;
-  bool bIsAVBR = std::strcmp(rate_control, "AVBR") == 0;
-  bool bIsCQP = std::strcmp(rate_control, "CQP") == 0;
-  bool bIsICQ = std::strcmp(rate_control, "ICQ") == 0;
-  bool bIsVCM = std::strcmp(rate_control, "VCM") == 0;
-  bool bIsQVBR = std::strcmp(rate_control, "QVBR") == 0;
+  bool bIsCBR  = sv(rate_control) == "CBR";
+  bool bIsVBR  = sv(rate_control) == "VBR";
+  bool bIsAVBR = sv(rate_control) == "AVBR";
+  bool bIsCQP  = sv(rate_control) == "CQP";
+  bool bIsICQ  = sv(rate_control) == "ICQ";
+  bool bIsVCM  = sv(rate_control) == "VCM";
+  bool bIsQVBR = sv(rate_control) == "QVBR";
 
-  bool bVisible = bIsVBR || bIsVCM;
-  Prop = obs_properties_get(Properties, "max_bitrate");
-  obs_property_set_visible(Prop, bVisible);
-
-  bVisible = bIsCQP || bIsICQ;
-  Prop = obs_properties_get(Properties, "bitrate");
-  obs_property_set_visible(Prop, !bVisible);
-
-  bVisible = bIsCQP;
-  Prop = obs_properties_get(Properties, "cqp_separate_ipb");
-  if (Prop)
-    obs_property_set_visible(Prop, bVisible);
+  SetVisible("max_bitrate", bIsVBR || bIsVCM);
+  SetVisible("bitrate", !(bIsCQP || bIsICQ));
+  SetVisible("cqp_separate_ipb", bIsCQP);
 
   bool separateIPB = obs_data_get_bool(Settings, "cqp_separate_ipb");
-  Prop = obs_properties_get(Properties, "qpi");
-  if (Prop)
-    obs_property_set_visible(Prop, bVisible && separateIPB);
-  Prop = obs_properties_get(Properties, "qpb");
-  if (Prop)
-    obs_property_set_visible(Prop, bVisible && separateIPB);
-  Prop = obs_properties_get(Properties, "qpp");
-  if (Prop)
-    obs_property_set_visible(Prop, bVisible && separateIPB);
-  Prop = obs_properties_get(Properties, "cqp");
-  if (Prop)
-    obs_property_set_visible(Prop, bVisible && !separateIPB);
+  SetVisible("qpi", bIsCQP && separateIPB);
+  SetVisible("qpb", bIsCQP && separateIPB);
+  SetVisible("qpp", bIsCQP && separateIPB);
+  SetVisible("cqp", bIsCQP && !separateIPB);
 
-  bVisible = bIsICQ;
-  Prop = obs_properties_get(Properties, "icq_quality");
-  obs_property_set_visible(Prop, bVisible);
+  SetVisible("icq_quality", bIsICQ);
 
   // EncTools visibility: CBR/VBR/AVBR/VCM/QVBR modes with feature support
   bool bEncToolsVisible = (bIsCBR || bIsVBR || bIsAVBR || bIsVCM || bIsQVBR);
-  Prop = obs_properties_get(Properties, "enctools");
-  bVisible = bEncToolsVisible;
+  bool bVisible = bEncToolsVisible;
   if (bVisible) bVisible = IsFeatureSupported("enc_tools");
-  obs_property_set_visible(Prop, bVisible);
+  SetVisible("enctools", bVisible);
 
   const char *enctools = obs_data_get_string(Settings, "enctools");
-  bool bVisibleEnctools = (std::strcmp(enctools, "ON") == 0) && bVisible;
+  bool bVisibleEnctools = (sv(enctools) == "ON") && bVisible;
 
   // EncTools sub-options visibility (only when enc_tools is ON)
-  const char *enc_tools_sub_opts[] = {
+  for (const char *opt : {
     "enc_tools_scene_change", "enc_tools_adaptive_ref_p", "enc_tools_adaptive_ref_b",
     "enc_tools_adaptive_pyramid_quant_p", "enc_tools_adaptive_pyramid_quant_b",
     "enc_tools_adaptive_mbqp", "enc_tools_brc_buffer_hints", "enc_tools_brc",
-    "enc_tools_saliency_map_hint", nullptr
-  };
-  for (const char **opt = enc_tools_sub_opts; *opt; opt++) {
-    Prop = obs_properties_get(Properties, *opt);
-    if (Prop) obs_property_set_visible(Prop, bVisibleEnctools);
-  }
+    "enc_tools_saliency_map_hint"
+  }) SetVisible(opt, bVisibleEnctools);
 
-  bVisible = bIsQVBR;
-  Prop = obs_properties_get(Properties, "qvbr_quality");
-  obs_property_set_visible(Prop, bVisible);
+  SetVisible("qvbr_quality", bIsQVBR);
 
   const char *lookahead = obs_data_get_string(Settings, "lookahead");
 
   bVisible = bIsCBR || bIsVBR || bIsAVBR || bIsQVBR || bIsICQ;
-  Prop = obs_properties_get(Properties, "lookahead");
-  obs_property_set_visible(Prop, bVisible);
+  SetVisible("lookahead", bVisible);
 
-  bool bVisible_lookahead_hq = std::strcmp(lookahead, "HQ") == 0;
-  bool bVisible_lookahead_lp = std::strcmp(lookahead, "LP") == 0;
+  bool bVisible_lookahead_hq = sv(lookahead) == "HQ";
+  bool bVisible_lookahead_lp = sv(lookahead) == "LP";
 
-  Prop = obs_properties_get(Properties, "lookahead_ds");
-  obs_property_set_visible(Prop, bVisible && bVisible_lookahead_hq);
-
-  Prop = obs_properties_get(Properties, "la_depth");
-  obs_property_set_visible(Prop, bVisible && bVisible_lookahead_hq);
+  SetVisible("lookahead_ds", bVisible && bVisible_lookahead_hq);
+  SetVisible("la_depth", bVisible && bVisible_lookahead_hq);
 
   if (bVisible_lookahead_lp) {
     obs_data_set_string(Settings, "enctools", "OFF");
@@ -469,126 +446,94 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   bVisible = bIsCBR || bIsVBR || bIsAVBR || bIsVCM || bIsQVBR || bIsICQ;
   // "mbbrc" control is not created for VP9 (codec disables MBBRC), so guard
   // against nullptr here.
-  Prop = obs_properties_get(Properties, "mbbrc");
-  if (Prop) {
-    obs_property_set_visible(Prop, bVisible);
-    if (!bVisible) {
+  if (auto *mbbrc = obs_properties_get(Properties, "mbbrc")) {
+    obs_property_set_visible(mbbrc, bVisible);
+    if (!bVisible)
       obs_data_set_string(Settings, "mbbrc", "OFF");
-    }
   }
 
   bool bRateControlVisible = !bIsICQ && !bIsCQP;
   bool use_bufsize = obs_data_get_bool(Settings, "custom_buffer_size");
-  Prop = obs_properties_get(Properties, "custom_buffer_size");
-  obs_property_set_visible(Prop, bRateControlVisible);
-  Prop = obs_properties_get(Properties, "buffer_size");
-  obs_property_set_visible(Prop, bRateControlVisible && use_bufsize);
-  if (!bRateControlVisible) {
+  SetVisible("custom_buffer_size", bRateControlVisible);
+  SetVisible("buffer_size", bRateControlVisible && use_bufsize);
+  if (!bRateControlVisible)
     obs_data_set_bool(Settings, "custom_buffer_size", false);
-  }
 
   const char *hrd_conformance =
       obs_data_get_string(Settings, "hrd_conformance");
-  Prop = obs_properties_get(Properties, "hrd_conformance");
-  obs_property_set_visible(Prop, bRateControlVisible);
-  if (!bRateControlVisible) {
+  SetVisible("hrd_conformance", bRateControlVisible);
+  if (!bRateControlVisible)
     obs_data_set_string(Settings, "hrd_conformance", "OFF");
-  }
-  bVisible = bRateControlVisible && (std::strcmp(hrd_conformance, "ON") == 0 ||
-             std::strcmp(hrd_conformance, "AUTO") == 0);
-  Prop = obs_properties_get(Properties, "low_delay_hrd");
-  if (Prop) {
-    obs_property_set_visible(Prop, bVisible);
-  }
+
+  bVisible = bRateControlVisible && (sv(hrd_conformance) == "ON" ||
+             sv(hrd_conformance) == "AUTO");
+  SetVisible("low_delay_hrd", bVisible);
 
   bVisible = bIsVBR || bIsVCM || bIsQVBR;
-  Prop = obs_properties_get(Properties, "low_delay_brc");
-  obs_property_set_visible(Prop, bVisible);
-  if (!bVisible) {
+  SetVisible("low_delay_brc", bVisible);
+  if (!bVisible)
     obs_data_set_string(Settings, "low_delay_brc", "OFF");
-  }
 
   bool bMaxFrameSizeVisible = !(bIsCQP || bIsICQ);
-  Prop = obs_properties_get(Properties, "adaptive_max_frame_size");
-  obs_property_set_visible(Prop, bMaxFrameSizeVisible);
-  if (!bMaxFrameSizeVisible) {
+  SetVisible("adaptive_max_frame_size", bMaxFrameSizeVisible);
+  if (!bMaxFrameSizeVisible)
     obs_data_set_int(Settings, "adaptive_max_frame_size", 0);
-  }
 
   bVisible = !(bIsCQP || bIsICQ);
-  Prop = obs_properties_get(Properties, "min_qp");
-  obs_property_set_visible(Prop, bVisible);
-  Prop = obs_properties_get(Properties, "max_qp");
-  obs_property_set_visible(Prop, bVisible);
+  SetVisible("min_qp", bVisible);
+  SetVisible("max_qp", bVisible);
 
   const char *global_motion_bias_adjustment_enable =
       obs_data_get_string(Settings, "global_motion_bias_adjustment");
-  bVisible = ((std::strcmp(global_motion_bias_adjustment_enable, "ON") == 0));
-  Prop = obs_properties_get(Properties, "mv_cost_scaling_factor");
-  obs_property_set_visible(Prop, bVisible);
-  if (!bVisible) {
+  bVisible = sv(global_motion_bias_adjustment_enable) == "ON";
+  SetVisible("mv_cost_scaling_factor", bVisible);
+  if (!bVisible)
     obs_data_erase(Settings, "mv_cost_scaling_factor");
-  }
 
   const char *vpp = obs_data_get_string(Settings, "vpp");
-  bool bVisibleVPP = std::strcmp(vpp, "ON") == 0;
-  Prop = obs_properties_get(Properties, "detail");
-  obs_property_set_visible(Prop, bVisibleVPP);
-  Prop = obs_properties_get(Properties, "image_stab_mode");
-  obs_property_set_visible(Prop, bVisibleVPP);
-  Prop = obs_properties_get(Properties, "perc_enc_prefilter");
-  obs_property_set_visible(Prop, bVisibleVPP);
-  Prop = obs_properties_get(Properties, "denoise_mode");
-  obs_property_set_visible(Prop, bVisibleVPP);
-  Prop = obs_properties_get(Properties, "scaling_mode");
-  obs_property_set_visible(Prop, bVisibleVPP);
+  bool bVisibleVPP = sv(vpp) == "ON";
+  SetVisible("detail", bVisibleVPP);
+  SetVisible("image_stab_mode", bVisibleVPP);
+  SetVisible("perc_enc_prefilter", bVisibleVPP);
+  SetVisible("denoise_mode", bVisibleVPP);
+  SetVisible("scaling_mode", bVisibleVPP);
   const char *scaling_mode = obs_data_get_string(Settings, "scaling_mode");
-  bool bScalingModeActive = std::strcmp(scaling_mode, "OFF") != 0;
-  Prop = obs_properties_get(Properties, "vpp_out_width");
-  obs_property_set_visible(Prop, bVisibleVPP && bScalingModeActive);
-  Prop = obs_properties_get(Properties, "vpp_out_height");
-  obs_property_set_visible(Prop, bVisibleVPP && bScalingModeActive);
+  bool bScalingModeActive = sv(scaling_mode) != "OFF";
+  SetVisible("vpp_out_width", bVisibleVPP && bScalingModeActive);
+  SetVisible("vpp_out_height", bVisibleVPP && bScalingModeActive);
 #ifndef QSV_UHD600_SUPPORT
-  Prop = obs_properties_get(Properties, "vpp_mctf");
-  obs_property_set_visible(Prop, bVisibleVPP);
+  SetVisible("vpp_mctf", bVisibleVPP);
 
   const char *vpp_mctf_val = obs_data_get_string(Settings, "vpp_mctf");
-  bool vpp_mctf_strength_visible = bVisibleVPP && (std::strcmp(vpp_mctf_val, "ON") == 0);
-  obs_property_set_visible(obs_properties_get(Properties, "vpp_mctf_strength"), vpp_mctf_strength_visible);
+  bool vpp_mctf_strength_visible = bVisibleVPP && sv(vpp_mctf_val) == "ON";
+  SetVisible("vpp_mctf_strength", vpp_mctf_strength_visible);
 #endif
 
   const char *denoise_mode = obs_data_get_string(Settings, "denoise_mode");
-  bVisible = std::strcmp(denoise_mode, "MANUAL | PRE ENCODE") == 0 ||
-             std::strcmp(denoise_mode, "MANUAL | POST ENCODE") == 0;
-  Prop = obs_properties_get(Properties, "denoise_strength");
-  obs_property_set_visible(Prop, bVisible && bVisibleVPP);
+  bVisible = sv(denoise_mode) == "MANUAL | PRE ENCODE" ||
+             sv(denoise_mode) == "MANUAL | POST ENCODE";
+  SetVisible("denoise_strength", bVisible && bVisibleVPP);
 
   const char *detail = obs_data_get_string(Settings, "detail");
-  bVisible = std::strcmp(detail, "ON") == 0;
-  Prop = obs_properties_get(Properties, "detail_factor");
-  obs_property_set_visible(Prop, bVisible && bVisibleVPP);
+  bVisible = sv(detail) == "ON";
+  SetVisible("detail_factor", bVisible && bVisibleVPP);
 
   const char *intra_ref_encoding =
       obs_data_get_string(Settings, "intra_ref_encoding");
-  bVisible = std::strcmp(intra_ref_encoding, "ON") == 0;
-  Prop = obs_properties_get(Properties, "intra_ref_type");
-  obs_property_set_visible(Prop, bVisible);
-  Prop = obs_properties_get(Properties, "intra_ref_cycle_size");
-  obs_property_set_visible(Prop, bVisible);
-  Prop = obs_properties_get(Properties, "intra_ref_qp_delta");
-  obs_property_set_visible(Prop, bVisible);
+  bVisible = sv(intra_ref_encoding) == "ON";
+  SetVisible("intra_ref_type", bVisible);
+  SetVisible("intra_ref_cycle_size", bVisible);
+  SetVisible("intra_ref_qp_delta", bVisible);
 
   mfxU16 platformCode = QueryPlatformCodeName();
   // HEVC High Tier is supported on SKL+ (subject to level >= 4 spec constraint)
   bool hasHighTier = platformCode == 0 ||
                      platformCode >= MFX_PLATFORM_SKYLAKE;
   bool showTierList = hasHighTier;
-  Prop = obs_properties_get(Properties, "hevc_tier");
-  if (Prop) {
-    obs_property_set_visible(Prop, showTierList);
-    if (!showTierList) {
+  if (auto *tier = obs_properties_get(Properties, "hevc_tier")) {
+    obs_property_set_visible(tier, showTierList);
+    if (!showTierList)
       obs_data_set_string(Settings, "hevc_tier", "main");
-    }
   }
 
   return true;
@@ -625,14 +570,15 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
       if (platformCode == 0 || platformCode >= rcInfo->min_platform) {
       // AV1/AVCM do not support VCM; HEVC encoder does not support AVBR;
       // VP9 only supports CBR/VBR/CQP/ICQ (no AVBR/QVBR/VCM)
+      auto sv = [](const char *s) { return std::string_view(s); };
       bool skipForAV1 = Codec == QSV_CODEC_AV1 &&
-                        std::strcmp(rcInfo->name, "VCM") == 0;
+                        sv(rcInfo->name) == "VCM";
       bool skipForHEVC = Codec == QSV_CODEC_HEVC &&
-                         std::strcmp(rcInfo->name, "AVBR") == 0;
+                         sv(rcInfo->name) == "AVBR";
       bool skipForVP9 = Codec == QSV_CODEC_VP9 &&
-                        (std::strcmp(rcInfo->name, "AVBR") == 0 ||
-                         std::strcmp(rcInfo->name, "QVBR") == 0 ||
-                         std::strcmp(rcInfo->name, "VCM") == 0);
+                        (sv(rcInfo->name) == "AVBR" ||
+                         sv(rcInfo->name) == "QVBR" ||
+                         sv(rcInfo->name) == "VCM");
       if (!skipForAV1 && !skipForHEVC && !skipForVP9) {
         obs_property_list_add_string(Prop, rcInfo->name, rcInfo->name);
       }
@@ -1089,8 +1035,8 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
     while (*profileEntryHEVC) {
       bool showProfileHEVC = true;
       if (platformCode != 0) {
-        bool isRext = std::strcmp(*profileEntryHEVC, "rext") == 0;
-        bool isSCC = std::strcmp(*profileEntryHEVC, "scc") == 0;
+        bool isRext = std::string_view(*profileEntryHEVC) == "rext";
+        bool isSCC = std::string_view(*profileEntryHEVC) == "scc";
         // REXT encoding (12-bit/4:2:2/4:4:4) and SCC encoding require TGL_LP (Gen12)+
         if ((isRext || isSCC) && platformCode < MFX_PLATFORM_TIGERLAKE) {
           showProfileHEVC = false;
@@ -1114,7 +1060,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                        platformCode >= MFX_PLATFORM_SKYLAKE;
     const char *const *tierEntry = qsv_profile_tiers_hevc;
     while (*tierEntry) {
-      bool isHigh = std::strcmp(*tierEntry, "high") == 0;
+      bool isHigh = std::string_view(*tierEntry) == "high";
       if (!isHigh || hasHighTier) {
         obs_property_list_add_string(Prop, *tierEntry, *tierEntry);
       }
@@ -1582,9 +1528,10 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   Context->EncoderParams.AV1SuperRes = ParseAV1Ternary(AV1SuperResData);
   Context->EncoderParams.AV1ErrorResilient = ParseAV1Ternary(AV1ErrorResilientData);
 
-  if (std::strcmp(AV1SegmentationData, "ON") == 0) {
+  auto svSeg = std::string_view(AV1SegmentationData);
+  if (svSeg == "ON") {
     Context->EncoderParams.AV1Segmentation = 1;
-  } else if (std::strcmp(AV1SegmentationData, "OFF") == 0) {
+  } else if (svSeg == "OFF") {
     Context->EncoderParams.AV1Segmentation = 0;
   }
   // AUTO leaves AV1Segmentation unset so the driver chooses.
@@ -1613,21 +1560,23 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   Context->EncoderParams.AdaptiveMaxFrameSize = AdaptiveMaxFrameSizeData;
 
   // SkipFrame: ON maps to the safest BRC-only mode; OFF disables skipping.
-  if (std::strcmp(SkipFrameData, "OFF") == 0) {
+  auto svSkip = std::string_view(SkipFrameData);
+  if (svSkip == "OFF") {
     Context->EncoderParams.SkipFrame = MFX_SKIPFRAME_NO_SKIP;
-  } else if (std::strcmp(SkipFrameData, "ON") == 0) {
+  } else if (svSkip == "ON") {
     Context->EncoderParams.SkipFrame = MFX_SKIPFRAME_BRC_ONLY;
   }
   // AUTO leaves SkipFrame unset so the driver chooses.
 
-  if (std::strcmp(RepartitionCheckData, "OFF") == 0) {
+  auto svRepart = std::string_view(RepartitionCheckData);
+  if (svRepart == "OFF") {
     Context->EncoderParams.RepartitionCheckEnable = false;
-  } else if (std::strcmp(RepartitionCheckData, "ON") == 0) {
+  } else if (svRepart == "ON") {
     Context->EncoderParams.RepartitionCheckEnable = true;
   }
 
 #ifndef QSV_UHD600_SUPPORT
-  if (strcmp(VPPMCTFData, "ON") == 0)
+  if (std::string_view(VPPMCTFData) == "ON")
     Context->EncoderParams.VPPMCTFMode = 1;
   else
     Context->EncoderParams.VPPMCTFMode = 0;
@@ -1670,7 +1619,7 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       Context->EncoderParams.CodecProfile = *v;
     }
 
-    if (std::strcmp(CodecProfileTierData, "main") == 0) {
+    if (std::string_view(CodecProfileTierData) == "main") {
       Context->EncoderParams.CodecProfileTier = MFX_TIER_HEVC_MAIN;
     } else {
       mfxU16 platformCode = QueryPlatformCodeName();
@@ -1841,12 +1790,13 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
 
   ParseOptionalBool(UseRawRefData, Context->EncoderParams.RawRef);
 
-  Context->EncoderParams.PPyramid = (std::strcmp(PPyramidData, "ON") == 0);
+  Context->EncoderParams.PPyramid = (std::string_view(PPyramidData) == "ON");
 
   ParseOptionalBool(GlobalMotionBiasAdjustmentData,
                     Context->EncoderParams.GlobalMotionBiasAdjustment);
 
-  if (std::strcmp(LookaheadData, "HQ") == 0) {
+  auto svLookahead = std::string_view(LookaheadData);
+  if (svLookahead == "HQ") {
     Context->EncoderParams.Lookahead = true;
 
     {
@@ -1858,7 +1808,7 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
         Depth = 100;
       Context->EncoderParams.LADepth = static_cast<mfxU16>(Depth);
     }
-  } else if (std::strcmp(LookaheadData, "LP") == 0) {
+  } else if (svLookahead == "LP") {
     if (BFramesData > 0) {
       Context->EncoderParams.Lookahead = true;
       Context->EncoderParams.LADepth =
@@ -1886,7 +1836,7 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.IntraRefEncoding = *v;
   }
 
-  if (std::strcmp(IntraRefTypeData, "VERTICAL") == 0) {
+  if (std::string_view(IntraRefTypeData) == "VERTICAL") {
     Context->EncoderParams.IntraRefType = MFX_REFRESH_VERTICAL;
   } else {
     Context->EncoderParams.IntraRefType = MFX_REFRESH_HORIZONTAL;
@@ -2017,8 +1967,9 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.VPPDenoiseMode = *v;
   }
   // MANUAL modes: set DenoiseStrength
-  if (std::strcmp(DenoiseModeData, "MANUAL | PRE ENCODE") == 0 ||
-      std::strcmp(DenoiseModeData, "MANUAL | POST ENCODE") == 0) {
+  auto svDenoise = std::string_view(DenoiseModeData);
+  if (svDenoise == "MANUAL | PRE ENCODE" ||
+      svDenoise == "MANUAL | POST ENCODE") {
     Context->EncoderParams.DenoiseStrength =
         static_cast<mfxU16>(DenoiseStrengthData);
   }
@@ -2153,7 +2104,7 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
        Context->EncoderParams.VPPScalingMode.has_value() ||
        Context->EncoderParams.VPPImageStabMode.has_value() ||
        Context->EncoderParams.PercEncPrefilter == true) &&
-      std::strcmp(VideoProcessingStatusData, "ON") == 0) {
+      std::string_view(VideoProcessingStatusData) == "ON") {
     if (VOI->format == VIDEO_FORMAT_NV12) {
       Context->EncoderParams.ProcessingEnable = true;
     } else if (VOI->format == VIDEO_FORMAT_P010 ||
@@ -2239,7 +2190,7 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     info("\tMax bitrate: %d", Context->EncoderParams.MaxBitRate);
 
   if (Context->EncoderParams.RateControl == MFX_RATECONTROL_ICQ &&
-      std::strcmp(RateControlData, "ICQ") == 0)
+      std::string_view(RateControlData) == "ICQ")
     info("\tICQ Quality: %d", Context->EncoderParams.ICQQuality);
 
   if (Context->EncoderParams.RateControl == MFX_RATECONTROL_CQP) {

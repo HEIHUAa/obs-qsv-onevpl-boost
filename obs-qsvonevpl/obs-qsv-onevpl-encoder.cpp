@@ -231,8 +231,9 @@ void GetVideoInfo(void *Data, video_scale_info *Info) {
   case QSV_CODEC_AV1: {
     obs_data_t *settings = obs_encoder_get_settings(Context->EncoderData);
     const char *profile = obs_data_get_string(settings, "profile");
-    use10bit = (std::strcmp(profile, "main10") == 0);
-    use444 = (std::strcmp(profile, "rext") == 0);
+    auto svProf = std::string_view(profile);
+    use10bit = svProf == "main10";
+    use444 = svProf == "rext";
     obs_data_release(settings);
     break;
   }
@@ -251,7 +252,7 @@ void GetVideoInfo(void *Data, video_scale_info *Info) {
   case QSV_CODEC_AVC: {
     obs_data_t *settings = obs_encoder_get_settings(Context->EncoderData);
     const char *profile = obs_data_get_string(settings, "profile");
-    use10bit = (std::strcmp(profile, "high10") == 0);
+    use10bit = (std::string_view(profile) == "high10");
     obs_data_release(settings);
     break;
   }

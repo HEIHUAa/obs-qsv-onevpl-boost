@@ -7,54 +7,22 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 
-#ifndef __QSV_VPL_COMMON_UTILS_H__
 #include "helpers/common_utils.hpp"
-#endif
-#ifndef _CSTDINT_
 #include <cstdint>
-#endif
-#ifndef _NEW_
 #include <new>
-#endif
-#ifndef _STDEXCEPT_
 #include <stdexcept>
-#endif
-#ifndef _STRING_
 #include <string>
-#endif
-#ifndef _TYPE_TRAITS_
 #include <type_traits>
-#endif
-#ifndef _VECTOR_
 #include <vector>
-#endif
-#ifndef __MFXBRC_H__
 #include "mfxbrc.h"
-#endif
-#ifndef __MFXCOMMON_H__
 #include "mfxcommon.h"
-#endif
-#ifndef __MFXDEFS_H__
 #include "mfxdefs.h"
-#endif
-#ifndef __MFXSTRUCTURES_H__
 #include "mfxstructures.h"
-#endif
-#ifndef __MFXSURFACE_POOL_H__
 #include <vpl/mfxsurfacepool.h>
-#endif
-#ifndef __MFXAV1_H__
 #include <vpl/private/mfxav1.h>
-#endif
-#ifndef __MFXENCTOOLS_H__
 #include <vpl/private/mfxenctools.h>
-#endif
-#ifndef __MFXEXT_BUFFERS_H__
 #include <vpl/private/mfxddi.h>
-#endif
-#ifndef __MFXPLUGIN_H__
 #include <vpl/private/mfxplugin.h>
-#endif
 
 template <class T> struct MFXExtBufferID {};
 
