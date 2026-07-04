@@ -409,8 +409,18 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
 
   SetVisible("icq_quality", bIsICQ);
 
-  // EncTools visibility: CBR/VBR/AVBR/VCM/QVBR modes with feature support
-  bool bEncToolsVisible = (bIsCBR || bIsVBR || bIsAVBR || bIsVCM || bIsQVBR);
+  // Retrieve codec stored by GetParamProps
+  auto codec = static_cast<codec_enum>(
+      reinterpret_cast<intptr_t>(obs_properties_get_param(Properties)));
+
+  // EncTools visibility: VP9 has no EncTools; other codecs share the same
+  // rate-control visibility + platform gate.  Even though EncTools BRC
+  // features (BRC, BRCBufferHints, AdaptiveMBQP) only work with CBR/VBR in
+  // the oneVPL driver's SetDefaultConfig, the non-BRC features (SceneChange,
+  // AdaptiveI, AdaptiveRef, PyramidQuant, etc.) are rate-control agnostic, so
+  // we keep the existing broad RC visibility.
+  bool bEncToolsVisible = (bIsCBR || bIsVBR || bIsAVBR || bIsVCM || bIsQVBR)
+                          && codec != QSV_CODEC_VP9;
   bool bVisible = bEncToolsVisible;
   if (bVisible) bVisible = IsFeatureSupported("enc_tools");
   SetVisible("enctools", bVisible);
@@ -430,8 +440,28 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
 
   const char *lookahead = obs_data_get_string(Settings, "lookahead");
 
-  bVisible = bIsCBR || bIsVBR || bIsAVBR || bIsQVBR || bIsICQ;
+  // Lookahead support per codec (verified against oneVPL vpl-gpu-rt 26.1.5):
+  //   AVC: VBR/ICQ only – these are promoted to LA/LA_ICQ/LA_HRD;
+  //        other RC modes cause the driver to zero LookAheadDepth.
+  //   HEVC/AV1: CBR/VBR only – lookahead works via GAME_STREAMING hardware
+  //        EncTools, which requires EncTools platform support (TigerLake+).
+  //   VP9: no lookahead mechanism at all.
+  switch (codec) {
+  case QSV_CODEC_AVC:
+    bVisible = bIsVBR || bIsICQ;
+    break;
+  case QSV_CODEC_HEVC:
+  case QSV_CODEC_AV1:
+    bVisible = (bIsCBR || bIsVBR) && IsFeatureSupported("enc_tools");
+    break;
+  case QSV_CODEC_VP9:
+  default:
+    bVisible = false;
+    break;
+  }
   SetVisible("lookahead", bVisible);
+  // Force OFF when not visible so obsolete values don't linger
+  if (!bVisible) obs_data_set_string(Settings, "lookahead", "OFF");
 
   bool bVisible_lookahead_hq = sv(lookahead) == "HQ";
   bool bVisible_lookahead_lp = sv(lookahead) == "LP";
@@ -542,6 +572,9 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
 static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 
   obs_properties_t *Props = obs_properties_create();
+  // Store codec so ParamsVisibilityModifier can branch per-codec
+  obs_properties_set_param(
+      Props, reinterpret_cast<void *>(static_cast<intptr_t>(Codec)), nullptr);
   obs_property_t *Prop;
   mfxU16 platformCode = QueryPlatformCodeName();
 

@@ -1791,17 +1791,14 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       }
     }
 
-    if (QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_CBR ||
-        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_VBR ||
-        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_AVBR ||
-        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_ICQ ||
-        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_QVBR ||
-        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_LA ||
-        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_LA_ICQ ||
-        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_LA_HRD) {
-      if (InputParams->Lookahead == true) {
-        CO2Params->LookAheadDepth = InputParams->LADepth;
-      }
+    // LookAheadDepth is only meaningful for RC modes where the oneVPL driver
+    // actually uses it (the UI already prevents enabling Lookahead for others):
+    //   AVC:   VBR/ICQ are promoted → LA/LA_ICQ/LA_HRD, so CBR/AVBR/QVBR never
+    //          reach here with Lookahead=true (driver would zero the field).
+    //   HEVC/AV1: only CBR/VBR work via GAME_STREAMING hardware EncTools.
+    //   VP9:  no lookahead at all.
+    if (InputParams->Lookahead == true) {
+      CO2Params->LookAheadDepth = InputParams->LADepth;
     }
 
     // VP9 MBBRC (auto-segmentation) is disabled: oneVPL defaults it OFF for
