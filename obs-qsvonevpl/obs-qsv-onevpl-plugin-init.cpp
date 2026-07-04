@@ -254,8 +254,8 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_int(Settings, "qpb", 23);
   obs_data_set_default_int(Settings, "icq_quality", 23);
 
-  obs_data_set_default_int(Settings, "keyint_sec", 2);
-  obs_data_set_default_int(Settings, "b_frames", 3);
+  obs_data_set_default_int(Settings, "keyint_sec", 4);
+  obs_data_set_default_int(Settings, "b_frames", 4);
   obs_data_set_default_int(Settings, "async_depth", 4);
 
   obs_data_set_default_string(Settings, "intra_ref_encoding", "OFF");
@@ -317,7 +317,7 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(Settings, "scaling_mode", "OFF");
 #ifndef QSV_UHD600_SUPPORT
   obs_data_set_default_string(Settings, "vpp_mctf", "OFF");
-  obs_data_set_default_int(Settings, "vpp_mctf_strength", 0);
+  obs_data_set_default_int(Settings, "vpp_mctf_strength", 6);
 #endif
   obs_data_set_default_int(Settings, "vpp_out_width", 0);
   obs_data_set_default_int(Settings, "vpp_out_height", 0);
