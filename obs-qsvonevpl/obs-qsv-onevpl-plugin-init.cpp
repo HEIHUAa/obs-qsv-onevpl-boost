@@ -276,7 +276,7 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(Settings, "hrd_conformance", "AUTO");
   obs_data_set_default_string(Settings, "mbbrc", "AUTO");
   obs_data_set_default_string(Settings, "trellis", "AUTO");
-  obs_data_set_default_int(Settings, "num_ref_frame", 0);
+  obs_data_set_default_int(Settings, "num_ref_frame", 4);
   obs_data_set_default_string(Settings, "global_motion_bias_adjustment",
                               "AUTO");
   obs_data_set_default_string(Settings, "mv_cost_scaling_factor", "AUTO");
