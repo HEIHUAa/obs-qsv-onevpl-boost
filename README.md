@@ -10,9 +10,10 @@
 
 ### 关于本项目
 
-本项目的初衷可能更偏向于UHD 700因为我的Intel显卡就只有这个，主要方向是：
+本项目的初衷可能更偏向于UHD 700系列和UHD600系列因为我的Intel显卡就只有UHD730，还有朋友的UHD620，主要方向是：
 
 - **更丰富的编码设置**：提供更多有用的编码参数和调节选项
+- 更多有效的功能：让某些选项真正生效
 - **更高的稳定性**：尽量减少录制和推流过程中遇到的错误
 - 当然，任何人都可以自由使用、克隆和修改本仓库
 
@@ -20,7 +21,8 @@
 
 - 修复语言文件（locale）加载问题，并且添加中文翻译
 - 添加更多编码参数可见项
-- 其他 bug 修复和优化
+- 更少的bug
+- 更好的录制启动速度和录制运行占用
 
 ### obq-qsvonevpl-boost 是什么
 
@@ -47,17 +49,19 @@ This project is a fork of [ma3uk/obs-qsv-onevpl](https://github.com/ma3uk/obs-qs
 
 ### About This Project
 
-This project was originally created with a focus on UHD 700 (since that is the Intel GPU I own), and the main goals are:
+The original intent of this project is more focused on the UHD 700 series and UHD 600 series, since my own Intel GPU is only UHD 730, and a friend's UHD 620. The main directions are:
 
-- **More encoding settings**: Provide more useful encoding parameters and adjustment options
-- **Better stability**: Minimize errors encountered during recording and streaming
-- Of course, anyone is free to use, clone, and modify this repository
+- **Richer encoding settings**: Provide more useful encoding parameters and adjustment options.
+- **More effective functionality**: Make certain options actually take effect.
+- **Higher stability**: Minimize errors encountered during recording and streaming.
+- Of course, anyone is free to use, clone, and modify this repository.
 
 ### Key Changes
 
-- Fixed locale loading issues and added Chinese translations
-- Added more visible encoding parameters
-- Other bug fixes and optimizations
+- Fixed locale loading issues and added Chinese translations.
+- Added more visible encoding parameters.
+- Fewer bugs.
+- Better recording startup speed and lower runtime resource usage.
 
 ### What is obq-qsvonevpl-boost
 
@@ -70,7 +74,6 @@ Original repository: <https://github.com/ma3uk/obs-qsv-onevpl>
 ### Download
 
 Go to the Releases page of this repository for the latest stable release: <https://github.com/HEIHUAa/obs-qsv-onevpl-boost/releases>
-
 Or go to the Actions page of this repository to download the latest build: <https://github.com/HEIHUAa/obs-qsv-onevpl-boost/actions>
 
 ### Installation
