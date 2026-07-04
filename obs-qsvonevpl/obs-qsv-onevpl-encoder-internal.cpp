@@ -1414,8 +1414,11 @@ void QSVEncoder::ApplyQPLimits(struct encoder_params *InputParams) {
     bitDepth = 8;
 
   mfxU8 qpBdOffset = static_cast<mfxU8>(6 * (bitDepth - 8));
-  mfxU8 maxQP8 = 51; // 8-bit max QP
+  bool isVp9OrAv1 = QSVEncodeParams.mfx.CodecId == MFX_CODEC_VP9 ||
+                    QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1;
 
+  // For VP9/AV1, MinQP/MaxQP text values are in UI scale (1.0-63.0, 0.25 step),
+  // same as the CQP slider. Scale x4 internally to match 0-255 base_q_idx range.
   auto ParseQPString = [&](const std::string &qpStr, mfxU8 &qpi,
                            mfxU8 &qpp, mfxU8 &qpb,
                            bool &skip) -> bool {
@@ -1425,13 +1428,35 @@ void QSVEncoder::ApplyQPLimits(struct encoder_params *InputParams) {
       return true;
     }
 
+    auto ClampScaled = [&](double val, mfxU8 &out) -> bool {
+      if (val < 0.0 || val > 255.0)
+        return false;
+      if (isVp9OrAv1) {
+        // Scale UI value (1.0-63.0) to internal (4-252), round to nearest
+        int scaled = static_cast<int>(val * 4.0 + 0.5);
+        out = static_cast<mfxU8>((std::min)(scaled, 255));
+      } else {
+        out = static_cast<mfxU8>((std::min)(static_cast<int>(val), 51));
+      }
+      return true;
+    };
+
+    auto ParseDouble = [&](const std::string &s, double &val) -> bool {
+      try {
+        size_t idx = 0;
+        val = std::stod(s, &idx);
+        return idx == s.size();  // ensure no trailing garbage
+      } catch (...) {
+        return false;
+      }
+    };
+
     size_t comma1 = qpStr.find(',');
     if (comma1 == std::string::npos) {
-      int val = std::atoi(qpStr.c_str());
-      if (val < 0 || val > 255)
-        return false;
-      mfxU8 clamped = static_cast<mfxU8>((std::min)(val, (int)maxQP8));
-      qpi = qpp = qpb = clamped;
+      double val;
+      if (!ParseDouble(qpStr, val)) return false;
+      if (!ClampScaled(val, qpi)) return false;
+      qpp = qpb = qpi;
       return true;
     }
 
@@ -1439,17 +1464,12 @@ void QSVEncoder::ApplyQPLimits(struct encoder_params *InputParams) {
     if (comma2 == std::string::npos)
       return false;
 
-    int v1 = std::atoi(qpStr.substr(0, comma1).c_str());
-    int v2 = std::atoi(qpStr.substr(comma1 + 1, comma2 - comma1 - 1).c_str());
-    int v3 = std::atoi(qpStr.substr(comma2 + 1).c_str());
+    double v1, v2, v3;
+    if (!ParseDouble(qpStr.substr(0, comma1), v1)) return false;
+    if (!ParseDouble(qpStr.substr(comma1 + 1, comma2 - comma1 - 1), v2)) return false;
+    if (!ParseDouble(qpStr.substr(comma2 + 1), v3)) return false;
 
-    if (v1 < 0 || v1 > 255 || v2 < 0 || v2 > 255 || v3 < 0 || v3 > 255)
-      return false;
-
-    qpi = static_cast<mfxU8>((std::min)(v1, (int)maxQP8));
-    qpp = static_cast<mfxU8>((std::min)(v2, (int)maxQP8));
-    qpb = static_cast<mfxU8>((std::min)(v3, (int)maxQP8));
-    return true;
+    return ClampScaled(v1, qpi) && ClampScaled(v2, qpp) && ClampScaled(v3, qpb);
   };
 
   {

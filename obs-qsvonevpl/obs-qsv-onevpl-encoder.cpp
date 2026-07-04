@@ -130,23 +130,35 @@ bool UpdateEncoderParams(void *Data, obs_data_t *Params) {
   } else if (isCQP) {
     bool separateIPB = obs_data_get_bool(Params, "cqp_separate_ipb");
     if (separateIPB) {
-      int qpi = static_cast<int>(obs_data_get_int(Params, "qpi"));
-      int qpp = static_cast<int>(obs_data_get_int(Params, "qpp"));
-      int qpb = static_cast<int>(obs_data_get_int(Params, "qpb"));
-      // AV1 uses 0-255 QP range internally; user inputs 1-63, scale up.
-      // VP9's QPI is used directly as base_q_idx (no scaling needed).
-      if (Context->Codec == QSV_CODEC_AV1) {
-        qpi *= 4;
-        qpp *= 4;
-        qpb *= 4;
+      double qpi, qpp, qpb;
+      if (Context->Codec == QSV_CODEC_AV1 || Context->Codec == QSV_CODEC_VP9) {
+        qpi = obs_data_get_double(Params, "qpi");
+        qpp = obs_data_get_double(Params, "qpp");
+        qpb = obs_data_get_double(Params, "qpb");
+      } else {
+        qpi = static_cast<double>(obs_data_get_int(Params, "qpi"));
+        qpp = static_cast<double>(obs_data_get_int(Params, "qpp"));
+        qpb = static_cast<double>(obs_data_get_int(Params, "qpb"));
+      }
+      // VP9/AV1 uses 0-255 QP range internally; UI 1.0-63.0, scale x4.
+      if (Context->Codec == QSV_CODEC_AV1 || Context->Codec == QSV_CODEC_VP9) {
+        qpi *= 4.0;
+        qpp *= 4.0;
+        qpb *= 4.0;
       }
       Context->EncoderParams.QPI = static_cast<mfxU16>(qpi);
       Context->EncoderParams.QPP = static_cast<mfxU16>(qpp);
       Context->EncoderParams.QPB = static_cast<mfxU16>(qpb);
     } else {
-      int cqp = static_cast<int>(obs_data_get_int(Params, "cqp"));
-      if (Context->Codec == QSV_CODEC_AV1) {
-        cqp *= 4;
+      double cqp;
+      if (Context->Codec == QSV_CODEC_AV1 || Context->Codec == QSV_CODEC_VP9) {
+        cqp = obs_data_get_double(Params, "cqp");
+      } else {
+        cqp = static_cast<double>(obs_data_get_int(Params, "cqp"));
+      }
+      // VP9/AV1 uses 0-255 QP range internally; UI 1.0-63.0, scale x4.
+      if (Context->Codec == QSV_CODEC_AV1 || Context->Codec == QSV_CODEC_VP9) {
+        cqp *= 4.0;
       }
       Context->EncoderParams.QPI = static_cast<mfxU16>(cqp);
       Context->EncoderParams.QPP = static_cast<mfxU16>(cqp);

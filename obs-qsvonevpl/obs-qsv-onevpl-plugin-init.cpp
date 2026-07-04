@@ -247,11 +247,18 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(Settings, "av1_level", "auto");
   obs_data_set_default_string(Settings, "rate_control", "CBR");
 
-  obs_data_set_default_int(Settings, "cqp", 23);
+  if (Codec == QSV_CODEC_AV1 || Codec == QSV_CODEC_VP9) {
+    obs_data_set_default_double(Settings, "cqp", 23.0);
+    obs_data_set_default_double(Settings, "qpi", 23.0);
+    obs_data_set_default_double(Settings, "qpp", 23.0);
+    obs_data_set_default_double(Settings, "qpb", 23.0);
+  } else {
+    obs_data_set_default_int(Settings, "cqp", 23);
+    obs_data_set_default_int(Settings, "qpi", 23);
+    obs_data_set_default_int(Settings, "qpp", 23);
+    obs_data_set_default_int(Settings, "qpb", 23);
+  }
   obs_data_set_default_bool(Settings, "cqp_separate_ipb", false);
-  obs_data_set_default_int(Settings, "qpi", 23);
-  obs_data_set_default_int(Settings, "qpp", 23);
-  obs_data_set_default_int(Settings, "qpb", 23);
   obs_data_set_default_int(Settings, "icq_quality", 23);
 
   obs_data_set_default_int(Settings, "keyint_sec", 4);
@@ -641,19 +648,29 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(Prop, TEXT_SEPARATE_IPB_QP_DESC);
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
-  Prop = obs_properties_add_int_slider(RCGroup, "qpi", TEXT_QPI, 1,
-                         (Codec == QSV_CODEC_AV1 || Codec == QSV_CODEC_VP9) ? 63 : 51, 1);
-  obs_property_set_long_description(Prop, TEXT_QP_DESC);
-  Prop = obs_properties_add_int_slider(RCGroup, "qpp", TEXT_QPP, 1,
-                         (Codec == QSV_CODEC_AV1 || Codec == QSV_CODEC_VP9) ? 63 : 51, 1);
-  obs_property_set_long_description(Prop, TEXT_QP_DESC);
-  Prop = obs_properties_add_int_slider(RCGroup, "qpb", TEXT_QPB, 1,
-                         (Codec == QSV_CODEC_AV1 || Codec == QSV_CODEC_VP9) ? 63 : 51, 1);
-  obs_property_set_long_description(Prop, TEXT_QP_DESC);
+  if (Codec == QSV_CODEC_AV1 || Codec == QSV_CODEC_VP9) {
+    // VP9/AV1 support fractional QP (0.25 increments). Internal range 0-255,
+    // UI exposes 1.0-63.0 with 0.25 step → *4 gives 4-252 (fits mfxU8).
+    Prop = obs_properties_add_float_slider(RCGroup, "qpi", TEXT_QPI, 1.0, 63.0, 0.25);
+    obs_property_set_long_description(Prop, TEXT_QP_DESC);
+    Prop = obs_properties_add_float_slider(RCGroup, "qpp", TEXT_QPP, 1.0, 63.0, 0.25);
+    obs_property_set_long_description(Prop, TEXT_QP_DESC);
+    Prop = obs_properties_add_float_slider(RCGroup, "qpb", TEXT_QPB, 1.0, 63.0, 0.25);
+    obs_property_set_long_description(Prop, TEXT_QP_DESC);
 
-  Prop = obs_properties_add_int_slider(RCGroup, "cqp", TEXT_CQP, 1,
-                         (Codec == QSV_CODEC_AV1 || Codec == QSV_CODEC_VP9) ? 63 : 51, 1);
-  obs_property_set_long_description(Prop, TEXT_CQP_DESC);
+    Prop = obs_properties_add_float_slider(RCGroup, "cqp", TEXT_CQP, 1.0, 63.0, 0.25);
+    obs_property_set_long_description(Prop, TEXT_CQP_DESC);
+  } else {
+    Prop = obs_properties_add_int_slider(RCGroup, "qpi", TEXT_QPI, 1, 51, 1);
+    obs_property_set_long_description(Prop, TEXT_QP_DESC);
+    Prop = obs_properties_add_int_slider(RCGroup, "qpp", TEXT_QPP, 1, 51, 1);
+    obs_property_set_long_description(Prop, TEXT_QP_DESC);
+    Prop = obs_properties_add_int_slider(RCGroup, "qpb", TEXT_QPB, 1, 51, 1);
+    obs_property_set_long_description(Prop, TEXT_QP_DESC);
+
+    Prop = obs_properties_add_int_slider(RCGroup, "cqp", TEXT_CQP, 1, 51, 1);
+    obs_property_set_long_description(Prop, TEXT_CQP_DESC);
+  }
 
   Prop = obs_properties_add_int(RCGroup, "bitrate", TEXT_TARGET_BITRATE, 50,
                                 6553500, 1000);
@@ -1413,7 +1430,12 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       static_cast<int>(obs_data_get_int(Settings, "buffer_size"));
   int MaxBitrateData =
       static_cast<int>(obs_data_get_int(Settings, "max_bitrate"));
-  int CQPData = static_cast<int>(obs_data_get_int(Settings, "cqp"));
+  double CQPData;
+  if (Context->Codec == QSV_CODEC_AV1 || Context->Codec == QSV_CODEC_VP9) {
+    CQPData = obs_data_get_double(Settings, "cqp");
+  } else {
+    CQPData = static_cast<double>(obs_data_get_int(Settings, "cqp"));
+  }
   int ICQQualityData =
       static_cast<int>(obs_data_get_int(Settings, "icq_quality"));
   // VP9 ICQQuality internally uses 0-255 range (MAX_ICQ_QUALITY_INDEX).
@@ -2058,20 +2080,27 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   auto ActualCQPData = CQPData;
   bool CQPSeparateIPB = obs_data_get_bool(Settings, "cqp_separate_ipb");
   if (CQPSeparateIPB) {
-    int QPIData = static_cast<int>(obs_data_get_int(Settings, "qpi"));
-    int QPPData = static_cast<int>(obs_data_get_int(Settings, "qpp"));
-    int QPBData = static_cast<int>(obs_data_get_int(Settings, "qpb"));
+    double QPIData, QPPData, QPBData;
+    if (Context->Codec == QSV_CODEC_AV1 || Context->Codec == QSV_CODEC_VP9) {
+      QPIData = obs_data_get_double(Settings, "qpi");
+      QPPData = obs_data_get_double(Settings, "qpp");
+      QPBData = obs_data_get_double(Settings, "qpb");
+    } else {
+      QPIData = static_cast<double>(obs_data_get_int(Settings, "qpi"));
+      QPPData = static_cast<double>(obs_data_get_int(Settings, "qpp"));
+      QPBData = static_cast<double>(obs_data_get_int(Settings, "qpb"));
+    }
     if (Context->Codec == QSV_CODEC_VP9 || Context->Codec == QSV_CODEC_AV1) {
-      QPIData *= 4;
-      QPPData *= 4;
-      QPBData *= 4;
+      QPIData *= 4.0;
+      QPPData *= 4.0;
+      QPBData *= 4.0;
     }
     Context->EncoderParams.QPI = static_cast<mfxU16>(QPIData);
     Context->EncoderParams.QPP = static_cast<mfxU16>(QPPData);
     Context->EncoderParams.QPB = static_cast<mfxU16>(QPBData);
   } else {
     if (Context->Codec == QSV_CODEC_VP9 || Context->Codec == QSV_CODEC_AV1) {
-      ActualCQPData *= 4;
+      ActualCQPData *= 4.0;
     }
     Context->EncoderParams.QPI = static_cast<mfxU16>(ActualCQPData);
     Context->EncoderParams.QPP = static_cast<mfxU16>(ActualCQPData);
