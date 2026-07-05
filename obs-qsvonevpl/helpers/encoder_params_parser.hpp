@@ -494,9 +494,13 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
 
   // SkipFrame
   auto svSkip = std::string_view(SkipFrameData);
-  if (svSkip == "OFF")
+  if (svSkip == "NO_SKIP")
     Params.SkipFrame = MFX_SKIPFRAME_NO_SKIP;
-  else if (svSkip == "ON")
+  else if (svSkip == "INSERT_DUMMY")
+    Params.SkipFrame = MFX_SKIPFRAME_INSERT_DUMMY;
+  else if (svSkip == "INSERT_NOTHING")
+    Params.SkipFrame = MFX_SKIPFRAME_INSERT_NOTHING;
+  else if (svSkip == "BRC_ONLY")
     Params.SkipFrame = MFX_SKIPFRAME_BRC_ONLY;
 
   // RepartitionCheckEnable

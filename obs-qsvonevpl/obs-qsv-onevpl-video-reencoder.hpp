@@ -30,6 +30,20 @@ struct FFmpegFuncs {
   int (*av_read_frame)(void *s, void *pkt);
   int (*av_find_best_stream)(void *ic, int type, int wanted_stream_nb,
                              int related_stream, void **decoder_ret, int flags);
+  int (*avformat_alloc_output_context2)(void **ctx, void *oformat,
+                                        const char *format_name,
+                                        const char *filename);
+  void *(*avformat_new_stream)(void *s, const void *c);
+  void (*avformat_free_context)(void *s);
+  int (*avio_open)(void **s, const char *url, int flags);
+  int (*avio_closep)(void **s);
+  int (*avformat_write_header)(void *s, void **opts);
+  int (*av_write_trailer)(void *s);
+  int (*av_interleaved_write_frame)(void *s, void *pkt);
+  void (*av_packet_unref)(void *pkt);
+  int (*avcodec_parameters_copy)(void *dst, const void *src);
+  void *(*avcodec_parameters_alloc)(void);
+  void (*avcodec_parameters_free)(void **par);
 
   // avcodec
   void *(*avcodec_find_decoder)(int id);

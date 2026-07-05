@@ -13,6 +13,7 @@
 #include <util/config-file.h>
 #include <util/platform.h>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <system_error>
 #include <string_view>
@@ -167,16 +168,18 @@ static HMODULE TryLoadDLLWithFallback(const wchar_t *BaseName, int MinVer,
   return nullptr;
 }
 
-static bool ResolveFuncs(HMODULE Mod, const char *Names[], void **Funcs,
+static bool ResolveFuncs(HMODULE Mod, const char *Names[], void **Funcs[],
                          size_t Count) {
   for (size_t i = 0; i < Count; i++) {
-    *Funcs = reinterpret_cast<void *>(GetProcAddress(Mod, Names[i]));
-    if (!*Funcs) {
+    void *addr = reinterpret_cast<void *>(GetProcAddress(Mod, Names[i]));
+    if (!addr) {
       blog(LOG_WARNING, "[QSV VPL ReEncoder] Failed to resolve %s from DLL",
            Names[i]);
       return false;
     }
-    Funcs++;
+    // Use memcpy to avoid strict-aliasing/UB when writing a void* into a
+    // function-pointer slot.
+    std::memcpy(Funcs[i], &addr, sizeof(void *));
   }
   return true;
 }
@@ -207,7 +210,7 @@ bool LoadFFmpegDyn(FFmpegFuncs &ff) {
   const char *avutil_names[] = {
       "av_frame_alloc", "av_frame_free",
       "av_image_get_buffer_size", "av_image_fill_arrays"};
-  void *avutil_ptrs[] = {
+  void **avutil_ptrs[] = {
       reinterpret_cast<void **>(&ff.av_frame_alloc),
       reinterpret_cast<void **>(&ff.av_frame_free),
       reinterpret_cast<void **>(&ff.av_image_get_buffer_size),
@@ -239,7 +242,7 @@ bool LoadFFmpegDyn(FFmpegFuncs &ff) {
       "avcodec_send_packet",
       "avcodec_receive_frame",
       "avcodec_free_context"};
-  void *avcodec_ptrs[] = {
+  void **avcodec_ptrs[] = {
       reinterpret_cast<void **>(&ff.avcodec_find_decoder),
       reinterpret_cast<void **>(&ff.avcodec_alloc_context3),
       reinterpret_cast<void **>(&ff.avcodec_parameters_to_context),
@@ -278,14 +281,32 @@ bool LoadFFmpegDyn(FFmpegFuncs &ff) {
   }
   const char *avformat_names[] = {
       "avformat_open_input", "avformat_close_input",
-      "avformat_find_stream_info", "av_read_frame", "av_find_best_stream"};
-  void *avformat_ptrs[] = {
+      "avformat_find_stream_info", "av_read_frame", "av_find_best_stream",
+      "avformat_alloc_output_context2", "avformat_new_stream",
+      "avformat_free_context", "avio_open", "avio_closep",
+      "avformat_write_header", "av_write_trailer",
+      "av_interleaved_write_frame", "av_packet_unref",
+      "avcodec_parameters_copy", "avcodec_parameters_alloc",
+      "avcodec_parameters_free"};
+  void **avformat_ptrs[] = {
       reinterpret_cast<void **>(&ff.avformat_open_input),
       reinterpret_cast<void **>(&ff.avformat_close_input),
       reinterpret_cast<void **>(&ff.avformat_find_stream_info),
       reinterpret_cast<void **>(&ff.av_read_frame),
-      reinterpret_cast<void **>(&ff.av_find_best_stream)};
-  if (!ResolveFuncs(avformat, avformat_names, avformat_ptrs, 5))
+      reinterpret_cast<void **>(&ff.av_find_best_stream),
+      reinterpret_cast<void **>(&ff.avformat_alloc_output_context2),
+      reinterpret_cast<void **>(&ff.avformat_new_stream),
+      reinterpret_cast<void **>(&ff.avformat_free_context),
+      reinterpret_cast<void **>(&ff.avio_open),
+      reinterpret_cast<void **>(&ff.avio_closep),
+      reinterpret_cast<void **>(&ff.avformat_write_header),
+      reinterpret_cast<void **>(&ff.av_write_trailer),
+      reinterpret_cast<void **>(&ff.av_interleaved_write_frame),
+      reinterpret_cast<void **>(&ff.av_packet_unref),
+      reinterpret_cast<void **>(&ff.avcodec_parameters_copy),
+      reinterpret_cast<void **>(&ff.avcodec_parameters_alloc),
+      reinterpret_cast<void **>(&ff.avcodec_parameters_free)};
+  if (!ResolveFuncs(avformat, avformat_names, avformat_ptrs, 17))
     return false;
 
   // swscale
@@ -296,7 +317,7 @@ bool LoadFFmpegDyn(FFmpegFuncs &ff) {
   }
   const char *swscale_names[] = {"sws_getContext", "sws_scale",
                                  "sws_freeContext"};
-  void *swscale_ptrs[] = {
+  void **swscale_ptrs[] = {
       reinterpret_cast<void **>(&ff.sws_getContext),
       reinterpret_cast<void **>(&ff.sws_scale),
       reinterpret_cast<void **>(&ff.sws_freeContext)};
@@ -694,21 +715,10 @@ bool ReEncodeDialog::StartEncoding() {
 
   QString outputPath = OutputPathEdit->text();
   if (outputPath.isEmpty()) {
-    // Auto-generate output path
+    // Auto-generate output path; default to MP4 container.
     QFileInfo fi(inputPath);
     QString base = fi.absolutePath() + "/" + fi.completeBaseName();
-    switch (m_Codec) {
-    case QSV_CODEC_AVC:
-      outputPath = base + "_reencoded.h264";
-      break;
-    case QSV_CODEC_HEVC:
-      outputPath = base + "_reencoded.hevc";
-      break;
-    case QSV_CODEC_AV1:
-    case QSV_CODEC_VP9:
-      outputPath = base + "_reencoded.ivf";
-      break;
-    }
+    outputPath = base + "_reencoded.mp4";
     OutputPathEdit->setText(outputPath);
   }
 
@@ -855,6 +865,42 @@ void ReEncodeDialog::EncodeThreadMainImpl() {
     }
     AppendLog("FFmpeg loaded successfully");
 
+    // Safety net: verify every critical function pointer is non-null before we
+    // start using them. This catches any weird loader/alias corruption.
+    auto checkPtr = [](auto ptr, const char *name) -> bool {
+      if (ptr)
+        return true;
+      blog(LOG_ERROR,
+           "[QSV VPL ReEncoder] Critical function pointer %s is null", name);
+      return false;
+    };
+    bool funcsOk =
+        checkPtr(ff.avformat_open_input, "avformat_open_input") &&
+        checkPtr(ff.avformat_find_stream_info, "avformat_find_stream_info") &&
+        checkPtr(ff.av_read_frame, "av_read_frame") &&
+        checkPtr(ff.avcodec_find_decoder, "avcodec_find_decoder") &&
+        checkPtr(ff.avcodec_alloc_context3, "avcodec_alloc_context3") &&
+        checkPtr(ff.avcodec_open2, "avcodec_open2") &&
+        checkPtr(ff.avcodec_send_packet, "avcodec_send_packet") &&
+        checkPtr(ff.avcodec_receive_frame, "avcodec_receive_frame") &&
+        checkPtr(ff.avformat_alloc_output_context2,
+                 "avformat_alloc_output_context2") &&
+        checkPtr(ff.avformat_new_stream, "avformat_new_stream") &&
+        checkPtr(ff.avio_open, "avio_open") &&
+        checkPtr(ff.avformat_write_header, "avformat_write_header") &&
+        checkPtr(ff.av_interleaved_write_frame, "av_interleaved_write_frame") &&
+        checkPtr(ff.av_write_trailer, "av_write_trailer") &&
+        checkPtr(ff.av_packet_unref, "av_packet_unref");
+    if (!funcsOk) {
+      AppendLog("ERROR: FFmpeg function resolution incomplete");
+      QMetaObject::invokeMethod(this, [this]() {
+        StatusLabel->setText("FFmpeg funcs incomplete");
+        SetUIEnabled(true);
+        m_Encoding = false;
+      }, Qt::QueuedConnection);
+      return;
+    }
+
     // 2. Open input
     void *fmtCtx = nullptr;
     blog(LOG_INFO, "[QSV VPL ReEncoder] Input path member: %s", m_InputPath.c_str());
@@ -867,26 +913,8 @@ void ReEncodeDialog::EncodeThreadMainImpl() {
       }, Qt::QueuedConnection);
       return;
     }
-    // Extra diagnostics: compare the stored function pointer with a fresh
-    // GetProcAddress to rule out ResolveFuncs corruption.
-    HMODULE hAvformat = GetModuleHandleW(L"avformat-62.dll");
-    if (hAvformat) {
-      void *procAddr = reinterpret_cast<void *>(
-          GetProcAddress(hAvformat, "avformat_open_input"));
-      blog(LOG_INFO,
-           "[QSV VPL ReEncoder] avformat_open_input fp=%p, GetProcAddress=%p",
-           reinterpret_cast<void *>(ff.avformat_open_input), procAddr);
-    }
-
-    // Quick sanity test of avutil/avcodec function pointers before the call
-    // that crashes.
-    void *testFrame = ff.av_frame_alloc();
-    blog(LOG_INFO, "[QSV VPL ReEncoder] av_frame_alloc test returned %p", testFrame);
-    if (testFrame)
-      ff.av_frame_free(&testFrame);
-
-    blog(LOG_INFO, "[QSV VPL ReEncoder] about to call avformat_open_input...");
-    int openRet = ff.avformat_open_input(&fmtCtx, m_InputPath.c_str(), nullptr, nullptr);
+    int openRet = ff.avformat_open_input(&fmtCtx, m_InputPath.c_str(), nullptr,
+                                         nullptr);
     blog(LOG_INFO, "[QSV VPL ReEncoder] avformat_open_input returned %d, fmtCtx=%p",
          openRet, fmtCtx);
     if (openRet < 0) {
@@ -1194,20 +1222,111 @@ void ReEncodeDialog::EncodeThreadMainImpl() {
     }
     AppendLog("Encoder opened successfully");
 
-    // 6. Open output file
+    // 6. Allocate output muxer context (MP4/MKV/etc based on extension)
     blog(LOG_INFO, "[QSV VPL ReEncoder] Output path member: %s", m_OutputPath.c_str());
-    std::ofstream outFile(m_OutputPath, std::ios::binary);
-    if (!outFile.is_open()) {
+    void *outFmtCtx = nullptr;
+    int allocRet = ff.avformat_alloc_output_context2(
+        &outFmtCtx, nullptr, nullptr, m_OutputPath.c_str());
+    if (allocRet < 0 || !outFmtCtx) {
       ff.avcodec_free_context(&decoderCtx);
       ff.avformat_close_input(&fmtCtx);
-      AppendLog("ERROR: Cannot open output file");
+      AppendLog("ERROR: Cannot allocate output format context");
       QMetaObject::invokeMethod(this, [this]() {
-        StatusLabel->setText("Output file failed");
+        StatusLabel->setText("Output context failed");
         SetUIEnabled(true);
         m_Encoding = false;
       }, Qt::QueuedConnection);
       return;
     }
+
+    void *outStream = ff.avformat_new_stream(outFmtCtx, nullptr);
+    if (!outStream) {
+      ff.avformat_free_context(outFmtCtx);
+      ff.avcodec_free_context(&decoderCtx);
+      ff.avformat_close_input(&fmtCtx);
+      AppendLog("ERROR: Cannot create output stream");
+      QMetaObject::invokeMethod(this, [this]() {
+        StatusLabel->setText("Output stream failed");
+        SetUIEnabled(true);
+        m_Encoding = false;
+      }, Qt::QueuedConnection);
+      return;
+    }
+
+    // Copy input codec parameters to output stream, then override codec_id
+    // to match the encoder (the output is a re-encode, not a remux).
+    {
+      auto *outStreamRaw = reinterpret_cast<uint8_t *>(outStream);
+      void *outCodecpar = *reinterpret_cast<void **>(outStreamRaw + 0x10);
+      if (ff.avcodec_parameters_copy(outCodecpar, codecpar) < 0) {
+        ff.avformat_free_context(outFmtCtx);
+        ff.avcodec_free_context(&decoderCtx);
+        ff.avformat_close_input(&fmtCtx);
+        AppendLog("ERROR: Cannot copy codec parameters");
+        QMetaObject::invokeMethod(this, [this]() {
+          StatusLabel->setText("Copy codecpar failed");
+          SetUIEnabled(true);
+          m_Encoding = false;
+        }, Qt::QueuedConnection);
+        return;
+      }
+      int outCodecId = 0;
+      switch (m_Codec) {
+      case QSV_CODEC_AVC:
+        outCodecId = 26; // AV_CODEC_ID_H264
+        break;
+      case QSV_CODEC_HEVC:
+        outCodecId = 173; // AV_CODEC_ID_HEVC
+        break;
+      case QSV_CODEC_AV1:
+        outCodecId = 227; // AV_CODEC_ID_AV1
+        break;
+      case QSV_CODEC_VP9:
+        outCodecId = 167; // AV_CODEC_ID_VP9
+        break;
+      }
+      auto *outCpRaw = reinterpret_cast<uint8_t *>(outCodecpar);
+      *reinterpret_cast<int *>(outCpRaw + 0x00) = 0; // AVMEDIA_TYPE_VIDEO
+      *reinterpret_cast<int *>(outCpRaw + 0x04) = outCodecId;
+      // Use 90kHz time base to match QSV VPL timestamps.
+      *reinterpret_cast<int *>(outStreamRaw + 0x20) = 1;
+      *reinterpret_cast<int *>(outStreamRaw + 0x24) = 90000;
+    }
+
+    // Open output IO. AVIO_FLAG_WRITE = 2.
+    auto *outFmtCtxRaw = reinterpret_cast<uint8_t *>(outFmtCtx);
+    int avioRet = ff.avio_open(
+        reinterpret_cast<void **>(outFmtCtxRaw + 0x20),
+        m_OutputPath.c_str(), 2);
+    if (avioRet < 0) {
+      ff.avformat_free_context(outFmtCtx);
+      ff.avcodec_free_context(&decoderCtx);
+      ff.avformat_close_input(&fmtCtx);
+      AppendLog("ERROR: Cannot open output IO");
+      QMetaObject::invokeMethod(this, [this]() {
+        StatusLabel->setText("Output IO failed");
+        SetUIEnabled(true);
+        m_Encoding = false;
+      }, Qt::QueuedConnection);
+      return;
+    }
+
+    int whRet = ff.avformat_write_header(outFmtCtx, nullptr);
+    if (whRet < 0) {
+      ff.avio_closep(reinterpret_cast<void **>(outFmtCtxRaw + 0x20));
+      ff.avformat_free_context(outFmtCtx);
+      ff.avcodec_free_context(&decoderCtx);
+      ff.avformat_close_input(&fmtCtx);
+      AppendLog("ERROR: Cannot write output header");
+      QMetaObject::invokeMethod(this, [this]() {
+        StatusLabel->setText("Write header failed");
+        SetUIEnabled(true);
+        m_Encoding = false;
+      }, Qt::QueuedConnection);
+      return;
+    }
+
+    AppendLog("Output muxer opened");
 
     // 7. Allocate NV12 frame buffer
     int nv12Size = srcWidth * srcHeight * 3 / 2;
@@ -1219,11 +1338,15 @@ void ReEncodeDialog::EncodeThreadMainImpl() {
     // 8. Frame and packet allocation
     void *frame = ff.av_frame_alloc();
     void *packet = ff.av_packet_alloc();
-    if (!frame || !packet) {
+    void *outPacket = ff.av_packet_alloc();
+    if (!frame || !packet || !outPacket) {
       ff.av_frame_free(&frame);
       ff.av_packet_free(&packet);
+      ff.av_packet_free(&outPacket);
       ff.avcodec_free_context(&decoderCtx);
       ff.avformat_close_input(&fmtCtx);
+      ff.avio_closep(reinterpret_cast<void **>(outFmtCtxRaw + 0x20));
+      ff.avformat_free_context(outFmtCtx);
       AppendLog("ERROR: Cannot allocate frame/packet");
       QMetaObject::invokeMethod(this, [this]() {
         StatusLabel->setText("Alloc failed");
@@ -1232,6 +1355,40 @@ void ReEncodeDialog::EncodeThreadMainImpl() {
       }, Qt::QueuedConnection);
       return;
     }
+
+    // Helper to fill an AVPacket for the muxer from a QSV bitstream.
+    auto fillOutPacket = [&ff, outPacket](mfxBitstream *bs, int64_t pts90k,
+                                          int64_t duration90k, bool key) {
+      // Detach any buffer owned by the packet; we only borrow QSV data.
+      ff.av_packet_unref(outPacket);
+      auto *pktRaw = reinterpret_cast<uint8_t *>(outPacket);
+      *reinterpret_cast<void **>(pktRaw + 0x00) = nullptr;         // buf
+      *reinterpret_cast<int64_t *>(pktRaw + 0x08) = pts90k;        // pts
+      *reinterpret_cast<int64_t *>(pktRaw + 0x10) = pts90k;        // dts
+      *reinterpret_cast<uint8_t **>(pktRaw + 0x18) =
+          bs->Data + bs->DataOffset;                               // data
+      *reinterpret_cast<int *>(pktRaw + 0x20) =
+          static_cast<int>(bs->DataLength);                        // size
+      *reinterpret_cast<int *>(pktRaw + 0x24) = 0;                 // stream_index
+      *reinterpret_cast<int *>(pktRaw + 0x28) = key ? 1 : 0;       // flags
+      *reinterpret_cast<int64_t *>(pktRaw + 0x40) = duration90k;   // duration
+    };
+
+    // Helper to write one QSV bitstream into the output muxer.
+    auto writeBitstream = [&ff, &fillOutPacket, outFmtCtx, outPacket](
+                              mfxBitstream *bs, int64_t pts90k,
+                              int64_t duration90k) {
+      bool key = (bs->FrameType &
+                  (MFX_FRAMETYPE_I | MFX_FRAMETYPE_IDR)) != 0;
+      fillOutPacket(bs, pts90k, duration90k, key);
+      int muxRet = ff.av_interleaved_write_frame(outFmtCtx, outPacket);
+      if (muxRet < 0) {
+        blog(LOG_ERROR,
+             "[QSV VPL ReEncoder] av_interleaved_write_frame failed: %d",
+             muxRet);
+      }
+      return muxRet >= 0;
+    };
 
     // SwsContext for pixel format conversion
     void *swsCtx = nullptr;
@@ -1295,6 +1452,8 @@ void ReEncodeDialog::EncodeThreadMainImpl() {
 
       // Receive all frames from decoder
       while (true) {
+        if (m_StopRequested)
+          break;
         ret = ff.avcodec_receive_frame(decoderCtx, frame);
         if (ret < 0)
           break;
@@ -1337,19 +1496,35 @@ void ReEncodeDialog::EncodeThreadMainImpl() {
                      fv->linesize, 0, srcHeight,
                      nv12Data, nv12Strides);
 
-        // Encode frame
-        mfxBitstream *encBS = nullptr;
-        mfxU64 mfxTS = pts * TS_MULT * fpsDen / fpsNum;
+        // Encode frame (submitted asynchronously)
+        int64_t pts90k = pts * TS_MULT * fpsDen / fpsNum;
         try {
+          mfxBitstream *encBS = nullptr;
           mfxStatus sts = encoder->EncodeFrame(
-              mfxTS, nv12Data, (uint32_t *)nv12Strides, &encBS);
-          if (sts >= MFX_ERR_NONE && encBS && encBS->DataLength > 0) {
-            outFile.write(
-                reinterpret_cast<char *>(encBS->Data + encBS->DataOffset),
-                encBS->DataLength);
+              static_cast<mfxU64>(pts90k), nv12Data, (uint32_t *)nv12Strides,
+              &encBS);
+
+          // EncodeFrame may return a completed frame when the task pool is full.
+          if (encBS && encBS->DataLength > 0) {
+            writeBitstream(encBS, static_cast<int64_t>(encBS->TimeStamp),
+                           TS_MULT * fpsDen / fpsNum);
             frameCount++;
-          } else if (sts == MFX_ERR_MORE_DATA) {
-            // VPP needs more data, skip
+          }
+
+          // Poll for additional completed frames from the async pipeline.
+          mfxBitstream *syncBS = nullptr;
+          while (encoder->SyncAndSwapPendingTask(&syncBS) == MFX_ERR_NONE) {
+            if (m_StopRequested)
+              break;
+            if (syncBS && syncBS->DataLength > 0) {
+              writeBitstream(syncBS, static_cast<int64_t>(syncBS->TimeStamp),
+                             TS_MULT * fpsDen / fpsNum);
+              frameCount++;
+            }
+          }
+
+          if (sts == MFX_ERR_MORE_DATA) {
+            // VPP consumed input but produced no output yet; continue.
           }
         } catch (const std::exception &e) {
           AppendLog(QString("Encode error: %1").arg(e.what()));
@@ -1358,9 +1533,7 @@ void ReEncodeDialog::EncodeThreadMainImpl() {
 
         pts++;
         m_EncodedFrames = frameCount;
-        if (frameCount % 30 == 0) {
-          UpdateProgress(frameCount, m_TotalFrames > 0 ? m_TotalFrames : 0);
-        }
+        UpdateProgress(frameCount, m_TotalFrames > 0 ? m_TotalFrames : 0);
       }
     }
 
@@ -1368,14 +1541,17 @@ void ReEncodeDialog::EncodeThreadMainImpl() {
     AppendLog("Draining encoder...");
     try {
       while (true) {
+        if (m_StopRequested) {
+          AppendLog("Drain aborted by user.");
+          break;
+        }
         mfxBitstream *drainBS = nullptr;
-        mfxStatus sts = encoder->EncodeFrame(0, nullptr, nullptr, &drainBS);
+        mfxStatus sts = encoder->DrainAndRetrieveBitstream(&drainBS);
         if (sts == MFX_ERR_MORE_DATA)
           break;
         if (sts >= MFX_ERR_NONE && drainBS && drainBS->DataLength > 0) {
-          outFile.write(
-              reinterpret_cast<char *>(drainBS->Data + drainBS->DataOffset),
-              drainBS->DataLength);
+          writeBitstream(drainBS, static_cast<int64_t>(drainBS->TimeStamp),
+                         TS_MULT * fpsDen / fpsNum);
           frameCount++;
         }
       }
@@ -1384,11 +1560,22 @@ void ReEncodeDialog::EncodeThreadMainImpl() {
     }
 
     // 11. Cleanup
-    outFile.close();
+    try {
+      if (outFmtCtx) {
+        ff.av_write_trailer(outFmtCtx);
+        auto *cleanupFmtCtxRaw = reinterpret_cast<uint8_t *>(outFmtCtx);
+        ff.avio_closep(reinterpret_cast<void **>(cleanupFmtCtxRaw + 0x20));
+        ff.avformat_free_context(outFmtCtx);
+      }
+    } catch (...) {
+      // Cleanup must not throw; swallow any secondary errors.
+    }
+
     if (swsCtx)
       ff.sws_freeContext(swsCtx);
     ff.av_frame_free(&frame);
     ff.av_packet_free(&packet);
+    ff.av_packet_free(&outPacket);
     ff.avcodec_free_context(&decoderCtx);
     ff.avformat_close_input(&fmtCtx);
 

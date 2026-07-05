@@ -261,6 +261,7 @@ extern const char *const qsv_params_weighted_pred_options[];
 extern const char *const qsv_params_condition_scaling_mode[];
 extern const char *const qsv_params_condition_image_stab_mode[];
 extern const char *const qsv_params_condition_screen_content_tools[];
+extern const char *const qsv_params_skip_frame_mode[];
 extern const char *const qsv_params_condition_intra_ref_encoding[];
 extern const char *const qsv_params_condition_mv_cost_scaling[];
 extern const char *const qsv_params_condition_lookahead_mode[];

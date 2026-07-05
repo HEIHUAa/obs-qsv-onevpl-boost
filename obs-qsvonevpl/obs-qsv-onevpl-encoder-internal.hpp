@@ -28,6 +28,14 @@ public:
   void UpdateROIRegions(const std::vector<encoder_params::roi_region> &Regions,
                          mfxU16 Mode);
 
+  // Exposed for the offline re-encoder so it can pull encoded bitstream
+  // frames from the async pipeline without changing the normal OBS path.
+  mfxStatus SyncAndSwapPendingTask(mfxBitstream **Bitstream);
+
+  // Drain the encoder and return each completed bitstream one by one.
+  // Returns MFX_ERR_NONE with *Bitstream set, or MFX_ERR_MORE_DATA when done.
+  mfxStatus DrainAndRetrieveBitstream(mfxBitstream **Bitstream);
+
   protected:
   struct Task {
     mfxBitstream Bitstream{};
@@ -61,7 +69,6 @@ public:
   void ReleaseTaskPool();
   mfxStatus ChangeBitstreamSize(mfxU32 NewSize);
   mfxStatus GetFreeTaskIndex(int *TaskID);
-  mfxStatus SyncAndSwapPendingTask(mfxBitstream **Bitstream);
   mfxStatus EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
                                   mfxEncodeCtrl *Ctrl, int TaskID,
                                   mfxU32 MaxRetries = 200);
@@ -160,6 +167,8 @@ private:
 #endif
 
   bool QSVIsTextureEncoder{};
+  // Tracks whether a drain marker has been submitted for offline re-encoder.
+  bool m_DrainSubmitted{false};
   mfxMemoryInterface *QSVMemoryInterface{};
 
   std::unique_ptr<class HWManager> HWManager{};

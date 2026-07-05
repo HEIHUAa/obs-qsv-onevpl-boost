@@ -50,6 +50,8 @@ const char *const qsv_params_condition_image_stab_mode[] = {
     "OFF", "UPSCALE", "BOXING", "AUTO", 0};
 const char *const qsv_params_condition_screen_content_tools[] = {
     "AUTO", "OFF", "ON", 0};
+const char *const qsv_params_skip_frame_mode[] = {
+    "NO_SKIP", "INSERT_DUMMY", "INSERT_NOTHING", "BRC_ONLY", "AUTO", 0};
 const char *const qsv_params_condition_intra_ref_encoding[] = {
     "VERTICAL", "HORIZONTAL", 0};
 const char *const qsv_params_condition_mv_cost_scaling[] = {
@@ -728,7 +730,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 
   Prop = obs_properties_add_list(RCGroup, "skip_frame", TEXT_SKIP_FRAME,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition_tristate);
+  AddStrings(Prop, qsv_params_skip_frame_mode);
   obs_property_set_long_description(Prop, TEXT_SKIP_FRAME_DESC);
   obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC ||
                            Codec == QSV_CODEC_HEVC);
@@ -1512,13 +1514,16 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
 
   Context->EncoderParams.AdaptiveMaxFrameSize = AdaptiveMaxFrameSizeData;
 
-  // SkipFrame: ON maps to the safest BRC-only mode; OFF disables skipping.
+  // SkipFrame: map all 4 VPL modes + AUTO (driver decides)
   auto svSkip = std::string_view(SkipFrameData);
-  if (svSkip == "OFF") {
+  if (svSkip == "NO_SKIP")
     Context->EncoderParams.SkipFrame = MFX_SKIPFRAME_NO_SKIP;
-  } else if (svSkip == "ON") {
+  else if (svSkip == "INSERT_DUMMY")
+    Context->EncoderParams.SkipFrame = MFX_SKIPFRAME_INSERT_DUMMY;
+  else if (svSkip == "INSERT_NOTHING")
+    Context->EncoderParams.SkipFrame = MFX_SKIPFRAME_INSERT_NOTHING;
+  else if (svSkip == "BRC_ONLY")
     Context->EncoderParams.SkipFrame = MFX_SKIPFRAME_BRC_ONLY;
-  }
   // AUTO leaves SkipFrame unset so the driver chooses.
 
   auto svRepart = std::string_view(RepartitionCheckData);

@@ -3494,12 +3494,38 @@ mfxStatus QSVEncoder::GetFreeTaskIndex(int *TaskID) {
 }
 
 mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
-  mfxStatus SyncStatus = MFX_ERR_NONE;
+  *Bitstream = nullptr;
   profile_start("qsv_sync_task");
 
   {
     std::lock_guard<std::mutex> lock(QSVTaskPoolMutex);
 
+    const int PoolSize = static_cast<int>(QSVTaskPool.size());
+    if (PoolSize == 0) {
+      profile_end("qsv_sync_task");
+      return MFX_ERR_MORE_DATA;
+    }
+
+    // Walk forward to the oldest task that still has a pending sync point.
+    // The normal OBS path keeps QSVSyncTaskID at the oldest pending task, but
+    // the offline re-encoder calls this repeatedly without submitting new
+    // frames, so we advance the index ourselves when we drain.
+    int FoundIdx = -1;
+    for (int i = 0; i < PoolSize; i++) {
+      int Idx = (QSVSyncTaskID + i) % PoolSize;
+      if (QSVTaskPool[Idx].SyncPoint != nullptr) {
+        QSVSyncTaskID = Idx;
+        FoundIdx = Idx;
+        break;
+      }
+    }
+
+    if (FoundIdx < 0) {
+      profile_end("qsv_sync_task");
+      return MFX_ERR_MORE_DATA;
+    }
+
+    mfxStatus SyncStatus = MFX_ERR_NONE;
     while (QSVTaskPool[QSVSyncTaskID].SyncPoint != nullptr) {
       SyncStatus = MFXVideoCORE_SyncOperation(
           QSVSession, QSVTaskPool[QSVSyncTaskID].SyncPoint, 100);
@@ -3571,12 +3597,49 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
     QSVTaskPool[QSVSyncTaskID].Bitstream.DataLength = 0;
     QSVTaskPool[QSVSyncTaskID].Bitstream.DataOffset = 0;
     QSVTaskPool[QSVSyncTaskID].SyncPoint = nullptr;
+
+    // Advance to the next candidate for the next call.
+    QSVSyncTaskID = (QSVSyncTaskID + 1) % PoolSize;
   }
 
   *Bitstream = &QSVBitstream;
 
   profile_end("qsv_sync_task");
   return MFX_ERR_NONE;
+}
+
+mfxStatus QSVEncoder::DrainAndRetrieveBitstream(mfxBitstream **Bitstream) {
+  *Bitstream = nullptr;
+
+  if (!QSVEncode) {
+    return MFX_ERR_MORE_DATA;
+  }
+
+  if (!m_DrainSubmitted) {
+    m_DrainSubmitted = true;
+    // Submit drain markers until the encoder reports no more buffered frames.
+    constexpr int MAX_DRAIN_SUBMITS = 128;
+    for (int i = 0; i < MAX_DRAIN_SUBMITS; i++) {
+      mfxSyncPoint sp = nullptr;
+      mfxStatus sts = QSVEncode->EncodeFrameAsync(nullptr, nullptr, nullptr, &sp);
+      if (sts == MFX_ERR_MORE_DATA) {
+        break;
+      }
+      if (sts < MFX_ERR_NONE && sts != MFX_ERR_NULL_PTR) {
+        warn("DrainAndRetrieve: EncodeFrameAsync error: %d", sts);
+        return sts;
+      }
+      if (sp) {
+        mfxStatus syncSts = MFXVideoCORE_SyncOperation(QSVSession, sp, 5000);
+        if (syncSts < MFX_ERR_NONE && syncSts != MFX_ERR_NULL_PTR) {
+          warn("DrainAndRetrieve: sync warning: %d", syncSts);
+        }
+      }
+    }
+  }
+
+  // Return completed frames from the task pool one at a time.
+  return SyncAndSwapPendingTask(Bitstream);
 }
 
 mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
@@ -4389,6 +4452,8 @@ void QSVEncoder::WarmUpEncoder() {
 
 mfxStatus QSVEncoder::ClearData() {
   mfxStatus Status = MFX_ERR_NONE;
+
+  m_DrainSubmitted = false;
 
   if (QSVEncode) {
     Drain();
