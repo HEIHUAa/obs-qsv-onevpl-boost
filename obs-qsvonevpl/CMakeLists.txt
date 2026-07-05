@@ -19,6 +19,8 @@ target_sources(
   obs-qsv-onevpl-encoder-internal.hpp
   obs-qsv-onevpl-roi-editor.cpp
   obs-qsv-onevpl-roi-editor.hpp
+  obs-qsv-onevpl-video-reencoder.cpp
+  obs-qsv-onevpl-video-reencoder.hpp
   helpers/common_utils.cpp
   helpers/common_utils.hpp
   helpers/ext_buf_manager.hpp
@@ -117,6 +119,8 @@ if(WIN32)
       obs-qsv-onevpl-encoder-internal.hpp
       obs-qsv-onevpl-roi-editor.cpp
       obs-qsv-onevpl-roi-editor.hpp
+      obs-qsv-onevpl-video-reencoder.cpp
+      obs-qsv-onevpl-video-reencoder.hpp
       helpers/common_utils.cpp
       helpers/common_utils.hpp
       helpers/ext_buf_manager.hpp

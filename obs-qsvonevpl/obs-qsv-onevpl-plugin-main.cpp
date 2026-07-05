@@ -303,6 +303,9 @@ bool obs_module_load([[maybe_unused]] void) {
   // Register ROI editor in Tools menu (only when frontend API is available)
   RegisterROIEditor();
 
+  // Register video re-encoder in Tools menu
+  RegisterReEncoder();
+
   return true;
 }
 

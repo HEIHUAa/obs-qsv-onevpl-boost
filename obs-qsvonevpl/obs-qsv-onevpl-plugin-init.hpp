@@ -332,3 +332,4 @@ static void SetVP9DefaultParams(obs_data_t *Settings);
 static void SetHEVCDefaultParams(obs_data_t *Settings);
 
 void RegisterROIEditor();
+void RegisterReEncoder();
