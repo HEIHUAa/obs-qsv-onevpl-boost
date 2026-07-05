@@ -781,17 +781,22 @@ void ReEncodeDialog::UpdateProgress(int64_t Current, int64_t Total) {
 // These are stable across FFmpeg releases (5.x/6.x/7.x).
 // ============================================================================
 
-// AVFrame: format(int) + padding + data[8](ptrs) + linesize[8](ints)
-// Standard layout since FFmpeg 3.x:
-//   offset 0x00: int format
-//   offset 0x04: 4 bytes padding (to align pointers)
-//   offset 0x08: uint8_t *data[8]
-//   offset 0x48: int linesize[8]
+// AVFrame layout (stable since FFmpeg 3.x):
+//   offset 0x00: uint8_t *data[8]
+//   offset 0x40: int linesize[8]
+//   offset 0x60: uint8_t **extended_data
+//   offset 0x68: int width
+//   offset 0x6c: int height
+//   offset 0x70: int nb_samples
+//   offset 0x74: int format
 struct AVFrameView {
-  int format;
-  int _pad;
   uint8_t *data[8];
   int linesize[8];
+  uint8_t **extended_data;
+  int width;
+  int height;
+  int nb_samples;
+  int format;
 };
 
 // AVCodecContext: key fields at stable offsets:
@@ -917,6 +922,10 @@ void ReEncodeDialog::EncodeThreadMain() {
         if (s && s[0] != nullptr) {
           nb_streams = n;
           streams = s;
+          blog(LOG_INFO,
+               "[QSV VPL ReEncoder] AVFormatContext layout: nb_streams@0x%x=%u, "
+               "streams@0x%x",
+               attempt.nbOff, n, attempt.streamsOff);
           break;
         }
       }
@@ -1016,14 +1025,18 @@ void ReEncodeDialog::EncodeThreadMain() {
       }
     }
 
-    // Get frame rate: probe r_frame_rate in AVStream
+    // Get frame rate: probe r_frame_rate in AVStream. In FFmpeg 6.x/7.x it
+    // sits after the embedded AVPacket (attached_pic), typically around 0xc0.
     int fpsNum = 0, fpsDen = 1;
-    for (int frOff : {0x38, 0x40, 0x48, 0x50, 0x58, 0x60, 0x68, 0x70, 0x78}) {
+    for (int frOff = 0x38; frOff < 0x100; frOff += 8) {
       int num = *reinterpret_cast<const int *>(rawSt + frOff);
       int den = *reinterpret_cast<const int *>(rawSt + frOff + 4);
       if (num > 0 && den > 0 && num < 1000 && den < 1000) {
         fpsNum = num;
         fpsDen = den;
+        blog(LOG_INFO,
+             "[QSV VPL ReEncoder] AVStream r_frame_rate offset 0x%x = %d/%d",
+             frOff, num, den);
         break;
       }
     }
@@ -1223,6 +1236,16 @@ void ReEncodeDialog::EncodeThreadMain() {
         // Get pixel format from AVFrame
         auto *fv = reinterpret_cast<const AVFrameView *>(frame);
         int srcFormat = fv->format;
+        blog(LOG_INFO,
+             "[QSV VPL ReEncoder] Decoded frame format=%d, data[0]=%p, "
+             "linesize[0]=%d",
+             srcFormat, static_cast<void *>(fv->data[0]), fv->linesize[0]);
+
+        // Sanity check: format should be a small non-negative enum value.
+        if (srcFormat < 0 || srcFormat > 0xFFFF) {
+          AppendLog(QString("ERROR: Invalid pixel format %1, aborting").arg(srcFormat));
+          break;
+        }
 
         // Create swscale context on first frame or format change
         if (!swsCtx) {
