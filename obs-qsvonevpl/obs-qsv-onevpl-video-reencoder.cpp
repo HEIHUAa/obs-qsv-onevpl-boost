@@ -9,6 +9,9 @@
 #include "obs-qsv-onevpl-encoder.hpp"
 #include "obs-qsv-onevpl-plugin-init.hpp"
 #include <obs-frontend-api.h>
+#include <util/config-file.h>
+#include <util/platform.h>
+#include <cstdio>
 #include <fstream>
 #include <system_error>
 
@@ -238,6 +241,142 @@ void ReEncodeDialog::closeEvent(QCloseEvent *Event) {
   QDialog::closeEvent(Event);
 }
 
+// ============================================================================
+// Fallback: load encoder config from OBS profile config files (basic.ini +
+// recordEncoder.json).  Called when no active encoder instance is available.
+// ============================================================================
+bool ReEncodeDialog::LoadEncoderConfigFromFile() {
+  config_t *config = obs_frontend_get_profile_config();
+  if (!config)
+    return false;
+
+  // Determine output mode and read the recording encoder ID
+  const char *mode = config_get_string(config, "Output", "Mode");
+  bool advOut = (mode && strcmp(mode, "Advanced") == 0);
+
+  const char *encId = nullptr;
+  if (advOut) {
+    encId = config_get_string(config, "AdvOut", "RecEncoder");
+    // "none" means re-use the streaming encoder
+    if (!encId || strcmp(encId, "none") == 0 || encId[0] == '\0')
+      encId = config_get_string(config, "AdvOut", "Encoder");
+  } else {
+    encId = config_get_string(config, "SimpleOutput", "RecEncoder");
+  }
+
+  if (!encId || encId[0] == '\0')
+    return false;
+
+  // ---- Map encoder ID to codec enum ----------------------------------------
+  codec_enum codec;
+  if (strcmp(encId, "obs_qsv_vpl_h264") == 0 ||
+      strcmp(encId, "obs_qsv_vpl_h264_tex") == 0 ||
+      strcmp(encId, "qsv") == 0 ||
+      strcmp(encId, "obs_qsv11_v2") == 0)
+    codec = QSV_CODEC_AVC;
+  else if (strcmp(encId, "obs_qsv_vpl_hevc") == 0 ||
+           strcmp(encId, "qsv_hevc") == 0 ||
+           strcmp(encId, "obs_qsv11_hevc") == 0)
+    codec = QSV_CODEC_HEVC;
+  else if (strcmp(encId, "obs_qsv_vpl_av1") == 0 ||
+           strcmp(encId, "qsv_av1") == 0 ||
+           strcmp(encId, "obs_qsv11_av1") == 0)
+    codec = QSV_CODEC_AV1;
+  else if (strcmp(encId, "obs_qsv_vpl_vp9") == 0 ||
+           strcmp(encId, "qsv_vp9") == 0 ||
+           strcmp(encId, "obs_qsv11_vp9") == 0)
+    codec = QSV_CODEC_VP9;
+  else
+    return false; // not a QSV encoder, can't re-encode with our plugin
+
+  m_Codec = codec;
+  m_EncoderParams = encoder_params{};
+
+  // Sensible defaults
+  m_EncoderParams.TargetUsage = 4; // balanced
+  m_EncoderParams.TargetBitRate = 5000;
+  m_EncoderParams.RateControl = MFX_RATECONTROL_VBR;
+
+  // ---- Advanced mode: try reading recordEncoder.json -----------------------
+  if (advOut) {
+    char *profilePath = obs_frontend_get_current_profile_path();
+    if (profilePath) {
+      std::string jsonPath = std::string(profilePath) + "/recordEncoder.json";
+      bfree(profilePath);
+
+      obs_data_t *s = obs_data_create_from_json_file(jsonPath.c_str());
+      if (s) {
+        // Rate control -------------------------------------------------------
+        const char *rc = obs_data_get_string(s, "rate_control");
+        if (rc && rc[0]) {
+          static const struct { const char *name; mfxU16 val; } kRC[] = {
+            {"CBR", MFX_RATECONTROL_CBR}, {"VBR", MFX_RATECONTROL_VBR},
+            {"CQP", MFX_RATECONTROL_CQP}, {"ICQ", MFX_RATECONTROL_ICQ},
+            {"AVBR", MFX_RATECONTROL_AVBR}, {"VCM", MFX_RATECONTROL_VCM},
+            {"QVBR", MFX_RATECONTROL_QVBR},
+          };
+          for (auto &e : kRC) {
+            if (strcmp(rc, e.name) == 0) {
+              m_EncoderParams.RateControl = e.val;
+              break;
+            }
+          }
+        }
+
+        // Basic bitrate params ----------------------------------------------
+        m_EncoderParams.TargetBitRate = (uint32_t)obs_data_get_int(s, "bitrate");
+        m_EncoderParams.MaxBitRate = (uint32_t)obs_data_get_int(s, "max_bitrate");
+
+        // Keyframe & GOP ----------------------------------------------------
+        m_EncoderParams.KeyIntSec = (mfxU16)obs_data_get_int(s, "keyint_sec");
+        m_EncoderParams.BFrames = (mfxU16)obs_data_get_int(s, "b_frames");
+        m_EncoderParams.NumRefFrame = (mfxU16)obs_data_get_int(s, "num_ref_frame");
+
+        // Target usage ------------------------------------------------------
+        const char *tu = obs_data_get_string(s, "target_usage");
+        if (tu && tu[0]) {
+          int val = 4;
+          if (sscanf(tu, "TU%d", &val) >= 1 && val >= 1 && val <= 7)
+            m_EncoderParams.TargetUsage = (mfxU16)val;
+        }
+
+        // ICQ / CQP quality -------------------------------------------------
+        m_EncoderParams.ICQQuality = (mfxU16)obs_data_get_int(s, "icq_quality");
+
+        uint64_t qp = obs_data_get_int(s, "cqp");
+        m_EncoderParams.QPI = (mfxU16)qp;
+        m_EncoderParams.QPP = (mfxU16)qp;
+        m_EncoderParams.QPB = (mfxU16)qp;
+
+        // Lookahead ---------------------------------------------------------
+        m_EncoderParams.LADepth = (mfxU16)obs_data_get_int(s, "lookahead_depth");
+
+        // Other -------------------------------------------------------------
+        m_EncoderParams.GPUNum = (mfxU16)obs_data_get_int(s, "gpu_num");
+        m_EncoderParams.AsyncDepth = (mfxU16)obs_data_get_int(s, "async_depth");
+        m_EncoderParams.BufferSize = (uint32_t)obs_data_get_int(s, "buffer_size");
+
+        obs_data_release(s);
+
+        m_ParamsValid = true;
+        return true;
+      }
+    }
+    // Fallback for advanced mode w/o JSON: read limited params from basic.ini
+    uint64_t vb = config_get_uint(config, "AdvOut", "VBitrate");
+    if (vb > 0)
+      m_EncoderParams.TargetBitRate = (uint32_t)vb;
+  } else {
+    // ---- Simple mode: read from [SimpleOutput] -------------------------------
+    uint64_t vb = config_get_uint(config, "SimpleOutput", "VBitrate");
+    if (vb > 0)
+      m_EncoderParams.TargetBitRate = (uint32_t)vb;
+  }
+
+  m_ParamsValid = true;
+  return true;
+}
+
 // Populate encoder params from the first active QSV encoder
 void ReEncodeDialog::PopulateEncoderConfig() {
   std::lock_guard<std::mutex> lock(EncoderDataMapMutex);
@@ -274,6 +413,25 @@ void ReEncodeDialog::PopulateEncoderConfig() {
     ConfigLabel->setText(summary);
     AppendLog(QString("Loaded encoder config from active encoder: %1")
                   .arg(summary));
+    return;
+  }
+
+  // No active encoder found — try loading from OBS config files
+  if (LoadEncoderConfigFromFile()) {
+    QString summary = QString("%1 | bitrate %2 kbps")
+                          .arg(CodecToStr(m_Codec))
+                          .arg(m_EncoderParams.TargetBitRate);
+    if (m_EncoderParams.RateControl == MFX_RATECONTROL_CBR)
+      summary += " | CBR";
+    else if (m_EncoderParams.RateControl == MFX_RATECONTROL_VBR)
+      summary += " | VBR";
+    else if (m_EncoderParams.RateControl == MFX_RATECONTROL_CQP)
+      summary += " | CQP";
+    else if (m_EncoderParams.RateControl == MFX_RATECONTROL_ICQ)
+      summary += " | ICQ";
+
+    ConfigLabel->setText(summary);
+    AppendLog(QString("Loaded encoder config from OBS profile: %1").arg(summary));
     return;
   }
 

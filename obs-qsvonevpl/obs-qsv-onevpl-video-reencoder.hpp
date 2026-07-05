@@ -91,6 +91,9 @@ private:
   void SetUIEnabled(bool Enabled);
   void UpdateProgress(int64_t Current, int64_t Total);
 
+  // Fallback: load encoder config from OBS profile files
+  bool LoadEncoderConfigFromFile();
+
   // UI
   QLineEdit *InputPathEdit;
   QLineEdit *OutputPathEdit;
