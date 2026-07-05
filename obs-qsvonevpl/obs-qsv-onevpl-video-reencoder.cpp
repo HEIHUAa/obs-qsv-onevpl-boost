@@ -199,24 +199,34 @@ bool LoadFFmpegDyn(FFmpegFuncs &ff) {
   }
 
   // avutil
-  HMODULE avutil = TryLoadDLLWithFallback(L"avutil", 55, 61);
+  HMODULE avutil = TryLoadDLLWithFallback(L"avutil", 55, 60);
   if (!avutil) {
     blog(LOG_ERROR, "[QSV VPL ReEncoder] Cannot load avutil DLL");
     return false;
   }
   const char *avutil_names[] = {
-      "av_frame_alloc", "av_frame_free", "av_packet_alloc",
-      "av_packet_free"};
+      "av_frame_alloc", "av_frame_free",
+      "av_image_get_buffer_size", "av_image_fill_arrays"};
   void *avutil_ptrs[] = {
       reinterpret_cast<void **>(&ff.av_frame_alloc),
       reinterpret_cast<void **>(&ff.av_frame_free),
-      reinterpret_cast<void **>(&ff.av_packet_alloc),
-      reinterpret_cast<void **>(&ff.av_packet_free)};
+      reinterpret_cast<void **>(&ff.av_image_get_buffer_size),
+      reinterpret_cast<void **>(&ff.av_image_fill_arrays)};
   if (!ResolveFuncs(avutil, avutil_names, avutil_ptrs, 4))
     return false;
 
+  // In standard FFmpeg av_packet_alloc/free live in avutil, but OBS's custom
+  // builds move them to avcodec. Try avutil first (non-fatal), then require
+  // them from avcodec.
+  ff.av_packet_alloc = reinterpret_cast<decltype(ff.av_packet_alloc)>(
+      GetProcAddress(avutil, "av_packet_alloc"));
+  ff.av_packet_free = reinterpret_cast<decltype(ff.av_packet_free)>(
+      GetProcAddress(avutil, "av_packet_free"));
+  if (ff.av_packet_alloc)
+    blog(LOG_INFO, "[QSV VPL ReEncoder] av_packet_alloc resolved from avutil");
+
   // avcodec
-  HMODULE avcodec = TryLoadDLLWithFallback(L"avcodec", 57, 63);
+  HMODULE avcodec = TryLoadDLLWithFallback(L"avcodec", 57, 62);
   if (!avcodec) {
     blog(LOG_ERROR, "[QSV VPL ReEncoder] Cannot load avcodec DLL");
     return false;
@@ -240,8 +250,28 @@ bool LoadFFmpegDyn(FFmpegFuncs &ff) {
   if (!ResolveFuncs(avcodec, avcodec_names, avcodec_ptrs, 7))
     return false;
 
+  // av_packet_alloc/free: prefer avcodec if available (OBS layout).
+  auto *pktAlloc = reinterpret_cast<decltype(ff.av_packet_alloc)>(
+      GetProcAddress(avcodec, "av_packet_alloc"));
+  auto *pktFree = reinterpret_cast<decltype(ff.av_packet_free)>(
+      GetProcAddress(avcodec, "av_packet_free"));
+  if (pktAlloc) {
+    ff.av_packet_alloc = pktAlloc;
+    blog(LOG_INFO, "[QSV VPL ReEncoder] av_packet_alloc resolved from avcodec");
+  }
+  if (pktFree) {
+    ff.av_packet_free = pktFree;
+    blog(LOG_INFO, "[QSV VPL ReEncoder] av_packet_free resolved from avcodec");
+  }
+  if (!ff.av_packet_alloc || !ff.av_packet_free) {
+    blog(LOG_ERROR,
+         "[QSV VPL ReEncoder] Cannot resolve av_packet_alloc/free from either "
+         "avutil or avcodec");
+    return false;
+  }
+
   // avformat (depends on avcodec/avutil)
-  HMODULE avformat = TryLoadDLLWithFallback(L"avformat", 57, 63);
+  HMODULE avformat = TryLoadDLLWithFallback(L"avformat", 57, 62);
   if (!avformat) {
     blog(LOG_ERROR, "[QSV VPL ReEncoder] Cannot load avformat DLL");
     return false;
@@ -259,7 +289,7 @@ bool LoadFFmpegDyn(FFmpegFuncs &ff) {
     return false;
 
   // swscale
-  HMODULE swscale = TryLoadDLLWithFallback(L"swscale", 4, 10);
+  HMODULE swscale = TryLoadDLLWithFallback(L"swscale", 4, 11);
   if (!swscale) {
     blog(LOG_ERROR, "[QSV VPL ReEncoder] Cannot load swscale DLL");
     return false;

@@ -43,12 +43,14 @@ struct FFmpegFuncs {
   // avutil
   void *(*av_frame_alloc)(void);
   void (*av_frame_free)(void **frame);
-  void *(*av_packet_alloc)(void);
-  void (*av_packet_free)(void **pkt);
   int (*av_image_get_buffer_size)(int pix_fmt, int w, int h, int align);
   int (*av_image_fill_arrays)(uint8_t **dst_data, int *dst_linesize,
                               const uint8_t *src, int pix_fmt,
                               int w, int h, int align);
+
+  // avcodec
+  void *(*av_packet_alloc)(void);
+  void (*av_packet_free)(void **pkt);
 
   // swscale
   void *(*sws_getContext)(int srcW, int srcH, int srcFormat,
