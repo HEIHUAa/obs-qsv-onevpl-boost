@@ -18,8 +18,6 @@
 #include <vector>
 #include <cstdint>
 
-#include <obs-module.h>
-#include <obs-frontend-api.h>
 #include "obs-qsv-onevpl-encoder.hpp"
 #include "helpers/qsv_params.hpp"
 
@@ -74,6 +72,9 @@ public:
   explicit ReEncodeDialog(QWidget *Parent = nullptr);
   ~ReEncodeDialog() override;
 
+  // Called externally (frontend event callback) to refresh config
+  void PopulateEncoderConfig();
+
 protected:
   void closeEvent(QCloseEvent *Event) override;
 
@@ -83,7 +84,6 @@ private slots:
   void OnStartStop();
 
 private:
-  void PopulateEncoderConfig();
   bool StartEncoding();
   void StopEncoding();
   void EncodeThreadMain();

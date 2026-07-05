@@ -1,12 +1,14 @@
-#include "obs-qsv-onevpl-video-reencoder.hpp"
-#include "helpers/common_utils.hpp"
-#include "obs-qsv-onevpl-encoder.hpp"
-#include "obs-qsv-onevpl-plugin-init.hpp"
-
+// Qt headers must come before OBS headers to avoid macro conflicts (e.g. LOG_ERROR)
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QTimer>
 #include <QFileInfo>
+
+#include "obs-qsv-onevpl-video-reencoder.hpp"
+#include "helpers/common_utils.hpp"
+#include "obs-qsv-onevpl-encoder.hpp"
+#include "obs-qsv-onevpl-plugin-init.hpp"
+#include <obs-frontend-api.h>
 #include <fstream>
 #include <system_error>
 
