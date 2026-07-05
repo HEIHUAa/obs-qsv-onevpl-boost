@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <string_view>
 
+#include "helpers/encoder_params_parser.hpp"
 #include "obs-qsv-onevpl-encoder.hpp"
 
 // Extern array definitions (declared in obs-qsv-onevpl-plugin-init.hpp)
@@ -1307,111 +1308,9 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   return Props;
 }
 
-// Forward declaration for MapString used below
-template <typename T, size_t N>
-static std::optional<T> MapString(std::string_view key,
-                                   const std::pair<std::string_view, T> (&map)[N]);
-
-// Helper: parse AV1 ON/OFF/AUTO three-state string.
-// 2 -> MFX_CODINGOPTION_UNKNOWN (let driver decide)
-static constexpr std::pair<std::string_view, mfxU16> kAV1TernaryMap[] = {
-    {"AUTO", 2},
-    {"ON",   1},
-    {"OFF",  0},
-};
-static inline mfxU16 ParseAV1Ternary(const char *Data) {
-  return MapString(Data, kAV1TernaryMap).value_or(2);
-}
-
-// Helper: parse WeightedPred/BiPred string. "AUTO" lets the driver decide
-// (MFX_WEIGHTED_PRED_UNKNOWN); unmapped strings also fall back to AUTO.
-static constexpr std::pair<std::string_view, mfxU16> kWeightedPredModeMap[] = {
-    {"AUTO",     MFX_WEIGHTED_PRED_UNKNOWN},
-    {"OFF",      MFX_WEIGHTED_PRED_UNKNOWN},
-    {"DEFAULT",  MFX_WEIGHTED_PRED_DEFAULT},
-    {"EXPLICIT", MFX_WEIGHTED_PRED_EXPLICIT},
-    {"IMPLICIT", MFX_WEIGHTED_PRED_IMPLICIT},
-};
-static inline mfxU16 ParseWeightedPredMode(const char *Data) {
-  return MapString(Data, kWeightedPredModeMap).value_or(MFX_WEIGHTED_PRED_UNKNOWN);
-}
-
-#ifdef ONEVPL_EXPERIMENTAL
-// Parse TuneQuality string for mfxExtTuneEncodeQuality (AV1 only, experimental).
-static constexpr std::pair<std::string_view, mfxU32> kTuneQualityMap[] = {
-    {"OFF",             0},
-    {"VMAF",            MFX_ENCODE_TUNE_VMAF},
-    {"PERCEPTUAL",      MFX_ENCODE_TUNE_PERCEPTUAL},
-    {"VMAF+PERCEPTUAL", MFX_ENCODE_TUNE_VMAF | MFX_ENCODE_TUNE_PERCEPTUAL},
-};
-static inline mfxU32 ParseTuneQuality(const char *Data) {
-  return MapString(Data, kTuneQualityMap).value_or(0);
-}
-#endif
-
-// Codec level lookup tables
-// Replace large if-else chains with data-driven lookup.
-
-struct LevelEntry {
-  const char *name;
-  mfxU16 value;
-};
-
-static mfxU16 ParseCodecLevel(std::string_view LevelStr,
-                               const LevelEntry *Table, size_t Count) {
-  auto it = std::ranges::find(Table, Table + Count, LevelStr, &LevelEntry::name);
-  return it != Table + Count ? it->value : 0;
-}
-
-static const LevelEntry kAVCLevels[] = {
-    {"auto", 0},   {"1", MFX_LEVEL_AVC_1},      {"1b", MFX_LEVEL_AVC_1b},
-    {"1.1", MFX_LEVEL_AVC_11}, {"1.2", MFX_LEVEL_AVC_12},
-    {"1.3", MFX_LEVEL_AVC_13}, {"2", MFX_LEVEL_AVC_2},
-    {"2.1", MFX_LEVEL_AVC_21}, {"2.2", MFX_LEVEL_AVC_22},
-    {"3", MFX_LEVEL_AVC_3},    {"3.1", MFX_LEVEL_AVC_31},
-    {"3.2", MFX_LEVEL_AVC_32}, {"4", MFX_LEVEL_AVC_4},
-    {"4.1", MFX_LEVEL_AVC_41}, {"4.2", MFX_LEVEL_AVC_42},
-    {"5", MFX_LEVEL_AVC_5},    {"5.1", MFX_LEVEL_AVC_51},
-    {"5.2", MFX_LEVEL_AVC_52}, {"6", MFX_LEVEL_AVC_6},
-    {"6.1", MFX_LEVEL_AVC_61}, {"6.2", MFX_LEVEL_AVC_62},
-};
-
-static const LevelEntry kHEVCLevels[] = {
-    {"auto", 0},   {"1", MFX_LEVEL_HEVC_1},     {"2", MFX_LEVEL_HEVC_2},
-    {"2.1", MFX_LEVEL_HEVC_21}, {"3", MFX_LEVEL_HEVC_3},
-    {"3.1", MFX_LEVEL_HEVC_31}, {"4", MFX_LEVEL_HEVC_4},
-    {"4.1", MFX_LEVEL_HEVC_41}, {"5", MFX_LEVEL_HEVC_5},
-    {"5.1", MFX_LEVEL_HEVC_51}, {"5.2", MFX_LEVEL_HEVC_52},
-    {"6", MFX_LEVEL_HEVC_6},    {"6.1", MFX_LEVEL_HEVC_61},
-    {"6.2", MFX_LEVEL_HEVC_62}, {"8.5", MFX_LEVEL_HEVC_85},
-};
-
-static const LevelEntry kAV1Levels[] = {
-    {"auto", 0},   {"2.0", MFX_LEVEL_AV1_2},    {"2.1", MFX_LEVEL_AV1_21},
-    {"2.2", MFX_LEVEL_AV1_22}, {"2.3", MFX_LEVEL_AV1_23},
-    {"3.0", MFX_LEVEL_AV1_3},  {"3.1", MFX_LEVEL_AV1_31},
-    {"3.2", MFX_LEVEL_AV1_32}, {"3.3", MFX_LEVEL_AV1_33},
-    {"4.0", MFX_LEVEL_AV1_4},  {"4.1", MFX_LEVEL_AV1_41},
-    {"4.2", MFX_LEVEL_AV1_42}, {"4.3", MFX_LEVEL_AV1_43},
-    {"5.0", MFX_LEVEL_AV1_5},  {"5.1", MFX_LEVEL_AV1_51},
-    {"5.2", MFX_LEVEL_AV1_52}, {"5.3", MFX_LEVEL_AV1_53},
-    {"6.0", MFX_LEVEL_AV1_6},  {"6.1", MFX_LEVEL_AV1_61},
-    {"6.2", MFX_LEVEL_AV1_62}, {"6.3", MFX_LEVEL_AV1_63},
-    {"7.0", MFX_LEVEL_AV1_7},  {"7.1", MFX_LEVEL_AV1_71},
-    {"7.2", MFX_LEVEL_AV1_72}, {"7.3", MFX_LEVEL_AV1_73},
-};
-
-// Map string to value via compile-time lookup table
-template <typename T, size_t N>
-static std::optional<T> MapString(std::string_view key,
-                                   const std::pair<std::string_view, T> (&map)[N]) {
-  for (const auto &[str, val] : map) {
-    if (key == str)
-      return val;
-  }
-  return std::nullopt;
-}
-
+// UI-to-encoder_params parsing is shared with the offline re-encoder via
+// helpers/encoder_params_parser.hpp.  This function only adds OBS video-output
+// derived fields (resolution, fps, color info, format) on top of it.
 static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   video_t *Video = obs_encoder_video(Context->EncoderData);
   const video_output_info *VOI = video_output_get_info(Video);

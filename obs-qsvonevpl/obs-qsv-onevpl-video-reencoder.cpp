@@ -6,6 +6,7 @@
 
 #include "obs-qsv-onevpl-video-reencoder.hpp"
 #include "helpers/common_utils.hpp"
+#include "helpers/encoder_params_parser.hpp"
 #include "obs-qsv-onevpl-encoder.hpp"
 #include "obs-qsv-onevpl-plugin-init.hpp"
 #include <obs-frontend-api.h>
@@ -14,6 +15,9 @@
 #include <cstdio>
 #include <fstream>
 #include <system_error>
+#include <string_view>
+#include <vector>
+#include <string>
 
 #include <windows.h>
 
@@ -26,19 +30,140 @@ static constexpr int SWS_BILINEAR = 2;
 // FFmpeg dynamic loading — resolves function pointers from OBS's bundled DLLs
 // ============================================================================
 
-// Try to load a DLL by trying multiple versioned names
-static HMODULE TryLoadDLL(const wchar_t *BaseName, int MinVer, int MaxVer) {
+// Try loading a DLL from a specific directory.
+static HMODULE TryLoadDLLFromDir(const wchar_t *Dir, const wchar_t *Name) {
+  wchar_t Path[MAX_PATH];
+  if (swprintf_s(Path, L"%s\\%s", Dir, Name) <= 0)
+    return nullptr;
+  HMODULE hMod = LoadLibraryW(Path);
+  if (!hMod) {
+    DWORD err = GetLastError();
+    blog(LOG_DEBUG, "[QSV VPL ReEncoder] LoadLibraryW(%S) failed, gle=%lu", Path, err);
+  }
+  return hMod;
+}
+
+static HMODULE GetCurrentModuleHandle() {
   HMODULE hMod = nullptr;
+  if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                          reinterpret_cast<LPCWSTR>(GetCurrentModuleHandle),
+                          &hMod)) {
+    return nullptr;
+  }
+  return hMod;
+}
+
+// Collect candidate directories that may contain OBS's FFmpeg DLLs.
+static std::vector<std::wstring> GetFFmpegSearchDirs() {
+  std::vector<std::wstring> dirs;
+
+  // 1. Plugin's own directory (obs-plugins/64bit).
+  wchar_t pluginPath[MAX_PATH] = {};
+  HMODULE hSelf = GetCurrentModuleHandle();
+  if (hSelf && GetModuleFileNameW(hSelf, pluginPath, MAX_PATH) > 0) {
+    if (wchar_t *lastSlash = wcsrchr(pluginPath, L'\\'))
+      *lastSlash = L'\0';
+    dirs.emplace_back(pluginPath);
+  }
+
+  // 2. OBS executable directory (bin/64bit).
+  wchar_t obsDir[MAX_PATH] = {};
+  if (GetModuleFileNameW(nullptr, obsDir, MAX_PATH) > 0) {
+    if (wchar_t *lastSlash = wcsrchr(obsDir, L'\\'))
+      *lastSlash = L'\0';
+    dirs.emplace_back(obsDir);
+
+    // 3. Parent's bin/64bit (some portable layouts use obs-studio/bin/64bit).
+    wchar_t parentBin[MAX_PATH] = {};
+    if (swprintf_s(parentBin, L"%s\\..\\bin\\64bit", obsDir) > 0) {
+      // Normalize path
+      wchar_t absPath[MAX_PATH] = {};
+      if (GetFullPathNameW(parentBin, MAX_PATH, absPath, nullptr))
+        dirs.emplace_back(absPath);
+      else
+        dirs.emplace_back(parentBin);
+    }
+  }
+
+  return dirs;
+}
+
+// Try loading a DLL by versioned names, unversioned name, and from candidate dirs.
+static HMODULE TryLoadDLLWithFallback(const wchar_t *BaseName, int MinVer,
+                                      int MaxVer) {
+  HMODULE hMod = nullptr;
+
+  auto tryLoaded = [&](const wchar_t *Name) -> HMODULE {
+    HMODULE m = GetModuleHandleW(Name);
+    if (m)
+      blog(LOG_INFO, "[QSV VPL ReEncoder] Found already-loaded %S", Name);
+    return m;
+  };
+
+  auto tryLoad = [&](const wchar_t *Name) -> HMODULE {
+    HMODULE m = LoadLibraryW(Name);
+    if (m)
+      blog(LOG_INFO, "[QSV VPL ReEncoder] Loaded %S", Name);
+    return m;
+  };
+
+  // 1. Already loaded versioned module.
   for (int v = MaxVer; v >= MinVer; --v) {
     wchar_t Name[64];
     swprintf_s(Name, L"%s-%d.dll", BaseName, v);
-    hMod = GetModuleHandleW(Name);
-    if (hMod)
-      return hMod;
-    hMod = LoadLibraryW(Name);
+    hMod = tryLoaded(Name);
     if (hMod)
       return hMod;
   }
+
+  // 2. Load versioned module from default search paths.
+  for (int v = MaxVer; v >= MinVer; --v) {
+    wchar_t Name[64];
+    swprintf_s(Name, L"%s-%d.dll", BaseName, v);
+    hMod = tryLoad(Name);
+    if (hMod)
+      return hMod;
+  }
+
+  // 3. Try unversioned name.
+  {
+    wchar_t Name[64];
+    swprintf_s(Name, L"%s.dll", BaseName);
+    hMod = tryLoaded(Name);
+    if (hMod)
+      return hMod;
+    hMod = tryLoad(Name);
+    if (hMod)
+      return hMod;
+  }
+
+  // 4. Try candidate directories.
+  std::vector<std::wstring> searchDirs = GetFFmpegSearchDirs();
+  for (const auto &dir : searchDirs) {
+    for (int v = MaxVer; v >= MinVer; --v) {
+      wchar_t Name[64];
+      swprintf_s(Name, L"%s-%d.dll", BaseName, v);
+      hMod = TryLoadDLLFromDir(dir.c_str(), Name);
+      if (hMod) {
+        blog(LOG_INFO, "[QSV VPL ReEncoder] Loaded %S from %S", Name, dir.c_str());
+        return hMod;
+      }
+    }
+
+    {
+      wchar_t Name[64];
+      swprintf_s(Name, L"%s.dll", BaseName);
+      hMod = TryLoadDLLFromDir(dir.c_str(), Name);
+      if (hMod) {
+        blog(LOG_INFO, "[QSV VPL ReEncoder] Loaded %S from %S", Name, dir.c_str());
+        return hMod;
+      }
+    }
+  }
+
+  blog(LOG_WARNING,
+       "[QSV VPL ReEncoder] Could not load %S DLL (tried versions %d-%d + unversioned)",
+       BaseName, MinVer, MaxVer);
   return nullptr;
 }
 
@@ -59,50 +184,22 @@ static bool ResolveFuncs(HMODULE Mod, const char *Names[], void **Funcs,
 bool LoadFFmpegDyn(FFmpegFuncs &ff) {
   ZeroMemory(&ff, sizeof(ff));
 
-  // avformat
-  HMODULE avformat = TryLoadDLL(L"avformat", 59, 62);
-  if (!avformat) {
-    blog(LOG_ERROR, "[QSV VPL ReEncoder] Cannot load avformat DLL");
-    return false;
-  }
-  const char *avformat_names[] = {
-      "avformat_open_input", "avformat_close_input",
-      "avformat_find_stream_info", "av_read_frame"};
-  void *avformat_ptrs[] = {
-      reinterpret_cast<void **>(&ff.avformat_open_input),
-      reinterpret_cast<void **>(&ff.avformat_close_input),
-      reinterpret_cast<void **>(&ff.avformat_find_stream_info),
-      nullptr /* av_read_frame — resolved separately */};
-  if (!ResolveFuncs(avformat, avformat_names, avformat_ptrs, 3))
-    return false;
+  // Widen version ranges and fall back to unversioned names / candidate dirs.
+  // OBS 28/29/30/31/32 bundle various FFmpeg versions; be permissive.
+  // Load order matters: avutil is a dependency of avcodec/avformat, so load it
+  // first so that later LoadLibraryW calls can resolve dependencies from the
+  // same directory.
 
-  // Resolve av_read_frame separately (not in the FFmpegFuncs struct, used directly)
-  // We'll resolve it via GetProcAddress in the encode thread.
-
-  // avcodec
-  HMODULE avcodec = TryLoadDLL(L"avcodec", 59, 62);
-  if (!avcodec) {
-    blog(LOG_ERROR, "[QSV VPL ReEncoder] Cannot load avcodec DLL");
-    return false;
+  auto searchDirs = GetFFmpegSearchDirs();
+  if (searchDirs.empty()) {
+    blog(LOG_WARNING, "[QSV VPL ReEncoder] Could not determine any FFmpeg search directory");
+  } else {
+    for (const auto &dir : searchDirs)
+      blog(LOG_INFO, "[QSV VPL ReEncoder] FFmpeg search dir: %S", dir.c_str());
   }
-  const char *avcodec_names[] = {
-      "avcodec_find_decoder",      "avcodec_alloc_context3",
-      "avcodec_parameters_to_context", "avcodec_open2",
-      "avcodec_send_packet",       "avcodec_receive_frame",
-      "avcodec_free_context"};
-  void *avcodec_ptrs[] = {
-      reinterpret_cast<void **>(&ff.avcodec_find_decoder),
-      reinterpret_cast<void **>(&ff.avcodec_alloc_context3),
-      reinterpret_cast<void **>(&ff.avcodec_parameters_to_context),
-      reinterpret_cast<void **>(&ff.avcodec_open2),
-      reinterpret_cast<void **>(&ff.avcodec_send_packet),
-      reinterpret_cast<void **>(&ff.avcodec_receive_frame),
-      reinterpret_cast<void **>(&ff.avcodec_free_context)};
-  if (!ResolveFuncs(avcodec, avcodec_names, avcodec_ptrs, 7))
-    return false;
 
   // avutil
-  HMODULE avutil = TryLoadDLL(L"avutil", 57, 60);
+  HMODULE avutil = TryLoadDLLWithFallback(L"avutil", 55, 61);
   if (!avutil) {
     blog(LOG_ERROR, "[QSV VPL ReEncoder] Cannot load avutil DLL");
     return false;
@@ -118,8 +215,51 @@ bool LoadFFmpegDyn(FFmpegFuncs &ff) {
   if (!ResolveFuncs(avutil, avutil_names, avutil_ptrs, 4))
     return false;
 
+  // avcodec
+  HMODULE avcodec = TryLoadDLLWithFallback(L"avcodec", 57, 63);
+  if (!avcodec) {
+    blog(LOG_ERROR, "[QSV VPL ReEncoder] Cannot load avcodec DLL");
+    return false;
+  }
+  const char *avcodec_names[] = {
+      "avcodec_find_decoder",
+      "avcodec_alloc_context3",
+      "avcodec_parameters_to_context",
+      "avcodec_open2",
+      "avcodec_send_packet",
+      "avcodec_receive_frame",
+      "avcodec_free_context"};
+  void *avcodec_ptrs[] = {
+      reinterpret_cast<void **>(&ff.avcodec_find_decoder),
+      reinterpret_cast<void **>(&ff.avcodec_alloc_context3),
+      reinterpret_cast<void **>(&ff.avcodec_parameters_to_context),
+      reinterpret_cast<void **>(&ff.avcodec_open2),
+      reinterpret_cast<void **>(&ff.avcodec_send_packet),
+      reinterpret_cast<void **>(&ff.avcodec_receive_frame),
+      reinterpret_cast<void **>(&ff.avcodec_free_context)};
+  if (!ResolveFuncs(avcodec, avcodec_names, avcodec_ptrs, 7))
+    return false;
+
+  // avformat (depends on avcodec/avutil)
+  HMODULE avformat = TryLoadDLLWithFallback(L"avformat", 57, 63);
+  if (!avformat) {
+    blog(LOG_ERROR, "[QSV VPL ReEncoder] Cannot load avformat DLL");
+    return false;
+  }
+  const char *avformat_names[] = {
+      "avformat_open_input", "avformat_close_input",
+      "avformat_find_stream_info", "av_read_frame", "av_find_best_stream"};
+  void *avformat_ptrs[] = {
+      reinterpret_cast<void **>(&ff.avformat_open_input),
+      reinterpret_cast<void **>(&ff.avformat_close_input),
+      reinterpret_cast<void **>(&ff.avformat_find_stream_info),
+      reinterpret_cast<void **>(&ff.av_read_frame),
+      reinterpret_cast<void **>(&ff.av_find_best_stream)};
+  if (!ResolveFuncs(avformat, avformat_names, avformat_ptrs, 5))
+    return false;
+
   // swscale
-  HMODULE swscale = TryLoadDLL(L"swscale", 6, 9);
+  HMODULE swscale = TryLoadDLLWithFallback(L"swscale", 4, 10);
   if (!swscale) {
     blog(LOG_ERROR, "[QSV VPL ReEncoder] Cannot load swscale DLL");
     return false;
@@ -133,6 +273,7 @@ bool LoadFFmpegDyn(FFmpegFuncs &ff) {
   if (!ResolveFuncs(swscale, swscale_names, swscale_ptrs, 3))
     return false;
 
+  blog(LOG_INFO, "[QSV VPL ReEncoder] All FFmpeg DLLs loaded and resolved");
   return true;
 }
 
@@ -311,9 +452,12 @@ bool ReEncodeDialog::LoadEncoderConfigFromFile() {
 
   m_Codec = codec;
   blog(LOG_INFO, "[QSV VPL ReEncoder] Matched encoder '%s' -> codec %d", encId, (int)codec);
+
+  // Start from a clean default-initialized struct, then overlay whatever we
+  // can read from the profile files.
   m_EncoderParams = encoder_params{};
 
-  // Sensible defaults
+  // Sensible defaults in case the file is missing or incomplete.
   m_EncoderParams.TargetUsage = 4; // balanced
   m_EncoderParams.TargetBitRate = 5000;
   m_EncoderParams.RateControl = MFX_RATECONTROL_VBR;
@@ -329,65 +473,18 @@ bool ReEncodeDialog::LoadEncoderConfigFromFile() {
       obs_data_t *s = obs_data_create_from_json_file(jsonPath.c_str());
       if (s) {
         blog(LOG_INFO, "[QSV VPL ReEncoder] Successfully loaded recordEncoder.json");
-        // Rate control -------------------------------------------------------
-        const char *rc = obs_data_get_string(s, "rate_control");
-        if (rc && rc[0]) {
-          static const struct { const char *name; mfxU16 val; } kRC[] = {
-            {"CBR", MFX_RATECONTROL_CBR}, {"VBR", MFX_RATECONTROL_VBR},
-            {"CQP", MFX_RATECONTROL_CQP}, {"ICQ", MFX_RATECONTROL_ICQ},
-            {"AVBR", MFX_RATECONTROL_AVBR}, {"VCM", MFX_RATECONTROL_VCM},
-            {"QVBR", MFX_RATECONTROL_QVBR},
-          };
-          for (auto &e : kRC) {
-            if (strcmp(rc, e.name) == 0) {
-              m_EncoderParams.RateControl = e.val;
-              break;
-            }
-          }
-        }
 
-        // Basic bitrate params ----------------------------------------------
-        m_EncoderParams.TargetBitRate = (uint32_t)obs_data_get_int(s, "bitrate");
-        m_EncoderParams.MaxBitRate = (uint32_t)obs_data_get_int(s, "max_bitrate");
-
-        // Keyframe & GOP ----------------------------------------------------
-        m_EncoderParams.KeyIntSec = (mfxU16)obs_data_get_int(s, "keyint_sec");
-        m_EncoderParams.BFrames = (mfxU16)obs_data_get_int(s, "b_frames");
-        m_EncoderParams.NumRefFrame = (mfxU16)obs_data_get_int(s, "num_ref_frame");
-
-        // Target usage ------------------------------------------------------
-        const char *tu = obs_data_get_string(s, "target_usage");
-        if (tu && tu[0]) {
-          int val = 4;
-          if (sscanf(tu, "TU%d", &val) >= 1 && val >= 1 && val <= 7)
-            m_EncoderParams.TargetUsage = (mfxU16)val;
-        }
-
-        // ICQ / CQP quality -------------------------------------------------
-        m_EncoderParams.ICQQuality = (mfxU16)obs_data_get_int(s, "icq_quality");
-
-        uint64_t qp = obs_data_get_int(s, "cqp");
-        m_EncoderParams.QPI = (mfxU16)qp;
-        m_EncoderParams.QPP = (mfxU16)qp;
-        m_EncoderParams.QPB = (mfxU16)qp;
-
-        // Lookahead ---------------------------------------------------------
-        m_EncoderParams.LADepth = (mfxU16)obs_data_get_int(s, "lookahead_depth");
-
-        // Other -------------------------------------------------------------
-        m_EncoderParams.GPUNum = (mfxU16)obs_data_get_int(s, "gpu_num");
-        m_EncoderParams.AsyncDepth = (mfxU16)obs_data_get_int(s, "async_depth");
-        m_EncoderParams.BufferSize = (uint32_t)obs_data_get_int(s, "buffer_size");
-
+        // Use the same parser as the live encoder so every UI option is honored.
+        ParseEncoderParamsFromObsData(s, m_Codec, m_EncoderParams);
         obs_data_release(s);
 
         m_ParamsValid = true;
-        blog(LOG_INFO, "[QSV VPL ReEncoder] Config loaded from JSON: rc=%d bitrate=%u keyint=%u",
-             m_EncoderParams.RateControl, m_EncoderParams.TargetBitRate, m_EncoderParams.KeyIntSec);
+        blog(LOG_INFO, "[QSV VPL ReEncoder] Config loaded from JSON: rc=%d bitrate=%u keyint=%u tu=%u",
+             m_EncoderParams.RateControl, m_EncoderParams.TargetBitRate,
+             m_EncoderParams.KeyIntSec, m_EncoderParams.TargetUsage);
         return true;
-      } else {
-        blog(LOG_WARNING, "[QSV VPL ReEncoder] Failed to parse recordEncoder.json (file may not exist or be invalid)");
       }
+      blog(LOG_WARNING, "[QSV VPL ReEncoder] Failed to parse recordEncoder.json (file may not exist or be invalid)");
     } else {
       blog(LOG_WARNING, "[QSV VPL ReEncoder] obs_frontend_get_current_profile_path() returned NULL");
     }
@@ -402,11 +499,38 @@ bool ReEncodeDialog::LoadEncoderConfigFromFile() {
     blog(LOG_INFO, "[QSV VPL ReEncoder] Simple mode: SimpleOutput.VBitrate = %llu", (unsigned long long)vb);
     if (vb > 0)
       m_EncoderParams.TargetBitRate = (uint32_t)vb;
+
+    // Simple mode only exposes a small subset of encoder options. Try to read
+    // the common ones so the offline encode at least matches the preset/quality
+    // level used for recording.
+    const char *preset = config_get_string(config, "SimpleOutput", "preset");
+    if (!preset || preset[0] == '\0')
+      preset = config_get_string(config, "SimpleOutput", "QSVPreset");
+    blog(LOG_INFO, "[QSV VPL ReEncoder] Simple mode: preset/QSVPreset = %s", preset ? preset : "NULL");
+    if (preset && preset[0] != '\0') {
+      std::string_view psv(preset);
+      // OBS simple presets: "hq", "mq", "fast", "faster", "slow", "slower",
+      // "lossless", "indistinguishable", "superfast", "ultrafast", etc.
+      if (psv == "hq" || psv == "slow" || psv == "slower" || psv == "lossless" ||
+          psv == "indistinguishable")
+        m_EncoderParams.TargetUsage = MFX_TARGETUSAGE_1;
+      else if (psv == "mq" || psv == "balanced" || psv == "default")
+        m_EncoderParams.TargetUsage = MFX_TARGETUSAGE_4;
+      else if (psv == "fast" || psv == "faster" || psv == "superfast" ||
+               psv == "ultrafast" || psv == "performance")
+        m_EncoderParams.TargetUsage = MFX_TARGETUSAGE_7;
+    }
+
+    uint64_t keyint = config_get_uint(config, "SimpleOutput", "keyint_sec");
+    blog(LOG_INFO, "[QSV VPL ReEncoder] Simple mode: keyint_sec = %llu", (unsigned long long)keyint);
+    if (keyint > 0)
+      m_EncoderParams.KeyIntSec = static_cast<mfxU16>(keyint);
   }
 
   m_ParamsValid = true;
-  blog(LOG_INFO, "[QSV VPL ReEncoder] Config loaded from basic.ini: bitrate=%u codec=%d",
-       m_EncoderParams.TargetBitRate, (int)m_Codec);
+  blog(LOG_INFO, "[QSV VPL ReEncoder] Config loaded from basic.ini: bitrate=%u tu=%u keyint=%u codec=%d",
+       m_EncoderParams.TargetBitRate, m_EncoderParams.TargetUsage,
+       m_EncoderParams.KeyIntSec, (int)m_Codec);
   return true;
 }
 
@@ -670,35 +794,6 @@ void ReEncodeDialog::EncodeThreadMain() {
     }
     AppendLog("FFmpeg loaded successfully");
 
-    // Resolve av_read_frame and av_find_best_stream
-    typedef int (*ReadFrameFn)(void *, void *);
-    ReadFrameFn av_read_frame = nullptr;
-    typedef int (*FindBestStreamFn)(void *, int, int *, int, void **, int);
-    FindBestStreamFn av_find_best_stream = nullptr;
-
-    for (int ver = 62; ver >= 59; --ver) {
-      wchar_t name[64];
-      swprintf_s(name, L"avformat-%d.dll", ver);
-      HMODULE h = GetModuleHandleW(name);
-      if (!h) h = LoadLibraryW(name);
-      if (h) {
-        if (!av_read_frame)
-          av_read_frame = (ReadFrameFn)GetProcAddress(h, "av_read_frame");
-        if (!av_find_best_stream)
-          av_find_best_stream = (FindBestStreamFn)GetProcAddress(h, "av_find_best_stream");
-      }
-    }
-
-    if (!av_read_frame) {
-      AppendLog("ERROR: Cannot resolve av_read_frame");
-      QMetaObject::invokeMethod(this, [this]() {
-        StatusLabel->setText("av_read_frame not found");
-        SetUIEnabled(true);
-        m_Encoding = false;
-      }, Qt::QueuedConnection);
-      return;
-    }
-
     // 2. Open input
     void *fmtCtx = nullptr;
     QByteArray inputPath = InputPathEdit->text().toUtf8();
@@ -725,9 +820,9 @@ void ReEncodeDialog::EncodeThreadMain() {
 
     // Find video stream using av_find_best_stream
     int videoStreamIdx = -1;
-    if (av_find_best_stream) {
-      videoStreamIdx = av_find_best_stream(
-          fmtCtx, AVMEDIA_TYPE_VIDEO, nullptr, -1, nullptr, 0);
+    if (ff.av_find_best_stream) {
+      videoStreamIdx = ff.av_find_best_stream(
+          fmtCtx, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
     }
 
     if (videoStreamIdx < 0) {
@@ -1048,7 +1143,7 @@ void ReEncodeDialog::EncodeThreadMain() {
       }
 
       // Read next packet
-      int ret = av_read_frame(fmtCtx, packet);
+      int ret = ff.av_read_frame(fmtCtx, packet);
       if (ret < 0) {
         eof = true;
         // Send NULL to flush decoder

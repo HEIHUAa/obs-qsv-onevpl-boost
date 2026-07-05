@@ -27,8 +27,9 @@ struct FFmpegFuncs {
   int (*avformat_open_input)(void **ps, const char *url, void *fmt, void **opts);
   void (*avformat_close_input)(void **s);
   int (*avformat_find_stream_info)(void *ic, void **options);
-  unsigned (*av_stream_get_r_frame_rate_num)(const void *st);
-  unsigned (*av_stream_get_r_frame_rate_den)(const void *st);
+  int (*av_read_frame)(void *s, void *pkt);
+  int (*av_find_best_stream)(void *ic, int type, int wanted_stream_nb,
+                             int related_stream, void **decoder_ret, int flags);
 
   // avcodec
   void *(*avcodec_find_decoder)(int id);
