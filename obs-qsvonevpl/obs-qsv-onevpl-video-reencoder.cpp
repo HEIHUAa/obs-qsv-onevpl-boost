@@ -718,6 +718,11 @@ bool ReEncodeDialog::StartEncoding() {
     return false;
   }
 
+  // Copy paths to thread-safe members so the worker thread never touches
+  // the GUI widgets from a non-GUI thread.
+  m_InputPath = inputPath.toUtf8().constData();
+  m_OutputPath = outputPath.toUtf8().constData();
+
   m_StopRequested = false;
   m_TotalFrames = 0;
   m_EncodedFrames = 0;
@@ -852,8 +857,20 @@ void ReEncodeDialog::EncodeThreadMainImpl() {
 
     // 2. Open input
     void *fmtCtx = nullptr;
-    QByteArray inputPath = InputPathEdit->text().toUtf8();
-    if (ff.avformat_open_input(&fmtCtx, inputPath.data(), nullptr, nullptr) < 0) {
+    blog(LOG_INFO, "[QSV VPL ReEncoder] Input path member: %s", m_InputPath.c_str());
+    if (m_InputPath.empty()) {
+      AppendLog("ERROR: Input path is empty");
+      QMetaObject::invokeMethod(this, [this]() {
+        StatusLabel->setText("Empty input path");
+        SetUIEnabled(true);
+        m_Encoding = false;
+      }, Qt::QueuedConnection);
+      return;
+    }
+    int openRet = ff.avformat_open_input(&fmtCtx, m_InputPath.c_str(), nullptr, nullptr);
+    blog(LOG_INFO, "[QSV VPL ReEncoder] avformat_open_input returned %d, fmtCtx=%p",
+         openRet, fmtCtx);
+    if (openRet < 0) {
       AppendLog("ERROR: Cannot open input file");
       QMetaObject::invokeMethod(this, [this]() {
         StatusLabel->setText("Open input failed");
@@ -863,7 +880,10 @@ void ReEncodeDialog::EncodeThreadMainImpl() {
       return;
     }
 
-    if (ff.avformat_find_stream_info(fmtCtx, nullptr) < 0) {
+    blog(LOG_INFO, "[QSV VPL ReEncoder] Calling avformat_find_stream_info...");
+    int siRet = ff.avformat_find_stream_info(fmtCtx, nullptr);
+    blog(LOG_INFO, "[QSV VPL ReEncoder] avformat_find_stream_info returned %d", siRet);
+    if (siRet < 0) {
       ff.avformat_close_input(&fmtCtx);
       AppendLog("ERROR: Cannot find stream info");
       QMetaObject::invokeMethod(this, [this]() {
@@ -875,11 +895,13 @@ void ReEncodeDialog::EncodeThreadMainImpl() {
     }
 
     // Find video stream using av_find_best_stream
+    blog(LOG_INFO, "[QSV VPL ReEncoder] Calling av_find_best_stream...");
     int videoStreamIdx = -1;
     if (ff.av_find_best_stream) {
       videoStreamIdx = ff.av_find_best_stream(
           fmtCtx, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
     }
+    blog(LOG_INFO, "[QSV VPL ReEncoder] av_find_best_stream returned %d", videoStreamIdx);
 
     if (videoStreamIdx < 0) {
       ff.avformat_close_input(&fmtCtx);
@@ -1034,14 +1056,18 @@ void ReEncodeDialog::EncodeThreadMainImpl() {
       codec_id = *reinterpret_cast<const int *>(cpRaw + 0x08);
     }
 
-    // Find width and height
+    // Find width and height. In modern FFmpeg (6.x/7.x) they sit at 0x48/0x4c
+    // inside AVCodecParameters.
     int srcWidth = 0, srcHeight = 0;
-    for (int wOff : {0x18, 0x20, 0x28, 0x30, 0x38, 0x40}) {
+    for (int wOff : {0x18, 0x20, 0x28, 0x30, 0x38, 0x40, 0x48}) {
       int w = *reinterpret_cast<const int *>(cpRaw + wOff);
       int h = *reinterpret_cast<const int *>(cpRaw + wOff + 4);
       if (w > 0 && w <= 7680 && h > 0 && h <= 4320) {
         srcWidth = w;
         srcHeight = h;
+        blog(LOG_INFO,
+             "[QSV VPL ReEncoder] AVCodecParameters width/height offset 0x%x = %dx%d",
+             wOff, w, h);
         break;
       }
     }
@@ -1150,8 +1176,8 @@ void ReEncodeDialog::EncodeThreadMainImpl() {
     AppendLog("Encoder opened successfully");
 
     // 6. Open output file
-    QByteArray outputPath = OutputPathEdit->text().toUtf8();
-    std::ofstream outFile(outputPath.data(), std::ios::binary);
+    blog(LOG_INFO, "[QSV VPL ReEncoder] Output path member: %s", m_OutputPath.c_str());
+    std::ofstream outFile(m_OutputPath, std::ios::binary);
     if (!outFile.is_open()) {
       ff.avcodec_free_context(&decoderCtx);
       ff.avformat_close_input(&fmtCtx);
@@ -1351,17 +1377,15 @@ void ReEncodeDialog::EncodeThreadMainImpl() {
 
     m_EncodedFrames = frameCount;
     AppendLog(QString("Re-encode complete: %1 frames encoded").arg(frameCount));
-    AppendLog(QString("Output: %1").arg(outputPath.data()));
+    AppendLog(QString("Output: %1").arg(QString::fromStdString(m_OutputPath)));
 
     QMetaObject::invokeMethod(this, [this, frameCount]() {
       StatusLabel->setText(QString("Complete: %1 frames").arg(frameCount));
       ProgressBar->setValue(100);
       StartStopBtn->setText(obs_module_text("ReEncoderStart"));
       SetUIEnabled(true);
+      m_Encoding = false;
     }, Qt::QueuedConnection);
-
-    m_Encoding = false;
-    SetUIEnabled(true);
 
   } catch (const std::exception &e) {
     AppendLog(QString("Re-encode error: %1").arg(e.what()));

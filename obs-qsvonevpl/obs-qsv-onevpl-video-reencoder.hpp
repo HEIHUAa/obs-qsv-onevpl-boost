@@ -121,6 +121,10 @@ private:
   int64_t m_TotalFrames{0};
   int64_t m_EncodedFrames{0};
 
+  // Paths copied from UI before the worker thread starts
+  std::string m_InputPath;
+  std::string m_OutputPath;
+
   // Encoder params — populated from active QSV encoder or recording config
   encoder_params m_EncoderParams{};
   codec_enum m_Codec{QSV_CODEC_AVC};
