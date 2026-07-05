@@ -82,6 +82,7 @@ private slots:
   void OnBrowseInput();
   void OnBrowseOutput();
   void OnStartStop();
+  void OnRefreshConfig();
 
 private:
   bool StartEncoding();
@@ -99,6 +100,7 @@ private:
   QLineEdit *OutputPathEdit;
   QPushButton *BrowseInputBtn;
   QPushButton *BrowseOutputBtn;
+  QPushButton *RefreshConfigBtn;
   QPushButton *StartStopBtn;
   QLabel *StatusLabel;
   QProgressBar *ProgressBar;

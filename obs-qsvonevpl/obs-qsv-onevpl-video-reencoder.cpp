@@ -215,6 +215,8 @@ ReEncodeDialog::ReEncodeDialog(QWidget *Parent)
 
   // Buttons
   auto *ButtonLayout = new QHBoxLayout();
+  RefreshConfigBtn = new QPushButton(obs_module_text("ReEncoderRefresh"), this);
+  ButtonLayout->addWidget(RefreshConfigBtn);
   ButtonLayout->addStretch();
   StartStopBtn = new QPushButton(obs_module_text("ReEncoderStart"), this);
   ButtonLayout->addWidget(StartStopBtn);
@@ -225,6 +227,8 @@ ReEncodeDialog::ReEncodeDialog(QWidget *Parent)
           &ReEncodeDialog::OnBrowseInput);
   connect(BrowseOutputBtn, &QPushButton::clicked, this,
           &ReEncodeDialog::OnBrowseOutput);
+  connect(RefreshConfigBtn, &QPushButton::clicked, this,
+          &ReEncodeDialog::OnRefreshConfig);
   connect(StartStopBtn, &QPushButton::clicked, this,
           &ReEncodeDialog::OnStartStop);
 
@@ -246,26 +250,37 @@ void ReEncodeDialog::closeEvent(QCloseEvent *Event) {
 // recordEncoder.json).  Called when no active encoder instance is available.
 // ============================================================================
 bool ReEncodeDialog::LoadEncoderConfigFromFile() {
+  blog(LOG_INFO, "[QSV VPL ReEncoder] LoadEncoderConfigFromFile: attempting to read config from OBS profile");
+
   config_t *config = obs_frontend_get_profile_config();
-  if (!config)
+  if (!config) {
+    blog(LOG_WARNING, "[QSV VPL ReEncoder] obs_frontend_get_profile_config() returned NULL");
     return false;
+  }
 
   // Determine output mode and read the recording encoder ID
   const char *mode = config_get_string(config, "Output", "Mode");
   bool advOut = (mode && strcmp(mode, "Advanced") == 0);
+  blog(LOG_INFO, "[QSV VPL ReEncoder] Output mode: %s", advOut ? "Advanced" : (mode ? mode : "NULL"));
 
   const char *encId = nullptr;
   if (advOut) {
     encId = config_get_string(config, "AdvOut", "RecEncoder");
+    blog(LOG_INFO, "[QSV VPL ReEncoder] AdvOut.RecEncoder = %s", encId ? encId : "NULL");
     // "none" means re-use the streaming encoder
-    if (!encId || strcmp(encId, "none") == 0 || encId[0] == '\0')
+    if (!encId || strcmp(encId, "none") == 0 || encId[0] == '\0') {
       encId = config_get_string(config, "AdvOut", "Encoder");
+      blog(LOG_INFO, "[QSV VPL ReEncoder] Falling back to AdvOut.Encoder = %s", encId ? encId : "NULL");
+    }
   } else {
     encId = config_get_string(config, "SimpleOutput", "RecEncoder");
+    blog(LOG_INFO, "[QSV VPL ReEncoder] SimpleOutput.RecEncoder = %s", encId ? encId : "NULL");
   }
 
-  if (!encId || encId[0] == '\0')
+  if (!encId || encId[0] == '\0') {
+    blog(LOG_WARNING, "[QSV VPL ReEncoder] No encoder ID found in profile config");
     return false;
+  }
 
   // ---- Map encoder ID to codec enum ----------------------------------------
   codec_enum codec;
@@ -275,21 +290,27 @@ bool ReEncodeDialog::LoadEncoderConfigFromFile() {
       strcmp(encId, "obs_qsv11_v2") == 0)
     codec = QSV_CODEC_AVC;
   else if (strcmp(encId, "obs_qsv_vpl_hevc") == 0 ||
+           strcmp(encId, "obs_qsv_vpl_hevc_tex") == 0 ||
            strcmp(encId, "qsv_hevc") == 0 ||
            strcmp(encId, "obs_qsv11_hevc") == 0)
     codec = QSV_CODEC_HEVC;
   else if (strcmp(encId, "obs_qsv_vpl_av1") == 0 ||
+           strcmp(encId, "obs_qsv_vpl_av1_tex") == 0 ||
            strcmp(encId, "qsv_av1") == 0 ||
            strcmp(encId, "obs_qsv11_av1") == 0)
     codec = QSV_CODEC_AV1;
   else if (strcmp(encId, "obs_qsv_vpl_vp9") == 0 ||
+           strcmp(encId, "obs_qsv_vpl_vp9_tex") == 0 ||
            strcmp(encId, "qsv_vp9") == 0 ||
            strcmp(encId, "obs_qsv11_vp9") == 0)
     codec = QSV_CODEC_VP9;
-  else
+  else {
+    blog(LOG_WARNING, "[QSV VPL ReEncoder] Unrecognized encoder ID '%s' — not a QSV encoder", encId);
     return false; // not a QSV encoder, can't re-encode with our plugin
+  }
 
   m_Codec = codec;
+  blog(LOG_INFO, "[QSV VPL ReEncoder] Matched encoder '%s' -> codec %d", encId, (int)codec);
   m_EncoderParams = encoder_params{};
 
   // Sensible defaults
@@ -302,10 +323,12 @@ bool ReEncodeDialog::LoadEncoderConfigFromFile() {
     char *profilePath = obs_frontend_get_current_profile_path();
     if (profilePath) {
       std::string jsonPath = std::string(profilePath) + "/recordEncoder.json";
+      blog(LOG_INFO, "[QSV VPL ReEncoder] Trying to load JSON config from: %s", jsonPath.c_str());
       bfree(profilePath);
 
       obs_data_t *s = obs_data_create_from_json_file(jsonPath.c_str());
       if (s) {
+        blog(LOG_INFO, "[QSV VPL ReEncoder] Successfully loaded recordEncoder.json");
         // Rate control -------------------------------------------------------
         const char *rc = obs_data_get_string(s, "rate_control");
         if (rc && rc[0]) {
@@ -359,64 +382,80 @@ bool ReEncodeDialog::LoadEncoderConfigFromFile() {
         obs_data_release(s);
 
         m_ParamsValid = true;
+        blog(LOG_INFO, "[QSV VPL ReEncoder] Config loaded from JSON: rc=%d bitrate=%u keyint=%u",
+             m_EncoderParams.RateControl, m_EncoderParams.TargetBitRate, m_EncoderParams.KeyIntSec);
         return true;
+      } else {
+        blog(LOG_WARNING, "[QSV VPL ReEncoder] Failed to parse recordEncoder.json (file may not exist or be invalid)");
       }
+    } else {
+      blog(LOG_WARNING, "[QSV VPL ReEncoder] obs_frontend_get_current_profile_path() returned NULL");
     }
     // Fallback for advanced mode w/o JSON: read limited params from basic.ini
     uint64_t vb = config_get_uint(config, "AdvOut", "VBitrate");
+    blog(LOG_INFO, "[QSV VPL ReEncoder] Advanced fallback: AdvOut.VBitrate = %llu", (unsigned long long)vb);
     if (vb > 0)
       m_EncoderParams.TargetBitRate = (uint32_t)vb;
   } else {
     // ---- Simple mode: read from [SimpleOutput] -------------------------------
     uint64_t vb = config_get_uint(config, "SimpleOutput", "VBitrate");
+    blog(LOG_INFO, "[QSV VPL ReEncoder] Simple mode: SimpleOutput.VBitrate = %llu", (unsigned long long)vb);
     if (vb > 0)
       m_EncoderParams.TargetBitRate = (uint32_t)vb;
   }
 
   m_ParamsValid = true;
+  blog(LOG_INFO, "[QSV VPL ReEncoder] Config loaded from basic.ini: bitrate=%u codec=%d",
+       m_EncoderParams.TargetBitRate, (int)m_Codec);
   return true;
 }
 
 // Populate encoder params from the first active QSV encoder
 void ReEncodeDialog::PopulateEncoderConfig() {
-  std::lock_guard<std::mutex> lock(EncoderDataMapMutex);
+  {
+    std::lock_guard<std::mutex> lock(EncoderDataMapMutex);
+    blog(LOG_INFO, "[QSV VPL ReEncoder] PopulateEncoderConfig: EncoderDataMap has %zu entries",
+         EncoderDataMap.size());
 
-  for (auto &pair : EncoderDataMap) {
-    plugin_context *ctx = pair.second;
-    if (!ctx)
-      continue;
+    for (auto &pair : EncoderDataMap) {
+      plugin_context *ctx = pair.second;
+      if (!ctx)
+        continue;
 
-    m_EncoderParams = ctx->EncoderParams;
-    m_Codec = ctx->Codec;
-    m_ParamsValid = true;
+      m_EncoderParams = ctx->EncoderParams;
+      m_Codec = ctx->Codec;
+      m_ParamsValid = true;
 
-    // Build summary text
-    QString summary = QString("%1 | %2x%3 @ %4/%5 fps | %6 kbps")
-                          .arg(CodecToStr(m_Codec))
-                          .arg(m_EncoderParams.Width)
-                          .arg(m_EncoderParams.Height)
-                          .arg(m_EncoderParams.FpsNum)
-                          .arg(m_EncoderParams.FpsDen)
-                          .arg(m_EncoderParams.TargetBitRate);
+      // Build summary text
+      QString summary = QString("%1 | %2x%3 @ %4/%5 fps | %6 kbps")
+                            .arg(CodecToStr(m_Codec))
+                            .arg(m_EncoderParams.Width)
+                            .arg(m_EncoderParams.Height)
+                            .arg(m_EncoderParams.FpsNum)
+                            .arg(m_EncoderParams.FpsDen)
+                            .arg(m_EncoderParams.TargetBitRate);
 
-    if (m_EncoderParams.RateControl == MFX_RATECONTROL_CBR)
-      summary += " | CBR";
-    else if (m_EncoderParams.RateControl == MFX_RATECONTROL_VBR)
-      summary += " | VBR";
-    else if (m_EncoderParams.RateControl == MFX_RATECONTROL_CQP)
-      summary += " | CQP";
-    else if (m_EncoderParams.RateControl == MFX_RATECONTROL_ICQ)
-      summary += " | ICQ";
-    else
-      summary += " | RC=" + QString::number(m_EncoderParams.RateControl);
+      if (m_EncoderParams.RateControl == MFX_RATECONTROL_CBR)
+        summary += " | CBR";
+      else if (m_EncoderParams.RateControl == MFX_RATECONTROL_VBR)
+        summary += " | VBR";
+      else if (m_EncoderParams.RateControl == MFX_RATECONTROL_CQP)
+        summary += " | CQP";
+      else if (m_EncoderParams.RateControl == MFX_RATECONTROL_ICQ)
+        summary += " | ICQ";
+      else
+        summary += " | RC=" + QString::number(m_EncoderParams.RateControl);
 
-    ConfigLabel->setText(summary);
-    AppendLog(QString("Loaded encoder config from active encoder: %1")
-                  .arg(summary));
-    return;
-  }
+      ConfigLabel->setText(summary);
+      AppendLog(QString("Loaded encoder config from active encoder: %1")
+                    .arg(summary));
+      blog(LOG_INFO, "[QSV VPL ReEncoder] Loaded config from active encoder: codec=%d bitrate=%u",
+           (int)m_Codec, m_EncoderParams.TargetBitRate);
+      return;
+    }
+  } // release lock
 
-  // No active encoder found — try loading from OBS config files
+  blog(LOG_INFO, "[QSV VPL ReEncoder] No active encoder found, trying config file fallback");
   if (LoadEncoderConfigFromFile()) {
     QString summary = QString("%1 | bitrate %2 kbps")
                           .arg(CodecToStr(m_Codec))
@@ -432,10 +471,13 @@ void ReEncodeDialog::PopulateEncoderConfig() {
 
     ConfigLabel->setText(summary);
     AppendLog(QString("Loaded encoder config from OBS profile: %1").arg(summary));
+    blog(LOG_INFO, "[QSV VPL ReEncoder] Config loaded from OBS profile: codec=%d bitrate=%u",
+         (int)m_Codec, m_EncoderParams.TargetBitRate);
     return;
   }
 
   // No active encoder found
+  blog(LOG_WARNING, "[QSV VPL ReEncoder] Both active encoder and file config loading failed");
   ConfigLabel->setText(obs_module_text("ReEncoderConfigNoEncoder"));
   m_ParamsValid = false;
   AppendLog(obs_module_text("ReEncoderLogNoEncoder"));
@@ -470,6 +512,17 @@ void ReEncodeDialog::OnStartStop() {
     return;
   }
   StartEncoding();
+}
+
+// Manually refresh encoder config from active encoder or profile files
+void ReEncodeDialog::OnRefreshConfig() {
+  if (m_Encoding) {
+    AppendLog("Cannot refresh config while encoding is in progress.");
+    return;
+  }
+  AppendLog("Refreshing encoder configuration...");
+  PopulateEncoderConfig();
+  AppendLog("Configuration refresh complete.");
 }
 
 bool ReEncodeDialog::StartEncoding() {
