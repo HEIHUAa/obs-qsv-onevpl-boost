@@ -867,6 +867,25 @@ void ReEncodeDialog::EncodeThreadMainImpl() {
       }, Qt::QueuedConnection);
       return;
     }
+    // Extra diagnostics: compare the stored function pointer with a fresh
+    // GetProcAddress to rule out ResolveFuncs corruption.
+    HMODULE hAvformat = GetModuleHandleW(L"avformat-62.dll");
+    if (hAvformat) {
+      void *procAddr = reinterpret_cast<void *>(
+          GetProcAddress(hAvformat, "avformat_open_input"));
+      blog(LOG_INFO,
+           "[QSV VPL ReEncoder] avformat_open_input fp=%p, GetProcAddress=%p",
+           reinterpret_cast<void *>(ff.avformat_open_input), procAddr);
+    }
+
+    // Quick sanity test of avutil/avcodec function pointers before the call
+    // that crashes.
+    void *testFrame = ff.av_frame_alloc();
+    blog(LOG_INFO, "[QSV VPL ReEncoder] av_frame_alloc test returned %p", testFrame);
+    if (testFrame)
+      ff.av_frame_free(&testFrame);
+
+    blog(LOG_INFO, "[QSV VPL ReEncoder] about to call avformat_open_input...");
     int openRet = ff.avformat_open_input(&fmtCtx, m_InputPath.c_str(), nullptr, nullptr);
     blog(LOG_INFO, "[QSV VPL ReEncoder] avformat_open_input returned %d, fmtCtx=%p",
          openRet, fmtCtx);
