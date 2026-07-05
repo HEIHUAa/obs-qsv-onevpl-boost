@@ -1596,7 +1596,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 #endif
 
   if (IsUHD600HEVC) {
-    info("\tUHD600 HEVC minimal params: CODDI and hardcoded reference/VUI flags skipped");
+    info("\tUHD600 HEVC minimal params: CODDI, ChromaLocInfo and hardcoded reference/VUI flags skipped");
   }
 
   QSVEncodeParams.mfx.RateControlMethod =
@@ -2133,14 +2133,18 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 #endif
 
   if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
-    auto ChromaLocParams = QSVEncodeParams.AddExtBuffer<mfxExtChromaLocInfo>();
-    ChromaLocParams->Header.BufferId = MFX_EXTBUFF_CHROMA_LOC_INFO;
-    ChromaLocParams->Header.BufferSz = sizeof(mfxExtChromaLocInfo);
-    ChromaLocParams->ChromaLocInfoPresentFlag = 1;
-    ChromaLocParams->ChromaSampleLocTypeTopField =
-        static_cast<mfxU16>(InputParams->ChromaSampleLocTypeTopField);
-    ChromaLocParams->ChromaSampleLocTypeBottomField =
-        static_cast<mfxU16>(InputParams->ChromaSampleLocTypeBottomField);
+    // ChromaLocInfo is accepted by newer GPU RT but causes MFX_ERR_INVALID_VIDEO_PARAM
+    // (-15) on the UHD600 legacy runtime, so skip it for that path.
+    if (!IsUHD600HEVC) {
+      auto ChromaLocParams = QSVEncodeParams.AddExtBuffer<mfxExtChromaLocInfo>();
+      ChromaLocParams->Header.BufferId = MFX_EXTBUFF_CHROMA_LOC_INFO;
+      ChromaLocParams->Header.BufferSz = sizeof(mfxExtChromaLocInfo);
+      ChromaLocParams->ChromaLocInfoPresentFlag = 1;
+      ChromaLocParams->ChromaSampleLocTypeTopField =
+          static_cast<mfxU16>(InputParams->ChromaSampleLocTypeTopField);
+      ChromaLocParams->ChromaSampleLocTypeBottomField =
+          static_cast<mfxU16>(InputParams->ChromaSampleLocTypeBottomField);
+    }
 
     auto HevcParams = QSVEncodeParams.AddExtBuffer<mfxExtHEVCParam>();
     HevcParams->Header.BufferId = MFX_EXTBUFF_HEVC_PARAM;
