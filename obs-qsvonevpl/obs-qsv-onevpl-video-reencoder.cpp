@@ -757,6 +757,9 @@ void ReEncodeDialog::SetUIEnabled(bool Enabled) {
 }
 
 void ReEncodeDialog::AppendLog(const QString &Msg) {
+  // Mirror every UI log message to the OBS log file so it survives a crash.
+  QByteArray utf8 = Msg.toUtf8();
+  blog(LOG_INFO, "[QSV VPL ReEncoder] %s", utf8.constData());
   QMetaObject::invokeMethod(this, [this, Msg]() {
     LogOutput->append(Msg);
   }, Qt::QueuedConnection);
@@ -815,7 +818,8 @@ struct AVCodecContextView {
 // Main encode thread
 // ============================================================================
 void ReEncodeDialog::EncodeThreadMain() {
-  try {
+  auto run = [this]() {
+    try {
     // 1. Load FFmpeg
     FFmpegFuncs ff;
     if (!LoadFFmpegDyn(ff)) {
@@ -1241,9 +1245,15 @@ void ReEncodeDialog::EncodeThreadMain() {
              "linesize[0]=%d",
              srcFormat, static_cast<void *>(fv->data[0]), fv->linesize[0]);
 
-        // Sanity check: format should be a small non-negative enum value.
+        // Sanity checks before passing possibly bogus pointers to swscale.
         if (srcFormat < 0 || srcFormat > 0xFFFF) {
           AppendLog(QString("ERROR: Invalid pixel format %1, aborting").arg(srcFormat));
+          break;
+        }
+        if (!fv->data[0] || fv->linesize[0] <= 0 || fv->linesize[0] > 32768) {
+          AppendLog(QString("ERROR: Invalid frame data=%1 linesize=%2, aborting")
+                        .arg(reinterpret_cast<quintptr>(fv->data[0]))
+                        .arg(fv->linesize[0]));
           break;
         }
 
@@ -1351,6 +1361,27 @@ void ReEncodeDialog::EncodeThreadMain() {
       m_Encoding = false;
     }, Qt::QueuedConnection);
   }
+  };
+
+#ifdef _WIN32
+  __try {
+    run();
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    DWORD code = GetExceptionCode();
+    blog(LOG_ERROR,
+         "[QSV VPL ReEncoder] FATAL SEH exception 0x%08X in encode thread", code);
+    AppendLog(QString("FATAL: SEH exception 0x%1")
+                  .arg(code, 8, 16, QChar('0')));
+    QMetaObject::invokeMethod(this, [this, code]() {
+      StatusLabel->setText(
+          QString("Fatal error 0x%1").arg(code, 8, 16, QChar('0')));
+      SetUIEnabled(true);
+      m_Encoding = false;
+    }, Qt::QueuedConnection);
+  }
+#else
+  run();
+#endif
 }
 
 // ============================================================================
