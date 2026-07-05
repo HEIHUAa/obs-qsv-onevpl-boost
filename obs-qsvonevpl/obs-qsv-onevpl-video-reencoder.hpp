@@ -91,6 +91,7 @@ private:
   bool StartEncoding();
   void StopEncoding();
   void EncodeThreadMain();
+  void EncodeThreadMainImpl();
   void AppendLog(const QString &Msg);
   void SetUIEnabled(bool Enabled);
   void UpdateProgress(int64_t Current, int64_t Total);

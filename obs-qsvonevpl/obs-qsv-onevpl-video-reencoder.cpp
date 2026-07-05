@@ -818,8 +818,29 @@ struct AVCodecContextView {
 // Main encode thread
 // ============================================================================
 void ReEncodeDialog::EncodeThreadMain() {
-  auto run = [this]() {
-    try {
+#ifdef _WIN32
+  __try {
+    EncodeThreadMainImpl();
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    DWORD code = GetExceptionCode();
+    blog(LOG_ERROR,
+         "[QSV VPL ReEncoder] FATAL SEH exception 0x%08X in encode thread", code);
+    AppendLog(QString("FATAL: SEH exception 0x%1")
+                  .arg(code, 8, 16, QChar('0')));
+    QMetaObject::invokeMethod(this, [this, code]() {
+      StatusLabel->setText(
+          QString("Fatal error 0x%1").arg(code, 8, 16, QChar('0')));
+      SetUIEnabled(true);
+      m_Encoding = false;
+    }, Qt::QueuedConnection);
+  }
+#else
+  EncodeThreadMainImpl();
+#endif
+}
+
+void ReEncodeDialog::EncodeThreadMainImpl() {
+  try {
     // 1. Load FFmpeg
     FFmpegFuncs ff;
     if (!LoadFFmpegDyn(ff)) {
@@ -1361,27 +1382,6 @@ void ReEncodeDialog::EncodeThreadMain() {
       m_Encoding = false;
     }, Qt::QueuedConnection);
   }
-  };
-
-#ifdef _WIN32
-  __try {
-    run();
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    DWORD code = GetExceptionCode();
-    blog(LOG_ERROR,
-         "[QSV VPL ReEncoder] FATAL SEH exception 0x%08X in encode thread", code);
-    AppendLog(QString("FATAL: SEH exception 0x%1")
-                  .arg(code, 8, 16, QChar('0')));
-    QMetaObject::invokeMethod(this, [this, code]() {
-      StatusLabel->setText(
-          QString("Fatal error 0x%1").arg(code, 8, 16, QChar('0')));
-      SetUIEnabled(true);
-      m_Encoding = false;
-    }, Qt::QueuedConnection);
-  }
-#else
-  run();
-#endif
 }
 
 // ============================================================================
