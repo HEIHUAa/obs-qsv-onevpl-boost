@@ -1588,6 +1588,17 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   }
 #endif
 
+  const bool IsUHD600HEVC =
+#ifdef QSV_UHD600_SUPPORT
+      QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC;
+#else
+      false;
+#endif
+
+  if (IsUHD600HEVC) {
+    info("\tUHD600 HEVC minimal params: CODDI and hardcoded reference/VUI flags skipped");
+  }
+
   QSVEncodeParams.mfx.RateControlMethod =
       static_cast<mfxU16>(InputParams->RateControl);
 
@@ -1761,11 +1772,18 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     COParams->Header.BufferSz = sizeof(mfxExtCodingOption);
     /*Don't touch it!*/
     COParams->CAVLC = MFX_CODINGOPTION_OFF;
-    COParams->RefPicListReordering = MFX_CODINGOPTION_ON;
-    COParams->RefPicMarkRep = MFX_CODINGOPTION_ON;
-    COParams->PicTimingSEI = MFX_CODINGOPTION_ON;
-    COParams->MaxDecFrameBuffering = InputParams->NumRefFrame;
-    COParams->ResetRefList = MFX_CODINGOPTION_ON;
+    if (!IsUHD600HEVC) {
+      // These reference-list flags help quality on newer GPU RT, but the
+      // UHD600 legacy runtime mismanages references when they are forced ON,
+      // causing the "only I-frame updates" symptom. Leave them UNKNOWN so
+      // the driver picks its own defaults.
+      COParams->RefPicListReordering = MFX_CODINGOPTION_ON;
+      COParams->RefPicMarkRep = MFX_CODINGOPTION_ON;
+      COParams->PicTimingSEI = MFX_CODINGOPTION_ON;
+      COParams->ResetRefList = MFX_CODINGOPTION_ON;
+    }
+    COParams->MaxDecFrameBuffering =
+        IsUHD600HEVC ? 0 : InputParams->NumRefFrame;
     COParams->FieldOutput = (InputParams->Lowpower == false)
                                 ? MFX_CODINGOPTION_OFF
                                 : MFX_CODINGOPTION_ON;
@@ -1787,7 +1805,11 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CO2Params->Header.BufferSz = sizeof(mfxExtCodingOption2);
     CO2Params->BufferingPeriodSEI = MFX_BPSEI_IFRAME;
     CO2Params->RepeatPPS = MFX_CODINGOPTION_OFF;
-    CO2Params->FixedFrameRate = MFX_CODINGOPTION_ON;
+    if (!IsUHD600HEVC) {
+      // FixedFrameRate=ON can confuse the UHD600 legacy runtime's timestamp
+      // handling; leave it UNKNOWN for that path.
+      CO2Params->FixedFrameRate = MFX_CODINGOPTION_ON;
+    }
     CO2Params->DisableDeblockingIdc = 0; // enable deblocking filter
 
     if (InputParams->IntraRefEncoding == true) {
@@ -1908,7 +1930,9 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CO3Params->TargetChromaFormatPlus1 =
         static_cast<mfxU16>(QSVEncodeParams.mfx.FrameInfo.ChromaFormat + 1);
     CO3Params->TransformSkip = GetCodingOpt(InputParams->TransformSkip);
-    CO3Params->EnableMBForceIntra = MFX_CODINGOPTION_ON;
+    if (!IsUHD600HEVC) {
+      CO3Params->EnableMBForceIntra = MFX_CODINGOPTION_ON;
+    }
     CO3Params->FadeDetection = GetCodingOpt(InputParams->FadeDetection);
 
     if (QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_QVBR &&
@@ -1916,12 +1940,14 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       CO3Params->QVBRQuality = InputParams->QVBRQuality;
     }
 
-    CO3Params->EnableQPOffset = MFX_CODINGOPTION_ON;
+    if (!IsUHD600HEVC) {
+      CO3Params->EnableQPOffset = MFX_CODINGOPTION_ON;
 
-    CO3Params->BitstreamRestriction = MFX_CODINGOPTION_ON;
-    CO3Params->AspectRatioInfoPresent = MFX_CODINGOPTION_ON;
-    CO3Params->TimingInfoPresent = MFX_CODINGOPTION_ON;
-    CO3Params->OverscanInfoPresent = MFX_CODINGOPTION_ON;
+      CO3Params->BitstreamRestriction = MFX_CODINGOPTION_ON;
+      CO3Params->AspectRatioInfoPresent = MFX_CODINGOPTION_ON;
+      CO3Params->TimingInfoPresent = MFX_CODINGOPTION_ON;
+      CO3Params->OverscanInfoPresent = MFX_CODINGOPTION_ON;
+    }
 
     CO3Params->LowDelayHrd = GetCodingOpt(InputParams->LowDelayHRD);
 
@@ -2064,7 +2090,11 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
   /*Don't touch it! Magic beyond the control of mere mortals takes place
    * here*/
-  if (QSVEncodeParams.mfx.CodecId != MFX_CODEC_AV1 &&
+  // CODDI is full of low-level DDI knobs. The UHD600 legacy runtime accepts
+  // the buffer but reference-frame-related flags inside it misbehave on HEVC,
+  // so skip it entirely for that path.
+  if (!IsUHD600HEVC &&
+      QSVEncodeParams.mfx.CodecId != MFX_CODEC_AV1 &&
       QSVEncodeParams.mfx.CodecId != MFX_CODEC_VP9) {
     auto CODDIParams = QSVEncodeParams.AddExtBuffer<mfxExtCodingOptionDDI>();
     CODDIParams->Header.BufferId = MFX_EXTBUFF_DDI;
