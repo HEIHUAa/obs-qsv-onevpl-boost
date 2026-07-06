@@ -823,10 +823,13 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
   QSVProcessingParams.vpp.Out.FourCC = static_cast<mfxU32>(InputParams->FourCC);
   QSVProcessingParams.vpp.Out.ChromaFormat =
       static_cast<mfxU16>(InputParams->ChromaFormat);
-  mfxU16 vppOutWidth = InputParams->VPPOutWidth > 0
+  // Only use VPPOutWidth/Height when scaling mode is active; otherwise
+  // fall back to the source size so OFF scaling never resizes unexpectedly.
+  bool scalingActive = InputParams->VPPScalingMode.has_value();
+  mfxU16 vppOutWidth = (scalingActive && InputParams->VPPOutWidth > 0)
       ? InputParams->VPPOutWidth.value()
       : InputParams->Width;
-  mfxU16 vppOutHeight = InputParams->VPPOutHeight > 0
+  mfxU16 vppOutHeight = (scalingActive && InputParams->VPPOutHeight > 0)
       ? InputParams->VPPOutHeight.value()
       : InputParams->Height;
 

@@ -2030,17 +2030,23 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     {"LOWPOWER | ADVANCED",           std::optional<int>(4)},
     {"AUTO",                          std::optional<int>(0)},
   };
+  auto svScalingPost = std::string_view(ScalingModeData);
   if (auto v = MapString(ScalingModeData, kScalingModeMap)) {
     Context->EncoderParams.VPPScalingMode = *v;
   }
 
-  int64_t VPPOutWidthData = obs_data_get_int(Settings, "vpp_out_width");
-  int64_t VPPOutHeightData = obs_data_get_int(Settings, "vpp_out_height");
-  if (VPPOutWidthData > 0 && VPPOutHeightData > 0) {
-    Context->EncoderParams.VPPOutWidth =
-        static_cast<mfxU16>(VPPOutWidthData);
-    Context->EncoderParams.VPPOutHeight =
-        static_cast<mfxU16>(VPPOutHeightData);
+  // Only parse VPPOutWidth/Height when scaling mode is actually active.
+  // If scaling is OFF, width/height values should NOT be applied even if
+  // they happen to have stale non-zero values in settings.
+  if (svScalingPost != "OFF") {
+    int64_t VPPOutWidthData = obs_data_get_int(Settings, "vpp_out_width");
+    int64_t VPPOutHeightData = obs_data_get_int(Settings, "vpp_out_height");
+    if (VPPOutWidthData > 0 && VPPOutHeightData > 0) {
+      Context->EncoderParams.VPPOutWidth =
+          static_cast<mfxU16>(VPPOutWidthData);
+      Context->EncoderParams.VPPOutHeight =
+          static_cast<mfxU16>(VPPOutHeightData);
+    }
   }
 
   // 16. ImageStabMode
