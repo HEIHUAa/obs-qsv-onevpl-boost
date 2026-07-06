@@ -3895,10 +3895,21 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
   *Bitstream = nullptr;
   int TaskID = 0;
 
-  Status = QSVEncode->GetSurface(&QSVEncodeSurface);
-  if (Status < MFX_ERR_NONE) {
-    error("Error code: %d", Status);
-    throw std::runtime_error("Encode(): Get encode surface error");
+  if (QSVProcessingEnable) {
+    // VPP input surface matches the source resolution (e.g. 1920x1080),
+    // while the encoder surface is at the VPP output resolution (e.g. 1280x720).
+    // Using GetSurfaceIn ensures the surface dimensions match the VPP input config.
+    Status = QSVProcessing->GetSurfaceIn(&QSVEncodeSurface);
+    if (Status < MFX_ERR_NONE) {
+      error("Error code: %d", Status);
+      throw std::runtime_error("Encode(): Get VPP input surface error");
+    }
+  } else {
+    Status = QSVEncode->GetSurface(&QSVEncodeSurface);
+    if (Status < MFX_ERR_NONE) {
+      error("Error code: %d", Status);
+      throw std::runtime_error("Encode(): Get encode surface error");
+    }
   }
 
   while (GetFreeTaskIndex(&TaskID) == MFX_ERR_NOT_FOUND) {
