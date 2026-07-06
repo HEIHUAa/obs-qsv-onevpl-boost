@@ -472,8 +472,9 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   const char *lookahead = obs_data_get_string(Settings, "lookahead");
 
   // Lookahead support per codec (verified against oneVPL vpl-gpu-rt 26.1.5):
-  //   AVC: CBR/VBR/ICQ – promoted to LA_HRD/LA/LA_ICQ.
-  //        LA_HRD is essentially LA-CBR (Lookahead BRC with HRD buffering).
+  //   AVC: CBR/VBR/ICQ. VBR/ICQ are promoted to LA/LA_ICQ/LA_HRD (SW BRC).
+  //        CBR keeps its RC mode but sets LookAheadDepth, which triggers
+  //        EncTools LAGS hardware lookahead (IsEnctoolsLAGS in mfx_enc_common).
   //   HEVC/AV1: CBR/VBR only – lookahead works via GAME_STREAMING hardware
   //        EncTools, which requires EncTools platform support (TigerLake+).
   //   VP9: no lookahead mechanism at all.
