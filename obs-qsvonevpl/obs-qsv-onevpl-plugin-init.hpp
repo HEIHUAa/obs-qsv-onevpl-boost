@@ -170,6 +170,32 @@ struct plugin_context {
 #define TEXT_VPP_MCTF_DESC obs_module_text("VPPMCTFDesc")
 #define TEXT_VPP_MCTF_STRENGTH_DESC obs_module_text("VPPMCTFStrengthDesc")
 
+// ProcAmp
+#define TEXT_VPP_PROCAMP obs_module_text("VPPProcAmp")
+#define TEXT_VPP_PROCAMP_DESC obs_module_text("VPPProcAmpDesc")
+#define TEXT_VPP_PROCAMP_BRIGHTNESS obs_module_text("VPPProcAmpBrightness")
+#define TEXT_VPP_PROCAMP_BRIGHTNESS_DESC obs_module_text("VPPProcAmpBrightnessDesc")
+#define TEXT_VPP_PROCAMP_CONTRAST obs_module_text("VPPProcAmpContrast")
+#define TEXT_VPP_PROCAMP_CONTRAST_DESC obs_module_text("VPPProcAmpContrastDesc")
+#define TEXT_VPP_PROCAMP_HUE obs_module_text("VPPProcAmpHue")
+#define TEXT_VPP_PROCAMP_HUE_DESC obs_module_text("VPPProcAmpHueDesc")
+#define TEXT_VPP_PROCAMP_SATURATION obs_module_text("VPPProcAmpSaturation")
+#define TEXT_VPP_PROCAMP_SATURATION_DESC obs_module_text("VPPProcAmpSaturationDesc")
+
+// Rotation
+#define TEXT_VPP_ROTATION obs_module_text("VPPRotation")
+#define TEXT_VPP_ROTATION_DESC obs_module_text("VPPRotationDesc")
+
+// Mirroring
+#define TEXT_VPP_MIRRORING obs_module_text("VPPMirroring")
+#define TEXT_VPP_MIRRORING_DESC obs_module_text("VPPMirroringDesc")
+
+// Frame Rate Conversion
+#define TEXT_VPP_FRC obs_module_text("VPPFRC")
+#define TEXT_VPP_FRC_DESC obs_module_text("VPPFRCDesc")
+#define TEXT_VPP_FRC_OUT_FPS obs_module_text("VPPFRCOutFPS")
+#define TEXT_VPP_FRC_OUT_FPS_DESC obs_module_text("VPPFRCOutFPSDesc")
+
 #define TEXT_WEIGHTED_PRED obs_module_text("WeightedPred")
 #define TEXT_WEIGHTED_BI_PRED obs_module_text("WeightedBiPred")
 #define TEXT_WEIGHTED_PRED_DESC obs_module_text("WeightedPredDesc")
@@ -272,6 +298,10 @@ extern const char *const qsv_params_condition_scenario_info[];
 extern const char *const qsv_params_condition_content_info[];
 extern const char *const qsv_params_condition_denoise_mode[];
 extern const char *const qsv_params_condition_av1_interp_filter[];
+extern const char *const qsv_params_condition_procamp[];
+extern const char *const qsv_params_condition_rotation[];
+extern const char *const qsv_params_condition_mirroring[];
+extern const char *const qsv_params_condition_frc[];
 
 static void SetDefaultEncoderParams(obs_data_t *, enum codec_enum);
 

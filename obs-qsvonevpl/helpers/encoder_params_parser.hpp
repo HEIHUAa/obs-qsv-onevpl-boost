@@ -459,6 +459,15 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
   const char *PercEncPrefilterData =
       obs_data_get_string(Settings, "perc_enc_prefilter");
 
+  const char *VPPProcAmpData =
+      obs_data_get_string(Settings, "vpp_procamp");
+  const char *VPPRotationData =
+      obs_data_get_string(Settings, "vpp_rotation");
+  const char *VPPMirroringData =
+      obs_data_get_string(Settings, "vpp_mirroring");
+  const char *VPPFRCData =
+      obs_data_get_string(Settings, "vpp_frc");
+
   int GPUNumData = static_cast<int>(obs_data_get_int(Settings, "gpu_number"));
 
   // 1. TargetUsage
@@ -715,6 +724,50 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
 
   if (auto v = MapString(PercEncPrefilterData, kPercEncPrefilterMap))
     Params.PercEncPrefilter = *v;
+
+  // ProcAmp
+  if (std::string_view(VPPProcAmpData) == "ON") {
+    Params.VPPProcAmpMode = 1;
+    Params.VPPProcAmpBrightness =
+        obs_data_get_double(Settings, "vpp_procamp_brightness");
+    Params.VPPProcAmpContrast =
+        obs_data_get_double(Settings, "vpp_procamp_contrast");
+    Params.VPPProcAmpHue =
+        obs_data_get_double(Settings, "vpp_procamp_hue");
+    Params.VPPProcAmpSaturation =
+        obs_data_get_double(Settings, "vpp_procamp_saturation");
+  }
+
+  // Rotation
+  if (std::string_view(VPPRotationData) == "90")
+    Params.VPPRotation = 90;
+  else if (std::string_view(VPPRotationData) == "180")
+    Params.VPPRotation = 180;
+  else if (std::string_view(VPPRotationData) == "270")
+    Params.VPPRotation = 270;
+
+  // Mirroring
+  if (std::string_view(VPPMirroringData) == "HORIZONTAL")
+    Params.VPPMirroring = 1;
+  else if (std::string_view(VPPMirroringData) == "VERTICAL")
+    Params.VPPMirroring = 2;
+  else if (std::string_view(VPPMirroringData) == "BOTH")
+    Params.VPPMirroring = 3;
+
+  // Frame Rate Conversion
+  static constexpr std::pair<std::string_view, int> kFRCModeMap[] = {
+    {"PRESERVE_TIMESTAMP",                    0},
+    {"DISTRIBUTED_TIMESTAMP",                 1},
+    {"FRAME_INTERPOLATION",                   2},
+    {"PRESERVE_TIMESTAMP + INTERPOLATION",    3},
+    {"DISTRIBUTED_TIMESTAMP + INTERPOLATION", 4},
+  };
+  if (auto v = MapString(VPPFRCData, kFRCModeMap)) {
+    Params.VPPFRCMode = *v;
+    Params.VPPOutFpsNum =
+        static_cast<mfxU32>(obs_data_get_int(Settings, "vpp_frc_out_fps"));
+    Params.VPPOutFpsDen = 1;
+  }
 
   Params.AsyncDepth =
       static_cast<mfxU16>(obs_data_get_int(Settings, "async_depth"));

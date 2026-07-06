@@ -126,6 +126,24 @@ struct encoder_params {
   std::optional<mfxU16> VPPOutWidth;
   std::optional<mfxU16> VPPOutHeight;
 
+  // ProcAmp (color adjustment)
+  std::optional<int> VPPProcAmpMode;     // 0=OFF, 1=ON
+  mfxF64 VPPProcAmpBrightness{};        // [-100.0, 100.0]
+  mfxF64 VPPProcAmpContrast{1.0};       // [0.0, 10.0]
+  mfxF64 VPPProcAmpHue{};               // [-180.0, 180.0]
+  mfxF64 VPPProcAmpSaturation{1.0};     // [0.0, 10.0]
+
+  // Rotation
+  std::optional<int> VPPRotation;       // 0=OFF, 90, 180, 270
+
+  // Mirroring
+  std::optional<int> VPPMirroring;      // 0=OFF, 1=HORIZONTAL, 2=VERTICAL, 3=BOTH
+
+  // Frame Rate Conversion
+  std::optional<int> VPPFRCMode;        // FRC algorithm
+  std::optional<mfxU32> VPPOutFpsNum;   // output frame rate numerator (for FRC)
+  std::optional<mfxU32> VPPOutFpsDen;   // output frame rate denominator
+
   mfxU32 FourCC;
   mfxU16 ChromaFormat;
 

@@ -73,6 +73,16 @@ const char *const qsv_params_condition_denoise_mode[] = {
     "DEFAULT", "AUTO | BDRATE | PRE ENCODE", "AUTO | ADJUST | POST ENCODE",
     "AUTO | SUBJECTIVE | PRE ENCODE", "MANUAL | PRE ENCODE",
     "MANUAL | POST ENCODE", "OFF", 0};
+const char *const qsv_params_condition_procamp[] = {
+    "OFF", "ON", 0};
+const char *const qsv_params_condition_rotation[] = {
+    "OFF", "90", "180", "270", 0};
+const char *const qsv_params_condition_mirroring[] = {
+    "OFF", "HORIZONTAL", "VERTICAL", "BOTH", 0};
+const char *const qsv_params_condition_frc[] = {
+    "OFF", "PRESERVE_TIMESTAMP", "DISTRIBUTED_TIMESTAMP",
+    "FRAME_INTERPOLATION", "PRESERVE_TIMESTAMP + INTERPOLATION",
+    "DISTRIBUTED_TIMESTAMP + INTERPOLATION", 0};
 const char *const qsv_params_condition_av1_interp_filter[] = {
     "DEFAULT", "EIGHTTAP", "EIGHTTAP_SMOOTH", "EIGHTTAP_SHARP", "BILINEAR",
     "SWITCHABLE", 0};
@@ -333,6 +343,17 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_int(Settings, "vpp_out_height", 0);
   obs_data_set_default_string(Settings, "perc_enc_prefilter", "OFF");
 
+  // New VPP filters defaults
+  obs_data_set_default_string(Settings, "vpp_procamp", "OFF");
+  obs_data_set_default_double(Settings, "vpp_procamp_brightness", 0.0);
+  obs_data_set_default_double(Settings, "vpp_procamp_contrast", 1.0);
+  obs_data_set_default_double(Settings, "vpp_procamp_hue", 0.0);
+  obs_data_set_default_double(Settings, "vpp_procamp_saturation", 1.0);
+  obs_data_set_default_string(Settings, "vpp_rotation", "OFF");
+  obs_data_set_default_string(Settings, "vpp_mirroring", "OFF");
+  obs_data_set_default_string(Settings, "vpp_frc", "OFF");
+  obs_data_set_default_int(Settings, "vpp_frc_out_fps", 60);
+
   obs_data_set_default_string(Settings, "scenario_info", "AUTO");
   obs_data_set_default_string(Settings, "content_info", "AUTO");
   obs_data_set_default_string(Settings, "transform_skip", "AUTO");
@@ -537,6 +558,10 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   SetVisible("perc_enc_prefilter", bVisibleVPP);
   SetVisible("denoise_mode", bVisibleVPP);
   SetVisible("scaling_mode", bVisibleVPP);
+  SetVisible("vpp_procamp", bVisibleVPP);
+  SetVisible("vpp_rotation", bVisibleVPP);
+  SetVisible("vpp_mirroring", bVisibleVPP);
+  SetVisible("vpp_frc", bVisibleVPP);
   const char *scaling_mode = obs_data_get_string(Settings, "scaling_mode");
   bool bScalingModeActive = sv(scaling_mode) != "OFF";
   SetVisible("vpp_out_width", bVisibleVPP && bScalingModeActive);
@@ -557,6 +582,19 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   const char *detail = obs_data_get_string(Settings, "detail");
   bVisible = sv(detail) == "ON";
   SetVisible("detail_factor", bVisible && bVisibleVPP);
+
+  // ProcAmp sub-controls: show when ProcAmp is ON
+  const char *vpp_procamp = obs_data_get_string(Settings, "vpp_procamp");
+  bool bProcAmpActive = bVisibleVPP && sv(vpp_procamp) == "ON";
+  SetVisible("vpp_procamp_brightness", bProcAmpActive);
+  SetVisible("vpp_procamp_contrast", bProcAmpActive);
+  SetVisible("vpp_procamp_hue", bProcAmpActive);
+  SetVisible("vpp_procamp_saturation", bProcAmpActive);
+
+  // FRC sub-control: show output fps when FRC mode is not OFF
+  const char *vpp_frc = obs_data_get_string(Settings, "vpp_frc");
+  bool bFRCActive = bVisibleVPP && sv(vpp_frc) != "OFF";
+  SetVisible("vpp_frc_out_fps", bFRCActive);
 
   const char *intra_ref_encoding =
       obs_data_get_string(Settings, "intra_ref_encoding");
@@ -1064,6 +1102,57 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                        TEXT_VPP_MCTF_STRENGTH, 0, 20, 1);
   obs_property_set_long_description(Prop, TEXT_VPP_MCTF_STRENGTH_DESC);
 #endif
+
+  // ProcAmp (color adjustment)
+  Prop = obs_properties_add_list(VFGroup, "vpp_procamp", TEXT_VPP_PROCAMP,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition_procamp);
+  obs_property_set_long_description(Prop, TEXT_VPP_PROCAMP_DESC);
+  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
+
+  Prop = obs_properties_add_float_slider(VFGroup, "vpp_procamp_brightness",
+                                         TEXT_VPP_PROCAMP_BRIGHTNESS, -100.0, 100.0, 0.5);
+  obs_property_set_long_description(Prop, TEXT_VPP_PROCAMP_BRIGHTNESS_DESC);
+  obs_property_set_visible(Prop, false);
+
+  Prop = obs_properties_add_float_slider(VFGroup, "vpp_procamp_contrast",
+                                         TEXT_VPP_PROCAMP_CONTRAST, 0.0, 10.0, 0.05);
+  obs_property_set_long_description(Prop, TEXT_VPP_PROCAMP_CONTRAST_DESC);
+  obs_property_set_visible(Prop, false);
+
+  Prop = obs_properties_add_float_slider(VFGroup, "vpp_procamp_hue",
+                                         TEXT_VPP_PROCAMP_HUE, -180.0, 180.0, 1.0);
+  obs_property_set_long_description(Prop, TEXT_VPP_PROCAMP_HUE_DESC);
+  obs_property_set_visible(Prop, false);
+
+  Prop = obs_properties_add_float_slider(VFGroup, "vpp_procamp_saturation",
+                                         TEXT_VPP_PROCAMP_SATURATION, 0.0, 10.0, 0.05);
+  obs_property_set_long_description(Prop, TEXT_VPP_PROCAMP_SATURATION_DESC);
+  obs_property_set_visible(Prop, false);
+
+  // Rotation
+  Prop = obs_properties_add_list(VFGroup, "vpp_rotation", TEXT_VPP_ROTATION,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition_rotation);
+  obs_property_set_long_description(Prop, TEXT_VPP_ROTATION_DESC);
+
+  // Mirroring
+  Prop = obs_properties_add_list(VFGroup, "vpp_mirroring", TEXT_VPP_MIRRORING,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition_mirroring);
+  obs_property_set_long_description(Prop, TEXT_VPP_MIRRORING_DESC);
+
+  // Frame Rate Conversion
+  Prop = obs_properties_add_list(VFGroup, "vpp_frc", TEXT_VPP_FRC,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition_frc);
+  obs_property_set_long_description(Prop, TEXT_VPP_FRC_DESC);
+  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
+
+  Prop = obs_properties_add_int(VFGroup, "vpp_frc_out_fps",
+                                TEXT_VPP_FRC_OUT_FPS, 1, 1000, 1);
+  obs_property_set_long_description(Prop, TEXT_VPP_FRC_OUT_FPS_DESC);
+  obs_property_set_visible(Prop, false);
 
   obs_properties_t *CSGroup = obs_properties_create();
 
@@ -1979,6 +2068,53 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.PercEncPrefilter = *v;
   }
 
+  // New VPP filters: ProcAmp, Rotation, Mirroring, FRC
+  const char *VPPProcAmpData = obs_data_get_string(Settings, "vpp_procamp");
+  if (std::string_view(VPPProcAmpData) == "ON") {
+    Context->EncoderParams.VPPProcAmpMode = 1;
+    Context->EncoderParams.VPPProcAmpBrightness =
+        obs_data_get_double(Settings, "vpp_procamp_brightness");
+    Context->EncoderParams.VPPProcAmpContrast =
+        obs_data_get_double(Settings, "vpp_procamp_contrast");
+    Context->EncoderParams.VPPProcAmpHue =
+        obs_data_get_double(Settings, "vpp_procamp_hue");
+    Context->EncoderParams.VPPProcAmpSaturation =
+        obs_data_get_double(Settings, "vpp_procamp_saturation");
+  }
+
+  const char *VPPRotationData = obs_data_get_string(Settings, "vpp_rotation");
+  if (std::string_view(VPPRotationData) == "90") {
+    Context->EncoderParams.VPPRotation = 90;
+  } else if (std::string_view(VPPRotationData) == "180") {
+    Context->EncoderParams.VPPRotation = 180;
+  } else if (std::string_view(VPPRotationData) == "270") {
+    Context->EncoderParams.VPPRotation = 270;
+  }
+
+  const char *VPPMirroringData = obs_data_get_string(Settings, "vpp_mirroring");
+  if (std::string_view(VPPMirroringData) == "HORIZONTAL") {
+    Context->EncoderParams.VPPMirroring = 1;
+  } else if (std::string_view(VPPMirroringData) == "VERTICAL") {
+    Context->EncoderParams.VPPMirroring = 2;
+  } else if (std::string_view(VPPMirroringData) == "BOTH") {
+    Context->EncoderParams.VPPMirroring = 3;
+  }
+
+  const char *VPPFRCData = obs_data_get_string(Settings, "vpp_frc");
+  static constexpr std::pair<std::string_view, int> kFRCModeMap[] = {
+    {"PRESERVE_TIMESTAMP",                    0},
+    {"DISTRIBUTED_TIMESTAMP",                 1},
+    {"FRAME_INTERPOLATION",                   2},
+    {"PRESERVE_TIMESTAMP + INTERPOLATION",    3},
+    {"DISTRIBUTED_TIMESTAMP + INTERPOLATION", 4},
+  };
+  if (auto v = MapString(VPPFRCData, kFRCModeMap)) {
+    Context->EncoderParams.VPPFRCMode = *v;
+    Context->EncoderParams.VPPOutFpsNum =
+        static_cast<mfxU32>(obs_data_get_int(Settings, "vpp_frc_out_fps"));
+    Context->EncoderParams.VPPOutFpsDen = 1;
+  }
+
   Context->EncoderParams.AsyncDepth =
       static_cast<mfxU16>(obs_data_get_int(Settings, "async_depth"));
 
@@ -2068,7 +2204,15 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
        Context->EncoderParams.VPPDetail.has_value() ||
        Context->EncoderParams.VPPScalingMode.has_value() ||
        Context->EncoderParams.VPPImageStabMode.has_value() ||
-       Context->EncoderParams.PercEncPrefilter == true) &&
+       Context->EncoderParams.PercEncPrefilter == true ||
+       Context->EncoderParams.VPPProcAmpMode.has_value() ||
+       Context->EncoderParams.VPPRotation.has_value() ||
+       Context->EncoderParams.VPPMirroring.has_value() ||
+       Context->EncoderParams.VPPFRCMode.has_value()
+#ifndef QSV_UHD600_SUPPORT
+       || Context->EncoderParams.VPPMCTFMode.has_value()
+#endif
+      ) &&
       std::string_view(VideoProcessingStatusData) == "ON") {
     if (VOI->format == VIDEO_FORMAT_NV12) {
       Context->EncoderParams.ProcessingEnable = true;

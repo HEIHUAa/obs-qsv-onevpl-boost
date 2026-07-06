@@ -962,6 +962,45 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
   }
 #endif
 
+  // ProcAmp (color adjustment)
+  if (InputParams->VPPProcAmpMode.has_value() && InputParams->VPPProcAmpMode.value() == 1) {
+    auto ProcAmpParams = QSVProcessingParams.AddExtBuffer<mfxExtVPPProcAmp>();
+    ProcAmpParams->Header.BufferId = MFX_EXTBUFF_VPP_PROCAMP;
+    ProcAmpParams->Header.BufferSz = sizeof(mfxExtVPPProcAmp);
+    ProcAmpParams->Brightness = InputParams->VPPProcAmpBrightness;
+    ProcAmpParams->Contrast = InputParams->VPPProcAmpContrast;
+    ProcAmpParams->Hue = InputParams->VPPProcAmpHue;
+    ProcAmpParams->Saturation = InputParams->VPPProcAmpSaturation;
+  }
+
+  // Rotation
+  if (InputParams->VPPRotation.has_value()) {
+    auto RotationParams = QSVProcessingParams.AddExtBuffer<mfxExtVPPRotation>();
+    RotationParams->Header.BufferId = MFX_EXTBUFF_VPP_ROTATION;
+    RotationParams->Header.BufferSz = sizeof(mfxExtVPPRotation);
+    RotationParams->Angle = static_cast<mfxU16>(InputParams->VPPRotation.value());
+  }
+
+  // Mirroring
+  if (InputParams->VPPMirroring.has_value()) {
+    auto MirroringParams = QSVProcessingParams.AddExtBuffer<mfxExtVPPMirroring>();
+    MirroringParams->Header.BufferId = MFX_EXTBUFF_VPP_MIRRORING;
+    MirroringParams->Header.BufferSz = sizeof(mfxExtVPPMirroring);
+    MirroringParams->Type = static_cast<mfxU16>(InputParams->VPPMirroring.value());
+  }
+
+  // Frame Rate Conversion
+  if (InputParams->VPPFRCMode.has_value()) {
+    auto FRCParams = QSVProcessingParams.AddExtBuffer<mfxExtVPPFrameRateConversion>();
+    FRCParams->Header.BufferId = MFX_EXTBUFF_VPP_FRAME_RATE_CONVERSION;
+    FRCParams->Header.BufferSz = sizeof(mfxExtVPPFrameRateConversion);
+    FRCParams->Algorithm = static_cast<mfxU16>(InputParams->VPPFRCMode.value());
+    if (InputParams->VPPOutFpsNum.has_value() && InputParams->VPPOutFpsDen.has_value()) {
+      QSVProcessingParams.vpp.Out.FrameRateExtN = InputParams->VPPOutFpsNum.value();
+      QSVProcessingParams.vpp.Out.FrameRateExtD = InputParams->VPPOutFpsDen.value();
+    }
+  }
+
   QSVProcessingParams.IOPattern =
       MFX_IOPATTERN_IN_VIDEO_MEMORY | MFX_IOPATTERN_OUT_VIDEO_MEMORY;
 
@@ -3277,6 +3316,43 @@ void QSVEncoder::LogActualParams() {
       info("\tPercEncPrefilter: ON");
     } else {
       info("\tPercEncPrefilter: OFF");
+    }
+  }
+  {
+    auto *ProcAmp = QSVProcessingParams.GetExtBuffer<mfxExtVPPProcAmp>();
+    if (ProcAmp) {
+      info("\tProcAmp: ON | Brightness=%.1f Contrast=%.2f Hue=%.1f Saturation=%.2f",
+           ProcAmp->Brightness, ProcAmp->Contrast,
+           ProcAmp->Hue, ProcAmp->Saturation);
+    } else {
+      info("\tProcAmp: OFF");
+    }
+  }
+  {
+    auto *Rotation = QSVProcessingParams.GetExtBuffer<mfxExtVPPRotation>();
+    if (Rotation) {
+      info("\tRotation: angle=%d", Rotation->Angle);
+    } else {
+      info("\tRotation: OFF");
+    }
+  }
+  {
+    auto *Mirroring = QSVProcessingParams.GetExtBuffer<mfxExtVPPMirroring>();
+    if (Mirroring) {
+      info("\tMirroring: type=%d", Mirroring->Type);
+    } else {
+      info("\tMirroring: OFF");
+    }
+  }
+  {
+    auto *FRC = QSVProcessingParams.GetExtBuffer<mfxExtVPPFrameRateConversion>();
+    if (FRC) {
+      info("\tFRC: algorithm=%d | OutFps=%u/%u",
+           FRC->Algorithm,
+           QSVProcessingParams.vpp.Out.FrameRateExtN,
+           QSVProcessingParams.vpp.Out.FrameRateExtD);
+    } else {
+      info("\tFRC: OFF");
     }
   }
 
