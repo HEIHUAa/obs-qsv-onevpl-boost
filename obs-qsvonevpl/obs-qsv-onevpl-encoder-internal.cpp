@@ -895,7 +895,14 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
         static_cast<mfxU16>(InputParams->VPPDetail.value());
   }
 
-  if (InputParams->VPPScalingMode.has_value()) {
+  // Only apply the scaling mode ext buffer when the VPP output size actually
+  // differs from the input (i.e. a real resize is requested).  Without a real
+  // resize, setting the buffer triggers an access violation in the oneVPL
+  // runtime on certain non-primary-Intel-GPU configurations (frame import
+  // path) because the hardware scaling pipeline (VEBOX / SFC) isn't wired up.
+  if (InputParams->VPPScalingMode.has_value() &&
+      (vppOutWidth != InputParams->Width ||
+       vppOutHeight != InputParams->Height)) {
     auto ScalingParams = QSVProcessingParams.AddExtBuffer<mfxExtVPPScaling>();
     ScalingParams->Header.BufferId = MFX_EXTBUFF_VPP_SCALING;
     ScalingParams->Header.BufferSz = sizeof(mfxExtVPPScaling);
@@ -1587,6 +1594,18 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     QSVEncodeParams.mfx.LowPower = MFX_CODINGOPTION_OFF;
   }
 #endif
+
+  // HEVC/AV1 hardware EncTools lookahead via GAME_STREAMING requires
+  // LowPower=ON in oneVPL 26.1.5 (verified in vpl-gpu-rt source).
+  // Without it the driver returns MFX_ERR_INVALID_VIDEO_PARAM (-15).
+  // Fall back to no lookahead when LowPower is OFF.
+  if (InputParams->Lookahead &&
+      (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC ||
+       QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1) &&
+      QSVEncodeParams.mfx.LowPower != MFX_CODINGOPTION_ON) {
+    InputParams->Lookahead = false;
+    info("\tLookahead disabled for HEVC/AV1: LowPower is OFF");
+  }
 
   const bool IsUHD600HEVC =
 #ifdef QSV_UHD600_SUPPORT
