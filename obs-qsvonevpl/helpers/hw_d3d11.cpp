@@ -63,12 +63,10 @@ mfxStatus HWManager::CreateDevice(mfxIMPL &Impl) {
         throw std::runtime_error("Adapter is nullptr");
       }
 
-      // UINT dxFlags = 0;
       UINT D3DFlags =
-          /*D3D11_CREATE_DEVICE_DEBUG |*/ D3D11_CREATE_DEVICE_BGRA_SUPPORT |
-          D3D11_CREATE_DEVICE_DISABLE_GPU_TIMEOUT |
+          D3D11_CREATE_DEVICE_BGRA_SUPPORT |
           D3D11_CREATE_DEVICE_VIDEO_SUPPORT |
-          D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS;
+          D3D11_CREATE_DEVICE_DISABLE_GPU_TIMEOUT;
 
       HR = D3D11CreateDevice(
           HWAdapter, D3D_DRIVER_TYPE_UNKNOWN, NULL, D3DFlags, FeatureLevels,
