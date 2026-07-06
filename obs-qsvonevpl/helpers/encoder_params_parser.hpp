@@ -180,10 +180,10 @@ static constexpr std::pair<std::string_view, bool> kEncToolsMap[] = {
 };
 
 static constexpr std::pair<std::string_view, int> kMVCostScalingFactorMap[] = {
-    {"DEFAULT", 0},
-    {"1/2", 1},
-    {"1/4", 2},
-    {"1/8", 3},
+    {"AGGRESSIVE_0", 0},
+    {"AGGRESSIVE_1", 1},
+    {"MODERATE_2", 2},
+    {"CONSERVATIVE_3", 3},
 };
 
 static constexpr std::pair<std::string_view, int> kLookaheadDSMap[] = {

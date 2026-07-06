@@ -1663,21 +1663,23 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   QSVEncodeParams.mfx.RateControlMethod =
       static_cast<mfxU16>(InputParams->RateControl);
 
-  // When lookahead is enabled, promote plain VBR/ICQ to the actual
+  // When lookahead is enabled, promote plain RC modes to the actual
   // lookahead-aware rate control algorithms. oneVPL ignores LookAheadDepth
   // unless the rate control method itself is an LA variant.
   // Verified in vpl-gpu-rt-intel-onevpl-26.1.5: LA/LA_ICQ/LA_HRD are only
   // implemented for AVC; HEVC and AV1 return MFX_ERR_UNSUPPORTED for them.
+  //   LA_HRD = LA-CBR (Lookahead BRC with HRD buffer conformance)
+  //   LA     = LA-VBR
+  //   LA_ICQ = LA-ICQ
   if (InputParams->Lookahead &&
       QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC) {
-    if (QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_VBR) {
-      if (InputParams->HRDConformance.value_or(false)) {
-        QSVEncodeParams.mfx.RateControlMethod = MFX_RATECONTROL_LA_HRD;
-        info("\tRate control promoted: VBR + Lookahead + HRD -> LA_HRD");
-      } else {
-        QSVEncodeParams.mfx.RateControlMethod = MFX_RATECONTROL_LA;
-        info("\tRate control promoted: VBR + Lookahead -> LA");
-      }
+    if (QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_CBR) {
+      QSVEncodeParams.mfx.RateControlMethod = MFX_RATECONTROL_LA_HRD;
+      info("\tRate control promoted: CBR + Lookahead -> LA_HRD (LA-CBR)");
+    } else if (QSVEncodeParams.mfx.RateControlMethod ==
+               MFX_RATECONTROL_VBR) {
+      QSVEncodeParams.mfx.RateControlMethod = MFX_RATECONTROL_LA;
+      info("\tRate control promoted: VBR + Lookahead -> LA");
     } else if (QSVEncodeParams.mfx.RateControlMethod ==
                MFX_RATECONTROL_ICQ) {
       QSVEncodeParams.mfx.RateControlMethod = MFX_RATECONTROL_LA_ICQ;
@@ -1896,8 +1898,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
     // LookAheadDepth is only meaningful for RC modes where the oneVPL driver
     // actually uses it (the UI already prevents enabling Lookahead for others):
-    //   AVC:   VBR/ICQ are promoted → LA/LA_ICQ/LA_HRD, so CBR/AVBR/QVBR never
-    //          reach here with Lookahead=true (driver would zero the field).
+    //   AVC:   CBR/VBR/ICQ are promoted → LA_HRD/LA/LA_ICQ.
     //   HEVC/AV1: only CBR/VBR work via GAME_STREAMING hardware EncTools.
     //   VP9:  no lookahead at all.
     if (InputParams->Lookahead == true) {

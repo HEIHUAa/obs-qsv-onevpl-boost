@@ -55,7 +55,7 @@ const char *const qsv_params_skip_frame_mode[] = {
 const char *const qsv_params_condition_intra_ref_encoding[] = {
     "VERTICAL", "HORIZONTAL", 0};
 const char *const qsv_params_condition_mv_cost_scaling[] = {
-    "DEFAULT", "1/2", "1/4", "1/8", "AUTO", 0};
+    "AGGRESSIVE_0", "AGGRESSIVE_1", "MODERATE_2", "CONSERVATIVE_3", "AUTO", 0};
 const char *const qsv_params_condition_lookahead_mode[] = {"HQ", "LP", "OFF", 0};
 const char *const qsv_params_condition_lookahead_ds[] = {
     "1X", "2X", "4X", "AUTO", 0};
@@ -472,14 +472,14 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   const char *lookahead = obs_data_get_string(Settings, "lookahead");
 
   // Lookahead support per codec (verified against oneVPL vpl-gpu-rt 26.1.5):
-  //   AVC: VBR/ICQ only – these are promoted to LA/LA_ICQ/LA_HRD;
-  //        other RC modes cause the driver to zero LookAheadDepth.
+  //   AVC: CBR/VBR/ICQ – promoted to LA_HRD/LA/LA_ICQ.
+  //        LA_HRD is essentially LA-CBR (Lookahead BRC with HRD buffering).
   //   HEVC/AV1: CBR/VBR only – lookahead works via GAME_STREAMING hardware
   //        EncTools, which requires EncTools platform support (TigerLake+).
   //   VP9: no lookahead mechanism at all.
   switch (codec) {
   case QSV_CODEC_AVC:
-    bVisible = bIsVBR || bIsICQ;
+    bVisible = bIsCBR || bIsVBR || bIsICQ;
     break;
   case QSV_CODEC_HEVC:
   case QSV_CODEC_AV1:
@@ -987,7 +987,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   AddStrings(Prop, qsv_params_condition_mv_cost_scaling);
   obs_property_set_long_description(Prop,
                                     obs_module_text("MVCostScalingFactor.Tooltip"));
-  obs_property_set_visible(Prop, bIsAVCOrHEVC);
+  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC); // HME only for AVC
 
   Prop = obs_properties_add_list(RMGroup, "direct_bias_adjustment",
                                  TEXT_DIRECT_BIAS_ADJUSTMENT,
@@ -1824,12 +1824,12 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   ParseOptionalBool(DirectBiasAdjustmentData,
                     Context->EncoderParams.DirectBiasAdjustment);
 
-  // 7. MVCostScalingFactor. "DEFAULT" sets MV cost to 0; "AUTO" (unmapped)
+  // 7. MVCostScalingFactor. 0=most aggressive, 3=most conservative; "AUTO" (unmapped)
   static constexpr std::pair<std::string_view, int> kMVCostScalingFactorMap[] = {
-    {"DEFAULT", 0},
-    {"1/2",     1},
-    {"1/4",     2},
-    {"1/8",     3},
+    {"AGGRESSIVE_0", 0},
+    {"AGGRESSIVE_1", 1},
+    {"MODERATE_2",   2},
+    {"CONSERVATIVE_3", 3},
   };
   if (auto v = MapString(MVCostScalingFactorData, kMVCostScalingFactorMap)) {
     Context->EncoderParams.MVCostScalingFactor = *v;
