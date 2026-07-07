@@ -1836,23 +1836,33 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     auto COParams = QSVEncodeParams.AddExtBuffer<mfxExtCodingOption>();
     COParams->Header.BufferId = MFX_EXTBUFF_CODING_OPTION;
     COParams->Header.BufferSz = sizeof(mfxExtCodingOption);
-    /*Don't touch it!*/
-    COParams->CAVLC = MFX_CODINGOPTION_OFF;
-    if (!IsUHD600HEVC) {
-      // These reference-list flags help quality on newer GPU RT, but the
-      // UHD600 legacy runtime mismanages references when they are forced ON,
-      // causing the "only I-frame updates" symptom. Leave them UNKNOWN so
-      // the driver picks its own defaults.
-      COParams->RefPicListReordering = MFX_CODINGOPTION_ON;
-      COParams->RefPicMarkRep = MFX_CODINGOPTION_ON;
-      COParams->PicTimingSEI = MFX_CODINGOPTION_ON;
-      COParams->ResetRefList = MFX_CODINGOPTION_ON;
+
+    // AVC-only CO1 fields (driver resets them to 0 for HEVC/AV1/VP9)
+    if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC) {
+      /*Don't touch it!*/
+      COParams->CAVLC = MFX_CODINGOPTION_OFF;
+      if (!IsUHD600HEVC) {
+        // These reference-list flags help quality on newer GPU RT, but the
+        // UHD600 legacy runtime mismanages references when they are forced ON,
+        // causing the "only I-frame updates" symptom. Leave them UNKNOWN so
+        // the driver picks its own defaults.
+        COParams->RefPicListReordering = MFX_CODINGOPTION_ON;
+        COParams->RefPicMarkRep = MFX_CODINGOPTION_ON;
+        COParams->ResetRefList = MFX_CODINGOPTION_ON;
+      }
+      COParams->FieldOutput = (InputParams->Lowpower == false)
+                                  ? MFX_CODINGOPTION_OFF
+                                  : MFX_CODINGOPTION_ON;
+      COParams->VuiVclHrdParameters = GetCodingOpt(InputParams->HRDConformance);
     }
+
+    // PicTimingSEI is shared across codecs
+    if (!IsUHD600HEVC) {
+      COParams->PicTimingSEI = MFX_CODINGOPTION_ON;
+    }
+
     COParams->MaxDecFrameBuffering =
         IsUHD600HEVC ? 0 : InputParams->NumRefFrame;
-    COParams->FieldOutput = (InputParams->Lowpower == false)
-                                ? MFX_CODINGOPTION_OFF
-                                : MFX_CODINGOPTION_ON;
 
     if (InputParams->IntraRefEncoding == true) {
       COParams->RecoveryPointSEI = MFX_CODINGOPTION_ON;
@@ -1860,7 +1870,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
     COParams->RateDistortionOpt = GetCodingOpt(InputParams->RDO);
 
-    COParams->VuiVclHrdParameters = GetCodingOpt(InputParams->HRDConformance);
+    // VuiNalHrdParameters and NalHrdConformance are shared (HEVC uses them too)
     COParams->VuiNalHrdParameters = GetCodingOpt(InputParams->HRDConformance);
     COParams->NalHrdConformance = GetCodingOpt(InputParams->HRDConformance);
   }
@@ -1917,32 +1927,34 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       CO2Params->MBBRC = GetCodingOpt(InputParams->MBBRC);
     }
 
-    if (InputParams->Trellis.has_value()) {
-      switch (InputParams->Trellis.value()) {
-      case 0:
-        CO2Params->Trellis = MFX_TRELLIS_OFF;
-        break;
-      case 1:
-        CO2Params->Trellis = MFX_TRELLIS_I;
-        break;
-      case 2:
-        CO2Params->Trellis = MFX_TRELLIS_I | MFX_TRELLIS_P;
-        break;
-      case 3:
-        CO2Params->Trellis = MFX_TRELLIS_I | MFX_TRELLIS_P | MFX_TRELLIS_B;
-        break;
-      case 4:
-        CO2Params->Trellis = MFX_TRELLIS_I | MFX_TRELLIS_B;
-        break;
-      case 5:
-        CO2Params->Trellis = MFX_TRELLIS_P;
-        break;
-      case 6:
-        CO2Params->Trellis = MFX_TRELLIS_P | MFX_TRELLIS_B;
-        break;
-      case 7:
-        CO2Params->Trellis = MFX_TRELLIS_B;
-        break;
+    if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC) {
+      if (InputParams->Trellis.has_value()) {
+        switch (InputParams->Trellis.value()) {
+        case 0:
+          CO2Params->Trellis = MFX_TRELLIS_OFF;
+          break;
+        case 1:
+          CO2Params->Trellis = MFX_TRELLIS_I;
+          break;
+        case 2:
+          CO2Params->Trellis = MFX_TRELLIS_I | MFX_TRELLIS_P;
+          break;
+        case 3:
+          CO2Params->Trellis = MFX_TRELLIS_I | MFX_TRELLIS_P | MFX_TRELLIS_B;
+          break;
+        case 4:
+          CO2Params->Trellis = MFX_TRELLIS_I | MFX_TRELLIS_B;
+          break;
+        case 5:
+          CO2Params->Trellis = MFX_TRELLIS_P;
+          break;
+        case 6:
+          CO2Params->Trellis = MFX_TRELLIS_P | MFX_TRELLIS_B;
+          break;
+        case 7:
+          CO2Params->Trellis = MFX_TRELLIS_B;
+          break;
+        }
       }
     }
 
@@ -1995,7 +2007,8 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CO3Params->TargetChromaFormatPlus1 =
         static_cast<mfxU16>(QSVEncodeParams.mfx.FrameInfo.ChromaFormat + 1);
     CO3Params->TransformSkip = GetCodingOpt(InputParams->TransformSkip);
-    if (!IsUHD600HEVC) {
+    if (!IsUHD600HEVC &&
+        QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC) {
       CO3Params->EnableMBForceIntra = MFX_CODINGOPTION_ON;
     }
     CO3Params->FadeDetection = GetCodingOpt(InputParams->FadeDetection);
@@ -2014,7 +2027,9 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       CO3Params->OverscanInfoPresent = MFX_CODINGOPTION_ON;
     }
 
-    CO3Params->LowDelayHrd = GetCodingOpt(InputParams->LowDelayHRD);
+    if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC) {
+      CO3Params->LowDelayHrd = GetCodingOpt(InputParams->LowDelayHRD);
+    }
 
     CO3Params->LowDelayBRC = GetCodingOpt(InputParams->LowDelayBRC);
 
@@ -2097,8 +2112,10 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CO3Params->AdaptiveLTR = GetCodingOpt(InputParams->AdaptiveLTR);
 #endif
 
-    CO3Params->MotionVectorsOverPicBoundaries =
-        GetCodingOpt(InputParams->MotionVectorsOverPicBoundaries);
+    if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC) {
+      CO3Params->MotionVectorsOverPicBoundaries =
+          GetCodingOpt(InputParams->MotionVectorsOverPicBoundaries);
+    }
 
     if (InputParams->GlobalMotionBiasAdjustment.has_value() &&
         InputParams->GlobalMotionBiasAdjustment.value() == true) {
@@ -2177,23 +2194,27 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CODDIParams->MVPrediction = MFX_CODINGOPTION_ON;
     CODDIParams->WeightedBiPredIdc = 2;
     CODDIParams->WeightedPrediction = MFX_CODINGOPTION_ON;
-    CODDIParams->FieldPrediction = MFX_CODINGOPTION_ON;
-    CODDIParams->DirectCheck = MFX_CODINGOPTION_ON;
     CODDIParams->FractionalQP = 1;
     CODDIParams->Hme = MFX_CODINGOPTION_ON;
     CODDIParams->LocalSearch = 6;
-    CODDIParams->MBAFF = MFX_CODINGOPTION_ON;
     CODDIParams->DDI.InterPredBlockSize = 64;
     CODDIParams->DDI.IntraPredBlockSize = 1;
-    CODDIParams->RefOppositeField = MFX_CODINGOPTION_ON;
     CODDIParams->RefRaw = GetCodingOpt(InputParams->RawRef);
     CODDIParams->TMVP = MFX_CODINGOPTION_ON;
-    CODDIParams->DisablePSubMBPartition = MFX_CODINGOPTION_OFF;
-    CODDIParams->DisableBSubMBPartition = MFX_CODINGOPTION_OFF;
     CODDIParams->QpAdjust = MFX_CODINGOPTION_ON;
-    CODDIParams->Transform8x8Mode = MFX_CODINGOPTION_ON;
     CODDIParams->EarlySkip = 0;
     CODDIParams->RefreshFrameContext = MFX_CODINGOPTION_ON;
+
+    // AVC-only CODDI fields (driver resets them to 0 for HEVC/AV1/VP9)
+    if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC) {
+      CODDIParams->FieldPrediction = MFX_CODINGOPTION_ON;
+      CODDIParams->DirectCheck = MFX_CODINGOPTION_ON;
+      CODDIParams->MBAFF = MFX_CODINGOPTION_ON;
+      CODDIParams->RefOppositeField = MFX_CODINGOPTION_ON;
+      CODDIParams->DisablePSubMBPartition = MFX_CODINGOPTION_OFF;
+      CODDIParams->DisableBSubMBPartition = MFX_CODINGOPTION_OFF;
+      CODDIParams->Transform8x8Mode = MFX_CODINGOPTION_ON;
+    }
   }
 #endif
 
