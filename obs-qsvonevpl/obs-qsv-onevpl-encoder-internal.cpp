@@ -2197,8 +2197,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CODDIParams->FractionalQP = 1;
     CODDIParams->Hme = MFX_CODINGOPTION_ON;
     CODDIParams->LocalSearch = 6;
-    CODDIParams->DDI.InterPredBlockSize = 64;
-    CODDIParams->DDI.IntraPredBlockSize = 1;
     CODDIParams->RefRaw = GetCodingOpt(InputParams->RawRef);
     CODDIParams->TMVP = MFX_CODINGOPTION_ON;
     CODDIParams->QpAdjust = MFX_CODINGOPTION_ON;
@@ -2207,6 +2205,8 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
     // AVC-only CODDI fields (driver resets them to 0 for HEVC/AV1/VP9)
     if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC) {
+      CODDIParams->DDI.InterPredBlockSize = 64;
+      CODDIParams->DDI.IntraPredBlockSize = 1;
       CODDIParams->FieldPrediction = MFX_CODINGOPTION_ON;
       CODDIParams->DirectCheck = MFX_CODINGOPTION_ON;
       CODDIParams->MBAFF = MFX_CODINGOPTION_ON;
