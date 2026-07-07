@@ -1022,17 +1022,17 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   Prop = obs_properties_add_int(RMGroup, "num_ref_active_p",
                                 TEXT_NUM_REF_ACTIVE_P, 0, 65535, 1);
   obs_property_set_long_description(Prop, TEXT_NUM_REF_ACTIVE_P_DESC);
-  obs_property_set_visible(Prop, bIsAVCOrHEVC);
+  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC);
 
   Prop = obs_properties_add_int(RMGroup, "num_ref_active_bl0",
                                 TEXT_NUM_REF_ACTIVE_BL0, 0, 65535, 1);
   obs_property_set_long_description(Prop, TEXT_NUM_REF_ACTIVE_BL0_DESC);
-  obs_property_set_visible(Prop, bIsAVCOrHEVC);
+  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC);
 
   Prop = obs_properties_add_int(RMGroup, "num_ref_active_bl1",
                                 TEXT_NUM_REF_ACTIVE_BL1, 0, 65535, 1);
   obs_property_set_long_description(Prop, TEXT_NUM_REF_ACTIVE_BL1_DESC);
-  obs_property_set_visible(Prop, bIsAVCOrHEVC);
+  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC);
 
   obs_properties_t *VFGroup = obs_properties_create();
 

@@ -2047,22 +2047,30 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       CO3Params->RepartitionCheckEnable = MFX_CODINGOPTION_UNKNOWN;
     }
 
-    if (InputParams->NumRefActiveP.has_value() &&
-        InputParams->NumRefActiveP > 0) {
-      std::fill(CO3Params->NumRefActiveP, CO3Params->NumRefActiveP + 8,
-                InputParams->NumRefActiveP.value());
-    }
+    if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC) {
+      // AVC: use user-set values (driver respects them)
+      if (InputParams->NumRefActiveP.has_value() &&
+          InputParams->NumRefActiveP > 0) {
+        std::fill(CO3Params->NumRefActiveP, CO3Params->NumRefActiveP + 8,
+                  InputParams->NumRefActiveP.value());
+      }
 
-    if (InputParams->NumRefActiveBL0.has_value() &&
-        InputParams->NumRefActiveBL0 > 0) {
-      std::fill(CO3Params->NumRefActiveBL0, CO3Params->NumRefActiveBL0 + 8,
-                InputParams->NumRefActiveBL0.value());
-    }
+      if (InputParams->NumRefActiveBL0.has_value() &&
+          InputParams->NumRefActiveBL0 > 0) {
+        std::fill(CO3Params->NumRefActiveBL0, CO3Params->NumRefActiveBL0 + 8,
+                  InputParams->NumRefActiveBL0.value());
+      }
 
-    if (InputParams->NumRefActiveBL1.has_value() &&
-        InputParams->NumRefActiveBL1 > 0) {
-      std::fill(CO3Params->NumRefActiveBL1, CO3Params->NumRefActiveBL1 + 8,
-                InputParams->NumRefActiveBL1.value());
+      if (InputParams->NumRefActiveBL1.has_value() &&
+          InputParams->NumRefActiveBL1 > 0) {
+        std::fill(CO3Params->NumRefActiveBL1, CO3Params->NumRefActiveBL1 + 8,
+                  InputParams->NumRefActiveBL1.value());
+      }
+    } else {
+      // HEVC/AV1/VP9: hardcode to 4, driver will clamp to HW-supported max
+      std::fill(CO3Params->NumRefActiveP, CO3Params->NumRefActiveP + 8, 4);
+      std::fill(CO3Params->NumRefActiveBL0, CO3Params->NumRefActiveBL0 + 8, 4);
+      std::fill(CO3Params->NumRefActiveBL1, CO3Params->NumRefActiveBL1 + 8, 4);
     }
 
     if (InputParams->IntraRefEncoding == true) {
