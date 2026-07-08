@@ -311,6 +311,31 @@ mfxStatus QSVEncoder::CreateSession([[maybe_unused]] enum codec_enum Codec,
 #if defined(_WIN32) || defined(_WIN64)
   if (QSVIsTextureEncoder) {
     makeConfig(3, MFX_ACCEL_MODE_VIA_D3D11, "mfxImplDescription.AccelerationMode");
+
+    // D3D11 surface sharing mode — all 3 associated parameters must be
+    // set on a single mfxConfig (logical AND). This tells the runtime
+    // that the app will supply its own D3D11 device via SetHandle,
+    // preventing the runtime from creating an internal device handle.
+    QSVLoaderConfig[4] = MFXCreateConfig(Loader);
+    QSVLoaderVariant[4].Type = MFX_VARIANT_TYPE_U32;
+
+    QSVLoaderVariant[4].Data.U32 = MFX_SURFACE_TYPE_D3D11_TEX2D;
+    MFXSetConfigFilterProperty(
+        QSVLoaderConfig[4],
+        (const mfxU8 *)"mfxSurfaceTypesSupported.surftype.SurfaceType",
+        QSVLoaderVariant[4]);
+
+    QSVLoaderVariant[4].Data.U32 = MFX_SURFACE_COMPONENT_ENCODE;
+    MFXSetConfigFilterProperty(
+        QSVLoaderConfig[4],
+        (const mfxU8 *)"mfxSurfaceTypesSupported.surftype.surfcomp.SurfaceComponent",
+        QSVLoaderVariant[4]);
+
+    QSVLoaderVariant[4].Data.U32 = MFX_SURFACE_FLAG_IMPORT_SHARED;
+    MFXSetConfigFilterProperty(
+        QSVLoaderConfig[4],
+        (const mfxU8 *)"mfxSurfaceTypesSupported.surftype.surfcomp.SurfaceFlags",
+        QSVLoaderVariant[4]);
   }
 #endif
 
