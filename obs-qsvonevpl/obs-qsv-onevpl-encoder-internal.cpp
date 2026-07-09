@@ -2691,7 +2691,22 @@ mfxStatus QSVEncoder::InitTexturePool() {
   mfxStatus Status = MFX_ERR_NONE;
 
   if (QSVIsTextureEncoder) {
-    Status = HWManager->AllocateTexturePool(QSVEncodeParams);
+    // Ask the encoder how many surfaces it actually needs instead of
+    // using a hardcoded overshoot formula.  NumFrameSuggested is derived
+    // from AsyncDepth + GOP ref frames + safety margin and is typically
+    // 8-16, vs the old (fps + AsyncDepth) * 2 which gave 128 at 60 fps.
+    mfxFrameAllocRequest Request[2] = {};
+    mfxU16 NumSurfaces = 0;
+    Status = QSVEncode->QueryIOSurf(&QSVEncodeParams, Request);
+    if (Status >= MFX_ERR_NONE && Request[0].NumFrameSuggested > 0) {
+      NumSurfaces = Request[0].NumFrameSuggested;
+      info("\tEncoder requests %u surfaces (via QueryIOSurf)", NumSurfaces);
+    } else {
+      warn("QueryIOSurf failed (sts=%d), falling back to AsyncDepth*4", Status);
+      NumSurfaces = static_cast<mfxU16>(QSVEncodeParams.AsyncDepth * 4);
+    }
+
+    Status = HWManager->AllocateTexturePool(QSVEncodeParams, NumSurfaces);
     if (Status < MFX_ERR_NONE) {
       error("Error code: %d", Status);
       throw std::runtime_error(

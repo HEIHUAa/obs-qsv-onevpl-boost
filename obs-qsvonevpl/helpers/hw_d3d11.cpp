@@ -118,7 +118,8 @@ void HWManager::ReleaseDevice() {
   }
 }
 
-mfxStatus HWManager::AllocateTexturePool(MFXVideoParam &EncodeParams) {
+mfxStatus HWManager::AllocateTexturePool(MFXVideoParam &EncodeParams,
+                                       mfxU16 NumSurfaces) {
   mfxStatus Status = MFX_ERR_NONE;
   HRESULT HR = S_OK;
   // warn("Res: %d x %d", Request->Info.Width, Request->Info.Height);
@@ -154,8 +155,7 @@ mfxStatus HWManager::AllocateTexturePool(MFXVideoParam &EncodeParams) {
   Desc.SampleDesc.Count = 1;
   Desc.SampleDesc.Quality = 0;
   Desc.Usage = D3D11_USAGE_DEFAULT;
-  Desc.BindFlags = (D3D11_BIND_DECODER | D3D11_BIND_VIDEO_ENCODER |
-                    D3D11_BIND_SHADER_RESOURCE);
+  Desc.BindFlags = (D3D11_BIND_DECODER | D3D11_BIND_VIDEO_ENCODER);
   Desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
 
   ID3D11Texture2D *Texture2D = nullptr;
@@ -165,10 +165,16 @@ mfxStatus HWManager::AllocateTexturePool(MFXVideoParam &EncodeParams) {
         "AllocateHWTexturePool(): D3D11 device not created");
   }
 
-  size_t Texture2DPoolSize = static_cast<size_t>(
-      static_cast<int>((std::ceil(EncodeParams.mfx.FrameInfo.FrameRateExtN /
-                                 EncodeParams.mfx.FrameInfo.FrameRateExtD)) +
-      EncodeParams.AsyncDepth) * 2);
+  size_t Texture2DPoolSize;
+  if (NumSurfaces > 0) {
+    Texture2DPoolSize = NumSurfaces;
+  } else {
+    // legacy fallback: only used when caller doesn't provide NumSurfaces
+    Texture2DPoolSize = static_cast<size_t>(
+        static_cast<int>((std::ceil(EncodeParams.mfx.FrameInfo.FrameRateExtN /
+                                   EncodeParams.mfx.FrameInfo.FrameRateExtD)) +
+        EncodeParams.AsyncDepth) * 2);
+  }
 
   // Create textures
   HWTexturePool.reserve(Texture2DPoolSize);

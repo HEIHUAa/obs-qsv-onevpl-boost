@@ -29,7 +29,7 @@ public:
   mfxStatus CopyTexture(mfxSurfaceD3D11Tex2D &OuterTexture, void *TextureHandle,
                         mfxU64 LockKey, mfxU64 *NextKey);
 
-  mfxStatus AllocateTexturePool(MFXVideoParam &EncodeParams);
+  mfxStatus AllocateTexturePool(MFXVideoParam &EncodeParams, mfxU16 NumSurfaces = 0);
 
   const std::vector<ID3D11Texture2D *> &GetTexturePool() const {
     return HWTexturePool;
