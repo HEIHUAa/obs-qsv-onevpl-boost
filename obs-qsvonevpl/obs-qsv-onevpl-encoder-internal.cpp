@@ -3668,11 +3668,18 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
   *Bitstream = nullptr;
   profile_start("qsv_sync_task");
 
+  int taskIdx = -1;
+  int poolSize = 0;
+  mfxSyncPoint syncPoint = nullptr;
+  QSVTask taskCopy;
+
+  // Step 1: find pending task, grab its data under lock.
+  // Don't do the actual sync here — that can wait and we want to release the
+  // lock quickly so GetFreeTaskIndex doesn't block on other threads.
   {
     std::lock_guard<std::mutex> lock(QSVTaskPoolMutex);
-
-    const int PoolSize = static_cast<int>(QSVTaskPool.size());
-    if (PoolSize == 0) {
+    poolSize = static_cast<int>(QSVTaskPool.size());
+    if (poolSize == 0) {
       profile_end("qsv_sync_task");
       return MFX_ERR_MORE_DATA;
     }
@@ -3682,8 +3689,8 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
     // the offline re-encoder calls this repeatedly without submitting new
     // frames, so we advance the index ourselves when we drain.
     int FoundIdx = -1;
-    for (int i = 0; i < PoolSize; i++) {
-      int Idx = (QSVSyncTaskID + i) % PoolSize;
+    for (int i = 0; i < poolSize; i++) {
+      int Idx = (QSVSyncTaskID + i) % poolSize;
       if (QSVTaskPool[Idx].SyncPoint != nullptr) {
         QSVSyncTaskID = Idx;
         FoundIdx = Idx;
@@ -3696,81 +3703,93 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
       return MFX_ERR_MORE_DATA;
     }
 
-    mfxStatus SyncStatus = MFX_ERR_NONE;
-    while (QSVTaskPool[QSVSyncTaskID].SyncPoint != nullptr) {
-      SyncStatus = MFXVideoCORE_SyncOperation(
-          QSVSession, QSVTaskPool[QSVSyncTaskID].SyncPoint, 100);
-      debug("SyncAndSwap: task=%d SyncOperation sts=%d", QSVSyncTaskID, SyncStatus);
-      if (SyncStatus < MFX_ERR_NONE) {
-        const auto &bs = QSVTaskPool[QSVSyncTaskID].Bitstream;
-        warn("SyncAndSwap FAILED: sts=%d task=%d syncID=%d "
-             "bs[MaxLength=%u DataLen=%u DataOff=%u] poolSize=%zu",
-             SyncStatus, QSVSyncTaskID, QSVSyncTaskID,
-             bs.MaxLength, bs.DataLength, bs.DataOffset,
-             QSVTaskPool.size());
-        int pending = 0;
+    taskIdx = FoundIdx;
+    syncPoint = QSVTaskPool[taskIdx].SyncPoint;
+    taskCopy = QSVTaskPool[taskIdx];
+
+    // We found the task, mark it as null in the pool so GetFreeTaskIndex can
+    // reuse the slot immediately.  This also lets us release the lock before
+    // doing the (potentially slow) sync operation.
+    QSVTaskPool[taskIdx].SyncPoint = nullptr;
+    // Advance to the next candidate for the next call.
+    QSVSyncTaskID = (QSVSyncTaskID + 1) % poolSize;
+  }
+
+  // Step 2: do the sync operation *outside* the lock.
+  // This allows other threads to get free tasks while we wait for GPU.
+  mfxStatus SyncStatus = MFX_ERR_NONE;
+  while (syncPoint != nullptr) {
+    SyncStatus = MFXVideoCORE_SyncOperation(QSVSession, syncPoint, 100);
+    debug("SyncAndSwap: task=%d SyncOperation sts=%d", taskIdx, SyncStatus);
+    if (SyncStatus < MFX_ERR_NONE) {
+      const auto &bs = taskCopy.Bitstream;
+      warn("SyncAndSwap FAILED: sts=%d task=%d "
+           "bs[MaxLength=%u DataLen=%u DataOff=%u] poolSize=%d",
+           SyncStatus, taskIdx, bs.MaxLength, bs.DataLength, bs.DataOffset,
+           poolSize);
+      int pending = 0;
+      {
+        std::lock_guard<std::mutex> lock(QSVTaskPoolMutex);
         for (const auto &t : QSVTaskPool) {
           if (t.SyncPoint != nullptr) pending++;
         }
-        warn("SyncAndSwap FAILED: pending tasks=%d/%zu AsyncDepth=%d "
-             "BufferSizeInKB=%u BRCMult=%u",
-             pending, QSVTaskPool.size(),
-             QSVEncodeParams.AsyncDepth,
-             QSVEncodeParams.mfx.BufferSizeInKB,
-             QSVEncodeParams.mfx.BRCParamMultiplier);
-        profile_end("qsv_sync_task");
-        return SyncStatus;
       }
-      if (SyncStatus != MFX_WRN_IN_EXECUTION) {
-        break;
+      warn("SyncAndSwap FAILED: pending tasks=%d/%d AsyncDepth=%d "
+           "BufferSizeInKB=%u BRCMult=%u",
+           pending, poolSize, QSVEncodeParams.AsyncDepth,
+           QSVEncodeParams.mfx.BufferSizeInKB,
+           QSVEncodeParams.mfx.BRCParamMultiplier);
+      profile_end("qsv_sync_task");
+      return SyncStatus;
+    }
+    if (SyncStatus != MFX_WRN_IN_EXECUTION) {
+      break;
+    }
+  }
+
+  // Step 3: extract QP stats (read-only from taskCopy, no lock needed).
+  if (QPStatsEnabled) {
+    auto &taskBS = taskCopy.Bitstream;
+    if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_VP9) {
+      // VP9 encoder doesn't fill mfxExtEncodedFrameInfo.QP; parse bitstream
+      mfxU16 qp = ExtractVP9QP(std::span<const uint8_t>(
+          taskBS.Data + taskBS.DataOffset, taskBS.DataLength));
+      UpdateFrameQPStats(taskBS.FrameType, qp);
+    } else if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1) {
+      // oneVPL GPU RT AV1 encoder doesn't fill mfxExtEncodedFrameInfo.QP
+      // (EncodedInfoAv1.QpY is never set — driver bug).
+      // Use encoder params: accurate for CQP, initial QP for VBR/CBR.
+      mfxU16 qp = 0;
+      if (taskBS.FrameType & MFX_FRAMETYPE_I ||
+          taskBS.FrameType & MFX_FRAMETYPE_IDR ||
+          taskBS.FrameType & MFX_FRAMETYPE_xI ||
+          taskBS.FrameType & MFX_FRAMETYPE_xIDR) {
+        qp = QSVEncodeParams.mfx.QPI;
+      } else if (taskBS.FrameType & MFX_FRAMETYPE_P ||
+                 taskBS.FrameType & MFX_FRAMETYPE_xP) {
+        qp = QSVEncodeParams.mfx.QPP;
+      } else {
+        qp = QSVEncodeParams.mfx.QPB;
+      }
+      UpdateFrameQPStats(taskBS.FrameType, qp);
+    } else if (taskBS.ExtParam && taskBS.NumExtParam > 0) {
+      auto *encInfo =
+          reinterpret_cast<mfxExtEncodedFrameInfo *>(taskBS.ExtParam[0]);
+      if (encInfo &&
+          encInfo->Header.BufferId == MFX_EXTBUFF_ENCODED_FRAME_INFO) {
+        UpdateFrameQPStats(taskBS.FrameType, encInfo->QP);
       }
     }
+  }
 
-    // ─ Extract per-frame QP from the synced bitstream ─
-    if (QPStatsEnabled) {
-      auto &taskBS = QSVTaskPool[QSVSyncTaskID].Bitstream;
-      if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_VP9) {
-        // VP9 encoder doesn't fill mfxExtEncodedFrameInfo.QP; parse bitstream
-        mfxU16 qp = ExtractVP9QP(std::span<const uint8_t>(
-            taskBS.Data + taskBS.DataOffset, taskBS.DataLength));
-        UpdateFrameQPStats(taskBS.FrameType, qp);
-      } else if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1) {
-        // oneVPL GPU RT AV1 encoder doesn't fill mfxExtEncodedFrameInfo.QP
-        // (EncodedInfoAv1.QpY is never set — driver bug).
-        // Use encoder params: accurate for CQP, initial QP for VBR/CBR.
-        mfxU16 qp = 0;
-        if (taskBS.FrameType & MFX_FRAMETYPE_I ||
-            taskBS.FrameType & MFX_FRAMETYPE_IDR ||
-            taskBS.FrameType & MFX_FRAMETYPE_xI ||
-            taskBS.FrameType & MFX_FRAMETYPE_xIDR) {
-          qp = QSVEncodeParams.mfx.QPI;
-        } else if (taskBS.FrameType & MFX_FRAMETYPE_P ||
-                   taskBS.FrameType & MFX_FRAMETYPE_xP) {
-          qp = QSVEncodeParams.mfx.QPP;
-        } else {
-          qp = QSVEncodeParams.mfx.QPB;
-        }
-        UpdateFrameQPStats(taskBS.FrameType, qp);
-      } else if (taskBS.ExtParam && taskBS.NumExtParam > 0) {
-        auto *encInfo =
-            reinterpret_cast<mfxExtEncodedFrameInfo *>(taskBS.ExtParam[0]);
-        if (encInfo &&
-            encInfo->Header.BufferId == MFX_EXTBUFF_ENCODED_FRAME_INFO) {
-          UpdateFrameQPStats(taskBS.FrameType, encInfo->QP);
-        }
-      }
-    }
-
+  // Step 4: swap bitstream buffer back into pool (re-lock for write).
+  {
+    std::lock_guard<std::mutex> lock(QSVTaskPoolMutex);
     mfxU8 *DataTemp = QSVBitstream.Data;
-    QSVBitstream = QSVTaskPool[QSVSyncTaskID].Bitstream;
-
-    QSVTaskPool[QSVSyncTaskID].Bitstream.Data = DataTemp;
-    QSVTaskPool[QSVSyncTaskID].Bitstream.DataLength = 0;
-    QSVTaskPool[QSVSyncTaskID].Bitstream.DataOffset = 0;
-    QSVTaskPool[QSVSyncTaskID].SyncPoint = nullptr;
-
-    // Advance to the next candidate for the next call.
-    QSVSyncTaskID = (QSVSyncTaskID + 1) % PoolSize;
+    QSVBitstream = taskCopy.Bitstream;
+    QSVTaskPool[taskIdx].Bitstream.Data = DataTemp;
+    QSVTaskPool[taskIdx].Bitstream.DataLength = 0;
+    QSVTaskPool[taskIdx].Bitstream.DataOffset = 0;
   }
 
   *Bitstream = &QSVBitstream;
