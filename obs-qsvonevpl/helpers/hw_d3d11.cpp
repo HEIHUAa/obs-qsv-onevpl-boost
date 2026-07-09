@@ -191,6 +191,29 @@ mfxStatus HWManager::AllocateTexturePool(MFXVideoParam &EncodeParams,
     HWTexturePool.push_back(Texture2D);
   }
 
+  // Pre-warm: touch every pool texture so the GPU driver allocates
+  // physical backing memory now instead of on the first real frame.
+  {
+    D3D11_TEXTURE2D_DESC tinyDesc = Desc;
+    tinyDesc.Width = 4;
+    tinyDesc.Height = 4;
+    tinyDesc.MiscFlags = 0;
+    std::vector<uint8_t> zeroBuf(4 * 4 * 3 / 2, 0);
+    D3D11_SUBRESOURCE_DATA initData = {};
+    initData.pSysMem = zeroBuf.data();
+    initData.SysMemPitch = 4;
+    ID3D11Texture2D *tinyTex = nullptr;
+    HR = HWDevice->CreateTexture2D(&tinyDesc, &initData, &tinyTex);
+    if (SUCCEEDED(HR)) {
+      D3D11_BOX box = {0, 0, 0, 4, 4, 1};
+      for (auto *tex : HWTexturePool) {
+        HWContext->CopySubresourceRegion(tex, 0, 0, 0, 0, tinyTex, 0, &box);
+      }
+      tinyTex->Release();
+    }
+    HWContext->Flush();
+  }
+
   return Status;
 }
 
@@ -233,13 +256,20 @@ mfxStatus HWManager::CopyTexture(mfxSurfaceD3D11Tex2D &OuterTexture,
 
   profile_start("copy_tex");
 
-  KeyedMutex->AcquireSync(LockKey, INFINITE);
+  HR = KeyedMutex->AcquireSync(LockKey, 100);
+  if (FAILED(HR)) {
+    // Don't deadlock the render thread — if the source texture isn't
+    // ready within 100 ms the GPU pipeline is already saturated.
+    if (HR == WAIT_TIMEOUT) {
+      throw std::runtime_error("CopyTexture(): AcquireSync timed out");
+    }
+    throw std::runtime_error("CopyTexture(): AcquireSync error");
+  }
 
-  D3D11_TEXTURE2D_DESC Desc = {0};
-  InputTexture->GetDesc(&Desc);
-  D3D11_BOX SrcBox = {0, 0, 0, Desc.Width, Desc.Height, 1};
+  // Source and dest textures are the same size → NULL SrcBox copies
+  // the full subresource (faster than GetDesc + manual SrcBox every frame).
   HWContext->CopySubresourceRegion(HWTexturePool[HWTextureCounter], 0, 0, 0, 0,
-                                   InputTexture, 0, &SrcBox);
+                                   InputTexture, 0, nullptr);
   KeyedMutex->ReleaseSync(*NextKey);
 
   profile_end("copy_tex");
