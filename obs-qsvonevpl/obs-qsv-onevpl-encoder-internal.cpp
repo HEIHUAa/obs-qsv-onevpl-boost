@@ -166,12 +166,9 @@ QSVEncoder::~QSVEncoder() {
   if (QSVEncode || QSVProcessing) {
     ClearData();
   }
-#ifdef QSV_UHD600_SUPPORT
-  ReleaseSystemMemorySurfacePool();
-#endif
+ReleaseSystemMemorySurfacePool();
 }
 
-#ifdef QSV_UHD600_SUPPORT
 void QSVEncoder::InitSystemMemorySurfacePool() {
   if (!QSVEncode || QSVIsTextureEncoder)
     return;
@@ -220,9 +217,7 @@ void QSVEncoder::InitSystemMemorySurfacePool() {
     QSVSystemMemPool.push_back(S);
   }
 }
-#endif
 
-#ifdef QSV_UHD600_SUPPORT
 void QSVEncoder::ReleaseSystemMemorySurfacePool() {
   for (auto &S : QSVSystemMemPool) {
     delete[] S.Surface.Data.Y;
@@ -232,7 +227,6 @@ void QSVEncoder::ReleaseSystemMemorySurfacePool() {
   QSVSystemMemPool.clear();
   QSVSystemMemPoolSize = 0;
 }
-#endif
 
 mfxStatus QSVEncoder::GetVPLVersion(mfxVersion &Version) {
   mfxStatus Status = MFX_ERR_NONE;
@@ -733,8 +727,7 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
       }
     }
 
-#ifdef QSV_UHD600_SUPPORT
-    QSVUseSystemMemoryPath = false;
+QSVUseSystemMemoryPath = false;
 
     Status = InitEncoderInternal(InputParams, Codec, "");
 
@@ -783,20 +776,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     if (QSVUseSystemMemoryPath) {
       InitSystemMemorySurfacePool();
     }
-#else
-    Status = InitEncoderInternal(InputParams, Codec, "");
-
-    if (Status < MFX_ERR_NONE) {
-      error("MFXVideoENCODE_Init failed (Status=%d)", Status);
-      return Status;
-    }
-
-    Status = InitTexturePool();
-    info("\tInitTexturePool status:   %d", Status);
-
-    Status = GetVideoParam(Codec);
-    LogActualParams();
-#endif
 
     // Cache debug toggles for use in Drain (InputParams may be gone by then)
     QPStatsEnabled = InputParams->QPStatistics;
@@ -2552,13 +2531,9 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
         static_cast<mfxU16>(InputParams->MaxPicAverageLightLevel);
   }
 
-#ifdef QSV_UHD600_SUPPORT
   QSVEncodeParams.IOPattern = QSVUseSystemMemoryPath
                                  ? MFX_IOPATTERN_IN_SYSTEM_MEMORY
                                  : MFX_IOPATTERN_IN_VIDEO_MEMORY;
-#else
-  QSVEncodeParams.IOPattern = MFX_IOPATTERN_IN_VIDEO_MEMORY;
-#endif
 
   // VP9 only accepts a small set of ext buffers (see IsExtBufferSupportedInInit
   // in mfx_vp9_encode_hw_par.cpp): VP9_PARAM, CODING_OPTION2, CODING_OPTION3,
@@ -2782,12 +2757,10 @@ mfxStatus QSVEncoder::InitTaskPool([[maybe_unused]] enum codec_enum Codec) {
 
     QSVTaskPool.push_back(NewTask);
 
-#ifdef QSV_UHD600_SUPPORT
     if (QSVUseSystemMemoryPath && !QSVIsTextureEncoder &&
         i < static_cast<int>(QSVSystemMemPool.size())) {
       QSVTaskPool[i].Surface = &QSVSystemMemPool[i].Surface;
     }
-#endif
   }
 
   info("\tTaskPool count: %d", QSVTaskPool.size());
@@ -3604,10 +3577,9 @@ void QSVEncoder::LoadFrameData(mfxFrameSurface1 *&Surface, uint8_t **FrameData,
   }
 }
 
-#ifdef QSV_UHD600_SUPPORT
 mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
-                                              uint32_t *FrameLinesize,
-                                              mfxBitstream **Bitstream) {
+                                               uint32_t *FrameLinesize,
+                                               mfxBitstream **Bitstream) {
   mfxStatus Status = MFX_ERR_NONE, SyncStatus = MFX_ERR_NONE;
   *Bitstream = nullptr;
   int TaskID = 0;
@@ -3645,7 +3617,6 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
 
   return Status;
 }
-#endif
 
 mfxStatus QSVEncoder::GetFreeTaskIndex(int *TaskID) {
   std::lock_guard<std::mutex> lock(QSVTaskPoolMutex);
@@ -4056,11 +4027,9 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
 mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
                                   uint32_t *FrameLinesize,
                                   mfxBitstream **Bitstream) {
-#ifdef QSV_UHD600_SUPPORT
   if (QSVUseSystemMemoryPath) {
     return EncodeFrameSystemMemory(TS, FrameData, FrameLinesize, Bitstream);
   }
-#endif
 
   mfxStatus Status = MFX_ERR_NONE, SyncStatus = MFX_ERR_NONE;
   *Bitstream = nullptr;
@@ -4610,10 +4579,8 @@ void QSVEncoder::WarmUpEncoder() {
   // Frame-encoder path (video / system memory)
   if (!QSVEncode)
     return;
-#ifdef QSV_UHD600_SUPPORT
   if (QSVUseSystemMemoryPath)
     return;
-#endif
   mfxFrameSurface1 *Surf = nullptr;
   mfxStatus sts = QSVEncode->GetSurface(&Surf);
   if (sts < MFX_ERR_NONE) {
@@ -4670,9 +4637,7 @@ mfxStatus QSVEncoder::ClearData() {
   ReleaseTaskPool();
   ReleaseBitstream();
 
-#ifdef QSV_UHD600_SUPPORT
   ReleaseSystemMemorySurfacePool();
-#endif
 
   if (Status >= MFX_ERR_NONE) {
     HWManager::HWEncoderCounter--;
