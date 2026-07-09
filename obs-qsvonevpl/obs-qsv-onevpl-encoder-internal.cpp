@@ -3642,7 +3642,7 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
   int taskIdx = -1;
   int poolSize = 0;
   mfxSyncPoint syncPoint = nullptr;
-  QSVTask taskCopy;
+  Task taskCopy;
 
   // Step 1: find pending task, grab its data under lock.
   // Don't do the actual sync here — that can wait and we want to release the
