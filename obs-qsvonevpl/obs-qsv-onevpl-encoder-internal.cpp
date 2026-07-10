@@ -2735,6 +2735,8 @@ mfxStatus QSVEncoder::InitTexturePool() {
 
 mfxStatus
 QSVEncoder::InitBitstreamBuffer([[maybe_unused]] enum codec_enum Codec) {
+  // Clear old bitstream before reallocating — prevents leaks on retries
+  ReleaseBitstream();
   mfxU16 brcM = QSVEncodeParams.mfx.BRCParamMultiplier;
   if (brcM == 0)
     brcM = 1;
@@ -2756,6 +2758,8 @@ QSVEncoder::InitBitstreamBuffer([[maybe_unused]] enum codec_enum Codec) {
 
 mfxStatus QSVEncoder::InitTaskPool([[maybe_unused]] enum codec_enum Codec) {
   QSVSyncTaskID = 0;
+  // Clear any existing tasks before reallocating — prevents leaks on retries
+  ReleaseTaskPool();
   Task NewTask = {};
   QSVTaskPool.reserve(QSVEncodeParams.AsyncDepth);
 
