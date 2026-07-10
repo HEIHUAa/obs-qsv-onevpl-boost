@@ -123,6 +123,8 @@ mfxStatus HWManager::AllocateTexturePool(MFXVideoParam &EncodeParams,
   mfxStatus Status = MFX_ERR_NONE;
   HRESULT HR = S_OK;
   // warn("Res: %d x %d", Request->Info.Width, Request->Info.Height);
+  //  Clear any existing textures before reallocating — prevents leaks on retries
+  FreeTexturePool();
   //  Determine texture Format
   DXGI_FORMAT Format;
   if (MFX_FOURCC_NV12 == EncodeParams.mfx.FrameInfo.FourCC) {
@@ -298,6 +300,7 @@ mfxStatus HWManager::FreeTexturePool() {
     HWTexturePool.clear();
     HWTexturePool.shrink_to_fit();
   }
+  HWTextureCounter = 0;
   return MFX_ERR_NONE;
 }
 
