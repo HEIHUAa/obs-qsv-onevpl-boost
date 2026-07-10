@@ -35,6 +35,11 @@ public:
     return HWTexturePool;
   }
 
+  size_t GetLastTextureIndex() const {
+    return (HWTextureCounter == 0) ? HWTexturePool.size() - 1
+                                   : HWTextureCounter - 1;
+  }
+
   static inline int HWEncoderCounter = 0;
   static inline mfxHDL HWDeviceHandle = nullptr;
 

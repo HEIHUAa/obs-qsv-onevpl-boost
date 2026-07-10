@@ -155,7 +155,7 @@ mfxStatus HWManager::AllocateTexturePool(MFXVideoParam &EncodeParams,
   Desc.SampleDesc.Count = 1;
   Desc.SampleDesc.Quality = 0;
   Desc.Usage = D3D11_USAGE_DEFAULT;
-  Desc.BindFlags = (D3D11_BIND_DECODER | D3D11_BIND_VIDEO_ENCODER);
+  Desc.BindFlags = D3D11_BIND_VIDEO_ENCODER;
   Desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
 
   ID3D11Texture2D *Texture2D = nullptr;
@@ -211,7 +211,10 @@ mfxStatus HWManager::AllocateTexturePool(MFXVideoParam &EncodeParams,
       }
       tinyTex->Release();
     }
-    HWContext->Flush();
+    // Don't Flush here — the pre-warm copies are async and the GPU
+    // driver will complete them in the background. An explicit Flush
+    // would block the calling thread for no benefit since the first
+    // real frame naturally waits for the GPU pipeline to drain.
   }
 
   return Status;

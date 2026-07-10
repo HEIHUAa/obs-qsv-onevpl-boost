@@ -167,6 +167,11 @@ private:
 
   std::unique_ptr<class HWManager> HWManager{};
 
+  // Pre-registered VPL surfaces — one per texture pool entry.
+  // Imported once at init and reused every frame, avoiding per-frame
+  // ImportFrameSurface / Release overhead.
+  std::vector<mfxFrameSurface1 *> QSVPreRegisteredSurfaces;
+
   bool QSVProcessingEnable{};
 
   mfxU32 QSVEncodeRefCount{};

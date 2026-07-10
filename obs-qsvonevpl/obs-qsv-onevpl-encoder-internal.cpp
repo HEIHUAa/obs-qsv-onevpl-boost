@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -10,6 +11,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 
 constexpr mfxU32 BRC_MAX_KBPS_LIMIT = 65535;
 
@@ -772,6 +774,38 @@ QSVUseSystemMemoryPath = false;
 
     Status = GetVideoParam(Codec);
     LogActualParams();
+
+#if defined(_WIN32) || defined(_WIN64)
+    // Pre-register all texture pool entries with VPL so we can reuse
+    // surfaces every frame without per-frame ImportFrameSurface / Release.
+    if (QSVIsTextureEncoder && HWManager && QSVMemoryInterface) {
+      const auto &Pool = HWManager->GetTexturePool();
+      QSVPreRegisteredSurfaces.reserve(Pool.size());
+      for (size_t i = 0; i < Pool.size(); i++) {
+        mfxSurfaceD3D11Tex2D TexDesc = {};
+        TexDesc.SurfaceInterface.Header.SurfaceType =
+            MFX_SURFACE_TYPE_D3D11_TEX2D;
+        TexDesc.SurfaceInterface.Header.SurfaceFlags =
+            MFX_SURFACE_FLAG_IMPORT_SHARED;
+        TexDesc.SurfaceInterface.Header.StructSize =
+            sizeof(mfxSurfaceD3D11Tex2D);
+        TexDesc.texture2D = Pool[i];
+
+        mfxFrameSurface1 *Surf = nullptr;
+        mfxStatus sts = QSVMemoryInterface->ImportFrameSurface(
+            QSVMemoryInterface, MFX_SURFACE_COMPONENT_ENCODE,
+            reinterpret_cast<mfxSurfaceHeader *>(&TexDesc), &Surf);
+        if (sts >= MFX_ERR_NONE) {
+          QSVPreRegisteredSurfaces.push_back(Surf);
+        } else {
+          warn("Pre-register texture[%zu] failed (sts=%d), fallback to nullptr",
+               i, sts);
+          QSVPreRegisteredSurfaces.push_back(nullptr);
+        }
+      }
+      info("\tPre-registered %zu texture surfaces", Pool.size());
+    }
+#endif
 
     if (QSVUseSystemMemoryPath) {
       InitSystemMemorySurfacePool();
@@ -3595,6 +3629,8 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
       throw std::runtime_error(
           "Encode(): Sync operation failed - unrecoverable error");
     }
+    // yield to avoid burning CPU while waiting for GPU
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 
   mfxFrameSurface1 *EncodeSurface = QSVTaskPool[TaskID].Surface;
@@ -3929,17 +3965,29 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
       throw std::runtime_error(
           "Encode(): Sync operation failed - unrecoverable error");
     }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 
   try {
     HWManager->CopyTexture(Texture, TextureHandle, LockKey,
                            static_cast<mfxU64 *>(NextKey));
   } catch (const std::exception &e) {
-    // Exception happened during CopyTexture, Status hasn't been assigned yet — don't log "Error code: 0"
     error("Encode(): CopyTexture failed: %s", e.what());
     throw;
   }
 
+#if defined(_WIN32) || defined(_WIN64)
+  // Use pre-registered surface instead of per-frame ImportFrameSurface.
+  // The surface was imported once at init and lives for the encoder lifetime.
+  size_t texIdx = HWManager->GetLastTextureIndex();
+  if (texIdx >= QSVPreRegisteredSurfaces.size() ||
+      !QSVPreRegisteredSurfaces[texIdx]) {
+    error("Pre-registered surface[%zu] unavailable (pool=%zu)",
+          texIdx, QSVPreRegisteredSurfaces.size());
+    throw std::runtime_error("Encode(): Pre-registered surface unavailable");
+  }
+  QSVEncodeSurface = QSVPreRegisteredSurfaces[texIdx];
+#else
   Status = QSVMemoryInterface->ImportFrameSurface(
       QSVMemoryInterface, MFX_SURFACE_COMPONENT_ENCODE,
       reinterpret_cast<mfxSurfaceHeader *>(&Texture), &QSVEncodeSurface);
@@ -3947,6 +3995,7 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
     error("Error code: %d", Status);
     throw std::runtime_error("Encode(): Texture import error");
   }
+#endif
 
   QSVTaskPool[TaskID].Bitstream.TimeStamp = TS;
   QSVEncodeSurface->Data.TimeStamp = TS;
@@ -3962,11 +4011,14 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
         if (MFX_ERR_NONE == Status) {
           break;
         } else if (MFX_ERR_MORE_DATA == Status) {
-          // VPP consumed input but needs more frames to produce an
-          // output (e.g. MCTF temporal filtering).  Release surfaces
-          // and skip encode — OBS will send the next frame.
+          // VPP consumed input but needs more frames.
+#if defined(_WIN32) || defined(_WIN64)
+          // Don't release QSVEncodeSurface — it's pre-registered.
+          QSVEncodeSurface = nullptr;
+#else
           QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
           QSVEncodeSurface = nullptr;
+#endif
           QSVProcessingSurface->FrameInterface->Release(QSVProcessingSurface);
           QSVProcessingSurface = nullptr;
           return Status;
@@ -3976,10 +4028,14 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
         }
       }
 
-      // Release VPP input surface immediately – RunFrameVPPAsync holds
-      // its own internal reference.
+      // VPP holds its own internal reference to the input surface.
+#if defined(_WIN32) || defined(_WIN64)
+      // Don't release the pre-registered surface — just drop our pointer.
+      QSVEncodeSurface = nullptr;
+#else
       QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
       QSVEncodeSurface = nullptr;
+#endif
     }
 
     bool roiActive = !CachedROIRegions.empty();
@@ -4004,18 +4060,26 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
       }
 
       QSVProcessingSurface->FrameInterface->Release(QSVProcessingSurface);
-    } else {
-      QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
     }
+#if defined(_WIN32) || defined(_WIN64)
+    // Don't release QSVEncodeSurface — it's pre-registered.
+#else
+    QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
+#endif
 
   } catch (...) {
     if (QSVProcessingEnable && QSVProcessingSurface) {
       QSVProcessingSurface->FrameInterface->Release(QSVProcessingSurface);
       QSVProcessingSurface = nullptr;
     }
+#if defined(_WIN32) || defined(_WIN64)
+    // Don't release QSVEncodeSurface — pre-registered surfaces are
+    // cleaned up in ClearData.
+#else
     if (QSVEncodeSurface) {
       QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
     }
+#endif
     QSVEncodeSurface = nullptr;
     throw;
   }
@@ -4064,6 +4128,7 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
       throw std::runtime_error(
           "Encode(): Sync operation failed - unrecoverable error");
     }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 
   Status =
@@ -4547,32 +4612,10 @@ mfxStatus QSVEncoder::Drain() {
 
 // Don't call EncodeFrameAsync here — it'd eat the first IDR slot
 void QSVEncoder::WarmUpEncoder() {
-  // Texture-encoder path
+  // Texture-encoder path: surfaces are already pre-registered in Init,
+  // which triggers VPL internal resource tracking.  No extra warm-up needed.
   if (QSVIsTextureEncoder && HWManager) {
-    const auto &Pool = HWManager->GetTexturePool();
-    if (Pool.empty() || Pool[0] == nullptr)
-      return;
-
-    // Import one pool texture so VPL pre-allocates internal tracking
-    mfxSurfaceD3D11Tex2D DummyTex = {};
-    DummyTex.SurfaceInterface.Header.SurfaceType =
-        MFX_SURFACE_TYPE_D3D11_TEX2D;
-    DummyTex.SurfaceInterface.Header.SurfaceFlags =
-        MFX_SURFACE_FLAG_IMPORT_SHARED;
-    DummyTex.SurfaceInterface.Header.StructSize =
-        sizeof(mfxSurfaceD3D11Tex2D);
-    DummyTex.texture2D = Pool[0];
-
-    mfxFrameSurface1 *Surf = nullptr;
-    mfxStatus sts = QSVMemoryInterface->ImportFrameSurface(
-        QSVMemoryInterface, MFX_SURFACE_COMPONENT_ENCODE,
-        reinterpret_cast<mfxSurfaceHeader *>(&DummyTex), &Surf);
-    if (sts >= MFX_ERR_NONE) {
-      Surf->FrameInterface->Release(Surf);
-      info("Encoder warm-up (texture) — ImportFrameSurface done");
-    } else {
-      warn("WarmUpEncoder: ImportFrameSurface failed (sts=%d)", sts);
-    }
+    info("Encoder warm-up (texture) — pre-registered surfaces already imported");
     return;
   }
 
@@ -4638,6 +4681,16 @@ mfxStatus QSVEncoder::ClearData() {
   ReleaseBitstream();
 
   ReleaseSystemMemorySurfacePool();
+
+#if defined(_WIN32) || defined(_WIN64)
+  // Release pre-registered VPL texture surfaces.
+  for (auto *Surf : QSVPreRegisteredSurfaces) {
+    if (Surf) {
+      Surf->FrameInterface->Release(Surf);
+    }
+  }
+  QSVPreRegisteredSurfaces.clear();
+#endif
 
   if (Status >= MFX_ERR_NONE) {
     HWManager::HWEncoderCounter--;
