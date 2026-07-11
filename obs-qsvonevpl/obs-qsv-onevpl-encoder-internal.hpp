@@ -152,6 +152,7 @@ private:
   // timestamp of the last frame we actually submitted for encoding.
   double AvgEncodeTimeMs{0.0};
   mfxU64 LastEncodedFrameTS{0};
+  int ConsecutiveSkips{0};
 
   mfxVideoParam QSVResetParams{};
   bool QSVResetParamsChanged{false};

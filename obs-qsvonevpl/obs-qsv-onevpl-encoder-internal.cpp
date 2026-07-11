@@ -3692,6 +3692,7 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
   if (roiActive)
     SetupROIEncodeCtrl();
   LastEncodedFrameTS = TS;
+  ConsecutiveSkips = 0;
   Status = EncodeFrameRetryLoop(EncodeSurface,
                                 roiActive ? &QSVEncodeCtrlParams : nullptr,
                                 TaskID, 200);
@@ -3978,12 +3979,23 @@ bool QSVEncoder::ShouldSkipFrame(mfxU64 TS) {
   if (AvgEncodeTimeMs <= 0.0)
     return false; // no throughput data yet, let frames through
 
-  // Convert EMA encode time (ms) → 90kHz ticks for the minimum sustainable
-  // frame interval. If we're submitting faster than the encoder can absorb,
-  // skip this frame to keep output evenly spaced in time.
-  mfxU64 minIntervalTicks = static_cast<mfxU64>(AvgEncodeTimeMs * 90.0);
-  if (TS - LastEncodedFrameTS < minIntervalTicks)
+  // Pipeline throughput: AsyncDepth tasks run in parallel, so the
+  // sustainable frame interval ≈ per-task-time / AsyncDepth.
+  // Convert ms → 90kHz ticks.
+  mfxU16 asyncDepth = QSVEncodeParams.AsyncDepth;
+  if (asyncDepth < 1)
+    asyncDepth = 1;
+  mfxU64 minIntervalTicks =
+      static_cast<mfxU64>(AvgEncodeTimeMs * 90.0 / asyncDepth);
+
+  if (TS - LastEncodedFrameTS < minIntervalTicks) {
+    // Don't starve the encoder — force a frame through every
+    // AsyncDepth*2 skips to keep the pipeline alive.
+    if (ConsecutiveSkips >= asyncDepth * 2)
+      return false;
+    ConsecutiveSkips++;
     return true;
+  }
 
   return false;
 }
@@ -4236,6 +4248,7 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
     if (roiActive)
       SetupROIEncodeCtrl();
     LastEncodedFrameTS = TS;
+    ConsecutiveSkips = 0;
     EncodeFrameRetryLoop(
         (QSVProcessingEnable ? QSVProcessingSurface : QSVEncodeSurface),
         roiActive ? &QSVEncodeCtrlParams : nullptr,
@@ -4406,6 +4419,7 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
   if (roiActive)
     SetupROIEncodeCtrl();
   LastEncodedFrameTS = TS;
+  ConsecutiveSkips = 0;
   EncodeFrameRetryLoop(
       (QSVProcessingEnable ? QSVProcessingSurface : QSVEncodeSurface),
       roiActive ? &QSVEncodeCtrlParams : nullptr,
@@ -4879,6 +4893,7 @@ mfxStatus QSVEncoder::ClearData() {
 
   AvgEncodeTimeMs = 0.0;
   LastEncodedFrameTS = 0;
+  ConsecutiveSkips = 0;
 
   if (QSVEncode) {
     Drain();
