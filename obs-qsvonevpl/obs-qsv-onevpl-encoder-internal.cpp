@@ -421,11 +421,14 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
       HEVCCopy = *p; HasHEVC = true;
     }
 
+    mfxInfoMFX MFXCopy = QSVEncodeParams.mfx;
+
     Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
     info("\tMFXVideoENCODE_Query%s status: %d", log_prefix, Status);
 
     if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
       LogDriverCorrections(log_prefix, QSVEncodeParams,
+                           &MFXCopy,
                            HasCO ? &COCopy : nullptr,
                            HasCO2 ? &CO2Copy : nullptr,
                            HasCO3 ? &CO3Copy : nullptr,
@@ -452,6 +455,7 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
 
       if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
         LogDriverCorrections(log_prefix, QSVEncodeParams,
+                             &MFXCopy,
                              HasCO ? &COCopy : nullptr,
                              HasCO2 ? &CO2Copy : nullptr,
                              HasCO3 ? &CO3Copy : nullptr,
@@ -1349,6 +1353,7 @@ static constexpr std::array<FieldEntry, 1> HEVC_FIELDS{
 static void LogDriverCorrections(
     const char *Prefix,
     MFXVideoParam &Params,
+    const mfxInfoMFX *MFXBefore,
     const mfxExtCodingOption *COBefore,
     const mfxExtCodingOption2 *CO2Before,
     const mfxExtCodingOption3 *CO3Before,
@@ -1368,6 +1373,28 @@ static void LogDriverCorrections(
 
   // Collect diffs first; skip the header if nothing changed
   std::vector<std::string> diffs;
+
+  // diff base mfx struct fields
+  if (MFXBefore) {
+    auto &mfxAfter = Params.mfx;
+    if (MFXBefore->CodecProfile != mfxAfter.CodecProfile) {
+      char buf[128];
+      snprintf(buf, sizeof(buf), "\t  CodecProfile: %d -> %d",
+               MFXBefore->CodecProfile, mfxAfter.CodecProfile);
+      diffs.push_back(buf);
+    }
+    if (MFXBefore->CodecLevel != mfxAfter.CodecLevel) {
+      mfxU16 bl = MFXBefore->CodecLevel & 0xFF;
+      mfxU16 al = mfxAfter.CodecLevel & 0xFF;
+      const char *bt = (MFXBefore->CodecLevel & MFX_TIER_HEVC_HIGH) ? "High" : "Main";
+      const char *at = (mfxAfter.CodecLevel & MFX_TIER_HEVC_HIGH) ? "High" : "Main";
+      char buf[128];
+      snprintf(buf, sizeof(buf), "\t  CodecLevel: %d.%d (%s) -> %d.%d (%s)",
+               bl / 10, bl % 10, bt, al / 10, al % 10, at);
+      diffs.push_back(buf);
+    }
+  }
+
   auto collectDiffs = [&](const void *before, const void *after,
                            std::span<const FieldEntry> fields) {
     if (!before || !after) return;
@@ -1737,15 +1764,8 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       static_cast<mfxU16>(InputParams->TargetUsage);
   QSVEncodeParams.mfx.CodecProfile =
       static_cast<mfxU16>(InputParams->CodecProfile);
-  if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
-    // MFX_TIER_HEVC_HIGH (0x100) already lives in the upper byte,
-    // so OR directly without shifting:
-    mfxU16 combinedProfile = QSVEncodeParams.mfx.CodecProfile |
-                             InputParams->CodecProfileTier;
-    QSVEncodeParams.mfx.CodecProfile = combinedProfile;
-  }
-
-  QSVEncodeParams.mfx.CodecLevel = InputParams->CodecLevel;
+  QSVEncodeParams.mfx.CodecLevel = InputParams->CodecLevel |
+                                    InputParams->CodecProfileTier;
   const mfxU16 BRC_BASELINE = 100;
   const mfxU16 brcMultiplier = BRC_BASELINE;
   QSVEncodeParams.mfx.BRCParamMultiplier = BRC_BASELINE;
@@ -3117,6 +3137,19 @@ void QSVEncoder::LogActualParams() {
        QSVEncodeParams.mfx.NumRefFrame);
   info("\tB-frames: %d",
        QSVEncodeParams.mfx.GopRefDist - 1);
+  {
+    mfxU16 profile = QSVEncodeParams.mfx.CodecProfile;
+    mfxU16 level = QSVEncodeParams.mfx.CodecLevel;
+    mfxU16 lv = level & 0xFF; // strip tier bits for HEVC
+    if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
+      const char *tier = (level & MFX_TIER_HEVC_HIGH) ? "High" : "Main";
+      info("\tCodecProfile: %d, CodecLevel: %d.%d (%s Tier)",
+           profile, lv / 10, lv % 10, tier);
+    } else {
+      info("\tCodecProfile: %d, CodecLevel: %d.%d",
+           profile, lv / 10, lv % 10);
+    }
+  }
 
   // ─ CO (mfxExtCodingOption) ─
   auto *CO = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
