@@ -365,6 +365,7 @@ void QSVEncoder::DisableVPP() {
 static void LogDriverCorrections(
     const char *Prefix,
     MFXVideoParam &Params,
+    const mfxInfoMFX *MFXBefore,
     const mfxExtCodingOption *COBefore,
     const mfxExtCodingOption2 *CO2Before,
     const mfxExtCodingOption3 *CO3Before,
