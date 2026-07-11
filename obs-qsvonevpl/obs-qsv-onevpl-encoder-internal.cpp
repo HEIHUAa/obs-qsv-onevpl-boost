@@ -3661,6 +3661,9 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
     if (SyncStatus == MFX_ERR_NOT_FOUND) {
       // pipeline full, oldest task still on GPU — drop this frame
       // so we don't pile up unbounded delay
+      warn("EncodeFrameSystemMemory: pipeline full, dropping TS=%llu "
+           "(pool=%zu)",
+           static_cast<unsigned long long>(TS), QSVTaskPool.size());
       return MFX_ERR_NONE;
     }
     if (SyncStatus < MFX_ERR_NONE) {
@@ -3989,11 +3992,35 @@ bool QSVEncoder::ShouldSkipFrame(mfxU64 TS) {
       static_cast<mfxU64>(AvgEncodeTimeMs * 90.0 / asyncDepth);
 
   if (TS - LastEncodedFrameTS < minIntervalTicks) {
-    // Don't starve the encoder — force a frame through every
-    // AsyncDepth*2 skips to keep the pipeline alive.
-    if (ConsecutiveSkips >= asyncDepth * 2)
+    // Only drop if the async pipeline still has work in flight.
+    // Forcing a frame through when the pipeline is already saturated
+    // (oldest task still on GPU) causes pipeline-full drops, which break
+    // reference picture management on HEVC/AV1 and produce the
+    // "only I-frame updates" freeze. If the pipeline is empty, feed the
+    // encoder to avoid starvation.
+    bool hasPending = false;
+    {
+      std::lock_guard<std::mutex> lock(QSVTaskPoolMutex);
+      for (const auto &task : QSVTaskPool) {
+        if (task.SyncPoint != nullptr) {
+          hasPending = true;
+          break;
+        }
+      }
+    }
+
+    if (!hasPending) {
+      debug("ShouldSkipFrame: pipeline empty, letting TS=%llu through",
+            static_cast<unsigned long long>(TS));
       return false;
+    }
+
     ConsecutiveSkips++;
+    debug("ShouldSkipFrame: dropping TS=%llu (skip #%d, minInterval=%lluticks, "
+          "avgEncode=%.2fms, asyncDepth=%d)",
+          static_cast<unsigned long long>(TS), ConsecutiveSkips,
+          static_cast<unsigned long long>(minIntervalTicks),
+          AvgEncodeTimeMs, asyncDepth);
     return true;
   }
 
@@ -4157,6 +4184,8 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
     SyncStatus = SyncOnePendingTaskNonBlocking(Bitstream);
     if (SyncStatus == MFX_ERR_NOT_FOUND) {
       // pipeline full, oldest task still on GPU — drop this frame
+      warn("EncodeTexture: pipeline full, dropping TS=%llu (pool=%zu)",
+           static_cast<unsigned long long>(TS), QSVTaskPool.size());
       *NextKey = LockKey;
       return MFX_ERR_NONE;
     }
@@ -4328,6 +4357,8 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
     SyncStatus = SyncOnePendingTaskNonBlocking(Bitstream);
     if (SyncStatus == MFX_ERR_NOT_FOUND) {
       // pipeline full, oldest task still on GPU — drop this frame
+      warn("EncodeFrame: pipeline full, dropping TS=%llu (pool=%zu)",
+           static_cast<unsigned long long>(TS), QSVTaskPool.size());
       if (QSVEncodeSurface) {
         QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
         QSVEncodeSurface = nullptr;
