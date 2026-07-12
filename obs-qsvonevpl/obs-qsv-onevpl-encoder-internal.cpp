@@ -734,37 +734,29 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
       }
     }
 
-QSVUseSystemMemoryPath = false;
-
-    Status = InitEncoderInternal(InputParams, Codec, "");
-
+// Non-texture encoder: prefer system memory path — uses less GPU VRAM
+    // because input surfaces live in system memory instead of being
+    // allocated in the driver's internal DXVA2 pool (GetMaxRaw ~64 surfaces
+    // at AsyncDepth=60).  Fall back to VIDEO_MEMORY only if sysmem fails.
     if (!QSVIsTextureEncoder) {
-      if (Status >= MFX_ERR_NONE) {
-        mfxFrameSurface1 *TestSurface = nullptr;
-        mfxStatus GetSts = QSVEncode->GetSurface(&TestSurface);
-        if (GetSts < MFX_ERR_NONE) {
-          info("\tGetSurface() not supported (%d), switch to system memory path",
-               GetSts);
-          QSVEncode->Close();
-          if (QSVProcessingEnable) {
-            warn("\tVPP processing disabled: system memory path does not support VPP");
-            DisableVPP();
-          }
-          QSVUseSystemMemoryPath = true;
-          Status = InitEncoderInternal(InputParams, Codec, " (sysmem)");
-        } else {
-          info("\tGetSurface() supported, using original VIDEO_MEMORY path");
-          TestSurface->FrameInterface->Release(TestSurface);
-        }
-      } else {
-        info("\tOriginal Init failed (%d), switch to system memory path", Status);
-        if (QSVProcessingEnable) {
-          warn("\tVPP processing disabled: system memory path does not support VPP");
-          DisableVPP();
-        }
-        QSVUseSystemMemoryPath = true;
-        Status = InitEncoderInternal(InputParams, Codec, " (sysmem)");
+      QSVUseSystemMemoryPath = true;
+      if (QSVProcessingEnable) {
+        warn("\tVPP disabled for non-texture encoder (sysmem path)");
+        DisableVPP();
       }
+      Status = InitEncoderInternal(InputParams, Codec, " (sysmem)");
+
+      // fallback: try VIDEO_MEMORY if system memory init fails
+      if (Status < MFX_ERR_NONE) {
+        info("\tSystem memory init failed (%d), falling back to VIDEO_MEMORY",
+             Status);
+        QSVEncode->Close();
+        QSVUseSystemMemoryPath = false;
+        Status = InitEncoderInternal(InputParams, Codec, "");
+      }
+    } else {
+      QSVUseSystemMemoryPath = false;
+      Status = InitEncoderInternal(InputParams, Codec, "");
     }
 
     if (Status < MFX_ERR_NONE) {
