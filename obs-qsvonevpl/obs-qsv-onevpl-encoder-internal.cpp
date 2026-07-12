@@ -767,25 +767,36 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
       }
     }
 
-// Non-texture encoder: prefer system memory path — uses less GPU VRAM
-    // because input surfaces live in system memory instead of being
-    // allocated in the driver's internal DXVA2 pool (GetMaxRaw ~64 surfaces
-    // at AsyncDepth=60).  Fall back to VIDEO_MEMORY only if sysmem fails.
+// Non-texture encoder path selection:
+    //   - VPP enabled  → try VIDEO_MEMORY first (VPP needs GPU mem), fallback
+    //                     to system memory with VPP disabled
+    //   - VPP disabled  → try system memory first (saves GPU VRAM), fallback
+    //                     to VIDEO_MEMORY
     if (!QSVIsTextureEncoder) {
-      QSVUseSystemMemoryPath = true;
       if (QSVProcessingEnable) {
-        warn("\tVPP disabled for non-texture encoder (sysmem path)");
-        DisableVPP();
-      }
-      Status = InitEncoderInternal(InputParams, Codec, " (sysmem)");
-
-      // fallback: try VIDEO_MEMORY if system memory init fails
-      if (Status < MFX_ERR_NONE) {
-        info("\tSystem memory init failed (%d), falling back to VIDEO_MEMORY",
-             Status);
-        QSVEncode->Close();
         QSVUseSystemMemoryPath = false;
         Status = InitEncoderInternal(InputParams, Codec, "");
+        if (Status < MFX_ERR_NONE) {
+          info("\tVIDEO_MEMORY+VPP init failed (%d), falling back to sysmem "
+               "(VPP disabled)",
+               Status);
+          QSVEncode->Close();
+          QSVUseSystemMemoryPath = true;
+          warn("\tVPP disabled for non-texture encoder (sysmem fallback)");
+          DisableVPP();
+          Status = InitEncoderInternal(InputParams, Codec, " (sysmem)");
+        }
+      } else {
+        QSVUseSystemMemoryPath = true;
+        Status = InitEncoderInternal(InputParams, Codec, " (sysmem)");
+        if (Status < MFX_ERR_NONE) {
+          info("\tSystem memory init failed (%d), falling back to "
+               "VIDEO_MEMORY",
+               Status);
+          QSVEncode->Close();
+          QSVUseSystemMemoryPath = false;
+          Status = InitEncoderInternal(InputParams, Codec, "");
+        }
       }
     } else {
       QSVUseSystemMemoryPath = false;
