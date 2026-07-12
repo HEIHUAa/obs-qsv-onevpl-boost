@@ -161,6 +161,10 @@ private:
   };
   std::vector<SystemMemSurface> QSVSystemMemPool;
   mfxU16 QSVSystemMemPoolSize{};
+  int QSVNextSystemMemSurfaceIdx{};
+  // Round-robin surface index for EncodeFrameSystemMemory.
+  // Each frame gets a different surface so we never overwrite data
+  // while the driver's DMA (CopySysToRaw) is still in flight.
 
   bool QSVIsTextureEncoder{};
   // Tracks whether a drain marker has been submitted for offline re-encoder.

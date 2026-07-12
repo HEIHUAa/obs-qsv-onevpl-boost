@@ -191,11 +191,13 @@ void QSVEncoder::InitSystemMemorySurfacePool() {
   }
 
   // Ensure we have enough surfaces for all async tasks
-  if (QSVSystemMemPoolSize < QSVEncodeParams.AsyncDepth) {
-    warn("SystemMemPoolSize (%d) < AsyncDepth (%d), "
-         "clamping to AsyncDepth",
-         QSVSystemMemPoolSize, QSVEncodeParams.AsyncDepth);
-    QSVSystemMemPoolSize = QSVEncodeParams.AsyncDepth;
+  // Round-robin needs pool > AsyncDepth so we never reuse a surface
+  // while the driver's DMA might still be reading it.  +4 margin.
+  if (QSVSystemMemPoolSize < QSVEncodeParams.AsyncDepth + 4) {
+    warn("SystemMemPoolSize (%d) < AsyncDepth+4 (%d), "
+         "clamping for round-robin safety",
+         QSVSystemMemPoolSize, QSVEncodeParams.AsyncDepth + 4);
+    QSVSystemMemPoolSize = QSVEncodeParams.AsyncDepth + 4;
   }
 
   info("\tSystem memory surface pool size: %d", QSVSystemMemPoolSize);
@@ -839,6 +841,7 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
 
     if (QSVUseSystemMemoryPath) {
       InitSystemMemorySurfacePool();
+      QSVNextSystemMemSurfaceIdx = 0;
     }
 
     // Cache debug toggles for use in Drain (InputParams may be gone by then)
@@ -2840,11 +2843,6 @@ mfxStatus QSVEncoder::InitTaskPool([[maybe_unused]] enum codec_enum Codec) {
     NewTask.Bitstream.NumExtParam = 1;
 
     QSVTaskPool.push_back(NewTask);
-
-    if (QSVUseSystemMemoryPath && !QSVIsTextureEncoder &&
-        i < static_cast<int>(QSVSystemMemPool.size())) {
-      QSVTaskPool[i].Surface = &QSVSystemMemPool[i].Surface;
-    }
   }
 
   info("\tTaskPool count: %d", QSVTaskPool.size());
@@ -3703,10 +3701,16 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
   }
 
   mfxFrameSurface1 *EncodeSurface = QSVTaskPool[TaskID].Surface;
-  if (!EncodeSurface) {
-    error("System memory surface is null for task %d", TaskID);
-    throw std::runtime_error("Encode(): System memory surface is null");
-  }
+  // Round-robin surface assignment: each frame gets a different surface
+  // so the driver's DMA (CopySysToRaw) never races with our writes.
+  // When EncodeFrameAsync returns MFX_ERR_MORE_DATA the surface data is
+  // still in flight — round-robin keeps it alive until the index wraps,
+  // giving the driver enough time to finish the copy.
+  int SurfaceIdx = QSVNextSystemMemSurfaceIdx;
+  QSVNextSystemMemSurfaceIdx =
+      (QSVNextSystemMemSurfaceIdx + 1) % QSVSystemMemPoolSize;
+  EncodeSurface = &QSVSystemMemPool[SurfaceIdx].Surface;
+  QSVTaskPool[TaskID].Surface = EncodeSurface;
 
   EncodeSurface->Data.TimeStamp = TS;
   LoadFrameData(EncodeSurface, FrameData, FrameLinesize);
