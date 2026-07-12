@@ -3657,28 +3657,25 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
   int TaskID = 0;
 
   while (GetFreeTaskIndex(&TaskID) == MFX_ERR_NOT_FOUND) {
-    SyncStatus = SyncOnePendingTaskNonBlocking(Bitstream);
-    if (SyncStatus == MFX_ERR_NOT_FOUND) {
-      // pipeline full, oldest task still on GPU — drop this frame
-      // so we don't pile up unbounded delay
-      warn("EncodeFrameSystemMemory: pipeline full, dropping TS=%llu "
-           "(pool=%zu)",
-           static_cast<unsigned long long>(TS), QSVTaskPool.size());
-      return MFX_ERR_NONE;
-    }
-    if (SyncStatus < MFX_ERR_NONE) {
-      error("Encode.EncodeSync error: %d", SyncStatus);
-      if (QSVEncodeSurface) {
-        QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
-        QSVEncodeSurface = nullptr;
+    do {
+      SyncStatus = MFXVideoCORE_SyncOperation(
+          QSVSession, QSVTaskPool[QSVSyncTaskID].SyncPoint, 100);
+      if (SyncStatus < MFX_ERR_NONE) {
+        error("Encode.EncodeSync error: %d", SyncStatus);
+        throw std::runtime_error(
+            "Encode(): Sync operation failed - unrecoverable error");
       }
-      throw std::runtime_error(
-          "Encode(): Sync operation failed - unrecoverable error");
-    }
-  }
+    } while (SyncStatus == MFX_WRN_IN_EXECUTION);
 
-  if (ShouldSkipFrame(TS))
-    return MFX_ERR_NONE;
+    mfxU8 *DataTemp = QSVBitstream.Data;
+    QSVBitstream = QSVTaskPool[QSVSyncTaskID].Bitstream;
+    QSVTaskPool[QSVSyncTaskID].Bitstream.Data = DataTemp;
+    QSVTaskPool[QSVSyncTaskID].Bitstream.DataLength = 0;
+    QSVTaskPool[QSVSyncTaskID].Bitstream.DataOffset = 0;
+    QSVTaskPool[QSVSyncTaskID].SyncPoint = nullptr;
+    TaskID = QSVSyncTaskID;
+    *Bitstream = &QSVBitstream;
+  }
 
   mfxFrameSurface1 *EncodeSurface = QSVTaskPool[TaskID].Surface;
   if (!EncodeSurface) {
@@ -3694,8 +3691,6 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
   bool roiActive = !CachedROIRegions.empty();
   if (roiActive)
     SetupROIEncodeCtrl();
-  LastEncodedFrameTS = TS;
-  ConsecutiveSkips = 0;
   Status = EncodeFrameRetryLoop(EncodeSurface,
                                 roiActive ? &QSVEncodeCtrlParams : nullptr,
                                 TaskID, 200);
@@ -3854,179 +3849,6 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
   return MFX_ERR_NONE;
 }
 
-mfxStatus QSVEncoder::SyncOnePendingTaskNonBlocking(mfxBitstream **Bitstream) {
-  *Bitstream = nullptr;
-  profile_start("qsv_sync_task");
-
-  int taskIdx = -1;
-  int poolSize = 0;
-  mfxSyncPoint syncPoint = nullptr;
-  Task taskCopy;
-
-  // Step 1: find oldest pending task, grab its data under lock.
-  {
-    std::lock_guard<std::mutex> lock(QSVTaskPoolMutex);
-    poolSize = static_cast<int>(QSVTaskPool.size());
-    if (poolSize == 0) {
-      profile_end("qsv_sync_task");
-      return MFX_ERR_MORE_DATA;
-    }
-
-    int FoundIdx = -1;
-    for (int i = 0; i < poolSize; i++) {
-      int Idx = (QSVSyncTaskID + i) % poolSize;
-      if (QSVTaskPool[Idx].SyncPoint != nullptr) {
-        QSVSyncTaskID = Idx;
-        FoundIdx = Idx;
-        break;
-      }
-    }
-
-    if (FoundIdx < 0) {
-      profile_end("qsv_sync_task");
-      return MFX_ERR_MORE_DATA;
-    }
-
-    taskIdx = FoundIdx;
-    syncPoint = QSVTaskPool[taskIdx].SyncPoint;
-    taskCopy = QSVTaskPool[taskIdx];
-    QSVTaskPool[taskIdx].SyncPoint = nullptr;
-    QSVSyncTaskID = (QSVSyncTaskID + 1) % poolSize;
-  }
-
-  // Step 2: non-blocking poll — timeout=0, don't retry.
-  mfxStatus SyncStatus =
-      MFXVideoCORE_SyncOperation(QSVSession, syncPoint, 0);
-  debug("SyncNonBlocking: task=%d SyncOp sts=%d", taskIdx, SyncStatus);
-
-  if (SyncStatus == MFX_WRN_IN_EXECUTION) {
-    // still running — restore sync point so we can poll it again next frame
-    {
-      std::lock_guard<std::mutex> lock(QSVTaskPoolMutex);
-      QSVTaskPool[taskIdx].SyncPoint = syncPoint;
-      QSVSyncTaskID = taskIdx; // rewind to try this task first next time
-    }
-    profile_end("qsv_sync_task");
-    return MFX_ERR_NOT_FOUND;
-  }
-
-  if (SyncStatus < MFX_ERR_NONE) {
-    const auto &bs = taskCopy.Bitstream;
-    warn("SyncNonBlocking FAILED: sts=%d task=%d "
-         "bs[MaxLen=%u DataLen=%u DataOff=%u] poolSize=%d",
-         SyncStatus, taskIdx, bs.MaxLength, bs.DataLength,
-         bs.DataOffset, poolSize);
-    profile_end("qsv_sync_task");
-    return SyncStatus;
-  }
-
-  // Update adaptive frame-drop EMA from this task's encode time
-  if (taskCopy.SubmitTime.time_since_epoch().count() > 0) {
-    auto now = std::chrono::steady_clock::now();
-    double encodeMs = std::chrono::duration<double, std::milli>(
-                          now - taskCopy.SubmitTime)
-                          .count();
-    if (AvgEncodeTimeMs <= 0.0)
-      AvgEncodeTimeMs = encodeMs;
-    else
-      AvgEncodeTimeMs = AvgEncodeTimeMs * 0.875 + encodeMs * 0.125;
-  }
-
-  // Step 3: extract QP stats (read-only from taskCopy, no lock needed).
-  if (QPStatsEnabled) {
-    auto &taskBS = taskCopy.Bitstream;
-    if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_VP9) {
-      mfxU16 qp = ExtractVP9QP(std::span<const uint8_t>(
-          taskBS.Data + taskBS.DataOffset, taskBS.DataLength));
-      UpdateFrameQPStats(taskBS.FrameType, qp);
-    } else if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1) {
-      mfxU16 qp = 0;
-      if (taskBS.FrameType & MFX_FRAMETYPE_I ||
-          taskBS.FrameType & MFX_FRAMETYPE_IDR ||
-          taskBS.FrameType & MFX_FRAMETYPE_xI ||
-          taskBS.FrameType & MFX_FRAMETYPE_xIDR) {
-        qp = QSVEncodeParams.mfx.QPI;
-      } else if (taskBS.FrameType & MFX_FRAMETYPE_P ||
-                 taskBS.FrameType & MFX_FRAMETYPE_xP) {
-        qp = QSVEncodeParams.mfx.QPP;
-      } else {
-        qp = QSVEncodeParams.mfx.QPB;
-      }
-      UpdateFrameQPStats(taskBS.FrameType, qp);
-    } else if (taskBS.ExtParam && taskBS.NumExtParam > 0) {
-      auto *encInfo =
-          reinterpret_cast<mfxExtEncodedFrameInfo *>(taskBS.ExtParam[0]);
-      if (encInfo &&
-          encInfo->Header.BufferId == MFX_EXTBUFF_ENCODED_FRAME_INFO) {
-        UpdateFrameQPStats(taskBS.FrameType, encInfo->QP);
-      }
-    }
-  }
-
-  // Step 4: swap bitstream buffer back into pool.
-  {
-    std::lock_guard<std::mutex> lock(QSVTaskPoolMutex);
-    mfxU8 *DataTemp = QSVBitstream.Data;
-    QSVBitstream = taskCopy.Bitstream;
-    QSVTaskPool[taskIdx].Bitstream.Data = DataTemp;
-    QSVTaskPool[taskIdx].Bitstream.DataLength = 0;
-    QSVTaskPool[taskIdx].Bitstream.DataOffset = 0;
-  }
-
-  *Bitstream = &QSVBitstream;
-  profile_end("qsv_sync_task");
-  return MFX_ERR_NONE;
-}
-
-bool QSVEncoder::ShouldSkipFrame(mfxU64 TS) {
-  if (AvgEncodeTimeMs <= 0.0)
-    return false; // no throughput data yet, let frames through
-
-  // Pipeline throughput: AsyncDepth tasks run in parallel, so the
-  // sustainable frame interval ≈ per-task-time / AsyncDepth.
-  // Convert ms → 90kHz ticks.
-  mfxU16 asyncDepth = QSVEncodeParams.AsyncDepth;
-  if (asyncDepth < 1)
-    asyncDepth = 1;
-  mfxU64 minIntervalTicks =
-      static_cast<mfxU64>(AvgEncodeTimeMs * 90.0 / asyncDepth);
-
-  if (TS - LastEncodedFrameTS < minIntervalTicks) {
-    // Only drop if the async pipeline still has work in flight.
-    // Forcing a frame through when the pipeline is already saturated
-    // (oldest task still on GPU) causes pipeline-full drops, which break
-    // reference picture management on HEVC/AV1 and produce the
-    // "only I-frame updates" freeze. If the pipeline is empty, feed the
-    // encoder to avoid starvation.
-    bool hasPending = false;
-    {
-      std::lock_guard<std::mutex> lock(QSVTaskPoolMutex);
-      for (const auto &task : QSVTaskPool) {
-        if (task.SyncPoint != nullptr) {
-          hasPending = true;
-          break;
-        }
-      }
-    }
-
-    if (!hasPending) {
-      debug("ShouldSkipFrame: pipeline empty, letting TS=%llu through",
-            static_cast<unsigned long long>(TS));
-      return false;
-    }
-
-    ConsecutiveSkips++;
-    debug("ShouldSkipFrame: dropping TS=%llu (skip #%d, minInterval=%lluticks, "
-          "avgEncode=%.2fms, asyncDepth=%d)",
-          static_cast<unsigned long long>(TS), ConsecutiveSkips,
-          static_cast<unsigned long long>(minIntervalTicks),
-          AvgEncodeTimeMs, asyncDepth);
-    return true;
-  }
-
-  return false;
-}
-
 mfxStatus QSVEncoder::DrainAndRetrieveBitstream(mfxBitstream **Bitstream) {
   *Bitstream = nullptr;
 
@@ -4086,7 +3908,6 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
         &QSVTaskPool[TaskID].SyncPoint);
 
     if (MFX_ERR_NONE == Status) [[likely]] {
-      QSVTaskPool[TaskID].SubmitTime = std::chrono::steady_clock::now();
       break;
     }
 
@@ -4112,7 +3933,6 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
     if (MFX_ERR_NONE < Status && QSVTaskPool[TaskID].SyncPoint) [[likely]] {
       debug("EncodeFrameAsync[%d] sync=0x%p warning=0x%x (async submit)", TaskID,
             (void *)QSVTaskPool[TaskID].SyncPoint, Status);
-      QSVTaskPool[TaskID].SubmitTime = std::chrono::steady_clock::now();
       Status = MFX_ERR_NONE;
       break;
     }
@@ -4181,26 +4001,24 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
 #endif
 
   while (GetFreeTaskIndex(&TaskID) == MFX_ERR_NOT_FOUND) {
-    SyncStatus = SyncOnePendingTaskNonBlocking(Bitstream);
-    if (SyncStatus == MFX_ERR_NOT_FOUND) {
-      // pipeline full, oldest task still on GPU — drop this frame
-      warn("EncodeTexture: pipeline full, dropping TS=%llu (pool=%zu)",
-           static_cast<unsigned long long>(TS), QSVTaskPool.size());
-      *NextKey = LockKey;
-      return MFX_ERR_NONE;
-    }
-    if (SyncStatus < MFX_ERR_NONE) {
-      error("Encode[%d].SyncAndSwap error: %d (pool=%zu syncID=%d)",
-            TaskID, SyncStatus,
-            QSVTaskPool.size(), QSVSyncTaskID);
-      throw std::runtime_error(
-          "Encode(): Sync operation failed - unrecoverable error");
-    }
-  }
+    do {
+      SyncStatus = MFXVideoCORE_SyncOperation(
+          QSVSession, QSVTaskPool[QSVSyncTaskID].SyncPoint, 100);
+      if (SyncStatus < MFX_ERR_NONE) {
+        error("Encode.EncodeSync error: %d", SyncStatus);
+        throw std::runtime_error(
+            "Encode(): Sync operation failed - unrecoverable error");
+      }
+    } while (SyncStatus == MFX_WRN_IN_EXECUTION);
 
-  if (ShouldSkipFrame(TS)) {
-    *NextKey = LockKey;
-    return MFX_ERR_NONE;
+    mfxU8 *DataTemp = QSVBitstream.Data;
+    QSVBitstream = QSVTaskPool[QSVSyncTaskID].Bitstream;
+    QSVTaskPool[QSVSyncTaskID].Bitstream.Data = DataTemp;
+    QSVTaskPool[QSVSyncTaskID].Bitstream.DataLength = 0;
+    QSVTaskPool[QSVSyncTaskID].Bitstream.DataOffset = 0;
+    QSVTaskPool[QSVSyncTaskID].SyncPoint = nullptr;
+    TaskID = QSVSyncTaskID;
+    *Bitstream = &QSVBitstream;
   }
 
   try {
@@ -4276,8 +4094,6 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
     bool roiActive = !CachedROIRegions.empty();
     if (roiActive)
       SetupROIEncodeCtrl();
-    LastEncodedFrameTS = TS;
-    ConsecutiveSkips = 0;
     EncodeFrameRetryLoop(
         (QSVProcessingEnable ? QSVProcessingSurface : QSVEncodeSurface),
         roiActive ? &QSVEncodeCtrlParams : nullptr,
@@ -4354,35 +4170,28 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
   }
 
   while (GetFreeTaskIndex(&TaskID) == MFX_ERR_NOT_FOUND) {
-    SyncStatus = SyncOnePendingTaskNonBlocking(Bitstream);
-    if (SyncStatus == MFX_ERR_NOT_FOUND) {
-      // pipeline full, oldest task still on GPU — drop this frame
-      warn("EncodeFrame: pipeline full, dropping TS=%llu (pool=%zu)",
-           static_cast<unsigned long long>(TS), QSVTaskPool.size());
-      if (QSVEncodeSurface) {
-        QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
-        QSVEncodeSurface = nullptr;
+    do {
+      SyncStatus = MFXVideoCORE_SyncOperation(
+          QSVSession, QSVTaskPool[QSVSyncTaskID].SyncPoint, 100);
+      if (SyncStatus < MFX_ERR_NONE) {
+        error("Encode.EncodeSync error: %d", SyncStatus);
+        if (QSVEncodeSurface) {
+          QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
+          QSVEncodeSurface = nullptr;
+        }
+        throw std::runtime_error(
+            "Encode(): Sync operation failed - unrecoverable error");
       }
-      return MFX_ERR_NONE;
-    }
-    if (SyncStatus < MFX_ERR_NONE) {
-      error("EncodeFrame[%d].SyncAndSwap error: %d (pool=%zu syncID=%d)",
-            TaskID, SyncStatus, QSVTaskPool.size(), QSVSyncTaskID);
-      if (QSVEncodeSurface) {
-        QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
-        QSVEncodeSurface = nullptr;
-      }
-      throw std::runtime_error(
-          "Encode(): Sync operation failed - unrecoverable error");
-    }
-  }
+    } while (SyncStatus == MFX_WRN_IN_EXECUTION);
 
-  if (ShouldSkipFrame(TS)) {
-    if (QSVEncodeSurface) {
-      QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
-      QSVEncodeSurface = nullptr;
-    }
-    return MFX_ERR_NONE;
+    mfxU8 *DataTemp = QSVBitstream.Data;
+    QSVBitstream = QSVTaskPool[QSVSyncTaskID].Bitstream;
+    QSVTaskPool[QSVSyncTaskID].Bitstream.Data = DataTemp;
+    QSVTaskPool[QSVSyncTaskID].Bitstream.DataLength = 0;
+    QSVTaskPool[QSVSyncTaskID].Bitstream.DataOffset = 0;
+    QSVTaskPool[QSVSyncTaskID].SyncPoint = nullptr;
+    TaskID = QSVSyncTaskID;
+    *Bitstream = &QSVBitstream;
   }
 
   Status =
@@ -4449,8 +4258,6 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
   bool roiActive = !CachedROIRegions.empty();
   if (roiActive)
     SetupROIEncodeCtrl();
-  LastEncodedFrameTS = TS;
-  ConsecutiveSkips = 0;
   EncodeFrameRetryLoop(
       (QSVProcessingEnable ? QSVProcessingSurface : QSVEncodeSurface),
       roiActive ? &QSVEncodeCtrlParams : nullptr,
@@ -4921,10 +4728,6 @@ mfxStatus QSVEncoder::ClearData() {
   mfxStatus Status = MFX_ERR_NONE;
 
   m_DrainSubmitted = false;
-
-  AvgEncodeTimeMs = 0.0;
-  LastEncodedFrameTS = 0;
-  ConsecutiveSkips = 0;
 
   if (QSVEncode) {
     Drain();

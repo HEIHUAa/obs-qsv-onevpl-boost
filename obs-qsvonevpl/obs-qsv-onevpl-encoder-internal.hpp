@@ -30,11 +30,7 @@ mfxStatus EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
   // Exposed for the offline re-encoder so it can pull encoded bitstream
   // frames from the async pipeline without changing the normal OBS path.
   mfxStatus SyncAndSwapPendingTask(mfxBitstream **Bitstream);
-  mfxStatus SyncOnePendingTaskNonBlocking(mfxBitstream **Bitstream);
-
-  // Adaptive frame-drop: returns true if this frame should be skipped
-  // based on measured encode throughput to keep output evenly spaced.
-  bool ShouldSkipFrame(mfxU64 TS);
+  
 
   // Drain the encoder and return each completed bitstream one by one.
   // Returns MFX_ERR_NONE with *Bitstream set, or MFX_ERR_MORE_DATA when done.
@@ -45,7 +41,6 @@ mfxStatus EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
     mfxBitstream Bitstream{};
     mfxSyncPoint SyncPoint{};
     mfxFrameSurface1 *Surface{};
-    std::chrono::steady_clock::time_point SubmitTime{};
   };
 
   mfxStatus CreateSession(enum codec_enum Codec, [[maybe_unused]] void **Data,
@@ -147,12 +142,6 @@ private:
   std::vector<struct Task> QSVTaskPool;
   int QSVSyncTaskID{};
   mutable std::mutex QSVTaskPoolMutex{};
-
-  // Adaptive frame-drop: EMA of per-task encode time (ms) and
-  // timestamp of the last frame we actually submitted for encoding.
-  double AvgEncodeTimeMs{0.0};
-  mfxU64 LastEncodedFrameTS{0};
-  int ConsecutiveSkips{0};
 
   mfxVideoParam QSVResetParams{};
   bool QSVResetParamsChanged{false};
