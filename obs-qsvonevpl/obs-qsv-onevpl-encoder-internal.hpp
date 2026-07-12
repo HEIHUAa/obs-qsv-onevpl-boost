@@ -238,6 +238,7 @@ private:
   std::vector<CustomCodingOptionEntry> m_CustomCodingOptions;
 
   void UpdateFrameQPStats(mfxU16 frameType, mfxU16 qp);
+  void RecordQPFromBitstream(const mfxBitstream &bs);
   void LogQPStats();
   void LogVideoHeaderHexDump();
 

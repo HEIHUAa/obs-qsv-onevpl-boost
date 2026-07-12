@@ -3720,6 +3720,12 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
       }
     } while (SyncStatus == MFX_WRN_IN_EXECUTION);
 
+    // Record QP stats before swap — the task's bitstream still has
+    // FrameType and ExtParam intact at this point.
+    if (QPStatsEnabled) {
+      RecordQPFromBitstream(QSVTaskPool[QSVSyncTaskID].Bitstream);
+    }
+
     // Swap bitstreams — get encoded output from the synced task
     mfxU8 *DataTemp = QSVBitstream.Data;
     QSVBitstream = QSVTaskPool[QSVSyncTaskID].Bitstream;
@@ -3872,37 +3878,7 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
 
   // Step 3: extract QP stats (read-only from taskCopy, no lock needed).
   if (QPStatsEnabled) {
-    auto &taskBS = taskCopy.Bitstream;
-    if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_VP9) {
-      // VP9 encoder doesn't fill mfxExtEncodedFrameInfo.QP; parse bitstream
-      mfxU16 qp = ExtractVP9QP(std::span<const uint8_t>(
-          taskBS.Data + taskBS.DataOffset, taskBS.DataLength));
-      UpdateFrameQPStats(taskBS.FrameType, qp);
-    } else if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1) {
-      // oneVPL GPU RT AV1 encoder doesn't fill mfxExtEncodedFrameInfo.QP
-      // (EncodedInfoAv1.QpY is never set — driver bug).
-      // Use encoder params: accurate for CQP, initial QP for VBR/CBR.
-      mfxU16 qp = 0;
-      if (taskBS.FrameType & MFX_FRAMETYPE_I ||
-          taskBS.FrameType & MFX_FRAMETYPE_IDR ||
-          taskBS.FrameType & MFX_FRAMETYPE_xI ||
-          taskBS.FrameType & MFX_FRAMETYPE_xIDR) {
-        qp = QSVEncodeParams.mfx.QPI;
-      } else if (taskBS.FrameType & MFX_FRAMETYPE_P ||
-                 taskBS.FrameType & MFX_FRAMETYPE_xP) {
-        qp = QSVEncodeParams.mfx.QPP;
-      } else {
-        qp = QSVEncodeParams.mfx.QPB;
-      }
-      UpdateFrameQPStats(taskBS.FrameType, qp);
-    } else if (taskBS.ExtParam && taskBS.NumExtParam > 0) {
-      auto *encInfo =
-          reinterpret_cast<mfxExtEncodedFrameInfo *>(taskBS.ExtParam[0]);
-      if (encInfo &&
-          encInfo->Header.BufferId == MFX_EXTBUFF_ENCODED_FRAME_INFO) {
-        UpdateFrameQPStats(taskBS.FrameType, encInfo->QP);
-      }
-    }
+    RecordQPFromBitstream(taskCopy.Bitstream);
   }
 
   // Step 4: swap bitstream buffer back into pool (re-lock for write).
@@ -4256,6 +4232,12 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
       }
     } while (SyncStatus == MFX_WRN_IN_EXECUTION);
 
+    // Record QP stats before swap — the task's bitstream still has
+    // FrameType and ExtParam intact at this point.
+    if (QPStatsEnabled) {
+      RecordQPFromBitstream(QSVTaskPool[QSVSyncTaskID].Bitstream);
+    }
+
     mfxU8 *DataTemp = QSVBitstream.Data;
     QSVBitstream = QSVTaskPool[QSVSyncTaskID].Bitstream;
     QSVTaskPool[QSVSyncTaskID].Bitstream.Data = DataTemp;
@@ -4433,6 +4415,37 @@ void QSVEncoder::SetupROIEncodeCtrl() {
 }
 
 // Per-frame QP tracking
+
+void QSVEncoder::RecordQPFromBitstream(const mfxBitstream &bs) {
+  if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_VP9) {
+    // VP9 encoder doesn't fill mfxExtEncodedFrameInfo.QP; parse bitstream
+    mfxU16 qp = ExtractVP9QP(std::span<const uint8_t>(
+        bs.Data + bs.DataOffset, bs.DataLength));
+    UpdateFrameQPStats(bs.FrameType, qp);
+  } else if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1) {
+    // oneVPL GPU RT AV1 encoder doesn't fill mfxExtEncodedFrameInfo.QP
+    // (EncodedInfoAv1.QpY is never set — driver bug).
+    // Use encoder params: accurate for CQP, initial QP for VBR/CBR.
+    mfxU16 qp = 0;
+    if (bs.FrameType & MFX_FRAMETYPE_I || bs.FrameType & MFX_FRAMETYPE_IDR ||
+        bs.FrameType & MFX_FRAMETYPE_xI || bs.FrameType & MFX_FRAMETYPE_xIDR) {
+      qp = QSVEncodeParams.mfx.QPI;
+    } else if (bs.FrameType & MFX_FRAMETYPE_P ||
+               bs.FrameType & MFX_FRAMETYPE_xP) {
+      qp = QSVEncodeParams.mfx.QPP;
+    } else {
+      qp = QSVEncodeParams.mfx.QPB;
+    }
+    UpdateFrameQPStats(bs.FrameType, qp);
+  } else if (bs.ExtParam && bs.NumExtParam > 0) {
+    auto *encInfo =
+        reinterpret_cast<mfxExtEncodedFrameInfo *>(bs.ExtParam[0]);
+    if (encInfo &&
+        encInfo->Header.BufferId == MFX_EXTBUFF_ENCODED_FRAME_INFO) {
+      UpdateFrameQPStats(bs.FrameType, encInfo->QP);
+    }
+  }
+}
 
 void QSVEncoder::UpdateFrameQPStats(mfxU16 frameType, mfxU16 qp) {
   FrameQPStats.totalFrames++;
