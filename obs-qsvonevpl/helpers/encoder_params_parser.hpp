@@ -303,7 +303,6 @@ static constexpr std::pair<std::string_view, mfxU16> kCodecProfileHEVCMap[] = {
     {"main", MFX_PROFILE_HEVC_MAIN},
     {"main10", MFX_PROFILE_HEVC_MAIN10},
     {"rext", MFX_PROFILE_HEVC_REXT},
-    {"mainsp", MFX_PROFILE_HEVC_MAINSP},
     {"scc", MFX_PROFILE_HEVC_SCC},
 };
 

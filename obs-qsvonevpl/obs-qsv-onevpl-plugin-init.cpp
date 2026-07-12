@@ -17,7 +17,7 @@ const char *const qsv_profile_names_vp9[] = {
 const char *const qsv_profile_names_h264[] = {
     "high10", "high", "main", "baseline", "extended",
     "constrained_baseline", "constrained_high", 0};
-const char *const qsv_profile_names_hevc[] = {"main", "main10", "mainsp", "rext", "scc", 0};
+const char *const qsv_profile_names_hevc[] = {"main", "main10", "rext", "scc", 0};
 const char *const qsv_profile_tiers_hevc[] = {"main", "high", 0};
 const char *const qsv_levels_hevc[] = {
     "auto", "1", "2", "2.1", "3", "3.1", "4", "4.1",
@@ -1660,7 +1660,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       {"main",    MFX_PROFILE_HEVC_MAIN},
       {"main10",  MFX_PROFILE_HEVC_MAIN10},
       {"rext",    MFX_PROFILE_HEVC_REXT},
-      {"mainsp",  MFX_PROFILE_HEVC_MAINSP},
       {"scc",     MFX_PROFILE_HEVC_SCC},
     };
     if (auto v = MapString(CodecProfileData, kCodecProfileHEVCMap)) {
