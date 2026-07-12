@@ -41,6 +41,14 @@ obq-qsvonevpl-boost 是 obq-qsvonevpl 增强版本 —— OBS Studio（30 及以
 
 将下载下来的zip当中的`data`，`obs-plugins`文件夹解压到OBS Studio主目录下，也就是看得见`bin`，`data`，`obs-plugins`这三个文件的文件夹下
 
+### 多显卡用户注意事项
+
+如果你有多张显卡（例如核显+独显），**强烈建议将 OBS 运行在你需要截取画面的那张显卡上**。例如，你要录制独显上的游戏画面，就将 OBS 的运行显卡也设置为独显。
+
+否则会导致显卡 3D 占用大幅增加。
+
+**设置方法**：Windows 设置 → 系统 → 屏幕 → 显示卡 → 找到 `obs64.exe` → 选项 → 选择你要截取画面的显卡 → 保存。
+
 ***
 
 ## English
@@ -79,3 +87,11 @@ Or go to the Actions page of this repository to download the latest build: <http
 ### Installation
 
 Extract the `data` and `obs-plugins` folders from the downloaded zip file into the OBS Studio main directory, i.e., the folder where you can see the `bin`, `data`, and `obs-plugins` folders.
+
+### Multi-GPU Users Notice
+
+If you have multiple GPUs (e.g., integrated + discrete), **it is strongly recommended to run OBS on the same GPU as the content you are capturing**. For example, if you want to record a game running on your discrete GPU, set OBS to run on the discrete GPU as well.
+
+Otherwise it will cause significantly higher GPU 3D usage.
+
+**How to configure**: Windows Settings → System → Display → Graphics → Find `obs64.exe` → Options → Select the GPU where your captured content runs → Save.
