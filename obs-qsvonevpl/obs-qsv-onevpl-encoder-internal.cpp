@@ -175,15 +175,27 @@ void QSVEncoder::InitSystemMemorySurfacePool() {
   if (!QSVEncode || QSVIsTextureEncoder)
     return;
 
-  mfxFrameAllocRequest Request[2] = {};
-  mfxStatus Sts = QSVEncode->QueryIOSurf(&QSVEncodeParams, Request);
-  if (Sts != MFX_ERR_NONE) {
-    warn("QueryIOSurf failed: %d, using default 4 surfaces", Sts);
-    QSVSystemMemPoolSize = 4;
-  } else {
-    QSVSystemMemPoolSize = Request[0].NumFrameSuggested;
-    if (QSVSystemMemPoolSize < 4)
+  // QueryIOSurf was already called before Init (in InitEncoderInternal).
+  // Only call it here as a fallback if the size wasn't set (e.g. legacy path).
+  if (QSVSystemMemPoolSize == 0) {
+    mfxFrameAllocRequest Request[2] = {};
+    mfxStatus Sts = QSVEncode->QueryIOSurf(&QSVEncodeParams, Request);
+    if (Sts != MFX_ERR_NONE) {
+      warn("QueryIOSurf failed: %d, using default 4 surfaces", Sts);
       QSVSystemMemPoolSize = 4;
+    } else {
+      QSVSystemMemPoolSize = Request[0].NumFrameSuggested;
+      if (QSVSystemMemPoolSize < 4)
+        QSVSystemMemPoolSize = 4;
+    }
+  }
+
+  // Ensure we have enough surfaces for all async tasks
+  if (QSVSystemMemPoolSize < QSVEncodeParams.AsyncDepth) {
+    warn("SystemMemPoolSize (%d) < AsyncDepth (%d), "
+         "clamping to AsyncDepth",
+         QSVSystemMemPoolSize, QSVEncodeParams.AsyncDepth);
+    QSVSystemMemPoolSize = QSVEncodeParams.AsyncDepth;
   }
 
   info("\tSystem memory surface pool size: %d", QSVSystemMemPoolSize);
@@ -449,6 +461,27 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
       if (Status == MFX_ERR_UNSUPPORTED) {
         warn("MFXVideoENCODE_Query%s returned UNSUPPORTED, "
              "attempting Init directly", log_prefix);
+      }
+
+      // QueryIOSurf must be called BEFORE Init per OneVPL API spec.
+      // For system-memory path, the driver tells us how many surfaces
+      // to allocate; for video-memory path the driver manages its own
+      // pool and QueryIOSurf is optional.
+      if (QSVUseSystemMemoryPath) {
+        mfxFrameAllocRequest IOSurfRequest[2] = {};
+        mfxStatus QISSts =
+            QSVEncode->QueryIOSurf(&QSVEncodeParams, IOSurfRequest);
+        if (QISSts == MFX_ERR_NONE) {
+          QSVSystemMemPoolSize = IOSurfRequest[0].NumFrameSuggested;
+          if (QSVSystemMemPoolSize < 4)
+            QSVSystemMemPoolSize = 4;
+          info("\tQueryIOSurf%s: NumFrameSuggested=%d",
+               log_prefix, QSVSystemMemPoolSize);
+        } else {
+          warn("\tQueryIOSurf%s failed: %d, using default 4 surfaces",
+               log_prefix, QISSts);
+          QSVSystemMemPoolSize = 4;
+        }
       }
 
       Status = QSVEncode->Init(&QSVEncodeParams);
