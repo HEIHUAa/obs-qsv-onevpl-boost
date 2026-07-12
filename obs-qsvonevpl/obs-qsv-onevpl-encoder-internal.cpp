@@ -190,14 +190,12 @@ void QSVEncoder::InitSystemMemorySurfacePool() {
     }
   }
 
-  // Ensure we have enough surfaces for all async tasks
-  // Round-robin needs pool > AsyncDepth so we never reuse a surface
-  // while the driver's DMA might still be reading it.  +4 margin.
-  if (QSVSystemMemPoolSize < QSVEncodeParams.AsyncDepth + 4) {
-    warn("SystemMemPoolSize (%d) < AsyncDepth+4 (%d), "
-         "clamping for round-robin safety",
-         QSVSystemMemPoolSize, QSVEncodeParams.AsyncDepth + 4);
-    QSVSystemMemPoolSize = QSVEncodeParams.AsyncDepth + 4;
+  // Ensure enough surfaces for all async tasks.  Data.Locked provides
+  // accurate per-surface tracking so we don't need extra margin.
+  if (QSVSystemMemPoolSize < QSVEncodeParams.AsyncDepth) {
+    warn("SystemMemPoolSize (%d) < AsyncDepth (%d), clamping",
+         QSVSystemMemPoolSize, QSVEncodeParams.AsyncDepth);
+    QSVSystemMemPoolSize = QSVEncodeParams.AsyncDepth;
   }
 
   info("\tSystem memory surface pool size: %d", QSVSystemMemPoolSize);
@@ -841,7 +839,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
 
     if (QSVUseSystemMemoryPath) {
       InitSystemMemorySurfacePool();
-      QSVNextSystemMemSurfaceIdx = 0;
     }
 
     // Cache debug toggles for use in Drain (InputParams may be gone by then)
@@ -3677,9 +3674,23 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
                                                mfxBitstream **Bitstream) {
   mfxStatus Status = MFX_ERR_NONE, SyncStatus = MFX_ERR_NONE;
   *Bitstream = nullptr;
-  int TaskID = 0;
 
-  while (GetFreeTaskIndex(&TaskID) == MFX_ERR_NOT_FOUND) {
+  // Match official obs-qsv11 pattern: independent task pool + surface pool.
+  // Data.Locked is set by the driver while the surface is in use, giving us
+  // accurate tracking of when it's safe to overwrite.
+  auto GetFreeSurface = [this]() -> int {
+    for (mfxU16 i = 0; i < QSVSystemMemPoolSize; i++) {
+      if (0 == QSVSystemMemPool[i].Surface.Data.Locked)
+        return i;
+    }
+    return MFX_ERR_NOT_FOUND;
+  };
+
+  int TaskID = GetFreeTaskIndex();
+  int SurfID = GetFreeSurface();
+
+  while (MFX_ERR_NOT_FOUND == TaskID || MFX_ERR_NOT_FOUND == SurfID) {
+    // Sync the oldest pending task (QSVSyncTaskID points to it)
     do {
       SyncStatus = MFXVideoCORE_SyncOperation(
           QSVSession, QSVTaskPool[QSVSyncTaskID].SyncPoint, 100);
@@ -3690,6 +3701,7 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
       }
     } while (SyncStatus == MFX_WRN_IN_EXECUTION);
 
+    // Swap bitstreams — get encoded output from the synced task
     mfxU8 *DataTemp = QSVBitstream.Data;
     QSVBitstream = QSVTaskPool[QSVSyncTaskID].Bitstream;
     QSVTaskPool[QSVSyncTaskID].Bitstream.Data = DataTemp;
@@ -3697,19 +3709,16 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
     QSVTaskPool[QSVSyncTaskID].Bitstream.DataOffset = 0;
     QSVTaskPool[QSVSyncTaskID].SyncPoint = nullptr;
     TaskID = QSVSyncTaskID;
+    // Advance to next sync candidate (same as m_nFirstSyncTask in official)
+    QSVSyncTaskID =
+        (QSVSyncTaskID + 1) % static_cast<int>(QSVTaskPool.size());
     *Bitstream = &QSVBitstream;
+
+    SurfID = GetFreeSurface();
   }
 
-  mfxFrameSurface1 *EncodeSurface = QSVTaskPool[TaskID].Surface;
-  // Round-robin surface assignment: each frame gets a different surface
-  // so the driver's DMA (CopySysToRaw) never races with our writes.
-  // When EncodeFrameAsync returns MFX_ERR_MORE_DATA the surface data is
-  // still in flight — round-robin keeps it alive until the index wraps,
-  // giving the driver enough time to finish the copy.
-  int SurfaceIdx = QSVNextSystemMemSurfaceIdx;
-  QSVNextSystemMemSurfaceIdx =
-      (QSVNextSystemMemSurfaceIdx + 1) % QSVSystemMemPoolSize;
-  EncodeSurface = &QSVSystemMemPool[SurfaceIdx].Surface;
+  // Use surface directly from the pool — not bound to any task
+  mfxFrameSurface1 *EncodeSurface = &QSVSystemMemPool[SurfID].Surface;
   QSVTaskPool[TaskID].Surface = EncodeSurface;
 
   EncodeSurface->Data.TimeStamp = TS;
@@ -3738,6 +3747,21 @@ mfxStatus QSVEncoder::GetFreeTaskIndex(int *TaskID) {
         QSVSyncTaskID = (Idx + 1) % PoolSize;
         *TaskID = Idx;
         return MFX_ERR_NONE;
+      }
+    }
+  }
+  return MFX_ERR_NOT_FOUND;
+}
+
+// Official obs-qsv11 style: find first free task, don't advance QSVSyncTaskID.
+// Used by EncodeFrameSystemMemory where the sync loop manages advancement.
+int QSVEncoder::GetFreeTaskIndex() {
+  std::lock_guard<std::mutex> lock(QSVTaskPoolMutex);
+  if (!QSVTaskPool.empty()) {
+    const int PoolSize = static_cast<int>(QSVTaskPool.size());
+    for (int i = 0; i < PoolSize; i++) {
+      if (static_cast<mfxSyncPoint>(nullptr) == QSVTaskPool[i].SyncPoint) {
+        return i;
       }
     }
   }

@@ -67,6 +67,7 @@ void InitSystemMemorySurfacePool();
   void ReleaseTaskPool();
   mfxStatus ChangeBitstreamSize(mfxU32 NewSize);
   mfxStatus GetFreeTaskIndex(int *TaskID);
+  int GetFreeTaskIndex(); // obs-qsv11 style: no-arg, no QSVSyncTaskID advance
   mfxStatus EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
                                   mfxEncodeCtrl *Ctrl, int TaskID,
                                   mfxU32 MaxRetries = 200);
@@ -161,10 +162,6 @@ private:
   };
   std::vector<SystemMemSurface> QSVSystemMemPool;
   mfxU16 QSVSystemMemPoolSize{};
-  int QSVNextSystemMemSurfaceIdx{};
-  // Round-robin surface index for EncodeFrameSystemMemory.
-  // Each frame gets a different surface so we never overwrite data
-  // while the driver's DMA (CopySysToRaw) is still in flight.
 
   bool QSVIsTextureEncoder{};
   // Tracks whether a drain marker has been submitted for offline re-encoder.
