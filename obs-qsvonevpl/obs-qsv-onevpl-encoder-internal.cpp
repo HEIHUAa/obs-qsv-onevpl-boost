@@ -803,6 +803,14 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
       Status = InitEncoderInternal(InputParams, Codec, "");
     }
 
+    // log which memory path is active
+    info("\tMemory path: %s",
+         QSVIsTextureEncoder
+             ? "VIDEO_MEMORY (texture sharing)"
+             : QSVUseSystemMemoryPath
+                 ? "SYSTEM_MEMORY"
+                 : "VIDEO_MEMORY");
+
     if (Status < MFX_ERR_NONE) {
       error("MFXVideoENCODE_Init failed after all retries (Status=%d)",
             Status);
