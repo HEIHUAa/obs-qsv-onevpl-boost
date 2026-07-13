@@ -20,6 +20,7 @@ bool OpenEncoder(std::unique_ptr<QSVEncoder> &EncoderPTR,
     if (EncoderParams->GPUNum == 0) {
       obs_video_info OVI;
       obs_get_video_info(&OVI);
+      EncoderParams->dxgiAdapterIndex = OVI.adapter; // save raw DXGI index before adjustment
       mfxU32 AdapterID = OVI.adapter;
       mfxU32 AdapterIDAdjustment = 0;
       // Select current adapter; handle adapter reordering

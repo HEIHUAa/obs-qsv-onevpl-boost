@@ -25,7 +25,7 @@ public:
   void ReleaseDevice();
   void ReleaseTexturePool();
 
-  mfxStatus CreateDevice(mfxIMPL &Impl);
+  mfxStatus CreateDevice(int dxgiAdapterIndex);
   mfxStatus CopyTexture(mfxSurfaceD3D11Tex2D &OuterTexture, void *TextureHandle,
                         mfxU64 LockKey, mfxU64 *NextKey);
 
@@ -50,7 +50,7 @@ private:
     IDXGIKeyedMutex *KeyedMutex;
   };
 
-  IDXGIAdapter *GetIntelDeviceAdapterHandle(mfxIMPL &Impl);
+  IDXGIAdapter *GetIntelDeviceAdapterHandle(int dxgiAdapterIndex);
   mfxStatus FreeTexturePool();
   mfxStatus FreeHandledTexturePool();
 

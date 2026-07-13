@@ -148,6 +148,7 @@ struct encoder_params {
   mfxU16 ChromaFormat;
 
   int GPUNum;
+  int dxgiAdapterIndex = 0; // actual DXGI adapter index, not adjusted for non-Intel GPUs
 
   int ScreenContentTools;
 

@@ -727,7 +727,7 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
       // the VPL session so internal texture allocations and imports use the
       // same device.
       if (HWManager->HWDeviceHandle == nullptr) {
-        Status = HWManager->CreateDevice(QSVImpl);
+        Status = HWManager->CreateDevice(InputParams->dxgiAdapterIndex);
         if (Status < MFX_ERR_NONE) {
           error("Error code: %d", Status);
           throw std::runtime_error("Init(): CreateDevice error");

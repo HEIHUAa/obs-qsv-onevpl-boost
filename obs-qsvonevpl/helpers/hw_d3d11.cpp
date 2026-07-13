@@ -11,24 +11,9 @@ HWManager::~HWManager() {
   ReleaseDevice();
 }
 
-IDXGIAdapter *HWManager::GetIntelDeviceAdapterHandle(mfxIMPL &Impl) {
+IDXGIAdapter *HWManager::GetIntelDeviceAdapterHandle(int dxgiAdapterIndex) {
 
   HRESULT HR = S_OK;
-  mfxU32 AdapterNum = 0;
-
-  const std::array<mfxIMPL, 4> Impls{MFX_IMPL_HARDWARE, MFX_IMPL_HARDWARE2,
-                                     MFX_IMPL_HARDWARE3, MFX_IMPL_HARDWARE4};
-
-  mfxIMPL BaseImpl =
-      MFX_IMPL_BASETYPE(Impl); // Extract Media SDK base implementation type
-
-  // get corresponding adapter number
-  for (mfxU32 i = 0; i < sizeof(Impls) / sizeof(Impls[0]); i++) {
-    if (Impls[i] == BaseImpl) {
-      AdapterNum = i;
-      break;
-    }
-  }
 
   HR = CreateDXGIFactory1(__uuidof(IDXGIFactory2),
                           reinterpret_cast<void **>(&HWFactory));
@@ -37,7 +22,7 @@ IDXGIAdapter *HWManager::GetIntelDeviceAdapterHandle(mfxIMPL &Impl) {
   }
 
   IDXGIAdapter *Adapter;
-  HR = HWFactory->EnumAdapters(AdapterNum, &Adapter);
+  HR = HWFactory->EnumAdapters(dxgiAdapterIndex, &Adapter);
   if (FAILED(HR)) {
     throw HR;
   }
@@ -46,7 +31,7 @@ IDXGIAdapter *HWManager::GetIntelDeviceAdapterHandle(mfxIMPL &Impl) {
 }
 
 // Create HW device context
-mfxStatus HWManager::CreateDevice(mfxIMPL &Impl) {
+mfxStatus HWManager::CreateDevice(int dxgiAdapterIndex) {
   try {
 
     if (HWEncoderCounter <= 0) {
@@ -58,7 +43,7 @@ mfxStatus HWManager::CreateDevice(mfxIMPL &Impl) {
           D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0};
       D3D_FEATURE_LEVEL FeatureLevelsOut;
 
-      HWAdapter = GetIntelDeviceAdapterHandle(Impl);
+      HWAdapter = GetIntelDeviceAdapterHandle(dxgiAdapterIndex);
       if (nullptr == HWAdapter) {
         throw std::runtime_error("Adapter is nullptr");
       }
