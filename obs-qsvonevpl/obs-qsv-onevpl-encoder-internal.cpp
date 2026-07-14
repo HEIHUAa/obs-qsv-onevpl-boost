@@ -3664,11 +3664,35 @@ void QSVEncoder::LoadFrameData(mfxFrameSurface1 *&Surface, uint8_t **FrameData,
   } else if (Surface->Info.FourCC == MFX_FOURCC_P010) {
     const size_t line_size = static_cast<size_t>(Width) * 2;
     if (Pitch == static_cast<mfxU16>(FrameLinesize[0])) {
+      // Fast path: source is P010 with matching stride
       avx2_memcpy(SurfaceData->Y, FrameData[0],
              static_cast<size_t>(Height) * Pitch);
       avx2_memcpy(SurfaceData->UV, FrameData[1],
              static_cast<size_t>(Height / 2) * Pitch);
+    } else if (FrameLinesize[0] < line_size) {
+      // Source is NV12 (8-bit, 1 byte/pixel), convert to P010 (10-bit, 2 bytes/pixel)
+      PTR = static_cast<mfxU8 *>(SurfaceData->Y + SurfaceInfo->CropX +
+                                 SurfaceInfo->CropY * Pitch);
+      for (i = 0; i < Height; i++) {
+        const mfxU8 *src = FrameData[0] + i * FrameLinesize[0];
+        mfxU16 *dst = reinterpret_cast<mfxU16 *>(PTR + i * Pitch);
+        for (mfxU32 x = 0; x < Width; x++) {
+          dst[x] = static_cast<mfxU16>(src[x]) << 2;
+        }
+      }
+
+      Height /= 2;
+      PTR = static_cast<mfxU8 *>((SurfaceData->UV + SurfaceInfo->CropX +
+                                  (SurfaceInfo->CropY / 2) * Pitch));
+      for (i = 0; i < Height; i++) {
+        const mfxU8 *src = FrameData[1] + i * FrameLinesize[1];
+        mfxU16 *dst = reinterpret_cast<mfxU16 *>(PTR + i * Pitch);
+        for (mfxU32 x = 0; x < Width; x++) {
+          dst[x] = static_cast<mfxU16>(src[x]) << 2;
+        }
+      }
     } else {
+      // Source is P010 but stride differs → line-by-line copy
       PTR = static_cast<mfxU8 *>(SurfaceData->Y + SurfaceInfo->CropX +
                                  SurfaceInfo->CropY * Pitch);
 
