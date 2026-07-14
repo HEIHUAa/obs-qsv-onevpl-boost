@@ -1702,11 +1702,15 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     // is used as the storage value, looked up via FindHevcProfileEntry.
     if (auto *hevcEntry = FindHevcProfileEntry(CodecProfileData)) {
       Context->EncoderParams.CodecProfile = hevcEntry->profile;
-      // FourCC / ChromaFormat / BitDepth are set again after the VOI
-      // switch below to override any OBS color format mapping.
-      Context->EncoderParams.FourCC = hevcEntry->fourcc;
-      Context->EncoderParams.ChromaFormat = hevcEntry->chroma_format;
-      Context->EncoderParams.BitDepth = hevcEntry->bit_depth;
+      // Only override chroma format for rext/scc (which have multiple
+      // chroma options). main/main10 keep the OBS output format as-is
+      // to avoid surface layout mismatch (e.g. P010 vs NV12 stride).
+      if (hevcEntry->profile == MFX_PROFILE_HEVC_REXT ||
+          hevcEntry->profile == MFX_PROFILE_HEVC_SCC) {
+        Context->EncoderParams.FourCC = hevcEntry->fourcc;
+        Context->EncoderParams.ChromaFormat = hevcEntry->chroma_format;
+        Context->EncoderParams.BitDepth = hevcEntry->bit_depth;
+      }
     } else {
       // Legacy fallback: map old-style profile name ("main", "main10", ...)
       // to MFX profile enum; chroma format is resolved from VOI later.
@@ -2346,11 +2350,16 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
 
   // Apply chroma from composite HEVC profile option, overriding the
   // VOI-based chroma format set above (ignores OBS advanced color format).
+  // Only for rext/scc which have multiple chroma options — main/main10
+  // keep the OBS output format to avoid surface layout mismatch.
   if (Context->Codec == QSV_CODEC_HEVC) {
     if (auto *hevcEntry = FindHevcProfileEntry(CodecProfileData)) {
-      Context->EncoderParams.FourCC = hevcEntry->fourcc;
-      Context->EncoderParams.ChromaFormat = hevcEntry->chroma_format;
-      Context->EncoderParams.BitDepth = hevcEntry->bit_depth;
+      if (hevcEntry->profile == MFX_PROFILE_HEVC_REXT ||
+          hevcEntry->profile == MFX_PROFILE_HEVC_SCC) {
+        Context->EncoderParams.FourCC = hevcEntry->fourcc;
+        Context->EncoderParams.ChromaFormat = hevcEntry->chroma_format;
+        Context->EncoderParams.BitDepth = hevcEntry->bit_depth;
+      }
     }
   }
 
