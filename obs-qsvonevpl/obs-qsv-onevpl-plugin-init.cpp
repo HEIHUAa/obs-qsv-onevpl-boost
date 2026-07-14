@@ -17,48 +17,6 @@ const char *const qsv_profile_names_vp9[] = {
 const char *const qsv_profile_names_h264[] = {
     "high10", "high", "main", "baseline", "extended",
     "constrained_baseline", "constrained_high", 0};
-// HEVC profile + chroma format composite option.
-// Each entry encodes profile, fourcc, chroma format, and bit depth
-// so the encoder ignores OBS advanced color format setting.
-struct qsv_hevc_profile_chroma_entry {
-    const char *display_name;  // UI display and storage value
-    mfxU16 profile;
-    mfxU32 fourcc;
-    mfxU16 chroma_format;
-    mfxU16 bit_depth;
-};
-
-static const qsv_hevc_profile_chroma_entry kHevcProfileChromaMap[] = {
-    // main: 4:2:0 8-bit only
-    {"main (4:2:0 8-bit)",     MFX_PROFILE_HEVC_MAIN,   MFX_FOURCC_NV12, MFX_CHROMAFORMAT_YUV420, 0},
-    // main10: 4:2:0 10-bit
-    {"main10 (4:2:0 10-bit)",  MFX_PROFILE_HEVC_MAIN10, MFX_FOURCC_P010, MFX_CHROMAFORMAT_YUV420, 10},
-    // rext (verified against OneVPL hevcehw_base_query_impl_desc.cpp)
-    {"rext (4:2:2 8-bit)",     MFX_PROFILE_HEVC_REXT, MFX_FOURCC_YUY2, MFX_CHROMAFORMAT_YUV422, 0},
-    {"rext (4:4:4 8-bit)",     MFX_PROFILE_HEVC_REXT, MFX_MAKEFOURCC('4','4','4','P'), MFX_CHROMAFORMAT_YUV444, 0},
-    {"rext (4:2:0 10-bit)",    MFX_PROFILE_HEVC_REXT, MFX_FOURCC_P010, MFX_CHROMAFORMAT_YUV420, 10},
-    {"rext (4:2:2 10-bit)",    MFX_PROFILE_HEVC_REXT, MFX_FOURCC_Y210, MFX_CHROMAFORMAT_YUV422, 10},
-    {"rext (4:4:4 10-bit)",    MFX_PROFILE_HEVC_REXT, MFX_FOURCC_Y410, MFX_CHROMAFORMAT_YUV444, 10},
-    {"rext (4:2:0 12-bit)",    MFX_PROFILE_HEVC_REXT, MFX_FOURCC_P016, MFX_CHROMAFORMAT_YUV420, 12},
-    {"rext (4:2:2 12-bit)",    MFX_PROFILE_HEVC_REXT, MFX_FOURCC_Y216, MFX_CHROMAFORMAT_YUV422, 12},
-    {"rext (4:4:4 12-bit)",    MFX_PROFILE_HEVC_REXT, MFX_FOURCC_Y416, MFX_CHROMAFORMAT_YUV444, 12},
-    // scc (verified against OneVPL hevcehw_base_query_impl_desc.cpp)
-    {"scc (4:2:0 8-bit)",      MFX_PROFILE_HEVC_SCC, MFX_FOURCC_NV12, MFX_CHROMAFORMAT_YUV420, 0},
-    {"scc (4:4:4 8-bit)",      MFX_PROFILE_HEVC_SCC, MFX_MAKEFOURCC('4','4','4','P'), MFX_CHROMAFORMAT_YUV444, 0},
-    {"scc (4:2:0 10-bit)",     MFX_PROFILE_HEVC_SCC, MFX_FOURCC_P010, MFX_CHROMAFORMAT_YUV420, 10},
-    {"scc (4:4:4 10-bit)",     MFX_PROFILE_HEVC_SCC, MFX_FOURCC_Y410, MFX_CHROMAFORMAT_YUV444, 10},
-};
-
-static const qsv_hevc_profile_chroma_entry *FindHevcProfileEntry(const char *name) {
-    if (!name) return nullptr;
-    const std::string_view sv(name);
-    for (const auto &entry : kHevcProfileChromaMap) {
-        if (sv == entry.display_name)
-            return &entry;
-    }
-    return nullptr;
-}
-
 const char *const qsv_profile_names_hevc[] = {"main", "main10", "rext", "scc", 0};
 const char *const qsv_profile_tiers_hevc[] = {"main", "high", 0};
 const char *const qsv_levels_hevc[] = {
@@ -295,7 +253,6 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
       Settings, "profile",
       Codec == QSV_CODEC_AVC ? "high"
       : Codec == QSV_CODEC_VP9 ? "0 (8-bit 4:2:0)"
-      : Codec == QSV_CODEC_HEVC ? "main (4:2:0 8-bit)"
                                : "main");
   obs_data_set_default_string(Settings, "hevc_tier", "main");
   obs_data_set_default_string(Settings, "hevc_level", "auto");
@@ -1216,21 +1173,22 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   } else if (Codec == QSV_CODEC_VP9) {
     AddStrings(Prop, qsv_profile_names_vp9);
   } else if (Codec == QSV_CODEC_HEVC) {
-    // Composite options: each entry encodes profile + chroma format + bit depth
-    for (const auto &entry : kHevcProfileChromaMap) {
+    const char *const *profileEntryHEVC = qsv_profile_names_hevc;
+    while (*profileEntryHEVC) {
       bool showProfileHEVC = true;
       if (platformCode != 0) {
-        bool isRext = entry.profile == MFX_PROFILE_HEVC_REXT;
-        bool isSCC = entry.profile == MFX_PROFILE_HEVC_SCC;
-        // REXT and SCC encoding require TGL_LP (Gen12)+
+        bool isRext = std::string_view(*profileEntryHEVC) == "rext";
+        bool isSCC = std::string_view(*profileEntryHEVC) == "scc";
+        // REXT encoding (12-bit/4:2:2/4:4:4) and SCC encoding require TGL_LP (Gen12)+
         if ((isRext || isSCC) && platformCode < MFX_PLATFORM_TIGERLAKE) {
           showProfileHEVC = false;
         }
       }
       if (showProfileHEVC) {
-        obs_property_list_add_string(Prop, entry.display_name,
-                                     entry.display_name);
+        obs_property_list_add_string(Prop, *profileEntryHEVC,
+                                     *profileEntryHEVC);
       }
+      profileEntryHEVC++;
     }
     obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
   }
@@ -1697,32 +1655,15 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   }
   case QSV_CODEC_HEVC: {
     Codec = "HEVC";
-    // 5. CodecProfile HEVC — composite option includes chroma format + bit depth
-    // Display name like "main (4:2:0 8-bit)" or "rext (4:4:4 10-bit)"
-    // is used as the storage value, looked up via FindHevcProfileEntry.
-    if (auto *hevcEntry = FindHevcProfileEntry(CodecProfileData)) {
-      Context->EncoderParams.CodecProfile = hevcEntry->profile;
-      // Override chroma format based on profile entry.
-      // For main10: set FourCC=P010, BitDepth=10 so the driver accepts MAIN10.
-      // For rext/scc: set the user-chosen chroma format.
-      // For main: keep OBS output format (NV12).
-      if (hevcEntry->profile != MFX_PROFILE_HEVC_MAIN) {
-        Context->EncoderParams.FourCC = hevcEntry->fourcc;
-        Context->EncoderParams.ChromaFormat = hevcEntry->chroma_format;
-        Context->EncoderParams.BitDepth = hevcEntry->bit_depth;
-      }
-    } else {
-      // Legacy fallback: map old-style profile name ("main", "main10", ...)
-      // to MFX profile enum; chroma format is resolved from VOI later.
-      static constexpr std::pair<std::string_view, mfxU16> kLegacyHEVCMap[] = {
-        {"main",   MFX_PROFILE_HEVC_MAIN},
-        {"main10", MFX_PROFILE_HEVC_MAIN10},
-        {"rext",   MFX_PROFILE_HEVC_REXT},
-        {"scc",    MFX_PROFILE_HEVC_SCC},
-      };
-      if (auto v = MapString(CodecProfileData, kLegacyHEVCMap)) {
-        Context->EncoderParams.CodecProfile = *v;
-      }
+    // 5. CodecProfile HEVC
+    static constexpr std::pair<std::string_view, mfxU16> kCodecProfileHEVCMap[] = {
+      {"main",    MFX_PROFILE_HEVC_MAIN},
+      {"main10",  MFX_PROFILE_HEVC_MAIN10},
+      {"rext",    MFX_PROFILE_HEVC_REXT},
+      {"scc",     MFX_PROFILE_HEVC_SCC},
+    };
+    if (auto v = MapString(CodecProfileData, kCodecProfileHEVCMap)) {
+      Context->EncoderParams.CodecProfile = *v;
     }
 
     if (std::string_view(CodecProfileTierData) == "main") {
@@ -2348,71 +2289,8 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     }
   }
 
-  // Apply chroma from composite HEVC profile option, overriding the
-  // VOI-based chroma format set above (ignores OBS advanced color format).
-  // For main10: set FourCC=P010, BitDepth=10 so the driver accepts MAIN10.
-  // For rext/scc: set the user-chosen chroma format.
-  // For main: keep OBS output format (NV12).
-  if (Context->Codec == QSV_CODEC_HEVC) {
-    if (auto *hevcEntry = FindHevcProfileEntry(CodecProfileData)) {
-      if (hevcEntry->profile != MFX_PROFILE_HEVC_MAIN) {
-        Context->EncoderParams.FourCC = hevcEntry->fourcc;
-        Context->EncoderParams.ChromaFormat = hevcEntry->chroma_format;
-        Context->EncoderParams.BitDepth = hevcEntry->bit_depth;
-      }
-    }
-  }
-
-  // Override chroma format based on selected profile for AVC/AV1.
-  if (Context->Codec == QSV_CODEC_AVC) {
-    if (Context->EncoderParams.CodecProfile == MFX_PROFILE_AVC_HIGH10) {
-      // high10: 4:2:0 10-bit
-      if (Context->EncoderParams.FourCC != MFX_FOURCC_P010) {
-        info("\tProfile chroma override: AVC high10 -> P010 (was 0x%04X)",
-             Context->EncoderParams.FourCC);
-        Context->EncoderParams.FourCC = MFX_FOURCC_P010;
-        Context->EncoderParams.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
-        Context->EncoderParams.BitDepth = 10;
-      }
-    } else {
-      // all other AVC profiles: 4:2:0 8-bit
-      if (Context->EncoderParams.FourCC != MFX_FOURCC_NV12) {
-        info("\tProfile chroma override: AVC -> NV12 (was 0x%04X)",
-             Context->EncoderParams.FourCC);
-        Context->EncoderParams.FourCC = MFX_FOURCC_NV12;
-        Context->EncoderParams.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
-        Context->EncoderParams.BitDepth = 0;
-      }
-    }
-  } else if (Context->Codec == QSV_CODEC_AV1) {
-    if (Context->EncoderParams.CodecProfile == MFX_PROFILE_AV1_MAIN) {
-      // AV1 main: 4:2:0 only, keep input bit depth (cap at 10-bit)
-      if (Context->EncoderParams.ChromaFormat != MFX_CHROMAFORMAT_YUV420) {
-        mfxU32 correctedFourCC = (Context->EncoderParams.BitDepth >= 10)
-            ? MFX_FOURCC_P010 : MFX_FOURCC_NV12;
-        info("\tProfile chroma override: AV1 main -> 4:2:0");
-        Context->EncoderParams.FourCC = correctedFourCC;
-        Context->EncoderParams.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
-        if (Context->EncoderParams.BitDepth > 10)
-          Context->EncoderParams.BitDepth = 10;
-      }
-    }
-    // AV1 high/pro: keep input format (supports 4:4:4)
-  }
-
   info("\tDebug info:");
   info("\tCodec: %s", Codec);
-  {
-    const char *chromaName = "unknown";
-    switch (Context->EncoderParams.ChromaFormat) {
-    case MFX_CHROMAFORMAT_YUV420: chromaName = "4:2:0"; break;
-    case MFX_CHROMAFORMAT_YUV422: chromaName = "4:2:2"; break;
-    case MFX_CHROMAFORMAT_YUV444: chromaName = "4:4:4"; break;
-    }
-    info("\tFourCC: 0x%04X, Chroma: %s, BitDepth: %d",
-         Context->EncoderParams.FourCC, chromaName,
-         Context->EncoderParams.BitDepth);
-  }
   info("\tRate control: %s", RateControlData);
 
   if (Context->EncoderParams.RateControl == MFX_RATECONTROL_QVBR)
