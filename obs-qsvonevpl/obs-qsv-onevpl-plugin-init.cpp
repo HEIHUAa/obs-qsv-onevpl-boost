@@ -35,7 +35,7 @@ static const qsv_hevc_profile_chroma_entry kHevcProfileChromaMap[] = {
     {"main10 (4:2:0 10-bit)",  MFX_PROFILE_HEVC_MAIN10, MFX_FOURCC_P010, MFX_CHROMAFORMAT_YUV420, 10},
     // rext (verified against OneVPL hevcehw_base_query_impl_desc.cpp)
     {"rext (4:2:2 8-bit)",     MFX_PROFILE_HEVC_REXT, MFX_FOURCC_YUY2, MFX_CHROMAFORMAT_YUV422, 0},
-    {"rext (4:4:4 8-bit)",     MFX_PROFILE_HEVC_REXT, MFX_FOURCC_AYUV, MFX_CHROMAFORMAT_YUV444, 0},
+    {"rext (4:4:4 8-bit)",     MFX_PROFILE_HEVC_REXT, MFX_MAKEFOURCC('4','4','4','P'), MFX_CHROMAFORMAT_YUV444, 0},
     {"rext (4:2:0 10-bit)",    MFX_PROFILE_HEVC_REXT, MFX_FOURCC_P010, MFX_CHROMAFORMAT_YUV420, 10},
     {"rext (4:2:2 10-bit)",    MFX_PROFILE_HEVC_REXT, MFX_FOURCC_Y210, MFX_CHROMAFORMAT_YUV422, 10},
     {"rext (4:4:4 10-bit)",    MFX_PROFILE_HEVC_REXT, MFX_FOURCC_Y410, MFX_CHROMAFORMAT_YUV444, 10},
@@ -44,7 +44,7 @@ static const qsv_hevc_profile_chroma_entry kHevcProfileChromaMap[] = {
     {"rext (4:4:4 12-bit)",    MFX_PROFILE_HEVC_REXT, MFX_FOURCC_Y416, MFX_CHROMAFORMAT_YUV444, 12},
     // scc (verified against OneVPL hevcehw_base_query_impl_desc.cpp)
     {"scc (4:2:0 8-bit)",      MFX_PROFILE_HEVC_SCC, MFX_FOURCC_NV12, MFX_CHROMAFORMAT_YUV420, 0},
-    {"scc (4:4:4 8-bit)",      MFX_PROFILE_HEVC_SCC, MFX_FOURCC_AYUV, MFX_CHROMAFORMAT_YUV444, 0},
+    {"scc (4:4:4 8-bit)",      MFX_PROFILE_HEVC_SCC, MFX_MAKEFOURCC('4','4','4','P'), MFX_CHROMAFORMAT_YUV444, 0},
     {"scc (4:2:0 10-bit)",     MFX_PROFILE_HEVC_SCC, MFX_FOURCC_P010, MFX_CHROMAFORMAT_YUV420, 10},
     {"scc (4:4:4 10-bit)",     MFX_PROFILE_HEVC_SCC, MFX_FOURCC_Y410, MFX_CHROMAFORMAT_YUV444, 10},
 };

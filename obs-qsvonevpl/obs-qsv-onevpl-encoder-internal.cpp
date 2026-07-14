@@ -439,32 +439,6 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
     Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
     info("\tMFXVideoENCODE_Query%s status: %d", log_prefix, Status);
 
-    // If Query returned UNSUPPORTED due to chroma format, try NV12
-    if (Status == MFX_ERR_UNSUPPORTED &&
-        QSVEncodeParams.mfx.FrameInfo.ChromaFormat != MFX_CHROMAFORMAT_YUV420) {
-      warn("MFXVideoENCODE_Query%s returned UNSUPPORTED with "
-           "chroma format %d, retrying with NV12",
-           log_prefix, QSVEncodeParams.mfx.FrameInfo.ChromaFormat);
-      QSVEncode->Close();
-      QSVEncodeParams.mfx.FrameInfo.FourCC = MFX_FOURCC_NV12;
-      QSVEncodeParams.mfx.FrameInfo.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
-      QSVEncodeParams.mfx.FrameInfo.BitDepthLuma = 0;
-      QSVEncodeParams.mfx.FrameInfo.BitDepthChroma = 0;
-      QSVEncodeParams.mfx.FrameInfo.Shift = 0;
-      {
-        auto *CO3 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption3>();
-        if (CO3) {
-          CO3->TargetChromaFormatPlus1 = MFX_CHROMAFORMAT_YUV420 + 1;
-          CO3->TargetBitDepthLuma = 0;
-          CO3->TargetBitDepthChroma = 0;
-        }
-      }
-      MFXCopy = QSVEncodeParams.mfx;
-      Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
-      info("\tMFXVideoENCODE_Query%s retry (NV12) status: %d",
-           log_prefix, Status);
-    }
-
     if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
       LogDriverCorrections(log_prefix, QSVEncodeParams,
                            &MFXCopy,
