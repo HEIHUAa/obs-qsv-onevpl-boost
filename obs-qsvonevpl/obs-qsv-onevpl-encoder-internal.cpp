@@ -520,6 +520,34 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
     }
   }
 
+  // Retry: if EncTools BRC is enabled but driver doesn't support it,
+  // just disable BRC and keep other EncTools options (AdaptiveMBQP etc.)
+  if (Status < MFX_ERR_NONE && HasEncTools) {
+    auto *EncToolsParams = QSVEncodeParams.GetExtBuffer<mfxExtEncToolsConfig>();
+    if (EncToolsParams && EncToolsParams->BRC == MFX_CODINGOPTION_ON) {
+      warn("MFXVideoENCODE_Init%s failed (err=%d), "
+           "retrying with BRC disabled (keeps other EncTools options)",
+           log_prefix, Status);
+      QSVEncode->Close();
+      EncToolsParams->BRC = MFX_CODINGOPTION_OFF;
+      Status = QSVEncode->Init(&QSVEncodeParams);
+      info("\tMFXVideoENCODE_Init%s retry (BRC disabled) status: %d",
+           log_prefix, Status);
+    } else if (Status < MFX_ERR_NONE) {
+      // Full EncTools removal as last resort
+      warn("MFXVideoENCODE_Init%s failed (err=%d), "
+           "retrying without EncTools config",
+           log_prefix, Status);
+      QSVEncode->Close();
+      QSVEncodeParams.RemoveExtBuffer<mfxExtEncToolsConfig>();
+      HasEncTools = false;
+      Status = QSVEncode->Init(&QSVEncodeParams);
+      info("\tMFXVideoENCODE_Init%s retry "
+           "(without EncTools) status: %d",
+           log_prefix, Status);
+    }
+  }
+
 #ifdef QSV_UHD600_SUPPORT
   // UHD600 legacy libmfx doesn't know about BRCParamMultiplier — it'd use scaled-down Kbps as-is
   if (Status < MFX_ERR_NONE &&
