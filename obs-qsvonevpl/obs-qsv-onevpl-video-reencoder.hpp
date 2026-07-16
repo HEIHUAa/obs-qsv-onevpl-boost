@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QDialog>
+#include <QByteArray>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QLabel>
@@ -29,6 +30,17 @@
 #ifdef LOG_DEBUG
 #undef LOG_DEBUG
 #endif
+
+// OBS type forward declarations — header is self-contained without pulling
+// in all of obs.h here (the .cpp includes obs-module.h for full definitions).
+struct obs_encoder;
+struct obs_output;
+struct obs_data;
+struct video_t;
+typedef struct obs_encoder obs_encoder_t;
+typedef struct obs_output obs_output_t;
+typedef struct obs_data obs_data_t;
+typedef struct video_t video_t;
 
 // FFmpeg headers — for type definitions only (we resolve functions at runtime)
 extern "C" {
@@ -104,7 +116,8 @@ private slots:
   void OnStartStop();
   void OnRefreshConfig();
 
-private:
+public:
+  // Encoding context — exposed to output callbacks (static functions in .cpp)
   struct ReEncodeCtx {
     // FFmpeg input
     AVFormatContext *in_fmt_ctx = nullptr;
@@ -126,7 +139,6 @@ private:
       std::vector<uint8_t> data;
       int64_t pts;
       int64_t dts;
-      int64_t duration;
       bool keyframe;
     };
     std::mutex pkt_mutex;
@@ -147,6 +159,9 @@ private:
     std::mutex err_mutex;
   };
 
+  ReEncodeCtx m_Ctx;
+
+private:
   // OBS pipeline objects
   video_t *m_Video = nullptr;
   obs_encoder_t *m_Encoder = nullptr;
@@ -155,8 +170,6 @@ private:
   // FFmpeg API
   ffmpeg_api m_FF;
 
-  // Encoding context
-  ReEncodeCtx m_Ctx;
   std::thread m_FeedThread;
   std::atomic<bool> m_Encoding{false};
 

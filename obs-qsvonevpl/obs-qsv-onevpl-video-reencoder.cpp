@@ -3,6 +3,8 @@
 #include <QMessageBox>
 #include <QTimer>
 #include <QFileInfo>
+#include <QVBoxLayout>
+#include <QHBoxLayout>
 
 #include "obs-qsv-onevpl-video-reencoder.hpp"
 #include "obs-qsv-onevpl-plugin-init.hpp"
@@ -198,7 +200,6 @@ static void reencode_output_encoded_packet(void *data, struct encoder_packet *pa
   pkt.data.assign(packet->data, packet->data + packet->size);
   pkt.pts = packet->pts;
   pkt.dts = packet->dts;
-  pkt.duration = packet->duration;
   pkt.keyframe = packet->keyframe;
 
   {
@@ -558,9 +559,26 @@ bool ReEncodeDialog::StartEncoding()
   }
   AppendLog("FFmpeg loaded");
 
-  // 2. Reset context
-  m_Ctx = ReEncodeCtx{};
+  // 2. Reset context (individual field reset to avoid std::mutex copy issue)
+  m_Ctx.in_fmt_ctx = nullptr;
+  m_Ctx.video_stream_idx = -1;
+  m_Ctx.audio_stream_idx = -1;
+  m_Ctx.video_decoder = nullptr;
+  m_Ctx.sws_ctx = nullptr;
+  m_Ctx.decoded_frame = nullptr;
+  m_Ctx.nv12_frame = nullptr;
+  m_Ctx.out_fmt_ctx = nullptr;
+  m_Ctx.out_video_stream = nullptr;
+  m_Ctx.out_audio_stream = nullptr;
+  m_Ctx.pkt_queue.clear();
+  m_Ctx.encoder_done = false;
+  m_Ctx.audio_packets.clear();
+  m_Ctx.duration = 0;
+  m_Ctx.total_frames = 0;
+  m_Ctx.frames_encoded = 0;
   m_Ctx.stop_requested = false;
+  m_Ctx.feed_error = false;
+  m_Ctx.error_msg.clear();
 
   // 3. Open input file
   int ret = m_FF.avformat_open_input(&m_Ctx.in_fmt_ctx, inputPath.toUtf8().constData(),
@@ -950,8 +968,9 @@ void ReEncodeDialog::FeedThreadMain()
                                     ctx.out_video_stream->time_base);
         outPkt->dts = av_rescale_q(encPkt.dts, {1, 1000000000},
                                     ctx.out_video_stream->time_base);
-        outPkt->duration = av_rescale_q(encPkt.duration, {1, 1000000000},
-                                         ctx.out_video_stream->time_base);
+        // encoder_packet has no duration field; output time_base is
+        // {fps_den, fps_num} so 1 = one frame duration
+        outPkt->duration = 1;
         if (encPkt.keyframe)
           outPkt->flags |= AV_PKT_FLAG_KEY;
 
