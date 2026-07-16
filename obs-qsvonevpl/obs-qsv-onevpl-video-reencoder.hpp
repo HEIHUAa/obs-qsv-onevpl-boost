@@ -6,79 +6,82 @@
 #include <QLabel>
 #include <QProgressBar>
 #include <QTextEdit>
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QComboBox>
 #include <QGroupBox>
 #include <QCloseEvent>
-#include <QShowEvent>
 #include <atomic>
+#include <condition_variable>
 #include <mutex>
 #include <thread>
 #include <vector>
-#include <cstdint>
+#include <string>
+#include <memory>
 
-#include "obs-qsv-onevpl-encoder.hpp"
-#include "helpers/qsv_params.hpp"
+// avoid macro conflicts with Qt
+#ifdef LOG_ERROR
+#undef LOG_ERROR
+#endif
+#ifdef LOG_INFO
+#undef LOG_INFO
+#endif
+#ifdef LOG_WARNING
+#undef LOG_WARNING
+#endif
+#ifdef LOG_DEBUG
+#undef LOG_DEBUG
+#endif
 
-// FFmpeg function pointer typedefs — loaded dynamically from OBS's bundled DLLs
-struct FFmpegFuncs {
+// FFmpeg headers — for type definitions only (we resolve functions at runtime)
+extern "C" {
+#include <libavformat/avformat.h>
+#include <libavcodec/avcodec.h>
+#include <libavutil/avutil.h>
+#include <libavutil/imgutils.h>
+#include <libavutil/opt.h>
+#include <libswscale/swscale.h>
+}
+
+// Dynamically resolved FFmpeg API — all pointers filled from OBS's loaded DLLs
+struct ffmpeg_api {
   // avformat
-  int (*avformat_open_input)(void **ps, const char *url, void *fmt, void **opts);
-  void (*avformat_close_input)(void **s);
-  int (*avformat_find_stream_info)(void *ic, void **options);
-  int (*av_read_frame)(void *s, void *pkt);
-  int (*av_find_best_stream)(void *ic, int type, int wanted_stream_nb,
-                             int related_stream, void **decoder_ret, int flags);
-  int (*avformat_alloc_output_context2)(void **ctx, void *oformat,
-                                        const char *format_name,
-                                        const char *filename);
-  void *(*avformat_new_stream)(void *s, const void *c);
-  void (*avformat_free_context)(void *s);
-  int (*avio_open)(void **s, const char *url, int flags);
-  int (*avio_closep)(void **s);
-  int (*avformat_write_header)(void *s, void **opts);
-  int (*av_write_trailer)(void *s);
-  int (*av_interleaved_write_frame)(void *s, void *pkt);
-  void (*av_packet_unref)(void *pkt);
-  int (*avcodec_parameters_copy)(void *dst, const void *src);
-  void *(*avcodec_parameters_alloc)(void);
-  void (*avcodec_parameters_free)(void **par);
+  decltype(&avformat_open_input) avformat_open_input = nullptr;
+  decltype(&avformat_close_input) avformat_close_input = nullptr;
+  decltype(&avformat_find_stream_info) avformat_find_stream_info = nullptr;
+  decltype(&av_read_frame) av_read_frame = nullptr;
+  decltype(&avformat_alloc_output_context2) avformat_alloc_output_context2 = nullptr;
+  decltype(&avformat_new_stream) avformat_new_stream = nullptr;
+  decltype(&avformat_free_context) avformat_free_context = nullptr;
+  decltype(&avio_open) avio_open = nullptr;
+  decltype(&avio_closep) avio_closep = nullptr;
+  decltype(&avformat_write_header) avformat_write_header = nullptr;
+  decltype(&av_write_trailer) av_write_trailer = nullptr;
+  decltype(&av_interleaved_write_frame) av_interleaved_write_frame = nullptr;
+  decltype(&av_packet_unref) av_packet_unref = nullptr;
+  decltype(&avcodec_parameters_copy) avcodec_parameters_copy = nullptr;
+  decltype(&av_packet_alloc) av_packet_alloc = nullptr;
+  decltype(&av_packet_free) av_packet_free = nullptr;
 
   // avcodec
-  void *(*avcodec_find_decoder)(int id);
-  void *(*avcodec_alloc_context3)(const void *codec);
-  int (*avcodec_parameters_to_context)(void *avctx, const void *par);
-  int (*avcodec_open2)(void *avctx, const void *codec, void **opts);
-  int (*avcodec_send_packet)(void *avctx, const void *pkt);
-  int (*avcodec_receive_frame)(void *avctx, void *frame);
-  void (*avcodec_free_context)(void **avctx);
+  decltype(&avcodec_find_decoder) avcodec_find_decoder = nullptr;
+  decltype(&avcodec_alloc_context3) avcodec_alloc_context3 = nullptr;
+  decltype(&avcodec_parameters_to_context) avcodec_parameters_to_context = nullptr;
+  decltype(&avcodec_open2) avcodec_open2 = nullptr;
+  decltype(&avcodec_send_packet) avcodec_send_packet = nullptr;
+  decltype(&avcodec_receive_frame) avcodec_receive_frame = nullptr;
+  decltype(&avcodec_free_context) avcodec_free_context = nullptr;
 
   // avutil
-  void *(*av_frame_alloc)(void);
-  void (*av_frame_free)(void **frame);
-  int (*av_image_get_buffer_size)(int pix_fmt, int w, int h, int align);
-  int (*av_image_fill_arrays)(uint8_t **dst_data, int *dst_linesize,
-                              const uint8_t *src, int pix_fmt,
-                              int w, int h, int align);
-
-  // avcodec
-  void *(*av_packet_alloc)(void);
-  void (*av_packet_free)(void **pkt);
+  decltype(&av_frame_alloc) av_frame_alloc = nullptr;
+  decltype(&av_frame_free) av_frame_free = nullptr;
+  decltype(&av_image_get_buffer_size) av_image_get_buffer_size = nullptr;
+  decltype(&av_image_fill_arrays) av_image_fill_arrays = nullptr;
 
   // swscale
-  void *(*sws_getContext)(int srcW, int srcH, int srcFormat,
-                          int dstW, int dstH, int dstFormat,
-                          int flags, void *srcFilter,
-                          void *dstFilter, const double *param);
-  int (*sws_scale)(void *c, const uint8_t *const *srcSlice,
-                   const int *srcStride, int srcSliceY, int srcSliceH,
-                   uint8_t *const *dst, const int *dstStride);
-  void (*sws_freeContext)(void *c);
+  decltype(&sws_getContext) sws_getContext = nullptr;
+  decltype(&sws_scale) sws_scale = nullptr;
+  decltype(&sws_freeContext) sws_freeContext = nullptr;
 };
 
-// Load FFmpeg DLLs and resolve function pointers. Returns true on success.
-bool LoadFFmpegDyn(FFmpegFuncs &ff);
+bool LoadFFmpegAPI(ffmpeg_api &ff);
 
 // Video re-encoder dialog — toolbar tool for re-encoding video files using
 // the current QSV encoder configuration.
@@ -102,45 +105,92 @@ private slots:
   void OnRefreshConfig();
 
 private:
-  bool StartEncoding();
-  void StopEncoding();
-  void EncodeThreadMain();
-  void EncodeThreadMainImpl();
-  void AppendLog(const QString &Msg);
-  void SetUIEnabled(bool Enabled);
-  void UpdateProgress(int64_t Current, int64_t Total);
+  struct ReEncodeCtx {
+    // FFmpeg input
+    AVFormatContext *in_fmt_ctx = nullptr;
+    int video_stream_idx = -1;
+    int audio_stream_idx = -1;
+    AVCodecContext *video_decoder = nullptr;
+    SwsContext *sws_ctx = nullptr;
+    AVFrame *decoded_frame = nullptr;
+    AVFrame *nv12_frame = nullptr;
 
-  // Fallback: load encoder config from OBS profile files
-  bool LoadEncoderConfigFromFile();
+    // FFmpeg output
+    AVFormatContext *out_fmt_ctx = nullptr;
+    AVStream *out_video_stream = nullptr;
+    AVStream *out_audio_stream = nullptr;
+
+    // Encoded video packet queue (filled by obs output callback, consumed by
+    // feed thread)
+    struct Packet {
+      std::vector<uint8_t> data;
+      int64_t pts;
+      int64_t dts;
+      int64_t duration;
+      bool keyframe;
+    };
+    std::mutex pkt_mutex;
+    std::condition_variable pkt_cv;
+    std::vector<Packet> pkt_queue;
+    bool encoder_done = false;
+
+    // Audio packets from input (stream copy, re-timestamped for output)
+    std::vector<AVPacket *> audio_packets;
+
+    // Progress tracking
+    int64_t duration = 0;
+    int64_t total_frames = 0;
+    std::atomic<int64_t> frames_encoded{0};
+    std::atomic<bool> stop_requested{false};
+    std::atomic<bool> feed_error{false};
+    std::string error_msg;
+    std::mutex err_mutex;
+  };
+
+  // OBS pipeline objects
+  video_t *m_Video = nullptr;
+  obs_encoder_t *m_Encoder = nullptr;
+  obs_output_t *m_Output = nullptr;
+
+  // FFmpeg API
+  ffmpeg_api m_FF;
+
+  // Encoding context
+  ReEncodeCtx m_Ctx;
+  std::thread m_FeedThread;
+  std::atomic<bool> m_Encoding{false};
+
+  // Encoder config (from active QSV encoder or profile config)
+  std::string m_EncoderID;
+  obs_data_t *m_EncoderSettings = nullptr;
+  int m_Width = 0;
+  int m_Height = 0;
+  int m_FpsNum = 30;
+  int m_FpsDen = 1;
+
+  // keep the QByteArray alive so the const char* from toUtf8() stays valid
+  QByteArray m_OutputPathBytes;
 
   // UI
-  QLineEdit *InputPathEdit;
-  QLineEdit *OutputPathEdit;
-  QPushButton *BrowseInputBtn;
-  QPushButton *BrowseOutputBtn;
-  QPushButton *RefreshConfigBtn;
-  QPushButton *StartStopBtn;
-  QLabel *StatusLabel;
-  QProgressBar *ProgressBar;
-  QTextEdit *LogOutput;
+  QLineEdit *InputPath = nullptr;
+  QLineEdit *OutputPath = nullptr;
+  QPushButton *StartStopBtn = nullptr;
+  QLabel *StatusLabel = nullptr;
+  QProgressBar *ProgressBar = nullptr;
+  QTextEdit *LogOutput = nullptr;
+  QLabel *ConfigLabel = nullptr;
+  QGroupBox *ConfigGroup = nullptr;
 
-  // Encoder config display (read-only summary)
-  QLabel *ConfigLabel;
-  QGroupBox *ConfigGroup;
+  void SetUIEnabled(bool Enabled);
+  void AppendLog(const QString &Msg);
+  void UpdateProgress(int64_t Current, int64_t Total);
 
-  // Encoding state
-  std::atomic<bool> m_Encoding{false};
-  std::atomic<bool> m_StopRequested{false};
-  std::thread m_EncodeThread;
-  int64_t m_TotalFrames{0};
-  int64_t m_EncodedFrames{0};
-
-  // Paths copied from UI before the worker thread starts
-  std::string m_InputPath;
-  std::string m_OutputPath;
-
-  // Encoder params — populated from active QSV encoder or recording config
-  encoder_params m_EncoderParams{};
-  codec_enum m_Codec{QSV_CODEC_AVC};
-  bool m_ParamsValid{false};
+  bool LoadEncoderConfigFromActive();
+  bool LoadEncoderConfigFromFile();
+  bool StartEncoding();
+  void StopEncoding();
+  void FeedThreadMain();
 };
+
+// output is registered here so obs_output_create can find it
+void RegisterReEncoder();

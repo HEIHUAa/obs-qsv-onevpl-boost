@@ -28,6 +28,8 @@ target_sources(
   helpers/qsv_params.hpp
 )
 
+target_include_directories(obs-qsvonevpl PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../log/FFmpeg)
+
 target_link_libraries(obs-qsvonevpl PRIVATE VPL libvpl-private OBS::libobs obs-frontend-api Qt6::Widgets)
 
 # Enable Qt MOC for ROI dialog
@@ -132,6 +134,8 @@ if(WIN32)
       helpers/hw_d3d11.hpp
       helpers/common_utils_windows.cpp
     )
+
+    target_include_directories(obs-qsvonevpl-uhd600 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../log/FFmpeg)
 
     target_link_libraries(obs-qsvonevpl-uhd600 PRIVATE
       VPL libvpl-private OBS::libobs obs-frontend-api Qt6::Widgets d3d11 dxgi dxguid)

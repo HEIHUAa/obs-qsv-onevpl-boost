@@ -1,1654 +1,1140 @@
-// Qt headers must come before OBS headers to avoid macro conflicts (e.g. LOG_ERROR)
+// Qt headers must come before OBS headers to avoid macro conflicts
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QTimer>
 #include <QFileInfo>
 
 #include "obs-qsv-onevpl-video-reencoder.hpp"
-#include "helpers/common_utils.hpp"
-#include "helpers/encoder_params_parser.hpp"
-#include "obs-qsv-onevpl-encoder.hpp"
 #include "obs-qsv-onevpl-plugin-init.hpp"
+#include <obs-module.h>
 #include <obs-frontend-api.h>
 #include <util/config-file.h>
 #include <util/platform.h>
 #include <cstdio>
-#include <cstring>
-#include <fstream>
-#include <system_error>
-#include <string_view>
-#include <vector>
-#include <string>
 
-#include <windows.h>
-
-// FFmpeg enum constants (dynamic loading, no headers available)
-static constexpr int AVMEDIA_TYPE_VIDEO = 0;
-static constexpr int AV_PIX_FMT_NV12 = 23;
-static constexpr int SWS_BILINEAR = 2;
+using namespace std::chrono_literals;
 
 // ============================================================================
-// FFmpeg dynamic loading — resolves function pointers from OBS's bundled DLLs
+// Output ID for our custom qsv re-encode output
+// ============================================================================
+static const char *const REENCODE_OUTPUT_ID = "qsv_reencode_output";
+
+// Per-output context — passed to output callbacks via void *data
+struct reencode_output_ctx {
+  ReEncodeDialog *dialog;
+};
+
+// ============================================================================
+// FFmpeg API loading — resolve function pointers from OBS's bundled DLLs
 // ============================================================================
 
-// Try loading a DLL from a specific directory.
-static HMODULE TryLoadDLLFromDir(const wchar_t *Dir, const wchar_t *Name) {
-  wchar_t Path[MAX_PATH];
-  if (swprintf_s(Path, L"%s\\%s", Dir, Name) <= 0)
-    return nullptr;
-  HMODULE hMod = LoadLibraryW(Path);
-  if (!hMod) {
-    DWORD err = GetLastError();
-    blog(LOG_DEBUG, "[QSV VPL ReEncoder] LoadLibraryW(%S) failed, gle=%lu", Path, err);
+// get a module handle for an already-loaded DLL by base name + version range
+static HMODULE GetLoadedModule(const wchar_t *baseName, int minVer, int maxVer)
+{
+  wchar_t name[64];
+  for (int v = maxVer; v >= minVer; --v) {
+    swprintf_s(name, L"%s-%d.dll", baseName, v);
+    HMODULE h = GetModuleHandleW(name);
+    if (h)
+      return h;
   }
-  return hMod;
+  // try unversioned
+  swprintf_s(name, L"%s.dll", baseName);
+  return GetModuleHandleW(name);
 }
 
-static HMODULE GetCurrentModuleHandle() {
-  HMODULE hMod = nullptr;
-  if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-                          reinterpret_cast<LPCWSTR>(GetCurrentModuleHandle),
-                          &hMod)) {
-    return nullptr;
+// resolve a single function pointer from a module
+template <typename T>
+static bool ResolveFunc(HMODULE mod, const char *name, T &ptr)
+{
+  void *addr = reinterpret_cast<void *>(GetProcAddress(mod, name));
+  if (!addr) {
+    blog(LOG_WARNING, "[QSV VPL ReEncoder] GetProcAddress(%s) failed", name);
+    return false;
   }
-  return hMod;
-}
-
-// Collect candidate directories that may contain OBS's FFmpeg DLLs.
-static std::vector<std::wstring> GetFFmpegSearchDirs() {
-  std::vector<std::wstring> dirs;
-
-  // 1. Plugin's own directory (obs-plugins/64bit).
-  wchar_t pluginPath[MAX_PATH] = {};
-  HMODULE hSelf = GetCurrentModuleHandle();
-  if (hSelf && GetModuleFileNameW(hSelf, pluginPath, MAX_PATH) > 0) {
-    if (wchar_t *lastSlash = wcsrchr(pluginPath, L'\\'))
-      *lastSlash = L'\0';
-    dirs.emplace_back(pluginPath);
-  }
-
-  // 2. OBS executable directory (bin/64bit).
-  wchar_t obsDir[MAX_PATH] = {};
-  if (GetModuleFileNameW(nullptr, obsDir, MAX_PATH) > 0) {
-    if (wchar_t *lastSlash = wcsrchr(obsDir, L'\\'))
-      *lastSlash = L'\0';
-    dirs.emplace_back(obsDir);
-
-    // 3. Parent's bin/64bit (some portable layouts use obs-studio/bin/64bit).
-    wchar_t parentBin[MAX_PATH] = {};
-    if (swprintf_s(parentBin, L"%s\\..\\bin\\64bit", obsDir) > 0) {
-      // Normalize path
-      wchar_t absPath[MAX_PATH] = {};
-      if (GetFullPathNameW(parentBin, MAX_PATH, absPath, nullptr))
-        dirs.emplace_back(absPath);
-      else
-        dirs.emplace_back(parentBin);
-    }
-  }
-
-  return dirs;
-}
-
-// Try loading a DLL by versioned names, unversioned name, and from candidate dirs.
-static HMODULE TryLoadDLLWithFallback(const wchar_t *BaseName, int MinVer,
-                                      int MaxVer) {
-  HMODULE hMod = nullptr;
-
-  auto tryLoaded = [&](const wchar_t *Name) -> HMODULE {
-    HMODULE m = GetModuleHandleW(Name);
-    if (m)
-      blog(LOG_INFO, "[QSV VPL ReEncoder] Found already-loaded %S", Name);
-    return m;
-  };
-
-  auto tryLoad = [&](const wchar_t *Name) -> HMODULE {
-    HMODULE m = LoadLibraryW(Name);
-    if (m)
-      blog(LOG_INFO, "[QSV VPL ReEncoder] Loaded %S", Name);
-    return m;
-  };
-
-  // 1. Already loaded versioned module.
-  for (int v = MaxVer; v >= MinVer; --v) {
-    wchar_t Name[64];
-    swprintf_s(Name, L"%s-%d.dll", BaseName, v);
-    hMod = tryLoaded(Name);
-    if (hMod)
-      return hMod;
-  }
-
-  // 2. Load versioned module from default search paths.
-  for (int v = MaxVer; v >= MinVer; --v) {
-    wchar_t Name[64];
-    swprintf_s(Name, L"%s-%d.dll", BaseName, v);
-    hMod = tryLoad(Name);
-    if (hMod)
-      return hMod;
-  }
-
-  // 3. Try unversioned name.
-  {
-    wchar_t Name[64];
-    swprintf_s(Name, L"%s.dll", BaseName);
-    hMod = tryLoaded(Name);
-    if (hMod)
-      return hMod;
-    hMod = tryLoad(Name);
-    if (hMod)
-      return hMod;
-  }
-
-  // 4. Try candidate directories.
-  std::vector<std::wstring> searchDirs = GetFFmpegSearchDirs();
-  for (const auto &dir : searchDirs) {
-    for (int v = MaxVer; v >= MinVer; --v) {
-      wchar_t Name[64];
-      swprintf_s(Name, L"%s-%d.dll", BaseName, v);
-      hMod = TryLoadDLLFromDir(dir.c_str(), Name);
-      if (hMod) {
-        blog(LOG_INFO, "[QSV VPL ReEncoder] Loaded %S from %S", Name, dir.c_str());
-        return hMod;
-      }
-    }
-
-    {
-      wchar_t Name[64];
-      swprintf_s(Name, L"%s.dll", BaseName);
-      hMod = TryLoadDLLFromDir(dir.c_str(), Name);
-      if (hMod) {
-        blog(LOG_INFO, "[QSV VPL ReEncoder] Loaded %S from %S", Name, dir.c_str());
-        return hMod;
-      }
-    }
-  }
-
-  blog(LOG_WARNING,
-       "[QSV VPL ReEncoder] Could not load %S DLL (tried versions %d-%d + unversioned)",
-       BaseName, MinVer, MaxVer);
-  return nullptr;
-}
-
-static bool ResolveFuncs(HMODULE Mod, const char *Names[], void **Funcs[],
-                         size_t Count) {
-  for (size_t i = 0; i < Count; i++) {
-    void *addr = reinterpret_cast<void *>(GetProcAddress(Mod, Names[i]));
-    if (!addr) {
-      blog(LOG_WARNING, "[QSV VPL ReEncoder] Failed to resolve %s from DLL",
-           Names[i]);
-      return false;
-    }
-    // Use memcpy to avoid strict-aliasing/UB when writing a void* into a
-    // function-pointer slot.
-    std::memcpy(Funcs[i], &addr, sizeof(void *));
-  }
+  std::memcpy(&ptr, &addr, sizeof(void *));
   return true;
 }
 
-bool LoadFFmpegDyn(FFmpegFuncs &ff) {
-  ZeroMemory(&ff, sizeof(ff));
+bool LoadFFmpegAPI(ffmpeg_api &ff)
+{
+  memset(&ff, 0, sizeof(ff));
 
-  // Widen version ranges and fall back to unversioned names / candidate dirs.
-  // OBS 28/29/30/31/32 bundle various FFmpeg versions; be permissive.
-  // Load order matters: avutil is a dependency of avcodec/avformat, so load it
-  // first so that later LoadLibraryW calls can resolve dependencies from the
-  // same directory.
+  HMODULE avutil = GetLoadedModule(L"avutil", 55, 60);
+  HMODULE avcodec = GetLoadedModule(L"avcodec", 57, 62);
+  HMODULE avformat = GetLoadedModule(L"avformat", 57, 62);
+  HMODULE swscale = GetLoadedModule(L"swscale", 5, 8);
 
-  auto searchDirs = GetFFmpegSearchDirs();
-  if (searchDirs.empty()) {
-    blog(LOG_WARNING, "[QSV VPL ReEncoder] Could not determine any FFmpeg search directory");
-  } else {
-    for (const auto &dir : searchDirs)
-      blog(LOG_INFO, "[QSV VPL ReEncoder] FFmpeg search dir: %S", dir.c_str());
+  if (!avutil || !avcodec || !avformat || !swscale) {
+    blog(LOG_ERROR, "[QSV VPL ReEncoder] Failed to find FFmpeg DLLs "
+                    "(avutil=%p avcodec=%p avformat=%p swscale=%p)",
+         avutil, avcodec, avformat, swscale);
+    return false;
   }
+
+  bool ok = true;
 
   // avutil
-  HMODULE avutil = TryLoadDLLWithFallback(L"avutil", 55, 60);
-  if (!avutil) {
-    blog(LOG_ERROR, "[QSV VPL ReEncoder] Cannot load avutil DLL");
-    return false;
-  }
-  const char *avutil_names[] = {
-      "av_frame_alloc", "av_frame_free",
-      "av_image_get_buffer_size", "av_image_fill_arrays"};
-  void **avutil_ptrs[] = {
-      reinterpret_cast<void **>(&ff.av_frame_alloc),
-      reinterpret_cast<void **>(&ff.av_frame_free),
-      reinterpret_cast<void **>(&ff.av_image_get_buffer_size),
-      reinterpret_cast<void **>(&ff.av_image_fill_arrays)};
-  if (!ResolveFuncs(avutil, avutil_names, avutil_ptrs, 4))
-    return false;
+  ok = ok && ResolveFunc(avutil, "av_frame_alloc", ff.av_frame_alloc);
+  ok = ok && ResolveFunc(avutil, "av_frame_free", ff.av_frame_free);
+  ok = ok && ResolveFunc(avutil, "av_image_get_buffer_size", ff.av_image_get_buffer_size);
+  ok = ok && ResolveFunc(avutil, "av_image_fill_arrays", ff.av_image_fill_arrays);
 
-  // In standard FFmpeg av_packet_alloc/free live in avutil, but OBS's custom
-  // builds move them to avcodec. Try avutil first (non-fatal), then require
-  // them from avcodec.
+  // av_packet_alloc/free may be in avutil or avcodec (OBS layout varies)
   ff.av_packet_alloc = reinterpret_cast<decltype(ff.av_packet_alloc)>(
       GetProcAddress(avutil, "av_packet_alloc"));
   ff.av_packet_free = reinterpret_cast<decltype(ff.av_packet_free)>(
       GetProcAddress(avutil, "av_packet_free"));
-  if (ff.av_packet_alloc)
-    blog(LOG_INFO, "[QSV VPL ReEncoder] av_packet_alloc resolved from avutil");
 
   // avcodec
-  HMODULE avcodec = TryLoadDLLWithFallback(L"avcodec", 57, 62);
-  if (!avcodec) {
-    blog(LOG_ERROR, "[QSV VPL ReEncoder] Cannot load avcodec DLL");
-    return false;
-  }
-  const char *avcodec_names[] = {
-      "avcodec_find_decoder",
-      "avcodec_alloc_context3",
-      "avcodec_parameters_to_context",
-      "avcodec_open2",
-      "avcodec_send_packet",
-      "avcodec_receive_frame",
-      "avcodec_free_context"};
-  void **avcodec_ptrs[] = {
-      reinterpret_cast<void **>(&ff.avcodec_find_decoder),
-      reinterpret_cast<void **>(&ff.avcodec_alloc_context3),
-      reinterpret_cast<void **>(&ff.avcodec_parameters_to_context),
-      reinterpret_cast<void **>(&ff.avcodec_open2),
-      reinterpret_cast<void **>(&ff.avcodec_send_packet),
-      reinterpret_cast<void **>(&ff.avcodec_receive_frame),
-      reinterpret_cast<void **>(&ff.avcodec_free_context)};
-  if (!ResolveFuncs(avcodec, avcodec_names, avcodec_ptrs, 7))
-    return false;
+  ok = ok && ResolveFunc(avcodec, "avcodec_find_decoder", ff.avcodec_find_decoder);
+  ok = ok && ResolveFunc(avcodec, "avcodec_alloc_context3", ff.avcodec_alloc_context3);
+  ok = ok && ResolveFunc(avcodec, "avcodec_parameters_to_context", ff.avcodec_parameters_to_context);
+  ok = ok && ResolveFunc(avcodec, "avcodec_open2", ff.avcodec_open2);
+  ok = ok && ResolveFunc(avcodec, "avcodec_send_packet", ff.avcodec_send_packet);
+  ok = ok && ResolveFunc(avcodec, "avcodec_receive_frame", ff.avcodec_receive_frame);
+  ok = ok && ResolveFunc(avcodec, "avcodec_free_context", ff.avcodec_free_context);
 
-  // av_packet_alloc/free: prefer avcodec if available (OBS layout).
-  auto *pktAlloc = reinterpret_cast<decltype(ff.av_packet_alloc)>(
-      GetProcAddress(avcodec, "av_packet_alloc"));
-  auto *pktFree = reinterpret_cast<decltype(ff.av_packet_free)>(
-      GetProcAddress(avcodec, "av_packet_free"));
-  if (pktAlloc) {
-    ff.av_packet_alloc = pktAlloc;
-    blog(LOG_INFO, "[QSV VPL ReEncoder] av_packet_alloc resolved from avcodec");
+  // av_packet_alloc/free from avcodec as fallback
+  if (!ff.av_packet_alloc) {
+    ff.av_packet_alloc = reinterpret_cast<decltype(ff.av_packet_alloc)>(
+        GetProcAddress(avcodec, "av_packet_alloc"));
   }
-  if (pktFree) {
-    ff.av_packet_free = pktFree;
-    blog(LOG_INFO, "[QSV VPL ReEncoder] av_packet_free resolved from avcodec");
+  if (!ff.av_packet_free) {
+    ff.av_packet_free = reinterpret_cast<decltype(ff.av_packet_free)>(
+        GetProcAddress(avcodec, "av_packet_free"));
   }
   if (!ff.av_packet_alloc || !ff.av_packet_free) {
-    blog(LOG_ERROR,
-         "[QSV VPL ReEncoder] Cannot resolve av_packet_alloc/free from either "
-         "avutil or avcodec");
+    blog(LOG_ERROR, "[QSV VPL ReEncoder] Cannot resolve av_packet_alloc/free");
     return false;
   }
 
-  // avformat (depends on avcodec/avutil)
-  HMODULE avformat = TryLoadDLLWithFallback(L"avformat", 57, 62);
-  if (!avformat) {
-    blog(LOG_ERROR, "[QSV VPL ReEncoder] Cannot load avformat DLL");
-    return false;
-  }
-  const char *avformat_names[] = {
-      "avformat_open_input", "avformat_close_input",
-      "avformat_find_stream_info", "av_read_frame", "av_find_best_stream",
-      "avformat_alloc_output_context2", "avformat_new_stream",
-      "avformat_free_context", "avio_open", "avio_closep",
-      "avformat_write_header", "av_write_trailer",
-      "av_interleaved_write_frame", "av_packet_unref",
-      "avcodec_parameters_copy", "avcodec_parameters_alloc",
-      "avcodec_parameters_free"};
-  void **avformat_ptrs[] = {
-      reinterpret_cast<void **>(&ff.avformat_open_input),
-      reinterpret_cast<void **>(&ff.avformat_close_input),
-      reinterpret_cast<void **>(&ff.avformat_find_stream_info),
-      reinterpret_cast<void **>(&ff.av_read_frame),
-      reinterpret_cast<void **>(&ff.av_find_best_stream),
-      reinterpret_cast<void **>(&ff.avformat_alloc_output_context2),
-      reinterpret_cast<void **>(&ff.avformat_new_stream),
-      reinterpret_cast<void **>(&ff.avformat_free_context),
-      reinterpret_cast<void **>(&ff.avio_open),
-      reinterpret_cast<void **>(&ff.avio_closep),
-      reinterpret_cast<void **>(&ff.avformat_write_header),
-      reinterpret_cast<void **>(&ff.av_write_trailer),
-      reinterpret_cast<void **>(&ff.av_interleaved_write_frame),
-      reinterpret_cast<void **>(&ff.av_packet_unref),
-      reinterpret_cast<void **>(&ff.avcodec_parameters_copy),
-      reinterpret_cast<void **>(&ff.avcodec_parameters_alloc),
-      reinterpret_cast<void **>(&ff.avcodec_parameters_free)};
-  if (!ResolveFuncs(avformat, avformat_names, avformat_ptrs, 17))
-    return false;
+  // avformat
+  ok = ok && ResolveFunc(avformat, "avformat_open_input", ff.avformat_open_input);
+  ok = ok && ResolveFunc(avformat, "avformat_close_input", ff.avformat_close_input);
+  ok = ok && ResolveFunc(avformat, "avformat_find_stream_info", ff.avformat_find_stream_info);
+  ok = ok && ResolveFunc(avformat, "av_read_frame", ff.av_read_frame);
+  ok = ok && ResolveFunc(avformat, "avformat_alloc_output_context2", ff.avformat_alloc_output_context2);
+  ok = ok && ResolveFunc(avformat, "avformat_new_stream", ff.avformat_new_stream);
+  ok = ok && ResolveFunc(avformat, "avformat_free_context", ff.avformat_free_context);
+  ok = ok && ResolveFunc(avformat, "avio_open", ff.avio_open);
+  ok = ok && ResolveFunc(avformat, "avio_closep", ff.avio_closep);
+  ok = ok && ResolveFunc(avformat, "avformat_write_header", ff.avformat_write_header);
+  ok = ok && ResolveFunc(avformat, "av_write_trailer", ff.av_write_trailer);
+  ok = ok && ResolveFunc(avformat, "av_interleaved_write_frame", ff.av_interleaved_write_frame);
+  ok = ok && ResolveFunc(avformat, "av_packet_unref", ff.av_packet_unref);
+  ok = ok && ResolveFunc(avformat, "avcodec_parameters_copy", ff.avcodec_parameters_copy);
 
   // swscale
-  HMODULE swscale = TryLoadDLLWithFallback(L"swscale", 4, 11);
-  if (!swscale) {
-    blog(LOG_ERROR, "[QSV VPL ReEncoder] Cannot load swscale DLL");
+  ok = ok && ResolveFunc(swscale, "sws_getContext", ff.sws_getContext);
+  ok = ok && ResolveFunc(swscale, "sws_scale", ff.sws_scale);
+  ok = ok && ResolveFunc(swscale, "sws_freeContext", ff.sws_freeContext);
+
+  if (!ok) {
+    blog(LOG_ERROR, "[QSV VPL ReEncoder] Failed to resolve FFmpeg functions");
     return false;
   }
-  const char *swscale_names[] = {"sws_getContext", "sws_scale",
-                                 "sws_freeContext"};
-  void **swscale_ptrs[] = {
-      reinterpret_cast<void **>(&ff.sws_getContext),
-      reinterpret_cast<void **>(&ff.sws_scale),
-      reinterpret_cast<void **>(&ff.sws_freeContext)};
-  if (!ResolveFuncs(swscale, swscale_names, swscale_ptrs, 3))
-    return false;
 
-  blog(LOG_INFO, "[QSV VPL ReEncoder] All FFmpeg DLLs loaded and resolved");
+  blog(LOG_INFO, "[QSV VPL ReEncoder] FFmpeg API loaded successfully");
   return true;
 }
 
 // ============================================================================
-// Helper: get a string describing the codec
+// Custom output — receives encoded video packets, pushes to queue for feed
+// thread to mux.  Audio is handled separately by the feed thread.
 // ============================================================================
-static const char *CodecToStr(enum codec_enum Codec) {
-  switch (Codec) {
-  case QSV_CODEC_AVC:
-    return "H.264";
-  case QSV_CODEC_HEVC:
-    return "HEVC";
-  case QSV_CODEC_AV1:
-    return "AV1";
-  case QSV_CODEC_VP9:
-    return "VP9";
+
+static const char *reencode_output_getname(void *)
+{
+  return "QSV Re-Encode Output";
+}
+
+// static used to pass the dialog pointer from StartEncoding() into
+// reencode_output_create(), since obs_output_t is opaque and we can't
+// access context.data from outside.
+static ReEncodeDialog *g_PendingOutputDialog = nullptr;
+
+static void *reencode_output_create(obs_data_t *, obs_output_t *output)
+{
+  auto *ctx = new reencode_output_ctx;
+  ctx->dialog = g_PendingOutputDialog;
+  g_PendingOutputDialog = nullptr;
+  obs_output_set_media(output, obs_get_video(), obs_get_audio());
+  return ctx;
+}
+
+static void reencode_output_destroy(void *data)
+{
+  delete static_cast<reencode_output_ctx *>(data);
+}
+
+static bool reencode_output_start(void *data)
+{
+  // nothing — feed thread handles all I/O
+  UNUSED_PARAMETER(data);
+  return true;
+}
+
+static void reencode_output_stop(void *data, uint64_t)
+{
+  // signal feed thread to drain
+  auto *ctx = static_cast<reencode_output_ctx *>(data);
+  if (ctx->dialog) {
+    auto &rc = ctx->dialog->m_Ctx;
+    rc.encoder_done = true;
+    rc.pkt_cv.notify_all();
   }
-  return "Unknown";
+}
+
+static void reencode_output_encoded_packet(void *data, struct encoder_packet *packet)
+{
+  auto *ctx = static_cast<reencode_output_ctx *>(data);
+  if (!ctx->dialog || packet->type != OBS_ENCODER_VIDEO)
+    return;
+
+  auto &rc = ctx->dialog->m_Ctx;
+
+  ReEncodeDialog::ReEncodeCtx::Packet pkt;
+  pkt.data.assign(packet->data, packet->data + packet->size);
+  pkt.pts = packet->pts;
+  pkt.dts = packet->dts;
+  pkt.duration = packet->duration;
+  pkt.keyframe = packet->keyframe;
+
+  {
+    std::lock_guard lock(rc.pkt_mutex);
+    rc.pkt_queue.push_back(std::move(pkt));
+  }
+  rc.pkt_cv.notify_one();
+}
+
+static obs_output_info reencode_output_info = {
+    .id = REENCODE_OUTPUT_ID,
+    .flags = OBS_OUTPUT_ENCODED | OBS_OUTPUT_VIDEO,
+    .get_name = reencode_output_getname,
+    .create = reencode_output_create,
+    .destroy = reencode_output_destroy,
+    .start = reencode_output_start,
+    .stop = reencode_output_stop,
+    .encoded_packet = reencode_output_encoded_packet,
+};
+
+// ============================================================================
+// Encoder config loading
+// ============================================================================
+
+// map encoder ID to FFmpeg codec ID
+static enum AVCodecID EncoderIDToAVCodecID(const std::string &id)
+{
+  if (id.find("h264") != std::string::npos)
+    return AV_CODEC_ID_H264;
+  if (id.find("hevc") != std::string::npos)
+    return AV_CODEC_ID_HEVC;
+  if (id.find("av1") != std::string::npos)
+    return AV_CODEC_ID_AV1;
+  if (id.find("vp9") != std::string::npos)
+    return AV_CODEC_ID_VP9;
+  return AV_CODEC_ID_NONE;
+}
+
+// strip "_tex" suffix to get the frame (non-texture) encoder ID
+static std::string ToFrameEncoderID(const std::string &id)
+{
+  if (id.ends_with("_tex"))
+    return id.substr(0, id.size() - 4);
+  return id;
+}
+
+// try to read encoder config from the active recording encoder
+bool ReEncodeDialog::LoadEncoderConfigFromActive()
+{
+  // check the EncoderDataMap for active QSV encoders
+  extern std::mutex EncoderDataMapMutex;
+  extern std::unordered_map<obs_encoder_t *, plugin_context *> EncoderDataMap;
+
+  std::lock_guard lock(EncoderDataMapMutex);
+  for (auto &pair : EncoderDataMap) {
+    plugin_context *ctx = pair.second;
+    if (!ctx)
+      continue;
+
+    m_EncoderID = ToFrameEncoderID(obs_encoder_get_id(ctx->EncoderData));
+    m_Width = ctx->EncoderParams.Width;
+    m_Height = ctx->EncoderParams.Height;
+    m_FpsNum = ctx->EncoderParams.FpsNum;
+    m_FpsDen = ctx->EncoderParams.FpsDen;
+
+    if (m_FpsNum <= 0 || m_FpsDen <= 0) {
+      m_FpsNum = 30;
+      m_FpsDen = 1;
+    }
+
+    // copy encoder settings as obs_data
+    obs_data_t *settings = obs_encoder_get_settings(ctx->EncoderData);
+    obs_data_addref(settings);
+    m_EncoderSettings = settings;
+
+    blog(LOG_INFO, "[QSV VPL ReEncoder] Loaded config from active encoder: %s %dx%d %d/%d fps",
+         m_EncoderID.c_str(), m_Width, m_Height, m_FpsNum, m_FpsDen);
+    return true;
+  }
+
+  return false;
+}
+
+// fallback: read from OBS profile config files
+bool ReEncodeDialog::LoadEncoderConfigFromFile()
+{
+  config_t *config = obs_frontend_get_profile_config();
+  if (!config) {
+    blog(LOG_WARNING, "[QSV VPL ReEncoder] No profile config");
+    return false;
+  }
+
+  // determine output mode and read recording encoder ID
+  const char *mode = config_get_string(config, "Output", "Mode");
+  const char *encId = nullptr;
+
+  if (mode && strcmp(mode, "Advanced") == 0) {
+    encId = config_get_string(config, "AdvOut", "RecEncoder");
+  } else {
+    // Simple mode — check if using streaming encoder or separate recording
+    encId = config_get_string(config, "SimpleOutput", "RecEncoder");
+    if (!encId || !*encId || strcmp(encId, "none") == 0) {
+      encId = config_get_string(config, "SimpleOutput", "StreamEncoder");
+    }
+  }
+
+  if (!encId || !*encId) {
+    blog(LOG_WARNING, "[QSV VPL ReEncoder] No encoder ID in profile config");
+    return false;
+  }
+
+  // check if it's a QSV encoder
+  std::string encoderId(encId);
+  if (encoderId.find("obs_qsv") == std::string::npos) {
+    blog(LOG_WARNING, "[QSV VPL ReEncoder] Encoder '%s' is not a QSV encoder", encId);
+    return false;
+  }
+
+  m_EncoderID = ToFrameEncoderID(encoderId);
+
+  // read basic settings
+  m_Width = (int)config_get_uint(config, "Video", "BaseCX");
+  m_Height = (int)config_get_uint(config, "Video", "BaseCY");
+  m_FpsNum = (int)config_get_uint(config, "Video", "FPSNum");
+  m_FpsDen = (int)config_get_uint(config, "Video", "FPSDen");
+
+  if (m_FpsNum <= 0 || m_FpsDen <= 0) {
+    m_FpsNum = 30;
+    m_FpsDen = 1;
+  }
+
+  blog(LOG_INFO, "[QSV VPL ReEncoder] Loaded config from profile: %s %dx%d %d/%d fps",
+       m_EncoderID.c_str(), m_Width, m_Height, m_FpsNum, m_FpsDen);
+  return true;
 }
 
 // ============================================================================
-// ReEncodeDialog implementation
+// ReEncodeDialog — UI construction
 // ============================================================================
 
 ReEncodeDialog::ReEncodeDialog(QWidget *Parent)
-    : QDialog(Parent) {
+    : QDialog(Parent)
+{
   setWindowTitle(obs_module_text("ReEncoder"));
-  setMinimumSize(640, 520);
-  resize(720, 600);
+  setMinimumSize(550, 520);
+  setAttribute(Qt::WA_DeleteOnClose, false);
 
-  auto *MainLayout = new QVBoxLayout(this);
+  auto *mainLayout = new QVBoxLayout(this);
 
   // Input file
-  auto *InputGroup = new QGroupBox(obs_module_text("ReEncoderInput"), this);
-  auto *InputLayout = new QHBoxLayout(InputGroup);
-  InputPathEdit = new QLineEdit(this);
-  InputPathEdit->setReadOnly(true);
-  InputPathEdit->setPlaceholderText(obs_module_text("ReEncoderInputPlaceholder"));
-  BrowseInputBtn = new QPushButton(obs_module_text("ReEncoderBrowse"), this);
-  InputLayout->addWidget(InputPathEdit, 1);
-  InputLayout->addWidget(BrowseInputBtn);
-  MainLayout->addWidget(InputGroup);
+  auto *inputLayout = new QHBoxLayout;
+  InputPath = new QLineEdit(this);
+  InputPath->setPlaceholderText(obs_module_text("ReEncoderInputPlaceholder"));
+  auto *browseInputBtn = new QPushButton(obs_module_text("ReEncoderBrowse"), this);
+  inputLayout->addWidget(InputPath);
+  inputLayout->addWidget(browseInputBtn);
+  mainLayout->addLayout(inputLayout);
 
   // Output file
-  auto *OutputGroup = new QGroupBox(obs_module_text("ReEncoderOutput"), this);
-  auto *OutputLayout = new QHBoxLayout(OutputGroup);
-  OutputPathEdit = new QLineEdit(this);
-  OutputPathEdit->setReadOnly(true);
-  OutputPathEdit->setPlaceholderText(obs_module_text("ReEncoderOutputPlaceholder"));
-  BrowseOutputBtn = new QPushButton(obs_module_text("ReEncoderBrowse"), this);
-  OutputLayout->addWidget(OutputPathEdit, 1);
-  OutputLayout->addWidget(BrowseOutputBtn);
-  MainLayout->addWidget(OutputGroup);
+  auto *outputLayout = new QHBoxLayout;
+  OutputPath = new QLineEdit(this);
+  OutputPath->setPlaceholderText(obs_module_text("ReEncoderOutputPlaceholder"));
+  auto *browseOutputBtn = new QPushButton(obs_module_text("ReEncoderBrowse"), this);
+  outputLayout->addWidget(OutputPath);
+  outputLayout->addWidget(browseOutputBtn);
+  mainLayout->addLayout(outputLayout);
 
-  // Encoder config summary
+  // Encoder config display
   ConfigGroup = new QGroupBox(obs_module_text("ReEncoderConfig"), this);
-  auto *ConfigLayout = new QVBoxLayout(ConfigGroup);
-  ConfigLabel = new QLabel(obs_module_text("ReEncoderConfigPending"), this);
+  auto *configLayout = new QVBoxLayout(ConfigGroup);
+  ConfigLabel = new QLabel(this);
   ConfigLabel->setWordWrap(true);
-  ConfigLayout->addWidget(ConfigLabel);
-  MainLayout->addWidget(ConfigGroup);
+  ConfigLabel->setText(obs_module_text("ReEncoderNoConfig"));
+  auto *refreshBtn = new QPushButton(obs_module_text("ReEncoderRefresh"), this);
+  auto *configBtnLayout = new QHBoxLayout;
+  configBtnLayout->addStretch();
+  configBtnLayout->addWidget(refreshBtn);
+  configLayout->addWidget(ConfigLabel);
+  configLayout->addLayout(configBtnLayout);
+  mainLayout->addWidget(ConfigGroup);
+
+  // Start/Stop
+  auto *ctrlLayout = new QHBoxLayout;
+  StartStopBtn = new QPushButton(obs_module_text("ReEncoderStart"), this);
+  StatusLabel = new QLabel(this);
+  StatusLabel->setText(obs_module_text("ReEncoderReady"));
+  ctrlLayout->addWidget(StartStopBtn);
+  ctrlLayout->addWidget(StatusLabel);
+  ctrlLayout->addStretch();
+  mainLayout->addLayout(ctrlLayout);
 
   // Progress
-  auto *ProgressGroup = new QGroupBox(obs_module_text("ReEncoderProgress"), this);
-  auto *ProgressLayout = new QVBoxLayout(ProgressGroup);
-  StatusLabel = new QLabel(obs_module_text("ReEncoderReady"), this);
-  ProgressLayout->addWidget(StatusLabel);
   ProgressBar = new QProgressBar(this);
   ProgressBar->setRange(0, 100);
   ProgressBar->setValue(0);
-  ProgressLayout->addWidget(ProgressBar);
-  MainLayout->addWidget(ProgressGroup);
+  mainLayout->addWidget(ProgressBar);
 
-  // Log output
+  // Log
   LogOutput = new QTextEdit(this);
   LogOutput->setReadOnly(true);
-  LogOutput->setFont(QFont("Consolas", 9));
   LogOutput->setMaximumHeight(150);
-  MainLayout->addWidget(LogOutput);
-
-  // Buttons
-  auto *ButtonLayout = new QHBoxLayout();
-  RefreshConfigBtn = new QPushButton(obs_module_text("ReEncoderRefresh"), this);
-  ButtonLayout->addWidget(RefreshConfigBtn);
-  ButtonLayout->addStretch();
-  StartStopBtn = new QPushButton(obs_module_text("ReEncoderStart"), this);
-  ButtonLayout->addWidget(StartStopBtn);
-  MainLayout->addLayout(ButtonLayout);
+  mainLayout->addWidget(LogOutput);
 
   // Connections
-  connect(BrowseInputBtn, &QPushButton::clicked, this,
-          &ReEncodeDialog::OnBrowseInput);
-  connect(BrowseOutputBtn, &QPushButton::clicked, this,
-          &ReEncodeDialog::OnBrowseOutput);
-  connect(RefreshConfigBtn, &QPushButton::clicked, this,
-          &ReEncodeDialog::OnRefreshConfig);
-  connect(StartStopBtn, &QPushButton::clicked, this,
-          &ReEncodeDialog::OnStartStop);
+  connect(browseInputBtn, &QPushButton::clicked, this, &ReEncodeDialog::OnBrowseInput);
+  connect(browseOutputBtn, &QPushButton::clicked, this, &ReEncodeDialog::OnBrowseOutput);
+  connect(refreshBtn, &QPushButton::clicked, this, &ReEncodeDialog::OnRefreshConfig);
+  connect(StartStopBtn, &QPushButton::clicked, this, &ReEncodeDialog::OnStartStop);
 
-  // Populate encoder config from active encoder
+  // Load config
   PopulateEncoderConfig();
 }
 
-ReEncodeDialog::~ReEncodeDialog() {
+ReEncodeDialog::~ReEncodeDialog()
+{
   StopEncoding();
+  obs_data_release(m_EncoderSettings);
 }
 
-void ReEncodeDialog::closeEvent(QCloseEvent *Event) {
-  StopEncoding();
+// ============================================================================
+// UI helpers
+// ============================================================================
+
+void ReEncodeDialog::SetUIEnabled(bool Enabled)
+{
+  InputPath->setEnabled(Enabled);
+  OutputPath->setEnabled(Enabled);
+  ConfigGroup->setEnabled(Enabled);
+}
+
+void ReEncodeDialog::AppendLog(const QString &Msg)
+{
+  QMetaObject::invokeMethod(this, [this, Msg]() {
+    LogOutput->append(Msg);
+  }, Qt::QueuedConnection);
+}
+
+void ReEncodeDialog::UpdateProgress(int64_t Current, int64_t Total)
+{
+  QMetaObject::invokeMethod(this, [this, Current, Total]() {
+    if (Total > 0) {
+      int pct = static_cast<int>((Current * 100) / Total);
+      ProgressBar->setValue(std::min(pct, 100));
+    }
+  }, Qt::QueuedConnection);
+}
+
+void ReEncodeDialog::closeEvent(QCloseEvent *Event)
+{
+  if (m_Encoding) {
+    Event->ignore();
+    return;
+  }
   QDialog::closeEvent(Event);
 }
 
 // ============================================================================
-// Fallback: load encoder config from OBS profile config files (basic.ini +
-// recordEncoder.json).  Called when no active encoder instance is available.
+// Config loading
 // ============================================================================
-bool ReEncodeDialog::LoadEncoderConfigFromFile() {
-  blog(LOG_INFO, "[QSV VPL ReEncoder] LoadEncoderConfigFromFile: attempting to read config from OBS profile");
 
-  config_t *config = obs_frontend_get_profile_config();
-  if (!config) {
-    blog(LOG_WARNING, "[QSV VPL ReEncoder] obs_frontend_get_profile_config() returned NULL");
-    return false;
-  }
-
-  // Determine output mode and read the recording encoder ID
-  const char *mode = config_get_string(config, "Output", "Mode");
-  bool advOut = (mode && strcmp(mode, "Advanced") == 0);
-  blog(LOG_INFO, "[QSV VPL ReEncoder] Output mode: %s", advOut ? "Advanced" : (mode ? mode : "NULL"));
-
-  const char *encId = nullptr;
-  if (advOut) {
-    encId = config_get_string(config, "AdvOut", "RecEncoder");
-    blog(LOG_INFO, "[QSV VPL ReEncoder] AdvOut.RecEncoder = %s", encId ? encId : "NULL");
-    // "none" means re-use the streaming encoder
-    if (!encId || strcmp(encId, "none") == 0 || encId[0] == '\0') {
-      encId = config_get_string(config, "AdvOut", "Encoder");
-      blog(LOG_INFO, "[QSV VPL ReEncoder] Falling back to AdvOut.Encoder = %s", encId ? encId : "NULL");
-    }
-  } else {
-    encId = config_get_string(config, "SimpleOutput", "RecEncoder");
-    blog(LOG_INFO, "[QSV VPL ReEncoder] SimpleOutput.RecEncoder = %s", encId ? encId : "NULL");
-  }
-
-  if (!encId || encId[0] == '\0') {
-    blog(LOG_WARNING, "[QSV VPL ReEncoder] No encoder ID found in profile config");
-    return false;
-  }
-
-  // ---- Map encoder ID to codec enum ----------------------------------------
-  codec_enum codec;
-  if (strcmp(encId, "obs_qsv_vpl_h264") == 0 ||
-      strcmp(encId, "obs_qsv_vpl_h264_tex") == 0 ||
-      strcmp(encId, "qsv") == 0 ||
-      strcmp(encId, "obs_qsv11_v2") == 0)
-    codec = QSV_CODEC_AVC;
-  else if (strcmp(encId, "obs_qsv_vpl_hevc") == 0 ||
-           strcmp(encId, "obs_qsv_vpl_hevc_tex") == 0 ||
-           strcmp(encId, "qsv_hevc") == 0 ||
-           strcmp(encId, "obs_qsv11_hevc") == 0)
-    codec = QSV_CODEC_HEVC;
-  else if (strcmp(encId, "obs_qsv_vpl_av1") == 0 ||
-           strcmp(encId, "obs_qsv_vpl_av1_tex") == 0 ||
-           strcmp(encId, "qsv_av1") == 0 ||
-           strcmp(encId, "obs_qsv11_av1") == 0)
-    codec = QSV_CODEC_AV1;
-  else if (strcmp(encId, "obs_qsv_vpl_vp9") == 0 ||
-           strcmp(encId, "obs_qsv_vpl_vp9_tex") == 0 ||
-           strcmp(encId, "qsv_vp9") == 0 ||
-           strcmp(encId, "obs_qsv11_vp9") == 0)
-    codec = QSV_CODEC_VP9;
-  else {
-    blog(LOG_WARNING, "[QSV VPL ReEncoder] Unrecognized encoder ID '%s' — not a QSV encoder", encId);
-    return false; // not a QSV encoder, can't re-encode with our plugin
-  }
-
-  m_Codec = codec;
-  blog(LOG_INFO, "[QSV VPL ReEncoder] Matched encoder '%s' -> codec %d", encId, (int)codec);
-
-  // Start from a clean default-initialized struct, then overlay whatever we
-  // can read from the profile files.
-  m_EncoderParams = encoder_params{};
-
-  // Sensible defaults in case the file is missing or incomplete.
-  m_EncoderParams.TargetUsage = 4; // balanced
-  m_EncoderParams.TargetBitRate = 5000;
-  m_EncoderParams.RateControl = MFX_RATECONTROL_VBR;
-
-  // ---- Advanced mode: try reading recordEncoder.json -----------------------
-  if (advOut) {
-    char *profilePath = obs_frontend_get_current_profile_path();
-    if (profilePath) {
-      std::string jsonPath = std::string(profilePath) + "/recordEncoder.json";
-      blog(LOG_INFO, "[QSV VPL ReEncoder] Trying to load JSON config from: %s", jsonPath.c_str());
-      bfree(profilePath);
-
-      obs_data_t *s = obs_data_create_from_json_file(jsonPath.c_str());
-      if (s) {
-        blog(LOG_INFO, "[QSV VPL ReEncoder] Successfully loaded recordEncoder.json");
-
-        // Use the same parser as the live encoder so every UI option is honored.
-        ParseEncoderParamsFromObsData(s, m_Codec, m_EncoderParams);
-        obs_data_release(s);
-
-        m_ParamsValid = true;
-        blog(LOG_INFO, "[QSV VPL ReEncoder] Config loaded from JSON: rc=%d bitrate=%u keyint=%u tu=%u",
-             m_EncoderParams.RateControl, m_EncoderParams.TargetBitRate,
-             m_EncoderParams.KeyIntSec, m_EncoderParams.TargetUsage);
-        return true;
-      }
-      blog(LOG_WARNING, "[QSV VPL ReEncoder] Failed to parse recordEncoder.json (file may not exist or be invalid)");
-    } else {
-      blog(LOG_WARNING, "[QSV VPL ReEncoder] obs_frontend_get_current_profile_path() returned NULL");
-    }
-    // Fallback for advanced mode w/o JSON: read limited params from basic.ini
-    uint64_t vb = config_get_uint(config, "AdvOut", "VBitrate");
-    blog(LOG_INFO, "[QSV VPL ReEncoder] Advanced fallback: AdvOut.VBitrate = %llu", (unsigned long long)vb);
-    if (vb > 0)
-      m_EncoderParams.TargetBitRate = (uint32_t)vb;
-  } else {
-    // ---- Simple mode: read from [SimpleOutput] -------------------------------
-    uint64_t vb = config_get_uint(config, "SimpleOutput", "VBitrate");
-    blog(LOG_INFO, "[QSV VPL ReEncoder] Simple mode: SimpleOutput.VBitrate = %llu", (unsigned long long)vb);
-    if (vb > 0)
-      m_EncoderParams.TargetBitRate = (uint32_t)vb;
-
-    // Simple mode only exposes a small subset of encoder options. Try to read
-    // the common ones so the offline encode at least matches the preset/quality
-    // level used for recording.
-    const char *preset = config_get_string(config, "SimpleOutput", "preset");
-    if (!preset || preset[0] == '\0')
-      preset = config_get_string(config, "SimpleOutput", "QSVPreset");
-    blog(LOG_INFO, "[QSV VPL ReEncoder] Simple mode: preset/QSVPreset = %s", preset ? preset : "NULL");
-    if (preset && preset[0] != '\0') {
-      std::string_view psv(preset);
-      // OBS simple presets: "hq", "mq", "fast", "faster", "slow", "slower",
-      // "lossless", "indistinguishable", "superfast", "ultrafast", etc.
-      if (psv == "hq" || psv == "slow" || psv == "slower" || psv == "lossless" ||
-          psv == "indistinguishable")
-        m_EncoderParams.TargetUsage = MFX_TARGETUSAGE_1;
-      else if (psv == "mq" || psv == "balanced" || psv == "default")
-        m_EncoderParams.TargetUsage = MFX_TARGETUSAGE_4;
-      else if (psv == "fast" || psv == "faster" || psv == "superfast" ||
-               psv == "ultrafast" || psv == "performance")
-        m_EncoderParams.TargetUsage = MFX_TARGETUSAGE_7;
-    }
-
-    uint64_t keyint = config_get_uint(config, "SimpleOutput", "keyint_sec");
-    blog(LOG_INFO, "[QSV VPL ReEncoder] Simple mode: keyint_sec = %llu", (unsigned long long)keyint);
-    if (keyint > 0)
-      m_EncoderParams.KeyIntSec = static_cast<mfxU16>(keyint);
-  }
-
-  m_ParamsValid = true;
-  blog(LOG_INFO, "[QSV VPL ReEncoder] Config loaded from basic.ini: bitrate=%u tu=%u keyint=%u codec=%d",
-       m_EncoderParams.TargetBitRate, m_EncoderParams.TargetUsage,
-       m_EncoderParams.KeyIntSec, (int)m_Codec);
-  return true;
-}
-
-// Populate encoder params from the first active QSV encoder
-void ReEncodeDialog::PopulateEncoderConfig() {
-  {
-    std::lock_guard<std::mutex> lock(EncoderDataMapMutex);
-    blog(LOG_INFO, "[QSV VPL ReEncoder] PopulateEncoderConfig: EncoderDataMap has %zu entries",
-         EncoderDataMap.size());
-
-    for (auto &pair : EncoderDataMap) {
-      plugin_context *ctx = pair.second;
-      if (!ctx)
-        continue;
-
-      m_EncoderParams = ctx->EncoderParams;
-      m_Codec = ctx->Codec;
-      m_ParamsValid = true;
-
-      // Build summary text
-      QString summary = QString("%1 | %2x%3 @ %4/%5 fps | %6 kbps")
-                            .arg(CodecToStr(m_Codec))
-                            .arg(m_EncoderParams.Width)
-                            .arg(m_EncoderParams.Height)
-                            .arg(m_EncoderParams.FpsNum)
-                            .arg(m_EncoderParams.FpsDen)
-                            .arg(m_EncoderParams.TargetBitRate);
-
-      if (m_EncoderParams.RateControl == MFX_RATECONTROL_CBR)
-        summary += " | CBR";
-      else if (m_EncoderParams.RateControl == MFX_RATECONTROL_VBR)
-        summary += " | VBR";
-      else if (m_EncoderParams.RateControl == MFX_RATECONTROL_CQP)
-        summary += " | CQP";
-      else if (m_EncoderParams.RateControl == MFX_RATECONTROL_ICQ)
-        summary += " | ICQ";
-      else
-        summary += " | RC=" + QString::number(m_EncoderParams.RateControl);
-
-      ConfigLabel->setText(summary);
-      AppendLog(QString("Loaded encoder config from active encoder: %1")
-                    .arg(summary));
-      blog(LOG_INFO, "[QSV VPL ReEncoder] Loaded config from active encoder: codec=%d bitrate=%u",
-           (int)m_Codec, m_EncoderParams.TargetBitRate);
-      return;
-    }
-  } // release lock
-
-  blog(LOG_INFO, "[QSV VPL ReEncoder] No active encoder found, trying config file fallback");
-  if (LoadEncoderConfigFromFile()) {
-    QString summary = QString("%1 | bitrate %2 kbps")
-                          .arg(CodecToStr(m_Codec))
-                          .arg(m_EncoderParams.TargetBitRate);
-    if (m_EncoderParams.RateControl == MFX_RATECONTROL_CBR)
-      summary += " | CBR";
-    else if (m_EncoderParams.RateControl == MFX_RATECONTROL_VBR)
-      summary += " | VBR";
-    else if (m_EncoderParams.RateControl == MFX_RATECONTROL_CQP)
-      summary += " | CQP";
-    else if (m_EncoderParams.RateControl == MFX_RATECONTROL_ICQ)
-      summary += " | ICQ";
-
+void ReEncodeDialog::PopulateEncoderConfig()
+{
+  if (LoadEncoderConfigFromActive()) {
+    QString summary = QString("%1 | %2x%3 | %4/%5 fps")
+                          .arg(QString::fromStdString(m_EncoderID))
+                          .arg(m_Width)
+                          .arg(m_Height)
+                          .arg(m_FpsNum)
+                          .arg(m_FpsDen);
     ConfigLabel->setText(summary);
-    AppendLog(QString("Loaded encoder config from OBS profile: %1").arg(summary));
-    blog(LOG_INFO, "[QSV VPL ReEncoder] Config loaded from OBS profile: codec=%d bitrate=%u",
-         (int)m_Codec, m_EncoderParams.TargetBitRate);
-    return;
+    AppendLog(QString("Encoder config: %1").arg(summary));
+  } else if (LoadEncoderConfigFromFile()) {
+    QString summary = QString("%1 | %2x%3 | %4/%5 fps")
+                          .arg(QString::fromStdString(m_EncoderID))
+                          .arg(m_Width)
+                          .arg(m_Height)
+                          .arg(m_FpsNum)
+                          .arg(m_FpsDen);
+    ConfigLabel->setText(summary);
+    AppendLog(QString("Encoder config (from profile): %1").arg(summary));
+  } else {
+    ConfigLabel->setText(obs_module_text("ReEncoderNoConfig"));
+    AppendLog("WARNING: No QSV encoder config found");
   }
-
-  // No active encoder found
-  blog(LOG_WARNING, "[QSV VPL ReEncoder] Both active encoder and file config loading failed");
-  ConfigLabel->setText(obs_module_text("ReEncoderConfigNoEncoder"));
-  m_ParamsValid = false;
-  AppendLog(obs_module_text("ReEncoderLogNoEncoder"));
 }
 
-// Browse input video file
-void ReEncodeDialog::OnBrowseInput() {
-  QString path = QFileDialog::getOpenFileName(
-      this, obs_module_text("ReEncoderSelectInput"), QString(),
-      obs_module_text("ReEncoderVideoFilter"));
-  if (path.isEmpty())
-    return;
-  InputPathEdit->setText(path);
-  AppendLog(QString("Input: %1").arg(path));
+void ReEncodeDialog::OnRefreshConfig()
+{
+  AppendLog("Refreshing encoder config...");
+  PopulateEncoderConfig();
 }
 
-// Browse output file
-void ReEncodeDialog::OnBrowseOutput() {
-  QString path = QFileDialog::getSaveFileName(
-      this, obs_module_text("ReEncoderSelectOutput"), QString(),
-      obs_module_text("ReEncoderBitstreamFilter"));
-  if (path.isEmpty())
-    return;
-  OutputPathEdit->setText(path);
-  AppendLog(QString("Output: %1").arg(path));
+// ============================================================================
+// Browse slots
+// ============================================================================
+
+void ReEncodeDialog::OnBrowseInput()
+{
+  QString path = QFileDialog::getOpenFileName(this, obs_module_text("ReEncoderSelectInput"),
+                                               QString(), "Video Files (*.mp4 *.mkv *.webm *.ts *.mov *.avi *.flv);;All Files (*)");
+  if (!path.isEmpty())
+    InputPath->setText(path);
 }
 
-// Start / Stop toggle
-void ReEncodeDialog::OnStartStop() {
+void ReEncodeDialog::OnBrowseOutput()
+{
+  QString path = QFileDialog::getSaveFileName(this, obs_module_text("ReEncoderSelectOutput"),
+                                               QString(), "Video Files (*.mp4 *.mkv *.webm *.ts *.mov);;All Files (*)");
+  if (!path.isEmpty())
+    OutputPath->setText(path);
+}
+
+// ============================================================================
+// Start / Stop
+// ============================================================================
+
+void ReEncodeDialog::OnStartStop()
+{
   if (m_Encoding) {
     StopEncoding();
-    return;
+  } else {
+    StartEncoding();
   }
-  StartEncoding();
 }
 
-// Manually refresh encoder config from active encoder or profile files
-void ReEncodeDialog::OnRefreshConfig() {
-  if (m_Encoding) {
-    AppendLog("Cannot refresh config while encoding is in progress.");
-    return;
-  }
-  AppendLog("Refreshing encoder configuration...");
-  PopulateEncoderConfig();
-  AppendLog("Configuration refresh complete.");
-}
+bool ReEncodeDialog::StartEncoding()
+{
+  if (m_Encoding)
+    return false;
 
-bool ReEncodeDialog::StartEncoding() {
-  QString inputPath = InputPathEdit->text();
-  if (inputPath.isEmpty()) {
+  QString inputPath = InputPath->text().trimmed();
+  QString outputPath = OutputPath->text().trimmed();
+
+  if (inputPath.isEmpty() || outputPath.isEmpty()) {
     QMessageBox::warning(this, obs_module_text("ReEncoderError"),
                          obs_module_text("ReEncoderNoInput"));
     return false;
   }
+
   if (!QFileInfo::exists(inputPath)) {
     QMessageBox::warning(this, obs_module_text("ReEncoderError"),
                          obs_module_text("ReEncoderInputNotFound"));
     return false;
   }
 
-  QString outputPath = OutputPathEdit->text();
-  if (outputPath.isEmpty()) {
-    // Auto-generate output path; default to MP4 container.
-    QFileInfo fi(inputPath);
-    QString base = fi.absolutePath() + "/" + fi.completeBaseName();
-    outputPath = base + "_reencoded.mp4";
-    OutputPathEdit->setText(outputPath);
-  }
-
-  if (!m_ParamsValid) {
+  if (m_EncoderID.empty()) {
     QMessageBox::warning(this, obs_module_text("ReEncoderError"),
                          obs_module_text("ReEncoderNoConfig"));
     return false;
   }
 
-  // Copy paths to thread-safe members so the worker thread never touches
-  // the GUI widgets from a non-GUI thread.
-  m_InputPath = inputPath.toUtf8().constData();
-  m_OutputPath = outputPath.toUtf8().constData();
+  // 1. Load FFmpeg
+  if (!LoadFFmpegAPI(m_FF)) {
+    QMessageBox::warning(this, obs_module_text("ReEncoderError"),
+                         "Failed to load FFmpeg");
+    return false;
+  }
+  AppendLog("FFmpeg loaded");
 
-  m_StopRequested = false;
-  m_TotalFrames = 0;
-  m_EncodedFrames = 0;
-  ProgressBar->setValue(0);
-  StatusLabel->setText(obs_module_text("ReEncoderStarting"));
-  AppendLog("Starting re-encode...");
+  // 2. Reset context
+  m_Ctx = ReEncodeCtx{};
+  m_Ctx.stop_requested = false;
 
-  SetUIEnabled(false);
+  // 3. Open input file
+  int ret = m_FF.avformat_open_input(&m_Ctx.in_fmt_ctx, inputPath.toUtf8().constData(),
+                                      nullptr, nullptr);
+  if (ret < 0) {
+    AppendLog("ERROR: Cannot open input file");
+    return false;
+  }
+
+  ret = m_FF.avformat_find_stream_info(m_Ctx.in_fmt_ctx, nullptr);
+  if (ret < 0) {
+    m_FF.avformat_close_input(&m_Ctx.in_fmt_ctx);
+    AppendLog("ERROR: Cannot find stream info");
+    return false;
+  }
+
+  // Find video stream
+  const AVCodec *videoDecoder = nullptr;
+  m_Ctx.video_stream_idx = av_find_best_stream(m_Ctx.in_fmt_ctx, AVMEDIA_TYPE_VIDEO,
+                                                -1, -1, &videoDecoder, 0);
+  if (m_Ctx.video_stream_idx < 0) {
+    m_FF.avformat_close_input(&m_Ctx.in_fmt_ctx);
+    AppendLog("ERROR: No video stream found");
+    return false;
+  }
+
+  AVStream *inVideoStream = m_Ctx.in_fmt_ctx->streams[m_Ctx.video_stream_idx];
+  int srcWidth = inVideoStream->codecpar->width;
+  int srcHeight = inVideoStream->codecpar->height;
+  AppendLog(QString("Input: %1x%2").arg(srcWidth).arg(srcHeight));
+
+  // Get frame rate from input
+  if (inVideoStream->avg_frame_rate.num > 0 && inVideoStream->avg_frame_rate.den > 0) {
+    m_FpsNum = inVideoStream->avg_frame_rate.num;
+    m_FpsDen = inVideoStream->avg_frame_rate.den;
+  }
+
+  m_Ctx.total_frames = static_cast<int64_t>(inVideoStream->nb_frames);
+  if (m_Ctx.total_frames <= 0 && m_Ctx.in_fmt_ctx->duration > 0) {
+    // estimate from duration
+    m_Ctx.duration = m_Ctx.in_fmt_ctx->duration;
+    double fps = static_cast<double>(m_FpsNum) / m_FpsDen;
+    m_Ctx.total_frames = static_cast<int64_t>(m_Ctx.duration / AV_TIME_BASE * fps);
+  }
+
+  // 4. Open video decoder
+  m_Ctx.video_decoder = m_FF.avcodec_alloc_context3(videoDecoder);
+  if (!m_Ctx.video_decoder) {
+    m_FF.avformat_close_input(&m_Ctx.in_fmt_ctx);
+    AppendLog("ERROR: Cannot allocate decoder");
+    return false;
+  }
+
+  ret = m_FF.avcodec_parameters_to_context(m_Ctx.video_decoder,
+                                            inVideoStream->codecpar);
+  if (ret < 0) {
+    m_FF.avcodec_free_context(&m_Ctx.video_decoder);
+    m_FF.avformat_close_input(&m_Ctx.in_fmt_ctx);
+    AppendLog("ERROR: Cannot copy codec params");
+    return false;
+  }
+
+  ret = m_FF.avcodec_open2(m_Ctx.video_decoder, videoDecoder, nullptr);
+  if (ret < 0) {
+    m_FF.avcodec_free_context(&m_Ctx.video_decoder);
+    m_FF.avformat_close_input(&m_Ctx.in_fmt_ctx);
+    AppendLog("ERROR: Cannot open decoder");
+    return false;
+  }
+
+  // 5. Find audio stream (optional)
+  m_Ctx.audio_stream_idx = av_find_best_stream(m_Ctx.in_fmt_ctx, AVMEDIA_TYPE_AUDIO,
+                                                -1, -1, nullptr, 0);
+  if (m_Ctx.audio_stream_idx >= 0) {
+    AppendLog(QString("Audio stream found at index %1").arg(m_Ctx.audio_stream_idx));
+  } else {
+    AppendLog("No audio stream (video-only output)");
+  }
+
+  // 6. Allocate frames
+  m_Ctx.decoded_frame = m_FF.av_frame_alloc();
+  m_Ctx.nv12_frame = m_FF.av_frame_alloc();
+  if (!m_Ctx.decoded_frame || !m_Ctx.nv12_frame) {
+    AppendLog("ERROR: Cannot allocate frames");
+    return false;
+  }
+
+  // 7. Create swscale context for NV12 conversion
+  m_Ctx.sws_ctx = m_FF.sws_getContext(srcWidth, srcHeight, m_Ctx.video_decoder->pix_fmt,
+                                       srcWidth, srcHeight, AV_PIX_FMT_NV12,
+                                       SWS_BILINEAR, nullptr, nullptr, nullptr);
+  if (!m_Ctx.sws_ctx) {
+    AppendLog("ERROR: Cannot create swscale context");
+    return false;
+  }
+
+  // 8. Create OBS video output
+  video_output_info vi = {};
+  vi.name = "qsv-reencode-video";
+  vi.format = VIDEO_FORMAT_NV12;
+  vi.width = static_cast<uint32_t>(srcWidth);
+  vi.height = static_cast<uint32_t>(srcHeight);
+  vi.fps_num = static_cast<uint32_t>(m_FpsNum);
+  vi.fps_den = static_cast<uint32_t>(m_FpsDen);
+  vi.cache_size = 16;
+  vi.colorspace = VIDEO_CS_709;
+  vi.range = VIDEO_RANGE_PARTIAL;
+
+  ret = video_output_open(&m_Video, &vi);
+  if (ret != VIDEO_OUTPUT_SUCCESS) {
+    AppendLog("ERROR: Cannot create video output");
+    return false;
+  }
+
+  // 9. Create OBS encoder
+  obs_data_t *encSettings = obs_data_create();
+  if (m_EncoderSettings) {
+    obs_data_apply(encSettings, m_EncoderSettings);
+  }
+  // override resolution to match input
+  obs_data_set_int(encSettings, "width", srcWidth);
+  obs_data_set_int(encSettings, "height", srcHeight);
+
+  m_Encoder = obs_video_encoder_create(m_EncoderID.c_str(), "qsv-reencode-encoder",
+                                       encSettings, nullptr);
+  obs_data_release(encSettings);
+
+  if (!m_Encoder) {
+    video_output_close(m_Video);
+    m_Video = nullptr;
+    AppendLog(QString("ERROR: Cannot create encoder '%1'").arg(QString::fromStdString(m_EncoderID)));
+    return false;
+  }
+
+  obs_encoder_set_video(m_Encoder, m_Video);
+
+  // 10. Create output (dialog ptr is passed via g_PendingOutputDialog to
+  // reencode_output_create, since obs_output_t is opaque to plugins)
+  g_PendingOutputDialog = this;
+  m_Output = obs_output_create(REENCODE_OUTPUT_ID, "qsv-reencode-output", nullptr, nullptr);
+  if (!m_Output) {
+    g_PendingOutputDialog = nullptr;
+    obs_encoder_release(m_Encoder);
+    m_Encoder = nullptr;
+    video_output_close(m_Video);
+    m_Video = nullptr;
+    AppendLog("ERROR: Cannot create output");
+    return false;
+  }
+
+  obs_output_set_video_encoder(m_Output, m_Encoder);
+
+  // 11. Create output file (FFmpeg muxer)
+  m_OutputPathBytes = outputPath.toUtf8();
+  const char *outPath = m_OutputPathBytes.constData();
+  ret = m_FF.avformat_alloc_output_context2(&m_Ctx.out_fmt_ctx, nullptr, nullptr,
+                                             outPath);
+  if (ret < 0 || !m_Ctx.out_fmt_ctx) {
+    AppendLog("ERROR: Cannot create output context");
+    return false;
+  }
+
+  // Video stream
+  enum AVCodecID outCodecId = EncoderIDToAVCodecID(m_EncoderID);
+  m_Ctx.out_video_stream = m_FF.avformat_new_stream(m_Ctx.out_fmt_ctx, nullptr);
+  if (!m_Ctx.out_video_stream) {
+    AppendLog("ERROR: Cannot create output video stream");
+    return false;
+  }
+  m_Ctx.out_video_stream->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
+  m_Ctx.out_video_stream->codecpar->codec_id = outCodecId;
+  m_Ctx.out_video_stream->codecpar->width = srcWidth;
+  m_Ctx.out_video_stream->codecpar->height = srcHeight;
+  // timebase = 1/fps for simplicity; PTS will be rescaled from nanosec
+  m_Ctx.out_video_stream->time_base = {m_FpsDen, m_FpsNum};
+  // set avg_frame_rate for the stream
+  m_Ctx.out_video_stream->avg_frame_rate = {m_FpsNum, m_FpsDen};
+
+  // Audio stream (copy from input)
+  if (m_Ctx.audio_stream_idx >= 0) {
+    AVStream *inAudioStream = m_Ctx.in_fmt_ctx->streams[m_Ctx.audio_stream_idx];
+    m_Ctx.out_audio_stream = m_FF.avformat_new_stream(m_Ctx.out_fmt_ctx, nullptr);
+    if (m_Ctx.out_audio_stream) {
+      m_FF.avcodec_parameters_copy(m_Ctx.out_audio_stream->codecpar,
+                                    inAudioStream->codecpar);
+      m_Ctx.out_audio_stream->time_base = inAudioStream->time_base;
+    }
+  }
+
+  // Open output file
+  if (!(m_Ctx.out_fmt_ctx->oformat->flags & AVFMT_NOFILE)) {
+    ret = m_FF.avio_open(&m_Ctx.out_fmt_ctx->pb, outPath, AVIO_FLAG_WRITE);
+    if (ret < 0) {
+      AppendLog("ERROR: Cannot open output file");
+      return false;
+    }
+  }
+
+  // Write header
+  ret = m_FF.avformat_write_header(m_Ctx.out_fmt_ctx, nullptr);
+  if (ret < 0) {
+    AppendLog("ERROR: Cannot write header");
+    return false;
+  }
+
+  // 12. Start OBS output (this internally initializes encoder, starts encoding,
+  //     and begins data capture)
+  if (!obs_output_start(m_Output)) {
+    AppendLog("ERROR: obs_output_start failed");
+    return false;
+  }
+
+  AppendLog(QString("Encoding started: %1 -> %2").arg(inputPath, outputPath));
+
+  // 13. Start feed thread
   m_Encoding = true;
+  SetUIEnabled(false);
+  StartStopBtn->setText(obs_module_text("ReEncoderStop"));
+  StatusLabel->setText(obs_module_text("ReEncoderStarting"));
 
-  m_EncodeThread = std::thread(&ReEncodeDialog::EncodeThreadMain, this);
+  m_FeedThread = std::thread(&ReEncodeDialog::FeedThreadMain, this);
 
   return true;
 }
 
-void ReEncodeDialog::StopEncoding() {
+void ReEncodeDialog::StopEncoding()
+{
   if (!m_Encoding)
     return;
 
-  m_StopRequested = true;
-  if (m_EncodeThread.joinable())
-    m_EncodeThread.join();
+  AppendLog("Stopping...");
+  m_Ctx.stop_requested = true;
+
+  // signal feed thread to wake up
+  m_Ctx.pkt_cv.notify_all();
+
+  if (m_FeedThread.joinable()) {
+    m_FeedThread.join();
+  }
+
+  // stop OBS output (stops encoder, disconnects from video output)
+  if (m_Output) {
+    obs_output_stop(m_Output);
+    obs_output_release(m_Output);
+    m_Output = nullptr;
+  }
+
+  if (m_Encoder) {
+    obs_encoder_release(m_Encoder);
+    m_Encoder = nullptr;
+  }
+
+  if (m_Video) {
+    video_output_stop(m_Video);
+    video_output_close(m_Video);
+    m_Video = nullptr;
+  }
 
   m_Encoding = false;
   SetUIEnabled(true);
-  StatusLabel->setText(obs_module_text("ReEncoderStopped"));
-  AppendLog("Re-encode stopped.");
-}
-
-void ReEncodeDialog::SetUIEnabled(bool Enabled) {
-  BrowseInputBtn->setEnabled(Enabled);
-  BrowseOutputBtn->setEnabled(Enabled);
-  if (Enabled)
-    StartStopBtn->setText(obs_module_text("ReEncoderStart"));
-  else
-    StartStopBtn->setText(obs_module_text("ReEncoderStop"));
-}
-
-void ReEncodeDialog::AppendLog(const QString &Msg) {
-  // Mirror every UI log message to the OBS log file so it survives a crash.
-  QByteArray utf8 = Msg.toUtf8();
-  blog(LOG_INFO, "[QSV VPL ReEncoder] %s", utf8.constData());
-  QMetaObject::invokeMethod(this, [this, Msg]() {
-    LogOutput->append(Msg);
-  }, Qt::QueuedConnection);
-}
-
-void ReEncodeDialog::UpdateProgress(int64_t Current, int64_t Total) {
-  QMetaObject::invokeMethod(this, [this, Current, Total]() {
-    if (Total > 0) {
-      int pct = static_cast<int>(Current * 100 / Total);
-      ProgressBar->setValue(pct);
-      StatusLabel->setText(
-          QString("%1 / %2 frames (%3%)")
-              .arg(Current).arg(Total).arg(pct));
-    } else {
-      StatusLabel->setText(QString("%1 frames encoded").arg(Current));
-    }
-  }, Qt::QueuedConnection);
+  StartStopBtn->setText(obs_module_text("ReEncoderStart"));
+  StatusLabel->setText(obs_module_text("ReEncoderReady"));
+  ProgressBar->setValue(0);
+  AppendLog("Encoding stopped");
 }
 
 // ============================================================================
-// FFmpeg ABI struct views — minimal field definitions for dynamic loading
-// These are stable across FFmpeg releases (5.x/6.x/7.x).
+// Feed thread — reads input, feeds video, writes audio, muxes everything
 // ============================================================================
 
-// AVFrame layout (stable since FFmpeg 3.x):
-//   offset 0x00: uint8_t *data[8]
-//   offset 0x40: int linesize[8]
-//   offset 0x60: uint8_t **extended_data
-//   offset 0x68: int width
-//   offset 0x6c: int height
-//   offset 0x70: int nb_samples
-//   offset 0x74: int format
-struct AVFrameView {
-  uint8_t *data[8];
-  int linesize[8];
-  uint8_t **extended_data;
-  int width;
-  int height;
-  int nb_samples;
-  int format;
-};
+void ReEncodeDialog::FeedThreadMain()
+{
+  auto &ff = m_FF;
+  auto &ctx = m_Ctx;
+  bool success = true;
 
-// AVCodecContext: key fields at stable offsets:
-//   offset 0x00: AVClass* (pointer)
-//   offset 0x08: int bit_rate
-//   offset 0x10+: various fields
-//   width/height/pix_fmt vary by version.
-// Instead of probing, we get width/height from the codec context
-// after avcodec_parameters_to_context populates them.
-// We'll find them by signature: width > 0 && width < 32768
-struct AVCodecContextView {
-  // We'll use byte probing for width/height/pix_fmt
-};
-
-// ============================================================================
-// Main encode thread
-// ============================================================================
-void ReEncodeDialog::EncodeThreadMain() {
-#ifdef _WIN32
-  __try {
-    EncodeThreadMainImpl();
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    // Keep this handler strictly C-style: no QString/lambda so the compiler
-    // does not need object unwinding inside this function.
-    DWORD code = GetExceptionCode();
-    blog(LOG_ERROR,
-         "[QSV VPL ReEncoder] FATAL SEH exception 0x%08X in encode thread", code);
-    m_Encoding = false;
-    m_StopRequested = true;
-  }
-#else
-  EncodeThreadMainImpl();
-#endif
-}
-
-void ReEncodeDialog::EncodeThreadMainImpl() {
   try {
-    // 1. Load FFmpeg
-    FFmpegFuncs ff;
-    if (!LoadFFmpegDyn(ff)) {
-      AppendLog("ERROR: Failed to load FFmpeg DLLs");
-      QMetaObject::invokeMethod(this, [this]() {
-        StatusLabel->setText("FFmpeg load failed");
-        SetUIEnabled(true);
-        m_Encoding = false;
-      }, Qt::QueuedConnection);
-      return;
-    }
-    AppendLog("FFmpeg loaded successfully");
-
-    // Safety net: verify every critical function pointer is non-null before we
-    // start using them. This catches any weird loader/alias corruption.
-    auto checkPtr = [](auto ptr, const char *name) -> bool {
-      if (ptr)
-        return true;
-      blog(LOG_ERROR,
-           "[QSV VPL ReEncoder] Critical function pointer %s is null", name);
-      return false;
-    };
-    bool funcsOk =
-        checkPtr(ff.avformat_open_input, "avformat_open_input") &&
-        checkPtr(ff.avformat_find_stream_info, "avformat_find_stream_info") &&
-        checkPtr(ff.av_read_frame, "av_read_frame") &&
-        checkPtr(ff.avcodec_find_decoder, "avcodec_find_decoder") &&
-        checkPtr(ff.avcodec_alloc_context3, "avcodec_alloc_context3") &&
-        checkPtr(ff.avcodec_open2, "avcodec_open2") &&
-        checkPtr(ff.avcodec_send_packet, "avcodec_send_packet") &&
-        checkPtr(ff.avcodec_receive_frame, "avcodec_receive_frame") &&
-        checkPtr(ff.avformat_alloc_output_context2,
-                 "avformat_alloc_output_context2") &&
-        checkPtr(ff.avformat_new_stream, "avformat_new_stream") &&
-        checkPtr(ff.avio_open, "avio_open") &&
-        checkPtr(ff.avformat_write_header, "avformat_write_header") &&
-        checkPtr(ff.av_interleaved_write_frame, "av_interleaved_write_frame") &&
-        checkPtr(ff.av_write_trailer, "av_write_trailer") &&
-        checkPtr(ff.av_packet_unref, "av_packet_unref");
-    if (!funcsOk) {
-      AppendLog("ERROR: FFmpeg function resolution incomplete");
-      QMetaObject::invokeMethod(this, [this]() {
-        StatusLabel->setText("FFmpeg funcs incomplete");
-        SetUIEnabled(true);
-        m_Encoding = false;
-      }, Qt::QueuedConnection);
+    AVPacket *inPkt = ff.av_packet_alloc();
+    if (!inPkt) {
+      AppendLog("ERROR: Cannot allocate input packet");
       return;
     }
 
-    // 2. Open input
-    void *fmtCtx = nullptr;
-    blog(LOG_INFO, "[QSV VPL ReEncoder] Input path member: %s", m_InputPath.c_str());
-    if (m_InputPath.empty()) {
-      AppendLog("ERROR: Input path is empty");
-      QMetaObject::invokeMethod(this, [this]() {
-        StatusLabel->setText("Empty input path");
-        SetUIEnabled(true);
-        m_Encoding = false;
-      }, Qt::QueuedConnection);
-      return;
-    }
-    int openRet = ff.avformat_open_input(&fmtCtx, m_InputPath.c_str(), nullptr,
-                                         nullptr);
-    blog(LOG_INFO, "[QSV VPL ReEncoder] avformat_open_input returned %d, fmtCtx=%p",
-         openRet, fmtCtx);
-    if (openRet < 0) {
-      AppendLog("ERROR: Cannot open input file");
-      QMetaObject::invokeMethod(this, [this]() {
-        StatusLabel->setText("Open input failed");
-        SetUIEnabled(true);
-        m_Encoding = false;
-      }, Qt::QueuedConnection);
-      return;
-    }
-
-    blog(LOG_INFO, "[QSV VPL ReEncoder] Calling avformat_find_stream_info...");
-    int siRet = ff.avformat_find_stream_info(fmtCtx, nullptr);
-    blog(LOG_INFO, "[QSV VPL ReEncoder] avformat_find_stream_info returned %d", siRet);
-    if (siRet < 0) {
-      ff.avformat_close_input(&fmtCtx);
-      AppendLog("ERROR: Cannot find stream info");
-      QMetaObject::invokeMethod(this, [this]() {
-        StatusLabel->setText("Stream info failed");
-        SetUIEnabled(true);
-        m_Encoding = false;
-      }, Qt::QueuedConnection);
-      return;
-    }
-
-    // Find video stream using av_find_best_stream
-    blog(LOG_INFO, "[QSV VPL ReEncoder] Calling av_find_best_stream...");
-    int videoStreamIdx = -1;
-    if (ff.av_find_best_stream) {
-      videoStreamIdx = ff.av_find_best_stream(
-          fmtCtx, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
-    }
-    blog(LOG_INFO, "[QSV VPL ReEncoder] av_find_best_stream returned %d", videoStreamIdx);
-
-    if (videoStreamIdx < 0) {
-      ff.avformat_close_input(&fmtCtx);
-      AppendLog("ERROR: No video stream found");
-      QMetaObject::invokeMethod(this, [this]() {
-        StatusLabel->setText("No video stream");
-        SetUIEnabled(true);
-        m_Encoding = false;
-      }, Qt::QueuedConnection);
-      return;
-    }
-
-    AppendLog(QString("Video stream index: %1").arg(videoStreamIdx));
-
-    // Get codec parameters from the stream.
-    // We need to navigate the AVFormatContext to get the AVStream.
-    // AVFormatContext layout (stable since FFmpeg 5.x):
-    //   +0x00: const AVClass *av_class
-    //   +0x08: struct AVInputFormat *iformat
-    //   +0x10: struct AVOutputFormat *oformat
-    //   +0x18: void *priv_data
-    //   +0x20: struct AVIOContext *pb
-    //   +0x28: int ctx_flags
-    //   +0x2c: unsigned int nb_streams
-    //   +0x30: AVStream **streams
-    //   ...
-    // This layout is very stable (used since FFmpeg 4.x).
-    //
-    // But since we can't include headers, we probe known offsets.
-    // The safest approach: use av_find_best_stream's return value as index,
-    // then find the streams pointer by checking which offset gives us
-    // a valid pointer for that index.
-
-    // Read nb_streams and streams from common offsets
-    auto *rawFmt = reinterpret_cast<const uint8_t *>(fmtCtx);
-    unsigned int nb_streams = 0;
-    void *const *streams = nullptr;
-
-    // Try common offsets for AVFormatContext
-    // FFmpeg 6.x/7.x: nb_streams at 0x2c, streams at 0x30
-    // FFmpeg 5.x: nb_streams at 0x28, streams at 0x30
-    // FFmpeg 4.x: nb_streams at 0x40, streams at 0x48
-    struct {
-      int nbOff;
-      int streamsOff;
-    } const layout_attempts[] = {
-      {0x2c, 0x30},  // FFmpeg 6.x/7.x
-      {0x28, 0x30},  // FFmpeg 5.x
-      {0x40, 0x48},  // FFmpeg 4.x
-      {0x3c, 0x40},  // alternative
-      {0x44, 0x48},  // alternative
-      {0x30, 0x38},  // alternative
-    };
-
-    for (const auto &attempt : layout_attempts) {
-      unsigned int n = *reinterpret_cast<const unsigned int *>(
-          rawFmt + attempt.nbOff);
-      if (n > 0 && n < 100) {
-        void *const *s = *reinterpret_cast<void *const *const *>(
-            rawFmt + attempt.streamsOff);
-        if (s && s[0] != nullptr) {
-          nb_streams = n;
-          streams = s;
-          blog(LOG_INFO,
-               "[QSV VPL ReEncoder] AVFormatContext layout: nb_streams@0x%x=%u, "
-               "streams@0x%x",
-               attempt.nbOff, n, attempt.streamsOff);
-          break;
-        }
-      }
-    }
-
-    if (!streams || videoStreamIdx >= static_cast<int>(nb_streams)) {
-      // Last resort: try to find streams by scanning
-      for (int off = 0x20; off < 0x80; off += 8) {
-        void *const *s = *reinterpret_cast<void *const *const *>(
-            rawFmt + off);
-        if (s && s[videoStreamIdx]) {
-          // Verify this is a valid stream by checking nb_streams nearby
-          for (int nbOff = off - 8; nbOff <= off + 8; nbOff += 4) {
-            unsigned int n = *reinterpret_cast<const unsigned int *>(
-                rawFmt + nbOff);
-            if (n > 0 && n < 100 && videoStreamIdx < static_cast<int>(n)) {
-              nb_streams = n;
-              streams = s;
-              break;
-            }
-          }
-          if (streams)
-            break;
-        }
-      }
-    }
-
-    if (!streams || !streams[videoStreamIdx]) {
-      ff.avformat_close_input(&fmtCtx);
-      AppendLog("ERROR: Cannot access video stream (struct layout mismatch)");
-      QMetaObject::invokeMethod(this, [this]() {
-        StatusLabel->setText("Stream access failed");
-        SetUIEnabled(true);
-        m_Encoding = false;
-      }, Qt::QueuedConnection);
-      return;
-    }
-
-    void *videoStream = streams[videoStreamIdx];
-
-    // Get codecpar from AVStream
-    // AVStream layout (stable):
-    //   +0x00: int index
-    //   +0x04: int id
-    //   +0x08: void *priv_data
-    //   +0x10: AVCodecParameters *codecpar
-    //   ...
-    // But offsets vary by version. Let's probe.
-    auto *rawSt = reinterpret_cast<const uint8_t *>(videoStream);
-    void *codecpar = nullptr;
-    for (int off : {0x10, 0x18, 0x20, 0x28, 0x30, 0x38}) {
-      void *cp = *reinterpret_cast<void *const *>(rawSt + off);
-      if (cp) {
-        // Verify: read first 4 bytes as int, should be a media type (0-3)
-        int mediaType = *reinterpret_cast<const int *>(cp);
-        if (mediaType >= 0 && mediaType <= 3) {
-          codecpar = cp;
-          break;
-        }
-      }
-    }
-
-    if (!codecpar) {
-      ff.avformat_close_input(&fmtCtx);
-      AppendLog("ERROR: Cannot get codec parameters");
-      QMetaObject::invokeMethod(this, [this]() {
-        StatusLabel->setText("Codec params failed");
-        SetUIEnabled(true);
-        m_Encoding = false;
-      }, Qt::QueuedConnection);
-      return;
-    }
-
-    // Read codec_id, width, height from AVCodecParameters
-    // AVCodecParameters layout:
-    //   +0x00: int codec_type  (4 bytes)
-    //   +0x04: int codec_id    (4 bytes) — or at +0x08 depending on version
-    //   +0x08: int codec_tag   (4 bytes)
-    //   ...
-    //   width/height vary by version
-    auto *cpRaw = reinterpret_cast<const uint8_t *>(codecpar);
-    int codec_id = *reinterpret_cast<const int *>(cpRaw + 0x04);
-    // Verify codec_id is plausible
-    if (codec_id <= 0 || codec_id > 0x200) {
-      codec_id = *reinterpret_cast<const int *>(cpRaw + 0x08);
-    }
-
-    // Find width and height. In modern FFmpeg (6.x/7.x) they sit at 0x48/0x4c
-    // inside AVCodecParameters.
-    int srcWidth = 0, srcHeight = 0;
-    for (int wOff : {0x18, 0x20, 0x28, 0x30, 0x38, 0x40, 0x48}) {
-      int w = *reinterpret_cast<const int *>(cpRaw + wOff);
-      int h = *reinterpret_cast<const int *>(cpRaw + wOff + 4);
-      if (w > 0 && w <= 7680 && h > 0 && h <= 4320) {
-        srcWidth = w;
-        srcHeight = h;
-        blog(LOG_INFO,
-             "[QSV VPL ReEncoder] AVCodecParameters width/height offset 0x%x = %dx%d",
-             wOff, w, h);
-        break;
-      }
-    }
-
-    // Get frame rate: probe r_frame_rate in AVStream. In FFmpeg 6.x/7.x it
-    // sits after the embedded AVPacket (attached_pic), typically around 0xc0.
-    int fpsNum = 0, fpsDen = 1;
-    for (int frOff = 0x38; frOff < 0x100; frOff += 8) {
-      int num = *reinterpret_cast<const int *>(rawSt + frOff);
-      int den = *reinterpret_cast<const int *>(rawSt + frOff + 4);
-      if (num > 0 && den > 0 && num < 1000 && den < 1000) {
-        fpsNum = num;
-        fpsDen = den;
-        blog(LOG_INFO,
-             "[QSV VPL ReEncoder] AVStream r_frame_rate offset 0x%x = %d/%d",
-             frOff, num, den);
-        break;
-      }
-    }
-    if (fpsNum <= 0) {
-      fpsNum = 30;
-      fpsDen = 1;
-    }
-
-    AppendLog(QString("Input: %1x%2, codec_id=0x%3, %4/%5 fps")
-                  .arg(srcWidth).arg(srcHeight)
-                  .arg(codec_id, 0, 16)
-                  .arg(fpsNum).arg(fpsDen));
-
-    // 3. Find decoder
-    void *decoder = ff.avcodec_find_decoder(codec_id);
-    if (!decoder) {
-      ff.avformat_close_input(&fmtCtx);
-      AppendLog("ERROR: Cannot find decoder");
-      QMetaObject::invokeMethod(this, [this]() {
-        StatusLabel->setText("Decoder not found");
-        SetUIEnabled(true);
-        m_Encoding = false;
-      }, Qt::QueuedConnection);
-      return;
-    }
-
-    // 4. Open decoder
-    void *decoderCtx = ff.avcodec_alloc_context3(decoder);
-    if (!decoderCtx) {
-      ff.avformat_close_input(&fmtCtx);
-      AppendLog("ERROR: Cannot allocate decoder context");
-      QMetaObject::invokeMethod(this, [this]() {
-        StatusLabel->setText("Alloc decoder failed");
-        SetUIEnabled(true);
-        m_Encoding = false;
-      }, Qt::QueuedConnection);
-      return;
-    }
-
-    if (ff.avcodec_parameters_to_context(decoderCtx, codecpar) < 0) {
-      ff.avcodec_free_context(&decoderCtx);
-      ff.avformat_close_input(&fmtCtx);
-      AppendLog("ERROR: Cannot copy codec params to context");
-      QMetaObject::invokeMethod(this, [this]() {
-        StatusLabel->setText("Copy params failed");
-        SetUIEnabled(true);
-        m_Encoding = false;
-      }, Qt::QueuedConnection);
-      return;
-    }
-
-    if (ff.avcodec_open2(decoderCtx, decoder, nullptr) < 0) {
-      ff.avcodec_free_context(&decoderCtx);
-      ff.avformat_close_input(&fmtCtx);
-      AppendLog("ERROR: Cannot open decoder");
-      QMetaObject::invokeMethod(this, [this]() {
-        StatusLabel->setText("Open decoder failed");
-        SetUIEnabled(true);
-        m_Encoding = false;
-      }, Qt::QueuedConnection);
-      return;
-    }
-
-    // 5. Open encoder
-    m_EncoderParams.Width = static_cast<mfxU16>(srcWidth);
-    m_EncoderParams.Height = static_cast<mfxU16>(srcHeight);
-    m_EncoderParams.FourCC = MFX_FOURCC_NV12;
-    m_EncoderParams.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
-    m_EncoderParams.FpsNum = static_cast<mfxU32>(fpsNum);
-    m_EncoderParams.FpsDen = static_cast<mfxU32>(fpsDen);
-
-    AppendLog(QString("Encoder params: %1x%2 @ %3/%4 fps")
-                  .arg(srcWidth).arg(srcHeight)
-                  .arg(fpsNum).arg(fpsDen));
-
-    InitGlobalLoader();
-
-    std::unique_ptr<QSVEncoder> encoder;
-    if (!OpenEncoder(encoder, &m_EncoderParams, m_Codec, false)) {
-      ff.avcodec_free_context(&decoderCtx);
-      ff.avformat_close_input(&fmtCtx);
-      AppendLog("ERROR: Failed to open encoder");
-      QMetaObject::invokeMethod(this, [this]() {
-        StatusLabel->setText("Open encoder failed");
-        SetUIEnabled(true);
-        m_Encoding = false;
-      }, Qt::QueuedConnection);
-      return;
-    }
-    AppendLog("Encoder opened successfully");
-
-    // 6. Allocate output muxer context (MP4/MKV/etc based on extension)
-    blog(LOG_INFO, "[QSV VPL ReEncoder] Output path member: %s", m_OutputPath.c_str());
-    void *outFmtCtx = nullptr;
-    int allocRet = ff.avformat_alloc_output_context2(
-        &outFmtCtx, nullptr, nullptr, m_OutputPath.c_str());
-    if (allocRet < 0 || !outFmtCtx) {
-      ff.avcodec_free_context(&decoderCtx);
-      ff.avformat_close_input(&fmtCtx);
-      AppendLog("ERROR: Cannot allocate output format context");
-      QMetaObject::invokeMethod(this, [this]() {
-        StatusLabel->setText("Output context failed");
-        SetUIEnabled(true);
-        m_Encoding = false;
-      }, Qt::QueuedConnection);
-      return;
-    }
-
-    void *outStream = ff.avformat_new_stream(outFmtCtx, nullptr);
-    if (!outStream) {
-      ff.avformat_free_context(outFmtCtx);
-      ff.avcodec_free_context(&decoderCtx);
-      ff.avformat_close_input(&fmtCtx);
-      AppendLog("ERROR: Cannot create output stream");
-      QMetaObject::invokeMethod(this, [this]() {
-        StatusLabel->setText("Output stream failed");
-        SetUIEnabled(true);
-        m_Encoding = false;
-      }, Qt::QueuedConnection);
-      return;
-    }
-
-    // Copy input codec parameters to output stream, then override codec_id
-    // to match the encoder (the output is a re-encode, not a remux).
-    {
-      auto *outStreamRaw = reinterpret_cast<uint8_t *>(outStream);
-      void *outCodecpar = *reinterpret_cast<void **>(outStreamRaw + 0x10);
-      if (ff.avcodec_parameters_copy(outCodecpar, codecpar) < 0) {
-        ff.avformat_free_context(outFmtCtx);
-        ff.avcodec_free_context(&decoderCtx);
-        ff.avformat_close_input(&fmtCtx);
-        AppendLog("ERROR: Cannot copy codec parameters");
-        QMetaObject::invokeMethod(this, [this]() {
-          StatusLabel->setText("Copy codecpar failed");
-          SetUIEnabled(true);
-          m_Encoding = false;
-        }, Qt::QueuedConnection);
-        return;
-      }
-      int outCodecId = 0;
-      switch (m_Codec) {
-      case QSV_CODEC_AVC:
-        outCodecId = 26; // AV_CODEC_ID_H264
-        break;
-      case QSV_CODEC_HEVC:
-        outCodecId = 173; // AV_CODEC_ID_HEVC
-        break;
-      case QSV_CODEC_AV1:
-        outCodecId = 227; // AV_CODEC_ID_AV1
-        break;
-      case QSV_CODEC_VP9:
-        outCodecId = 167; // AV_CODEC_ID_VP9
-        break;
-      }
-      auto *outCpRaw = reinterpret_cast<uint8_t *>(outCodecpar);
-      *reinterpret_cast<int *>(outCpRaw + 0x00) = 0; // AVMEDIA_TYPE_VIDEO
-      *reinterpret_cast<int *>(outCpRaw + 0x04) = outCodecId;
-      // Use 90kHz time base to match QSV VPL timestamps.
-      *reinterpret_cast<int *>(outStreamRaw + 0x20) = 1;
-      *reinterpret_cast<int *>(outStreamRaw + 0x24) = 90000;
-    }
-
-    // Open output IO. AVIO_FLAG_WRITE = 2.
-    auto *outFmtCtxRaw = reinterpret_cast<uint8_t *>(outFmtCtx);
-    int avioRet = ff.avio_open(
-        reinterpret_cast<void **>(outFmtCtxRaw + 0x20),
-        m_OutputPath.c_str(), 2);
-    if (avioRet < 0) {
-      ff.avformat_free_context(outFmtCtx);
-      ff.avcodec_free_context(&decoderCtx);
-      ff.avformat_close_input(&fmtCtx);
-      AppendLog("ERROR: Cannot open output IO");
-      QMetaObject::invokeMethod(this, [this]() {
-        StatusLabel->setText("Output IO failed");
-        SetUIEnabled(true);
-        m_Encoding = false;
-      }, Qt::QueuedConnection);
-      return;
-    }
-
-    int whRet = ff.avformat_write_header(outFmtCtx, nullptr);
-    if (whRet < 0) {
-      ff.avio_closep(reinterpret_cast<void **>(outFmtCtxRaw + 0x20));
-      ff.avformat_free_context(outFmtCtx);
-      ff.avcodec_free_context(&decoderCtx);
-      ff.avformat_close_input(&fmtCtx);
-      AppendLog("ERROR: Cannot write output header");
-      QMetaObject::invokeMethod(this, [this]() {
-        StatusLabel->setText("Write header failed");
-        SetUIEnabled(true);
-        m_Encoding = false;
-      }, Qt::QueuedConnection);
-      return;
-    }
-
-    AppendLog("Output muxer opened");
-
-    // 7. Allocate NV12 frame buffer
-    int nv12Size = srcWidth * srcHeight * 3 / 2;
-    std::vector<uint8_t> nv12Frame(nv12Size);
-    int nv12Strides[2] = {srcWidth, srcWidth};
-    uint8_t *nv12Data[2] = {nv12Frame.data(),
-                            nv12Frame.data() + srcWidth * srcHeight};
-
-    // 8. Frame and packet allocation
-    void *frame = ff.av_frame_alloc();
-    void *packet = ff.av_packet_alloc();
-    void *outPacket = ff.av_packet_alloc();
-    if (!frame || !packet || !outPacket) {
-      ff.av_frame_free(&frame);
-      ff.av_packet_free(&packet);
-      ff.av_packet_free(&outPacket);
-      ff.avcodec_free_context(&decoderCtx);
-      ff.avformat_close_input(&fmtCtx);
-      ff.avio_closep(reinterpret_cast<void **>(outFmtCtxRaw + 0x20));
-      ff.avformat_free_context(outFmtCtx);
-      AppendLog("ERROR: Cannot allocate frame/packet");
-      QMetaObject::invokeMethod(this, [this]() {
-        StatusLabel->setText("Alloc failed");
-        SetUIEnabled(true);
-        m_Encoding = false;
-      }, Qt::QueuedConnection);
-      return;
-    }
-
-    // Helper to fill an AVPacket for the muxer from a QSV bitstream.
-    auto fillOutPacket = [&ff, outPacket](mfxBitstream *bs, int64_t pts90k,
-                                          int64_t duration90k, bool key) {
-      // Detach any buffer owned by the packet; we only borrow QSV data.
-      ff.av_packet_unref(outPacket);
-      auto *pktRaw = reinterpret_cast<uint8_t *>(outPacket);
-      *reinterpret_cast<void **>(pktRaw + 0x00) = nullptr;         // buf
-      *reinterpret_cast<int64_t *>(pktRaw + 0x08) = pts90k;        // pts
-      *reinterpret_cast<int64_t *>(pktRaw + 0x10) = pts90k;        // dts
-      *reinterpret_cast<uint8_t **>(pktRaw + 0x18) =
-          bs->Data + bs->DataOffset;                               // data
-      *reinterpret_cast<int *>(pktRaw + 0x20) =
-          static_cast<int>(bs->DataLength);                        // size
-      *reinterpret_cast<int *>(pktRaw + 0x24) = 0;                 // stream_index
-      *reinterpret_cast<int *>(pktRaw + 0x28) = key ? 1 : 0;       // flags
-      *reinterpret_cast<int64_t *>(pktRaw + 0x40) = duration90k;   // duration
-    };
-
-    // Helper to write one QSV bitstream into the output muxer.
-    auto writeBitstream = [&ff, &fillOutPacket, outFmtCtx, outPacket](
-                              mfxBitstream *bs, int64_t pts90k,
-                              int64_t duration90k) {
-      bool key = (bs->FrameType &
-                  (MFX_FRAMETYPE_I | MFX_FRAMETYPE_IDR)) != 0;
-      fillOutPacket(bs, pts90k, duration90k, key);
-      int muxRet = ff.av_interleaved_write_frame(outFmtCtx, outPacket);
-      if (muxRet < 0) {
-        blog(LOG_ERROR,
-             "[QSV VPL ReEncoder] av_interleaved_write_frame failed: %d",
-             muxRet);
-      }
-      return muxRet >= 0;
-    };
-
-    // SwsContext for pixel format conversion
-    void *swsCtx = nullptr;
-
-    // 9. Decode-encode loop
-    int64_t frameCount = 0;
-    int64_t pts = 0;
-    const int64_t TS_MULT = 90000;
-    bool eof = false;
-
-    while (!m_StopRequested && !eof) {
-      // Free and re-allocate packet for each read
-      ff.av_packet_free(&packet);
-      packet = ff.av_packet_alloc();
-      if (!packet) {
-        AppendLog("ERROR: Cannot allocate packet");
-        break;
-      }
-
-      // Read next packet
-      int ret = ff.av_read_frame(fmtCtx, packet);
+    while (!ctx.stop_requested) {
+      // Read next packet from input
+      int ret = ff.av_read_frame(ctx.in_fmt_ctx, inPkt);
       if (ret < 0) {
-        eof = true;
-        // Send NULL to flush decoder
-        ff.avcodec_send_packet(decoderCtx, nullptr);
-      } else {
-        // Check if this is a video stream packet
-        // In AVPacket, stream_index is at a stable offset:
-        // AVPacket layout (stable since FFmpeg 3.x):
-        //   +0x00: AVBufferRef *buf
-        //   +0x08: int64_t pts
-        //   +0x10: int64_t dts
-        //   +0x18: uint8_t *data
-        //   +0x20: int size
-        //   +0x24: int stream_index
-        //   +0x28: int flags
-        auto *pktRaw = reinterpret_cast<const uint8_t *>(packet);
-        int pktStreamIdx = *reinterpret_cast<const int *>(pktRaw + 0x24);
-        // Verify: try alternative offsets if 0x24 doesn't give a valid index
-        if (pktStreamIdx < 0 || pktStreamIdx >= 100) {
-          for (int off : {0x20, 0x28, 0x2c, 0x30, 0x34, 0x3c, 0x44}) {
-            int idx = *reinterpret_cast<const int *>(pktRaw + off);
-            if (idx >= 0 && idx < 100) {
-              pktStreamIdx = idx;
-              break;
-            }
-          }
+        if (ret == AVERROR_EOF) {
+          break; // done
         }
-
-        if (pktStreamIdx != videoStreamIdx) {
-          continue; // Skip non-video packets
-        }
-
-        // Send packet to decoder
-        ret = ff.avcodec_send_packet(decoderCtx, packet);
-        if (ret < 0) {
-          AppendLog(QString("avcodec_send_packet error: %1").arg(ret));
-          continue;
-        }
+        AppendLog(QString("ERROR: av_read_frame failed: %1").arg(ret));
+        success = false;
+        break;
       }
 
-      // Receive all frames from decoder
-      while (true) {
-        if (m_StopRequested)
-          break;
-        ret = ff.avcodec_receive_frame(decoderCtx, frame);
-        if (ret < 0)
-          break;
+      if (inPkt->stream_index == ctx.video_stream_idx) {
+        // --- Video packet ---
 
-        // Get pixel format from AVFrame
-        auto *fv = reinterpret_cast<const AVFrameView *>(frame);
-        int srcFormat = fv->format;
-        blog(LOG_INFO,
-             "[QSV VPL ReEncoder] Decoded frame format=%d, data[0]=%p, "
-             "linesize[0]=%d",
-             srcFormat, static_cast<void *>(fv->data[0]), fv->linesize[0]);
+        // Send to decoder
+        ret = ff.avcodec_send_packet(ctx.video_decoder, inPkt);
+        ff.av_packet_unref(inPkt);
 
-        // Sanity checks before passing possibly bogus pointers to swscale.
-        if (srcFormat < 0 || srcFormat > 0xFFFF) {
-          AppendLog(QString("ERROR: Invalid pixel format %1, aborting").arg(srcFormat));
-          break;
-        }
-        if (!fv->data[0] || fv->linesize[0] <= 0 || fv->linesize[0] > 32768) {
-          AppendLog(QString("ERROR: Invalid frame data=%1 linesize=%2, aborting")
-                        .arg(reinterpret_cast<quintptr>(fv->data[0]))
-                        .arg(fv->linesize[0]));
+        if (ret < 0) {
+          AppendLog(QString("ERROR: avcodec_send_packet failed: %1").arg(ret));
+          success = false;
           break;
         }
 
-        // Create swscale context on first frame or format change
-        if (!swsCtx) {
-          swsCtx = ff.sws_getContext(
-              srcWidth, srcHeight, srcFormat,
-              srcWidth, srcHeight, AV_PIX_FMT_NV12,
-              SWS_BILINEAR, nullptr, nullptr, nullptr);
-          if (!swsCtx) {
-            AppendLog("ERROR: Cannot create swscale context");
-            break;
-          }
+        // Receive decoded frame
+        ret = ff.avcodec_receive_frame(ctx.video_decoder, ctx.decoded_frame);
+        if (ret == AVERROR(EAGAIN)) {
+          continue; // need more packets
+        }
+        if (ret < 0) {
+          AppendLog(QString("ERROR: avcodec_receive_frame failed: %1").arg(ret));
+          success = false;
+          break;
         }
 
         // Convert to NV12
-        ff.sws_scale(swsCtx,
-                     (const uint8_t *const *)fv->data,
-                     fv->linesize, 0, srcHeight,
-                     nv12Data, nv12Strides);
+        ctx.nv12_frame->format = AV_PIX_FMT_NV12;
+        ctx.nv12_frame->width = ctx.decoded_frame->width;
+        ctx.nv12_frame->height = ctx.decoded_frame->height;
+        ret = ff.av_image_get_buffer_size(AV_PIX_FMT_NV12,
+                                           ctx.decoded_frame->width,
+                                           ctx.decoded_frame->height, 1);
+        // allocate NV12 buffer (reuse if already allocated)
+        static thread_local std::vector<uint8_t> nv12_buf;
+        nv12_buf.resize(ret);
+        ff.av_image_fill_arrays(ctx.nv12_frame->data, ctx.nv12_frame->linesize,
+                                 nv12_buf.data(), AV_PIX_FMT_NV12,
+                                 ctx.decoded_frame->width,
+                                 ctx.decoded_frame->height, 1);
 
-        // Encode frame (submitted asynchronously)
-        int64_t pts90k = pts * TS_MULT * fpsDen / fpsNum;
-        try {
-          mfxBitstream *encBS = nullptr;
-          mfxStatus sts = encoder->EncodeFrame(
-              static_cast<mfxU64>(pts90k), nv12Data, (uint32_t *)nv12Strides,
-              &encBS);
+        ff.sws_scale(ctx.sws_ctx,
+                      ctx.decoded_frame->data, ctx.decoded_frame->linesize,
+                      0, ctx.decoded_frame->height,
+                      ctx.nv12_frame->data, ctx.nv12_frame->linesize);
 
-          // EncodeFrame may return a completed frame when the task pool is full.
-          if (encBS && encBS->DataLength > 0) {
-            writeBitstream(encBS, static_cast<int64_t>(encBS->TimeStamp),
-                           TS_MULT * fpsDen / fpsNum);
-            frameCount++;
+        // Feed NV12 frame to OBS video pipeline
+        video_frame vf = {};
+        for (int i = 0; i < MAX_AV_PLANES; i++) {
+          vf.data[i] = ctx.nv12_frame->data[i];
+          vf.linesize[i] = static_cast<uint32_t>(ctx.nv12_frame->linesize[i]);
+        }
+
+        // Use decoded frame PTS as timestamp (in decoder's timebase → convert to
+        // nanosec for OBS)
+        int64_t ptsNs = ctx.decoded_frame->pts;
+        if (ptsNs == AV_NOPTS_VALUE)
+          ptsNs = ctx.frames_encoded.load();
+
+        // rescale from decoder timebase to nanoseconds
+        AVRational decTb = ctx.in_fmt_ctx->streams[ctx.video_stream_idx]->time_base;
+        ptsNs = av_rescale_q(ptsNs, decTb, {1, 1000000000});
+
+        video_output_lock_frame(m_Video, &vf, 1, ptsNs);
+        video_output_unlock_frame(m_Video);
+
+        // Wait for encoded packet to appear in queue
+        ReEncodeCtx::Packet encPkt;
+        {
+          std::unique_lock lock(ctx.pkt_mutex);
+          ctx.pkt_cv.wait(lock, [&ctx] {
+            return !ctx.pkt_queue.empty() || ctx.stop_requested || ctx.encoder_done;
+          });
+
+          if (ctx.stop_requested)
+            break;
+
+          if (ctx.pkt_queue.empty()) {
+            // encoder_done without packet — should not happen normally
+            continue;
           }
 
-          // Poll for additional completed frames from the async pipeline.
-          mfxBitstream *syncBS = nullptr;
-          while (encoder->SyncAndSwapPendingTask(&syncBS) == MFX_ERR_NONE) {
-            if (m_StopRequested)
+          encPkt = std::move(ctx.pkt_queue.front());
+          ctx.pkt_queue.erase(ctx.pkt_queue.begin());
+        }
+
+        // Write encoded video packet to muxer
+        AVPacket *outPkt = ff.av_packet_alloc();
+        outPkt->data = encPkt.data.data();
+        outPkt->size = static_cast<int>(encPkt.data.size());
+        outPkt->stream_index = ctx.out_video_stream->index;
+        // rescale PTS from nanoseconds to output timebase
+        outPkt->pts = av_rescale_q(encPkt.pts, {1, 1000000000},
+                                    ctx.out_video_stream->time_base);
+        outPkt->dts = av_rescale_q(encPkt.dts, {1, 1000000000},
+                                    ctx.out_video_stream->time_base);
+        outPkt->duration = av_rescale_q(encPkt.duration, {1, 1000000000},
+                                         ctx.out_video_stream->time_base);
+        if (encPkt.keyframe)
+          outPkt->flags |= AV_PKT_FLAG_KEY;
+
+        ret = ff.av_interleaved_write_frame(ctx.out_fmt_ctx, outPkt);
+        ff.av_packet_free(&outPkt);
+
+        if (ret < 0) {
+          AppendLog(QString("ERROR: av_interleaved_write_frame (video) failed: %1").arg(ret));
+          success = false;
+          break;
+        }
+
+        // Write any buffered audio packets with PTS <= this video frame's PTS
+        // (helps with interleaving)
+        if (ctx.out_audio_stream && !ctx.audio_packets.empty()) {
+          int64_t videoPts = encPkt.pts; // in nanosec
+          auto it = ctx.audio_packets.begin();
+          while (it != ctx.audio_packets.end()) {
+            AVPacket *audioPkt = *it;
+            int64_t audioPts = audioPkt->pts;
+            // rescale audio PTS to nanoseconds for comparison
+            AVRational audioTb = ctx.out_audio_stream->time_base;
+            int64_t audioPtsNs = av_rescale_q(audioPts, audioTb, {1, 1000000000});
+
+            if (audioPtsNs <= videoPts) {
+              audioPkt->stream_index = ctx.out_audio_stream->index;
+              ret = ff.av_interleaved_write_frame(ctx.out_fmt_ctx, audioPkt);
+              if (ret < 0) {
+                AppendLog(QString("ERROR: av_interleaved_write_frame (audio) failed: %1").arg(ret));
+                success = false;
+                break;
+              }
+              ff.av_packet_free(&audioPkt);
+              it = ctx.audio_packets.erase(it);
+            } else {
               break;
-            if (syncBS && syncBS->DataLength > 0) {
-              writeBitstream(syncBS, static_cast<int64_t>(syncBS->TimeStamp),
-                             TS_MULT * fpsDen / fpsNum);
-              frameCount++;
             }
           }
-
-          if (sts == MFX_ERR_MORE_DATA) {
-            // VPP consumed input but produced no output yet; continue.
-          }
-        } catch (const std::exception &e) {
-          AppendLog(QString("Encode error: %1").arg(e.what()));
-          break;
+          if (!success)
+            break;
         }
 
-        pts++;
-        m_EncodedFrames = frameCount;
-        UpdateProgress(frameCount, m_TotalFrames > 0 ? m_TotalFrames : 0);
+        ctx.frames_encoded++;
+        UpdateProgress(ctx.frames_encoded, ctx.total_frames);
+
+      } else if (inPkt->stream_index == ctx.audio_stream_idx) {
+        // --- Audio packet: buffer for later writing ---
+        if (ctx.out_audio_stream) {
+          AVPacket *audioPkt = ff.av_packet_alloc();
+          av_packet_move_ref(audioPkt, inPkt);
+          ctx.audio_packets.push_back(audioPkt);
+        } else {
+          ff.av_packet_unref(inPkt);
+        }
+      } else {
+        ff.av_packet_unref(inPkt);
       }
     }
 
-    // 10. Drain encoder
-    AppendLog("Draining encoder...");
-    try {
-      while (true) {
-        if (m_StopRequested) {
-          AppendLog("Drain aborted by user.");
-          break;
-        }
-        mfxBitstream *drainBS = nullptr;
-        mfxStatus sts = encoder->DrainAndRetrieveBitstream(&drainBS);
-        if (sts == MFX_ERR_MORE_DATA)
-          break;
-        if (sts >= MFX_ERR_NONE && drainBS && drainBS->DataLength > 0) {
-          writeBitstream(drainBS, static_cast<int64_t>(drainBS->TimeStamp),
-                         TS_MULT * fpsDen / fpsNum);
-          frameCount++;
-        }
+    // Write remaining audio packets
+    if (ctx.out_audio_stream && !ctx.audio_packets.empty()) {
+      AppendLog(QString("Writing %1 remaining audio packets...").arg(ctx.audio_packets.size()));
+      for (auto *audioPkt : ctx.audio_packets) {
+        audioPkt->stream_index = ctx.out_audio_stream->index;
+        ff.av_interleaved_write_frame(ctx.out_fmt_ctx, audioPkt);
+        ff.av_packet_free(&audioPkt);
       }
-    } catch (const std::exception &e) {
-      AppendLog(QString("Drain warning: %1").arg(e.what()));
+      ctx.audio_packets.clear();
     }
 
-    // 11. Cleanup
-    try {
-      if (outFmtCtx) {
-        ff.av_write_trailer(outFmtCtx);
-        auto *cleanupFmtCtxRaw = reinterpret_cast<uint8_t *>(outFmtCtx);
-        ff.avio_closep(reinterpret_cast<void **>(cleanupFmtCtxRaw + 0x20));
-        ff.avformat_free_context(outFmtCtx);
-      }
-    } catch (...) {
-      // Cleanup must not throw; swallow any secondary errors.
+    // Write trailer
+    if (ctx.out_fmt_ctx && success) {
+      ff.av_write_trailer(ctx.out_fmt_ctx);
+      AppendLog("Trailer written");
     }
 
-    if (swsCtx)
-      ff.sws_freeContext(swsCtx);
-    ff.av_frame_free(&frame);
-    ff.av_packet_free(&packet);
-    ff.av_packet_free(&outPacket);
-    ff.avcodec_free_context(&decoderCtx);
-    ff.avformat_close_input(&fmtCtx);
-
-    encoder->ClearData();
-
-    m_EncodedFrames = frameCount;
-    AppendLog(QString("Re-encode complete: %1 frames encoded").arg(frameCount));
-    AppendLog(QString("Output: %1").arg(QString::fromStdString(m_OutputPath)));
-
-    QMetaObject::invokeMethod(this, [this, frameCount]() {
-      StatusLabel->setText(QString("Complete: %1 frames").arg(frameCount));
-      ProgressBar->setValue(100);
-      StartStopBtn->setText(obs_module_text("ReEncoderStart"));
-      SetUIEnabled(true);
-      m_Encoding = false;
-    }, Qt::QueuedConnection);
+    ff.av_packet_free(&inPkt);
 
   } catch (const std::exception &e) {
-    AppendLog(QString("Re-encode error: %1").arg(e.what()));
-    QMetaObject::invokeMethod(this, [this, e = std::string(e.what())]() {
-      StatusLabel->setText(QString("Error: %1").arg(e.c_str()));
-      SetUIEnabled(true);
-      m_Encoding = false;
-    }, Qt::QueuedConnection);
+    AppendLog(QString("EXCEPTION: %1").arg(e.what()));
+    success = false;
   } catch (...) {
-    AppendLog("Unknown error during re-encode");
-    QMetaObject::invokeMethod(this, [this]() {
-      StatusLabel->setText("Unknown error");
-      SetUIEnabled(true);
-      m_Encoding = false;
-    }, Qt::QueuedConnection);
+    AppendLog("UNKNOWN EXCEPTION in feed thread");
+    success = false;
   }
+
+  // Cleanup FFmpeg resources
+  if (ctx.out_fmt_ctx) {
+    if (!(ctx.out_fmt_ctx->oformat->flags & AVFMT_NOFILE)) {
+      ff.avio_closep(&ctx.out_fmt_ctx->pb);
+    }
+    ff.avformat_free_context(ctx.out_fmt_ctx);
+    ctx.out_fmt_ctx = nullptr;
+  }
+
+  if (ctx.sws_ctx) {
+    ff.sws_freeContext(ctx.sws_ctx);
+    ctx.sws_ctx = nullptr;
+  }
+
+  if (ctx.video_decoder) {
+    ff.avcodec_free_context(&ctx.video_decoder);
+  }
+
+  if (ctx.in_fmt_ctx) {
+    ff.avformat_close_input(&ctx.in_fmt_ctx);
+  }
+
+  if (ctx.decoded_frame) {
+    ff.av_frame_free(&ctx.decoded_frame);
+  }
+
+  if (ctx.nv12_frame) {
+    ff.av_frame_free(&ctx.nv12_frame);
+  }
+
+  // cleanup buffered audio packets
+  for (auto *p : ctx.audio_packets) {
+    ff.av_packet_free(&p);
+  }
+  ctx.audio_packets.clear();
+
+  // Signal output to stop
+  {
+    std::lock_guard lock(ctx.pkt_mutex);
+    ctx.encoder_done = true;
+  }
+
+  AppendLog(success ? "Encoding completed" : "Encoding failed");
+  UpdateProgress(ctx.total_frames, ctx.total_frames);
+
+  // Stop encoding on the main thread
+  QMetaObject::invokeMethod(this, [this]() {
+    if (m_Encoding) {
+      StopEncoding();
+    }
+  }, Qt::QueuedConnection);
 }
 
 // ============================================================================
-// Frontend toolbar registration
+// Toolbar registration
 // ============================================================================
 
 static ReEncodeDialog *g_ActiveReEncodeDialog = nullptr;
 
-static void OnReEncoderFrontendEvent(obs_frontend_event Event, void *) {
-  if (Event != OBS_FRONTEND_EVENT_PROFILE_CHANGED)
-    return;
-  if (g_ActiveReEncodeDialog) {
-    QMetaObject::invokeMethod(g_ActiveReEncodeDialog, [dialog = g_ActiveReEncodeDialog]() {
-      dialog->PopulateEncoderConfig();
-    }, Qt::QueuedConnection);
+static void OnReEncoderFrontendEvent(obs_frontend_event Event, void *)
+{
+  if (Event == OBS_FRONTEND_EVENT_ENCODER_LIST_CHANGED ||
+      Event == OBS_FRONTEND_EVENT_PROFILE_CHANGED ||
+      Event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED) {
+    if (g_ActiveReEncodeDialog) {
+      QMetaObject::invokeMethod(g_ActiveReEncodeDialog, [dialog = g_ActiveReEncodeDialog]() {
+        dialog->PopulateEncoderConfig();
+      }, Qt::QueuedConnection);
+    }
   }
 }
 
-static void OpenReEncoder(void * /*data*/) {
+static void OpenReEncoder(void *)
+{
   try {
-    auto *dialog = new ReEncodeDialog();
-    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    if (g_ActiveReEncodeDialog) {
+      g_ActiveReEncodeDialog->raise();
+      g_ActiveReEncodeDialog->show();
+      return;
+    }
 
+    auto *dialog = new ReEncodeDialog(nullptr);
     g_ActiveReEncodeDialog = dialog;
-    QObject::connect(dialog, &QObject::destroyed, []() {
+    QObject::connect(dialog, &QDialog::destroyed, []() {
       g_ActiveReEncodeDialog = nullptr;
     });
-
     dialog->show();
-    blog(LOG_INFO, "[QSV VPL] Re-encode dialog opened");
-
   } catch (const std::exception &e) {
-    blog(LOG_ERROR,
-         "[QSV VPL] OpenReEncoder: std::exception caught: %s", e.what());
+    blog(LOG_ERROR, "[QSV VPL] OpenReEncoder: %s", e.what());
   } catch (...) {
-    blog(LOG_ERROR,
-         "[QSV VPL] OpenReEncoder: unknown exception caught");
+    blog(LOG_ERROR, "[QSV VPL] OpenReEncoder: unknown exception");
   }
 }
 
-void RegisterReEncoder() {
+void RegisterReEncoder()
+{
+  obs_register_output(&reencode_output_info);
   obs_frontend_add_tools_menu_item(obs_module_text("ReEncoder"),
                                     OpenReEncoder, nullptr);
   obs_frontend_add_event_callback(OnReEncoderFrontendEvent, nullptr);
