@@ -35,6 +35,7 @@
 // Included before FFmpeg so the decltype() in ffmpeg_api doesn't see OBS macros.
 #include <obs.h>
 #include <obs-data.h>
+#include <media-io/video-frame.h>
 
 // OBS defines LOG_* as integer constants; Qt/FFmpeg may define them too, so
 // undef to avoid conflicts downstream.
