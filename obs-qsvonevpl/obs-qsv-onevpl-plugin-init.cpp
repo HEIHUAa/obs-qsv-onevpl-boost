@@ -438,11 +438,11 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   SetVisible("qpp", bIsCQP && separateIPB);
   SetVisible("cqp", bIsCQP && !separateIPB);
 
-  SetVisible("icq_quality", bIsICQ);
-
   // Retrieve codec stored by GetParamProps
   auto codec = static_cast<codec_enum>(
       reinterpret_cast<intptr_t>(obs_properties_get_param(Properties)));
+
+  SetVisible("icq_quality", bIsICQ && codec != QSV_CODEC_VP9);
 
   // EncTools visibility: VP9 has no EncTools; other codecs share the same
   // rate-control visibility + platform gate.  Even though EncTools BRC
@@ -675,14 +675,14 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(Prop,
                                     obs_module_text("QVBRQuality.Tooltip"));
 
-  // VP9 ICQQuality internally uses 0-255 range (matches base_q_idx).
-  // Expose 1-63 in UI (same as CQP QP) and scale x4 internally to 0-252.
-  // Higher value = worse quality (same direction as H264/HEVC ICQ).
+  // VP9 ICQQuality slider is hidden — VP9 driver's VAAPI layer ignores
+  // ICQ_quality_factor entirely (driver bug), so the value has no effect.
   {
     int icqMax = (Codec == QSV_CODEC_VP9) ? 63 : 51;
     Prop = obs_properties_add_int_slider(RCGroup, "icq_quality",
                                          TEXT_ICQ_QUALITY, 1, icqMax, 1);
     obs_property_set_long_description(Prop, TEXT_ICQ_QUALITY_DESC);
+    obs_property_set_visible(Prop, Codec != QSV_CODEC_VP9);
   }
 
   Prop = obs_properties_add_bool(RCGroup, "cqp_separate_ipb",
@@ -1438,10 +1438,10 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   }
   int ICQQualityData =
       static_cast<int>(obs_data_get_int(Settings, "icq_quality"));
-  // VP9 ICQQuality internally uses 0-255 range (MAX_ICQ_QUALITY_INDEX).
-  // UI exposes 1-63, scale x4 to match the internal range.
   if (Context->Codec == QSV_CODEC_VP9) {
-    ICQQualityData *= 4;
+    // VP9 driver's VAAPI layer ignores ICQ_quality_factor (driver bug).
+    // Slider is hidden, set to 0 (driver default / auto).
+    ICQQualityData = 0;
   }
   int KeyIntervalData =
       static_cast<int>(obs_data_get_int(Settings, "keyint_sec"));
