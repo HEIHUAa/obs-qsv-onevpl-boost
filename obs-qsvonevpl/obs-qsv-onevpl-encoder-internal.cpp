@@ -1748,6 +1748,11 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   }
 #endif
 
+  // VP9 only supports LowPower=ON (driver forces it in CheckAndFix)
+  if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_VP9) {
+    QSVEncodeParams.mfx.LowPower = MFX_CODINGOPTION_ON;
+  }
+
   // HEVC/AV1 hardware EncTools lookahead via GAME_STREAMING requires
   // LowPower=ON in oneVPL 26.1.5 (verified in vpl-gpu-rt source).
   // Without it the driver returns MFX_ERR_INVALID_VIDEO_PARAM (-15).

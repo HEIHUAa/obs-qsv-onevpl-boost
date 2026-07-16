@@ -275,7 +275,7 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_int(Settings, "icq_quality", 23);
 
   obs_data_set_default_int(Settings, "keyint_sec", 4);
-  obs_data_set_default_int(Settings, "b_frames", 4);
+  obs_data_set_default_int(Settings, "b_frames", Codec == QSV_CODEC_VP9 ? 0 : 4);
   obs_data_set_default_int(Settings, "async_depth", 4);
 
   obs_data_set_default_string(Settings, "intra_ref_encoding", "OFF");
@@ -754,6 +754,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_long_description(Prop, TEXT_HRD_CONFORMANCE_DESC);
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
+  obs_property_set_visible(Prop, Codec != QSV_CODEC_VP9);
 
   Prop = obs_properties_add_list(RCGroup, "low_delay_hrd", TEXT_LOW_DELAY_HRD,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -766,6 +767,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_long_description(Prop, TEXT_LOW_DELAY_BRC_DESC);
+  obs_property_set_visible(Prop, Codec != QSV_CODEC_VP9);
 
   Prop = obs_properties_add_list(RCGroup, "skip_frame", TEXT_SKIP_FRAME,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -801,6 +803,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   Prop = obs_properties_add_int(IFGroup, "b_frames", TEXT_B_FRAMES, 0,
                                 65534, 1);
   obs_property_set_long_description(Prop, TEXT_B_FRAMES_DESC);
+  obs_property_set_visible(Prop, Codec != QSV_CODEC_VP9);
 
   Prop = obs_properties_add_list(IFGroup, "lookahead", TEXT_LA,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -907,11 +910,13 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_long_description(Prop, TEXT_ADAPTIVE_I_DESC);
+  obs_property_set_visible(Prop, Codec != QSV_CODEC_VP9);
 
   Prop = obs_properties_add_list(ETGroup, "adaptive_b", TEXT_ADAPTIVE_B,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_long_description(Prop, TEXT_ADAPTIVE_B_DESC);
+  obs_property_set_visible(Prop, Codec != QSV_CODEC_VP9);
 
 #ifndef QSV_UHD600_SUPPORT
   Prop = obs_properties_add_list(ETGroup, "adaptive_ref", TEXT_ADAPTIVE_REF,
@@ -953,6 +958,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_long_description(Prop, TEXT_RDO_DESC);
+  obs_property_set_visible(Prop, Codec != QSV_CODEC_VP9);
 
   Prop = obs_properties_add_list(ETGroup, "fade_detection",
                                  TEXT_FADE_DETECTION,
@@ -1334,6 +1340,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
   obs_property_set_long_description(Prop, TEXT_LOW_POWER_DESC);
+  obs_property_set_visible(Prop, Codec != QSV_CODEC_VP9);
 
   Prop = obs_properties_add_int(MXGroup, "async_depth", TEXT_ASYNC_DEPTH,
                                 1, 1000, 1);
@@ -1354,6 +1361,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_content_info);
   obs_property_set_long_description(Prop, TEXT_CONTENT_INFO_DESC);
+  obs_property_set_visible(Prop, Codec != QSV_CODEC_VP9);
 
   Prop = obs_properties_add_text(MXGroup, "custom_coding_options",
                                  TEXT_CUSTOM_CODING_OPTIONS,
