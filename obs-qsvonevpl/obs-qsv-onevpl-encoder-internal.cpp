@@ -797,20 +797,24 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
 // Non-texture encoder path selection:
     //   - VPP enabled  → try VIDEO_MEMORY first (VPP needs GPU mem), fallback
     //                     to system memory with VPP disabled
-    //   - VPP disabled  → try system memory first (saves GPU VRAM), fallback
+    //   - VP9          → try VIDEO_MEMORY first (system memory has driver
+    //                     bug: EncodeFrameAsync returns sts=-2), fallback
+    //                     to system memory
+    //   - Other codecs → try system memory first (saves GPU VRAM), fallback
     //                     to VIDEO_MEMORY
     if (!QSVIsTextureEncoder) {
-      if (QSVProcessingEnable) {
+      if (QSVProcessingEnable || Codec == QSV_CODEC_VP9) {
         QSVUseSystemMemoryPath = false;
         Status = InitEncoderInternal(InputParams, Codec, "");
         if (Status < MFX_ERR_NONE) {
-          info("\tVIDEO_MEMORY+VPP init failed (%d), falling back to sysmem "
-               "(VPP disabled)",
+          info("\tVIDEO_MEMORY init failed (%d), falling back to sysmem",
                Status);
           QSVEncode->Close();
           QSVUseSystemMemoryPath = true;
-          warn("\tVPP disabled for non-texture encoder (sysmem fallback)");
-          DisableVPP();
+          if (QSVProcessingEnable) {
+            warn("\tVPP disabled for non-texture encoder (sysmem fallback)");
+            DisableVPP();
+          }
           Status = InitEncoderInternal(InputParams, Codec, " (sysmem)");
         }
       } else {

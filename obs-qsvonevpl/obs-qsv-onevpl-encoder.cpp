@@ -63,14 +63,43 @@ bool OpenEncoder(std::unique_ptr<QSVEncoder> &EncoderPTR,
     }
 
     if (Codec == QSV_CODEC_VP9) {
-      IsTextureEncoder = true;
+      // VP9: try texture mode first, fall back to non-texture path
+      // (VIDEO_MEMORY, or system memory if VIDEO_MEMORY fails)
+      // for multi-GPU setups where SetHandle fails with -16
+      bool VP9InitSuccess = false;
+      try {
+        IsTextureEncoder = true;
+        mfxStatus VP9Sts = EncoderPTR->Init(EncoderParams, Codec, true);
+        if (VP9Sts >= MFX_ERR_NONE)
+          VP9InitSuccess = true;
+      } catch (const std::exception &e) {
+        warn("VP9 texture mode init failed: %s, falling back to "
+             "non-texture path",
+             e.what());
+      }
+
+      if (!VP9InitSuccess) {
+        EncoderPTR = std::make_unique<QSVEncoder>();
+        IsTextureEncoder = false;
+        mfxStatus VP9NonTexSts = EncoderPTR->Init(EncoderParams, Codec, false);
+        if (VP9NonTexSts < MFX_ERR_NONE) {
+          error("VP9 encoder init failed (non-texture fallback, sts=%d)",
+                VP9NonTexSts);
+          return false;
+        }
+      }
     } else if (EncoderParams->GPUNum > 0) {
       IsTextureEncoder = false;
-    }
-
-    if (EncoderPTR->Init(EncoderParams, Codec, IsTextureEncoder) < MFX_ERR_NONE) {
-      error("QSV encoder init failed");
-      return false;
+      if (EncoderPTR->Init(EncoderParams, Codec, false) < MFX_ERR_NONE) {
+        error("QSV encoder init failed");
+        return false;
+      }
+    } else {
+      if (EncoderPTR->Init(EncoderParams, Codec, IsTextureEncoder) <
+          MFX_ERR_NONE) {
+        error("QSV encoder init failed");
+        return false;
+      }
     }
 
     VPLVersion = EncoderPTR->GetCachedVPLVersion();
