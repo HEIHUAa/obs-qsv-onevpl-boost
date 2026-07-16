@@ -81,6 +81,7 @@ bool LoadFFmpegAPI(ffmpeg_api &ff)
   ok = ok && ResolveFunc(avutil, "av_frame_free", ff.av_frame_free);
   ok = ok && ResolveFunc(avutil, "av_image_get_buffer_size", ff.av_image_get_buffer_size);
   ok = ok && ResolveFunc(avutil, "av_image_fill_arrays", ff.av_image_fill_arrays);
+  ok = ok && ResolveFunc(avutil, "av_rescale_q", ff.av_rescale_q);
 
   // av_packet_alloc/free may be in avutil or avcodec (OBS layout varies)
   ff.av_packet_alloc = reinterpret_cast<decltype(ff.av_packet_alloc)>(
@@ -96,6 +97,7 @@ bool LoadFFmpegAPI(ffmpeg_api &ff)
   ok = ok && ResolveFunc(avcodec, "avcodec_send_packet", ff.avcodec_send_packet);
   ok = ok && ResolveFunc(avcodec, "avcodec_receive_frame", ff.avcodec_receive_frame);
   ok = ok && ResolveFunc(avcodec, "avcodec_free_context", ff.avcodec_free_context);
+  ok = ok && ResolveFunc(avcodec, "av_packet_move_ref", ff.av_packet_move_ref);
 
   // av_packet_alloc/free from avcodec as fallback
   if (!ff.av_packet_alloc) {
@@ -108,6 +110,16 @@ bool LoadFFmpegAPI(ffmpeg_api &ff)
   }
   if (!ff.av_packet_alloc || !ff.av_packet_free) {
     blog(LOG_ERROR, "[QSV VPL ReEncoder] Cannot resolve av_packet_alloc/free");
+    return false;
+  }
+
+  // av_packet_move_ref from avformat as fallback (FFmpeg layout varies)
+  if (!ff.av_packet_move_ref) {
+    ff.av_packet_move_ref = reinterpret_cast<decltype(ff.av_packet_move_ref)>(
+        GetProcAddress(avformat, "av_packet_move_ref"));
+  }
+  if (!ff.av_packet_move_ref) {
+    blog(LOG_ERROR, "[QSV VPL ReEncoder] Cannot resolve av_packet_move_ref");
     return false;
   }
 
@@ -126,6 +138,7 @@ bool LoadFFmpegAPI(ffmpeg_api &ff)
   ok = ok && ResolveFunc(avformat, "av_interleaved_write_frame", ff.av_interleaved_write_frame);
   ok = ok && ResolveFunc(avformat, "av_packet_unref", ff.av_packet_unref);
   ok = ok && ResolveFunc(avformat, "avcodec_parameters_copy", ff.avcodec_parameters_copy);
+  ok = ok && ResolveFunc(avformat, "av_find_best_stream", ff.av_find_best_stream);
 
   // swscale
   ok = ok && ResolveFunc(swscale, "sws_getContext", ff.sws_getContext);
@@ -597,8 +610,8 @@ bool ReEncodeDialog::StartEncoding()
 
   // Find video stream
   const AVCodec *videoDecoder = nullptr;
-  m_Ctx.video_stream_idx = av_find_best_stream(m_Ctx.in_fmt_ctx, AVMEDIA_TYPE_VIDEO,
-                                                -1, -1, &videoDecoder, 0);
+  m_Ctx.video_stream_idx = m_FF.av_find_best_stream(m_Ctx.in_fmt_ctx, AVMEDIA_TYPE_VIDEO,
+                                                       -1, -1, &videoDecoder, 0);
   if (m_Ctx.video_stream_idx < 0) {
     m_FF.avformat_close_input(&m_Ctx.in_fmt_ctx);
     AppendLog("ERROR: No video stream found");
@@ -650,8 +663,8 @@ bool ReEncodeDialog::StartEncoding()
   }
 
   // 5. Find audio stream (optional)
-  m_Ctx.audio_stream_idx = av_find_best_stream(m_Ctx.in_fmt_ctx, AVMEDIA_TYPE_AUDIO,
-                                                -1, -1, nullptr, 0);
+  m_Ctx.audio_stream_idx = m_FF.av_find_best_stream(m_Ctx.in_fmt_ctx, AVMEDIA_TYPE_AUDIO,
+                                                       -1, -1, nullptr, 0);
   if (m_Ctx.audio_stream_idx >= 0) {
     AppendLog(QString("Audio stream found at index %1").arg(m_Ctx.audio_stream_idx));
   } else {
@@ -933,7 +946,7 @@ void ReEncodeDialog::FeedThreadMain()
 
         // rescale from decoder timebase to nanoseconds
         AVRational decTb = ctx.in_fmt_ctx->streams[ctx.video_stream_idx]->time_base;
-        ptsNs = av_rescale_q(ptsNs, decTb, {1, 1000000000});
+        ptsNs = ff.av_rescale_q(ptsNs, decTb, {1, 1000000000});
 
         video_output_lock_frame(m_Video, &vf, 1, ptsNs);
         video_output_unlock_frame(m_Video);
@@ -964,9 +977,9 @@ void ReEncodeDialog::FeedThreadMain()
         outPkt->size = static_cast<int>(encPkt.data.size());
         outPkt->stream_index = ctx.out_video_stream->index;
         // rescale PTS from nanoseconds to output timebase
-        outPkt->pts = av_rescale_q(encPkt.pts, {1, 1000000000},
+        outPkt->pts = ff.av_rescale_q(encPkt.pts, {1, 1000000000},
                                     ctx.out_video_stream->time_base);
-        outPkt->dts = av_rescale_q(encPkt.dts, {1, 1000000000},
+        outPkt->dts = ff.av_rescale_q(encPkt.dts, {1, 1000000000},
                                     ctx.out_video_stream->time_base);
         // encoder_packet has no duration field; output time_base is
         // {fps_den, fps_num} so 1 = one frame duration
@@ -993,7 +1006,7 @@ void ReEncodeDialog::FeedThreadMain()
             int64_t audioPts = audioPkt->pts;
             // rescale audio PTS to nanoseconds for comparison
             AVRational audioTb = ctx.out_audio_stream->time_base;
-            int64_t audioPtsNs = av_rescale_q(audioPts, audioTb, {1, 1000000000});
+            int64_t audioPtsNs = ff.av_rescale_q(audioPts, audioTb, {1, 1000000000});
 
             if (audioPtsNs <= videoPts) {
               audioPkt->stream_index = ctx.out_audio_stream->index;
@@ -1020,7 +1033,7 @@ void ReEncodeDialog::FeedThreadMain()
         // --- Audio packet: buffer for later writing ---
         if (ctx.out_audio_stream) {
           AVPacket *audioPkt = ff.av_packet_alloc();
-          av_packet_move_ref(audioPkt, inPkt);
+          ff.av_packet_move_ref(audioPkt, inPkt);
           ctx.audio_packets.push_back(audioPkt);
         } else {
           ff.av_packet_unref(inPkt);

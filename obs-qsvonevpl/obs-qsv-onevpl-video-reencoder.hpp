@@ -81,6 +81,8 @@ struct ffmpeg_api {
   decltype(&avcodec_parameters_copy) avcodec_parameters_copy = nullptr;
   decltype(&av_packet_alloc) av_packet_alloc = nullptr;
   decltype(&av_packet_free) av_packet_free = nullptr;
+  decltype(&av_find_best_stream) av_find_best_stream = nullptr;
+  decltype(&av_packet_move_ref) av_packet_move_ref = nullptr;
 
   // avcodec
   decltype(&avcodec_find_decoder) avcodec_find_decoder = nullptr;
@@ -96,6 +98,7 @@ struct ffmpeg_api {
   decltype(&av_frame_free) av_frame_free = nullptr;
   decltype(&av_image_get_buffer_size) av_image_get_buffer_size = nullptr;
   decltype(&av_image_fill_arrays) av_image_fill_arrays = nullptr;
+  decltype(&av_rescale_q) av_rescale_q = nullptr;
 
   // swscale
   decltype(&sws_getContext) sws_getContext = nullptr;
