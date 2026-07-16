@@ -31,16 +31,25 @@
 #undef LOG_DEBUG
 #endif
 
-// OBS type forward declarations — header is self-contained without pulling
-// in all of obs.h here (the .cpp includes obs-module.h for full definitions).
-struct obs_encoder;
-struct obs_output;
-struct obs_data;
-struct video_t;
-typedef struct obs_encoder obs_encoder_t;
-typedef struct obs_output obs_output_t;
-typedef struct obs_data obs_data_t;
-typedef struct video_t video_t;
+// OBS types — needed for opaque pointer members (video_t, obs_encoder_t, etc.)
+// Included before FFmpeg so the decltype() in ffmpeg_api doesn't see OBS macros.
+#include <obs.h>
+#include <obs-data.h>
+
+// OBS defines LOG_* as integer constants; Qt/FFmpeg may define them too, so
+// undef to avoid conflicts downstream.
+#ifdef LOG_ERROR
+#undef LOG_ERROR
+#endif
+#ifdef LOG_INFO
+#undef LOG_INFO
+#endif
+#ifdef LOG_WARNING
+#undef LOG_WARNING
+#endif
+#ifdef LOG_DEBUG
+#undef LOG_DEBUG
+#endif
 
 // FFmpeg headers — for type definitions only (we resolve functions at runtime)
 extern "C" {

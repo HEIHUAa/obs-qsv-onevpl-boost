@@ -1118,8 +1118,7 @@ static ReEncodeDialog *g_ActiveReEncodeDialog = nullptr;
 
 static void OnReEncoderFrontendEvent(obs_frontend_event Event, void *)
 {
-  if (Event == OBS_FRONTEND_EVENT_ENCODER_LIST_CHANGED ||
-      Event == OBS_FRONTEND_EVENT_PROFILE_CHANGED ||
+  if (Event == OBS_FRONTEND_EVENT_PROFILE_CHANGED ||
       Event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED) {
     if (g_ActiveReEncodeDialog) {
       QMetaObject::invokeMethod(g_ActiveReEncodeDialog, [dialog = g_ActiveReEncodeDialog]() {
