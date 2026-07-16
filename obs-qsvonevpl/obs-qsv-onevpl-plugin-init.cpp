@@ -296,7 +296,7 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(Settings, "hrd_conformance", "AUTO");
   obs_data_set_default_string(Settings, "mbbrc", "AUTO");
   obs_data_set_default_string(Settings, "trellis", "AUTO");
-  obs_data_set_default_int(Settings, "num_ref_frame", 4);
+  obs_data_set_default_int(Settings, "num_ref_frame", Codec == QSV_CODEC_VP9 ? 1 : 4);
   obs_data_set_default_string(Settings, "global_motion_bias_adjustment",
                               "AUTO");
   obs_data_set_default_string(Settings, "mv_cost_scaling_factor", "AUTO");
@@ -795,8 +795,10 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_int_set_suffix(Prop, " s");
   obs_property_set_long_description(Prop, TEXT_KEYFRAME_INTERVAL_SEC_DESC);
 
+  // VP9 max NumRefFrame is 3 (per driver, depends on target usage)
+  int ref_max = (Codec == QSV_CODEC_VP9) ? 3 : 15;
   Prop = obs_properties_add_int(IFGroup, "num_ref_frame", TEXT_NUM_REF_FRAME,
-                                0, 15, 1);
+                                0, ref_max, 1);
   obs_property_set_long_description(Prop,
                                     obs_module_text("NumRefFrame.Tooltip"));
 
