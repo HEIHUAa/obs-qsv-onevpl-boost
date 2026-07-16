@@ -194,7 +194,7 @@ static void *reencode_output_create(obs_data_t *, obs_output_t *output)
   auto *ctx = new reencode_output_ctx;
   ctx->dialog = g_PendingOutputDialog;
   g_PendingOutputDialog = nullptr;
-  obs_output_set_media(output, obs_get_video(), obs_get_audio());
+  obs_output_set_media(output, obs_get_video(), nullptr);
   return ctx;
 }
 
