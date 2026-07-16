@@ -32,7 +32,6 @@ CO2.RepeatPPS=OFF
 CO3.LowDelayBRC=ON
 
 # CodingOptionDDI
-CODDI.Hme=ON
 CODDI.BRCPrecision=3
 CODDI.DDI.IntraPredBlockSize=1
 CODDI.DDI.InterPredBlockSize=64
@@ -175,35 +174,12 @@ Low-level driver tuning parameters. **"Magic beyond the control of mere mortals.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `IntraPredCostType` | numeric | 8 | Intra prediction cost function. 1=SAD, 2=SSD, 4=SATD_HADAMARD, 8=SATD_HARR. |
-| `MEInterpolationMethod` | numeric | 8 | Motion estimation interpolation method. 1=VME4TAP, 2=BILINEAR, 4=WMV4TAP, 8=AVC6TAP. |
-| `MEFractionalSearchType` | numeric | 16 | Fractional-pixel ME search pattern. 1=FULL, 2=HALF, 4=SQUARE, 8=HQ, 16=DIAMOND. |
-| `MaxMVs` | numeric | (driver default) | Maximum number of motion vectors per macroblock. |
-| `SkipCheck` | tri-state | (driver default) | Enable skip macroblock checking. |
-| `DirectCheck` | tri-state | ON | Enable direct prediction mode checking. |
-| `BiDirSearch` | tri-state | ON | Enable bidirectional motion search. |
-| `MBAFF` | tri-state | ON | Macroblock-Adaptive Frame/Field coding (interlaced content). |
-| `FieldPrediction` | tri-state | ON | Enable field-level prediction for interlaced content. |
-| `RefOppositeField` | tri-state | ON | Allow reference from opposite field in interlaced coding. |
-| `ChromaInME` | tri-state | (driver default) | Include chroma planes in motion estimation. |
-| `WeightedPrediction` | tri-state | ON | DDI-level weighted prediction for P-frames. |
-| `MVPrediction` | tri-state | ON | DDI-level motion vector prediction control. |
-| `BRCPrecision` | numeric | 3 (highest) | Bitrate control precision. 0=default, 1=lowest, 2=normal, 3=highest. |
 | `RefRaw` | tri-state | (user setting) | Use raw frames as VME reference. ON = raw input, OFF = reconstructed. |
-| `ConstQP` | numeric | (driver default) | Force constant QP mode, bypassing BRC. |
-| `GlobalSearch` | numeric | 1 (long) | Global motion search scope. 0=default, 1=long, 2=medium, 3=short. |
-| `LocalSearch` | numeric | 6 (exhaustive) | Local motion search pattern. Values 0-8. 6=exhaustive is the most thorough. |
-| `EarlySkip` | numeric | 0 (auto) | Early skip decision control. 0=let driver choose, 1=enabled, 2=disabled. |
-| `LaScaleFactor` | numeric | (driver default) | LookAhead scale factor. 0=auto, 1=1x, 2=2x, 4=4x. Deprecated for legacy H.264. |
-| `IBC` | tri-state | ON | Intra Block Copy for screen content coding. |
-| `Palette` | tri-state | ON | Palette mode for screen content coding. |
 | `StrengthN` | numeric | (driver default) | Encoding strength level = StrengthN / 100.0. |
-| `FractionalQP` | numeric | 1 (enabled) | Enable fractional QP values. 0=disabled, 1=enabled. |
 | `NumActiveRefP` | numeric | (driver default) | Number of active references for P-frames. |
 | `NumActiveRefBL0` | numeric | (driver default) | Number of active references for B-frames (L0). |
 | `NumActiveRefBL1` | numeric | (driver default) | Number of active references for B-frames (L1). |
 | `DisablePSubMBPartition` | tri-state | OFF | Disable sub-macroblock partitions for P-frames. OFF = allow all partitions (better quality). |
-| `DisableBSubMBPartition` | tri-state | OFF | Disable sub-macroblock partitions for B-frames. OFF = allow all partitions (better quality). |
 | `WeightedBiPredIdc` | numeric | 2 (implicit) | Weighted bi-prediction mode. 0=OFF, 1=explicit (unsupported), 2=implicit. |
 | `DirectSpatialMvPredFlag` | tri-state | ON | Direct mode MV prediction type. ON=spatial, OFF=temporal. |
 | `Transform8x8Mode` | tri-state | ON | Enable 8x8 transform mode (improves quality for HD content). |
@@ -212,13 +188,9 @@ Low-level driver tuning parameters. **"Magic beyond the control of mere mortals.
 | `QpUpdateRange` | numeric | (driver default) | QP adjustment range for BRC. |
 | `RegressionWindow` | numeric | (driver default) | Regression analysis window size for BRC. |
 | `LookAheadDependency` | numeric | (driver default) | Lookahead dependency depth (must be less than LookAhead depth). |
-| `Hme` | tri-state | ON | Hierarchical Motion Estimation. Uses multi-level search for better accuracy. |
-| `WriteIVFHeaders` | tri-state | OFF | Write IVF container headers. OFF = normal bitstream output. |
 | `RefreshFrameContext` | tri-state | ON | Refresh encoder frame context for improved quality. |
 | `QpAdjust` | tri-state | ON | Enable SPS-level QP adjustment. |
 | `TMVP` | tri-state | ON | Temporal Motion Vector Prediction. Improves compression efficiency. |
-| `DDI.IntraPredBlockSize` | numeric | 1 (4x4) | DDI-level intra prediction block size. 1=4x4, 2=8x8, 4=16x16, 8=PCM. |
-| `DDI.InterPredBlockSize` | numeric | 64 (4x4) | DDI-level inter prediction block size. 1=16x16, 2=16x8, 4=8x16, ... 64=4x4. |
 
 ---
 

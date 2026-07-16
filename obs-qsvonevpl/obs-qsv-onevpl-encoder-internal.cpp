@@ -1336,37 +1336,13 @@ static constexpr std::array<FieldEntry, 75> CO3_FIELDS{
 #endif
 };
 
-static constexpr std::array<FieldEntry, 44> CODDI_FIELDS{
-  FieldEntry{"IntraPredCostType", offsetof(mfxExtCodingOptionDDI, IntraPredCostType), FT_U16},
-  FieldEntry{"MEInterpolationMethod", offsetof(mfxExtCodingOptionDDI, MEInterpolationMethod), FT_U16},
-  FieldEntry{"MEFractionalSearchType", offsetof(mfxExtCodingOptionDDI, MEFractionalSearchType), FT_U16},
-  FieldEntry{"MaxMVs", offsetof(mfxExtCodingOptionDDI, MaxMVs), FT_U16},
-  FieldEntry{"SkipCheck", offsetof(mfxExtCodingOptionDDI, SkipCheck), FT_U16},
-  FieldEntry{"DirectCheck", offsetof(mfxExtCodingOptionDDI, DirectCheck), FT_U16},
-  FieldEntry{"BiDirSearch", offsetof(mfxExtCodingOptionDDI, BiDirSearch), FT_U16},
-  FieldEntry{"MBAFF", offsetof(mfxExtCodingOptionDDI, MBAFF), FT_U16},
-  FieldEntry{"FieldPrediction", offsetof(mfxExtCodingOptionDDI, FieldPrediction), FT_U16},
-  FieldEntry{"RefOppositeField", offsetof(mfxExtCodingOptionDDI, RefOppositeField), FT_U16},
-  FieldEntry{"ChromaInME", offsetof(mfxExtCodingOptionDDI, ChromaInME), FT_U16},
-  FieldEntry{"WeightedPrediction", offsetof(mfxExtCodingOptionDDI, WeightedPrediction), FT_U16},
-  FieldEntry{"MVPrediction", offsetof(mfxExtCodingOptionDDI, MVPrediction), FT_U16},
-  FieldEntry{"DDI.IntraPredBlockSize", offsetof(mfxExtCodingOptionDDI, DDI.IntraPredBlockSize), FT_U16},
-  FieldEntry{"DDI.InterPredBlockSize", offsetof(mfxExtCodingOptionDDI, DDI.InterPredBlockSize), FT_U16},
-  FieldEntry{"BRCPrecision", offsetof(mfxExtCodingOptionDDI, BRCPrecision), FT_U16},
+// Only fields that are actually used by the driver are listed here.
+static constexpr std::array<FieldEntry, 17> CODDI_FIELDS{
   FieldEntry{"RefRaw", offsetof(mfxExtCodingOptionDDI, RefRaw), FT_U16},
-  FieldEntry{"ConstQP", offsetof(mfxExtCodingOptionDDI, ConstQP), FT_U16},
-  FieldEntry{"GlobalSearch", offsetof(mfxExtCodingOptionDDI, GlobalSearch), FT_U16},
-  FieldEntry{"LocalSearch", offsetof(mfxExtCodingOptionDDI, LocalSearch), FT_U16},
-  FieldEntry{"EarlySkip", offsetof(mfxExtCodingOptionDDI, EarlySkip), FT_U16},
-  FieldEntry{"LaScaleFactor", offsetof(mfxExtCodingOptionDDI, LaScaleFactor), FT_U16},
-  FieldEntry{"IBC", offsetof(mfxExtCodingOptionDDI, IBC), FT_U16},
-  FieldEntry{"Palette", offsetof(mfxExtCodingOptionDDI, Palette), FT_U16},
   FieldEntry{"StrengthN", offsetof(mfxExtCodingOptionDDI, StrengthN), FT_U16},
-  FieldEntry{"FractionalQP", offsetof(mfxExtCodingOptionDDI, FractionalQP), FT_U16},
   FieldEntry{"NumActiveRefP", offsetof(mfxExtCodingOptionDDI, NumActiveRefP), FT_U16},
   FieldEntry{"NumActiveRefBL0", offsetof(mfxExtCodingOptionDDI, NumActiveRefBL0), FT_U16},
   FieldEntry{"DisablePSubMBPartition", offsetof(mfxExtCodingOptionDDI, DisablePSubMBPartition), FT_U16},
-  FieldEntry{"DisableBSubMBPartition", offsetof(mfxExtCodingOptionDDI, DisableBSubMBPartition), FT_U16},
   FieldEntry{"WeightedBiPredIdc", offsetof(mfxExtCodingOptionDDI, WeightedBiPredIdc), FT_U16},
   FieldEntry{"DirectSpatialMvPredFlag", offsetof(mfxExtCodingOptionDDI, DirectSpatialMvPredFlag), FT_U16},
   FieldEntry{"Transform8x8Mode", offsetof(mfxExtCodingOptionDDI, Transform8x8Mode), FT_U16},
@@ -1376,8 +1352,6 @@ static constexpr std::array<FieldEntry, 44> CODDI_FIELDS{
   FieldEntry{"QpUpdateRange", offsetof(mfxExtCodingOptionDDI, QpUpdateRange), FT_U16},
   FieldEntry{"RegressionWindow", offsetof(mfxExtCodingOptionDDI, RegressionWindow), FT_U16},
   FieldEntry{"LookAheadDependency", offsetof(mfxExtCodingOptionDDI, LookAheadDependency), FT_U16},
-  FieldEntry{"Hme", offsetof(mfxExtCodingOptionDDI, Hme), FT_U16},
-  FieldEntry{"WriteIVFHeaders", offsetof(mfxExtCodingOptionDDI, WriteIVFHeaders), FT_U16},
   FieldEntry{"RefreshFrameContext", offsetof(mfxExtCodingOptionDDI, RefreshFrameContext), FT_U16},
   FieldEntry{"QpAdjust", offsetof(mfxExtCodingOptionDDI, QpAdjust), FT_U16},
   FieldEntry{"TMVP", offsetof(mfxExtCodingOptionDDI, TMVP), FT_U16},
@@ -2314,45 +2288,31 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   // the buffer but reference-frame-related flags inside it misbehave on HEVC,
   // so skip it entirely for that path.
   if (!IsUHD600HEVC &&
-      QSVEncodeParams.mfx.CodecId != MFX_CODEC_AV1 &&
-      QSVEncodeParams.mfx.CodecId != MFX_CODEC_VP9) {
+      QSVEncodeParams.mfx.CodecId != MFX_CODEC_AV1) {
     auto CODDIParams = QSVEncodeParams.AddExtBuffer<mfxExtCodingOptionDDI>();
     CODDIParams->Header.BufferId = MFX_EXTBUFF_DDI;
     CODDIParams->Header.BufferSz = sizeof(mfxExtCodingOptionDDI);
-    CODDIParams->WriteIVFHeaders = MFX_CODINGOPTION_OFF;
-    CODDIParams->IBC = MFX_CODINGOPTION_ON;
-    CODDIParams->Palette = MFX_CODINGOPTION_ON;
-    CODDIParams->BRCPrecision = 3;
-    CODDIParams->BiDirSearch = MFX_CODINGOPTION_ON;
-    CODDIParams->DirectSpatialMvPredFlag = MFX_CODINGOPTION_ON;
-    CODDIParams->GlobalSearch = 1;
-    CODDIParams->IntraPredCostType = 8;
-    CODDIParams->MEFractionalSearchType = 16;
-    CODDIParams->MEInterpolationMethod = 8;
-    CODDIParams->MVPrediction = MFX_CODINGOPTION_ON;
-    CODDIParams->WeightedBiPredIdc = 2;
-    CODDIParams->WeightedPrediction = MFX_CODINGOPTION_ON;
-    CODDIParams->FractionalQP = 1;
-    CODDIParams->Hme = MFX_CODINGOPTION_ON;
-    CODDIParams->LocalSearch = 6;
-    CODDIParams->RefRaw = GetCodingOpt(InputParams->RawRef);
-    CODDIParams->TMVP = MFX_CODINGOPTION_ON;
-    CODDIParams->QpAdjust = MFX_CODINGOPTION_ON;
-    CODDIParams->EarlySkip = 0;
-    CODDIParams->RefreshFrameContext = MFX_CODINGOPTION_ON;
 
-    // AVC-only CODDI fields (driver resets them to 0 for HEVC/AV1/VP9)
-    if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC) {
-      CODDIParams->DDI.InterPredBlockSize = 64;
-      CODDIParams->DDI.IntraPredBlockSize = 1;
-      CODDIParams->FieldPrediction = MFX_CODINGOPTION_ON;
-      CODDIParams->DirectCheck = MFX_CODINGOPTION_ON;
-      CODDIParams->MBAFF = MFX_CODINGOPTION_ON;
-      CODDIParams->RefOppositeField = MFX_CODINGOPTION_ON;
-      CODDIParams->DisablePSubMBPartition = MFX_CODINGOPTION_OFF;
-      CODDIParams->DisableBSubMBPartition = MFX_CODINGOPTION_OFF;
-      CODDIParams->Transform8x8Mode = MFX_CODINGOPTION_ON;
+    if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_VP9) {
+      // VP9: only RefreshFrameContext is used by the driver
+      CODDIParams->RefreshFrameContext = MFX_CODINGOPTION_ON;
+    } else {
+      // AVC & HEVC (non-UHD600) DDI options
+      // driver ignores fields not applicable to the codec
+      CODDIParams->DirectSpatialMvPredFlag = MFX_CODINGOPTION_ON;
+      CODDIParams->WeightedBiPredIdc = 2;
+      CODDIParams->RefRaw = GetCodingOpt(InputParams->RawRef);
+      CODDIParams->TMVP = MFX_CODINGOPTION_ON;
+      CODDIParams->QpAdjust = MFX_CODINGOPTION_ON;
+
+      // AVC-only DDI fields used by the driver
+      if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC) {
+        CODDIParams->DisablePSubMBPartition = MFX_CODINGOPTION_OFF;
+        CODDIParams->Transform8x8Mode = MFX_CODINGOPTION_ON;
+      }
     }
+
+    QSVEncodeParams.AddExtBuffer(CODDIParams);
   }
 #endif
 

@@ -32,7 +32,6 @@ CO2.RepeatPPS=OFF
 CO3.LowDelayBRC=ON
 
 # CodingOptionDDI
-CODDI.Hme=ON
 CODDI.BRCPrecision=3
 CODDI.DDI.IntraPredBlockSize=1
 CODDI.DDI.InterPredBlockSize=64
@@ -175,35 +174,12 @@ CODDI.DDI.InterPredBlockSize=64
 
 | 字段 | 类型 | 默认值 | 描述 |
 |------|------|--------|------|
-| `IntraPredCostType` | 数值 | 8 | 帧内预测代价函数。1=SAD, 2=SSD, 4=SATD_HADAMARD, 8=SATD_HARR。 |
-| `MEInterpolationMethod` | 数值 | 8 | 运动估计插值方法。1=VME4TAP, 2=BILINEAR, 4=WMV4TAP, 8=AVC6TAP。 |
-| `MEFractionalSearchType` | 数值 | 16 | 亚像素运动估计搜索模式。1=FULL, 2=HALF, 4=SQUARE, 8=HQ, 16=DIAMOND。 |
-| `MaxMVs` | 数值 | （驱动默认） | 每个宏块的最大运动矢量数。 |
-| `SkipCheck` | 三态 | （驱动默认） | 启用跳过宏块检测。 |
-| `DirectCheck` | 三态 | ON | 启用直接预测模式检测。 |
-| `BiDirSearch` | 三态 | ON | 启用双向运动搜索。 |
-| `MBAFF` | 三态 | ON | 宏块自适应帧/场编码（隔行内容）。 |
-| `FieldPrediction` | 三态 | ON | 启用隔行内容的场级预测。 |
-| `RefOppositeField` | 三态 | ON | 允许隔行编码中从对向场参考。 |
-| `ChromaInME` | 三态 | （驱动默认） | 在运动估计中包括色度平面。 |
-| `WeightedPrediction` | 三态 | ON | DDI 级 P 帧加权预测。 |
-| `MVPrediction` | 三态 | ON | DDI 级运动矢量预测控制。 |
-| `BRCPrecision` | 数值 | 3（最高） | 码率控制精度。0=默认, 1=最低, 2=正常, 3=最高。 |
 | `RefRaw` | 三态 | （用户设置） | 使用原始帧作为 VME 参考。ON = 原始输入, OFF = 重建帧。 |
-| `ConstQP` | 数值 | （驱动默认） | 强制恒定 QP 模式，绕过码率控制。 |
-| `GlobalSearch` | 数值 | 1（长搜索） | 全局运动搜索范围。0=默认, 1=长, 2=中, 3=短。 |
-| `LocalSearch` | 数值 | 6（穷举） | 局部运动搜索模式。值 0-8。6=穷举是最彻底的。 |
-| `EarlySkip` | 数值 | 0（自动） | 早期跳过决策控制。0=让驱动选择, 1=启用, 2=禁用。 |
-| `LaScaleFactor` | 数值 | （驱动默认） | 前瞻缩放因子。0=自动, 1=1倍, 2=2倍, 4=4倍。旧版 H.264 已弃用。 |
-| `IBC` | 三态 | ON | 帧内块复制（屏幕内容编码）。 |
-| `Palette` | 三态 | ON | 调色板模式（屏幕内容编码）。 |
 | `StrengthN` | 数值 | （驱动默认） | 编码强度级别 = StrengthN / 100.0。 |
-| `FractionalQP` | 数值 | 1（启用） | 启用分数 QP。0=禁用, 1=启用。 |
 | `NumActiveRefP` | 数值 | （驱动默认） | P 帧的活跃参考帧数。 |
 | `NumActiveRefBL0` | 数值 | （驱动默认） | B 帧 L0 方向的活跃参考帧数。 |
 | `NumActiveRefBL1` | 数值 | （驱动默认） | B 帧 L1 方向的活跃参考帧数。 |
 | `DisablePSubMBPartition` | 三态 | OFF | 禁用 P 帧子宏块分割。OFF = 允许所有分割（更好的画质）。 |
-| `DisableBSubMBPartition` | 三态 | OFF | 禁用 B 帧子宏块分割。OFF = 允许所有分割（更好的画质）。 |
 | `WeightedBiPredIdc` | 数值 | 2（隐式） | 加权双向预测模式。0=OFF, 1=显式（不支持）, 2=隐式。 |
 | `DirectSpatialMvPredFlag` | 三态 | ON | 直接模式 MV 预测类型。ON=空间, OFF=时间。 |
 | `Transform8x8Mode` | 三态 | ON | 启用 8x8 变换模式（改善高清内容的画质）。 |
@@ -212,13 +188,9 @@ CODDI.DDI.InterPredBlockSize=64
 | `QpUpdateRange` | 数值 | （驱动默认） | BRC 的 QP 调整范围。 |
 | `RegressionWindow` | 数值 | （驱动默认） | BRC 的回归分析窗口大小。 |
 | `LookAheadDependency` | 数值 | （驱动默认） | 前瞻依赖深度（必须小于前瞻深度）。 |
-| `Hme` | 三态 | ON | 分层运动估计。使用多级搜索获得更好的精度。 |
-| `WriteIVFHeaders` | 三态 | OFF | 写入 IVF 容器头。OFF = 正常码流输出。 |
 | `RefreshFrameContext` | 三态 | ON | 刷新编码器帧上下文以改善画质。 |
 | `QpAdjust` | 三态 | ON | 启用 SPS 级 QP 调整。 |
 | `TMVP` | 三态 | ON | 时间运动矢量预测。提高压缩效率。 |
-| `DDI.IntraPredBlockSize` | 数值 | 1 (4x4) | DDI 级帧内预测块大小。1=4x4, 2=8x8, 4=16x16, 8=PCM。 |
-| `DDI.InterPredBlockSize` | 数值 | 64 (4x4) | DDI 级帧间预测块大小。1=16x16, 2=16x8, 4=8x16, ... 64=4x4。 |
 
 ---
 
