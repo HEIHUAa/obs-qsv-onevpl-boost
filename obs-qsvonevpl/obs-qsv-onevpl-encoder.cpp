@@ -62,7 +62,9 @@ bool OpenEncoder(std::unique_ptr<QSVEncoder> &EncoderPTR,
       EncoderParams->GPUNum = AdapterID;
     }
 
-    if (EncoderParams->GPUNum > 0) {
+    if (Codec == QSV_CODEC_VP9) {
+      IsTextureEncoder = true;
+    } else if (EncoderParams->GPUNum > 0) {
       IsTextureEncoder = false;
     }
 

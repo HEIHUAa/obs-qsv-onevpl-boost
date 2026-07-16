@@ -208,7 +208,7 @@ Low-level driver tuning parameters. **"Magic beyond the control of mere mortals.
 ## Notes
 
 - Custom options **override** the corresponding values set by the plugin's normal configuration GUI.
-- Fields for a buffer that is not currently enabled (e.g., CODDI for AV1/VP9) will be silently ignored with a warning log.
+- Fields for a buffer that is not currently enabled (e.g., CODDI for AV1) will be silently ignored with a warning log.
 - Incorrect values may cause encoder failures or degraded quality. Use with caution.
 - The plugin logs all applied custom options at `info` level. Check the OBS log to verify your settings.
 - CO fields marked **"Reserved. Must be 0."** exist for backward compatibility but should not be set. Use their CODDI equivalents instead.

@@ -2288,24 +2288,28 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   // the buffer but reference-frame-related flags inside it misbehave on HEVC,
   // so skip it entirely for that path.
   if (!IsUHD600HEVC &&
-      QSVEncodeParams.mfx.CodecId != MFX_CODEC_AV1 &&
-      QSVEncodeParams.mfx.CodecId != MFX_CODEC_VP9) {
+      QSVEncodeParams.mfx.CodecId != MFX_CODEC_AV1) {
     auto CODDIParams = QSVEncodeParams.AddExtBuffer<mfxExtCodingOptionDDI>();
     CODDIParams->Header.BufferId = MFX_EXTBUFF_DDI;
     CODDIParams->Header.BufferSz = sizeof(mfxExtCodingOptionDDI);
 
-    // AVC & HEVC (non-UHD600) DDI options
-    // driver ignores fields not applicable to the codec
-    CODDIParams->DirectSpatialMvPredFlag = MFX_CODINGOPTION_ON;
-    CODDIParams->WeightedBiPredIdc = 2;
-    CODDIParams->RefRaw = GetCodingOpt(InputParams->RawRef);
-    CODDIParams->TMVP = MFX_CODINGOPTION_ON;
-    CODDIParams->QpAdjust = MFX_CODINGOPTION_ON;
+    if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_VP9) {
+      // VP9: only RefreshFrameContext is used by the driver
+      CODDIParams->RefreshFrameContext = MFX_CODINGOPTION_ON;
+    } else {
+      // AVC & HEVC (non-UHD600) DDI options
+      // driver ignores fields not applicable to the codec
+      CODDIParams->DirectSpatialMvPredFlag = MFX_CODINGOPTION_ON;
+      CODDIParams->WeightedBiPredIdc = 2;
+      CODDIParams->RefRaw = GetCodingOpt(InputParams->RawRef);
+      CODDIParams->TMVP = MFX_CODINGOPTION_ON;
+      CODDIParams->QpAdjust = MFX_CODINGOPTION_ON;
 
-    // AVC-only DDI fields used by the driver
-    if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC) {
-      CODDIParams->DisablePSubMBPartition = MFX_CODINGOPTION_OFF;
-      CODDIParams->Transform8x8Mode = MFX_CODINGOPTION_ON;
+      // AVC-only DDI fields used by the driver
+      if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC) {
+        CODDIParams->DisablePSubMBPartition = MFX_CODINGOPTION_OFF;
+        CODDIParams->Transform8x8Mode = MFX_CODINGOPTION_ON;
+      }
     }
   }
 #endif
