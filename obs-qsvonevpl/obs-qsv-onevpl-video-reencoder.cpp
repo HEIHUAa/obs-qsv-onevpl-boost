@@ -99,6 +99,7 @@ bool LoadFFmpegAPI(ffmpeg_api &ff)
   ok = ok && ResolveFunc(avcodec, "avcodec_free_context", ff.avcodec_free_context);
   ok = ok && ResolveFunc(avcodec, "av_packet_unref", ff.av_packet_unref);
   ok = ok && ResolveFunc(avcodec, "av_packet_move_ref", ff.av_packet_move_ref);
+  ok = ok && ResolveFunc(avcodec, "avcodec_parameters_copy", ff.avcodec_parameters_copy);
 
   // av_packet_alloc/free from avcodec as fallback
   if (!ff.av_packet_alloc) {
@@ -134,6 +135,16 @@ bool LoadFFmpegAPI(ffmpeg_api &ff)
     return false;
   }
 
+  // avcodec_parameters_copy from avformat as fallback (FFmpeg layout varies)
+  if (!ff.avcodec_parameters_copy) {
+    ff.avcodec_parameters_copy = reinterpret_cast<decltype(ff.avcodec_parameters_copy)>(
+        GetProcAddress(avformat, "avcodec_parameters_copy"));
+  }
+  if (!ff.avcodec_parameters_copy) {
+    blog(LOG_ERROR, "[QSV VPL ReEncoder] Cannot resolve avcodec_parameters_copy");
+    return false;
+  }
+
   // avformat
   ok = ok && ResolveFunc(avformat, "avformat_open_input", ff.avformat_open_input);
   ok = ok && ResolveFunc(avformat, "avformat_close_input", ff.avformat_close_input);
@@ -147,7 +158,6 @@ bool LoadFFmpegAPI(ffmpeg_api &ff)
   ok = ok && ResolveFunc(avformat, "avformat_write_header", ff.avformat_write_header);
   ok = ok && ResolveFunc(avformat, "av_write_trailer", ff.av_write_trailer);
   ok = ok && ResolveFunc(avformat, "av_interleaved_write_frame", ff.av_interleaved_write_frame);
-  ok = ok && ResolveFunc(avformat, "avcodec_parameters_copy", ff.avcodec_parameters_copy);
   ok = ok && ResolveFunc(avformat, "av_find_best_stream", ff.av_find_best_stream);
 
   // swscale
