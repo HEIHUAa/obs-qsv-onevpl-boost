@@ -2312,8 +2312,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       }
     }
 
-    QSVEncodeParams.AddExtBuffer(CODDIParams);
-  }
+    }
 #endif
 
   if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
