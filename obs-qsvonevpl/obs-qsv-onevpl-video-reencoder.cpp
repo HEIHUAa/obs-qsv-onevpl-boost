@@ -1184,21 +1184,16 @@ void ReEncodeDialog::FeedThreadMain()
 
     // --- Loop ended (EOF or stop_requested) ---
 
-    // Helper: convert a decoded frame to NV12, feed to video pipeline,
-    // and collect any available encoded packets (non-blocking).
-    // Returns false on fatal error.
-    auto feedDecodedFrame = [&]() -> bool {
-      // Lazily create swscale context (should already exist after first frame)
-      if (!ctx.sws_ctx) {
-        ctx.sws_ctx = ff.sws_getContext(
-            ctx.decoded_frame->width, ctx.decoded_frame->height,
-            (AVPixelFormat)ctx.decoded_frame->format,
-            ctx.decoded_frame->width, ctx.decoded_frame->height,
-            AV_PIX_FMT_NV12, SWS_BILINEAR, nullptr, nullptr, nullptr);
-        if (!ctx.sws_ctx) {
-          AppendLog("ERROR: Cannot create swscale context");
-          return false;
-        }
+    // Flush the decoder: send null packet, drain remaining frames
+    ff.avcodec_send_packet(ctx.video_decoder, nullptr);
+    while (true) {
+      ret = ff.avcodec_receive_frame(ctx.video_decoder, ctx.decoded_frame);
+      if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+        break;
+      if (ret < 0) {
+        AppendLog(QString("ERROR: decoder drain failed: %1").arg(ret));
+        success = false;
+        break;
       }
 
       // Convert to NV12
@@ -1241,11 +1236,11 @@ void ReEncodeDialog::FeedThreadMain()
 
       // Collect available encoded packets (non-blocking)
       {
-        std::unique_lock lock(ctx.pkt_mutex);
+        std::unique_lock lock2(ctx.pkt_mutex);
         while (!ctx.pkt_queue.empty()) {
           ReEncodeCtx::Packet encPkt = std::move(ctx.pkt_queue.front());
           ctx.pkt_queue.erase(ctx.pkt_queue.begin());
-          lock.unlock();
+          lock2.unlock();
 
           AVPacket *outPkt = ff.av_packet_alloc();
           outPkt->data = encPkt.data.data();
@@ -1263,7 +1258,8 @@ void ReEncodeDialog::FeedThreadMain()
           ff.av_packet_free(&outPkt);
           if (wr < 0) {
             AppendLog(QString("ERROR: av_interleaved_write_frame (video) failed: %1").arg(wr));
-            return false;
+            success = false;
+            break;
           }
 
           // Write buffered audio with PTS <= this video frame
@@ -1285,27 +1281,10 @@ void ReEncodeDialog::FeedThreadMain()
             }
           }
 
-          lock.lock();
+          lock2.lock();
         }
       }
-      return true;
-    };
 
-    // Flush the decoder: send null packet, drain remaining frames
-    ff.avcodec_send_packet(ctx.video_decoder, nullptr);
-    while (true) {
-      ret = ff.avcodec_receive_frame(ctx.video_decoder, ctx.decoded_frame);
-      if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
-        break;
-      if (ret < 0) {
-        AppendLog(QString("ERROR: decoder drain failed: %1").arg(ret));
-        success = false;
-        break;
-      }
-      if (!feedDecodedFrame()) {
-        success = false;
-        break;
-      }
       ctx.frames_encoded++;
       UpdateProgress(ctx.frames_encoded, ctx.total_frames);
     }
