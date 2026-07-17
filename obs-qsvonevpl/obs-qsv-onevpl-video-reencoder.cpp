@@ -989,9 +989,11 @@ void ReEncodeDialog::FeedThreadMain()
       return;
     }
 
+    int ret;
+
     while (!ctx.stop_requested) {
       // Read next packet from input
-      int ret = ff.av_read_frame(ctx.in_fmt_ctx, inPkt);
+      ret = ff.av_read_frame(ctx.in_fmt_ctx, inPkt);
       if (ret < 0) {
         if (ret == AVERROR_EOF) {
           break; // done
