@@ -167,6 +167,7 @@ public:
     int64_t total_frames = 0;
     std::atomic<int64_t> frames_encoded{0};
     std::atomic<bool> stop_requested{false};
+    std::atomic<bool> encoder_flushed{false};
     std::atomic<bool> feed_error{false};
     std::string error_msg;
     std::mutex err_mutex;

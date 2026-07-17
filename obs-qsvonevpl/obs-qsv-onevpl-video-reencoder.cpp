@@ -669,6 +669,7 @@ bool ReEncodeDialog::StartEncoding()
   m_Ctx.total_frames = 0;
   m_Ctx.frames_encoded = 0;
   m_Ctx.stop_requested = false;
+  m_Ctx.encoder_flushed = false;
   m_Ctx.feed_error = false;
   m_Ctx.error_msg.clear();
 
@@ -921,23 +922,37 @@ void ReEncodeDialog::StopEncoding()
   if (!m_Encoding)
     return;
 
-  AppendLog("Stopping...");
-  m_Ctx.stop_requested = true;
-
-  // signal feed thread to wake up
-  m_Ctx.pkt_cv.notify_all();
-
-  if (m_FeedThread.joinable()) {
-    m_FeedThread.join();
+  // If called from UI (user clicked stop), signal feed thread to stop reading
+  bool wasUserStop = !m_Ctx.stop_requested;
+  if (wasUserStop) {
+    AppendLog("Stopping...");
+    m_Ctx.stop_requested = true;
+    m_Ctx.pkt_cv.notify_all();
   }
 
-  // stop OBS output (stops encoder, disconnects from video output)
+  // Wait for feed thread to finish feeding all frames
+  {
+    std::unique_lock lock(m_Ctx.pkt_mutex);
+    m_Ctx.pkt_cv.wait(lock, [this] { return m_Ctx.encoder_done; });
+  }
+
+  // Flush encoder by stopping the output (triggers remaining encoded callbacks)
   if (m_Output) {
     obs_output_stop(m_Output);
     obs_output_release(m_Output);
     m_Output = nullptr;
   }
 
+  // Signal feed thread that the encoder has been flushed
+  m_Ctx.encoder_flushed = true;
+  m_Ctx.pkt_cv.notify_all();
+
+  // Join feed thread (it will now collect remaining packets, write trailer, cleanup)
+  if (m_FeedThread.joinable()) {
+    m_FeedThread.join();
+  }
+
+  // Release remaining resources
   if (m_Encoder) {
     obs_encoder_release(m_Encoder);
     m_Encoder = nullptr;
@@ -1082,76 +1097,69 @@ void ReEncodeDialog::FeedThreadMain()
 
         video_output_unlock_frame(m_Video);
 
-        // Wait for encoded packet to appear in queue
-        ReEncodeCtx::Packet encPkt;
+        // Process any available encoded packets (non-blocking).
+        // QSV encoder may buffer frames (B-frames, lookahead) so we
+        // cannot wait for a packet after each frame — we push all frames
+        // first and collect packets as they arrive.
         {
           std::unique_lock lock(ctx.pkt_mutex);
-          ctx.pkt_cv.wait(lock, [&ctx] {
-            return !ctx.pkt_queue.empty() || ctx.stop_requested || ctx.encoder_done;
-          });
+          while (!ctx.pkt_queue.empty()) {
+            ReEncodeCtx::Packet encPkt = std::move(ctx.pkt_queue.front());
+            ctx.pkt_queue.erase(ctx.pkt_queue.begin());
+            lock.unlock();
 
-          if (ctx.stop_requested)
-            break;
+            // Write encoded video packet to muxer
+            AVPacket *outPkt = ff.av_packet_alloc();
+            outPkt->data = encPkt.data.data();
+            outPkt->size = static_cast<int>(encPkt.data.size());
+            outPkt->stream_index = ctx.out_video_stream->index;
+            outPkt->pts = ff.av_rescale_q(encPkt.pts, {1, 1000000000},
+                                          ctx.out_video_stream->time_base);
+            outPkt->dts = ff.av_rescale_q(encPkt.dts, {1, 1000000000},
+                                          ctx.out_video_stream->time_base);
+            outPkt->duration = 1;
+            if (encPkt.keyframe)
+              outPkt->flags |= AV_PKT_FLAG_KEY;
 
-          if (ctx.pkt_queue.empty()) {
-            // encoder_done without packet — should not happen normally
-            continue;
-          }
+            ret = ff.av_interleaved_write_frame(ctx.out_fmt_ctx, outPkt);
+            ff.av_packet_free(&outPkt);
 
-          encPkt = std::move(ctx.pkt_queue.front());
-          ctx.pkt_queue.erase(ctx.pkt_queue.begin());
-        }
-
-        // Write encoded video packet to muxer
-        AVPacket *outPkt = ff.av_packet_alloc();
-        outPkt->data = encPkt.data.data();
-        outPkt->size = static_cast<int>(encPkt.data.size());
-        outPkt->stream_index = ctx.out_video_stream->index;
-        // rescale PTS from nanoseconds to output timebase
-        outPkt->pts = ff.av_rescale_q(encPkt.pts, {1, 1000000000},
-                                    ctx.out_video_stream->time_base);
-        outPkt->dts = ff.av_rescale_q(encPkt.dts, {1, 1000000000},
-                                    ctx.out_video_stream->time_base);
-        // encoder_packet has no duration field; output time_base is
-        // {fps_den, fps_num} so 1 = one frame duration
-        outPkt->duration = 1;
-        if (encPkt.keyframe)
-          outPkt->flags |= AV_PKT_FLAG_KEY;
-
-        ret = ff.av_interleaved_write_frame(ctx.out_fmt_ctx, outPkt);
-        ff.av_packet_free(&outPkt);
-
-        if (ret < 0) {
-          AppendLog(QString("ERROR: av_interleaved_write_frame (video) failed: %1").arg(ret));
-          success = false;
-          break;
-        }
-
-        // Write any buffered audio packets with PTS <= this video frame's PTS
-        // (helps with interleaving)
-        if (ctx.out_audio_stream && !ctx.audio_packets.empty()) {
-          int64_t videoPts = encPkt.pts; // in nanosec
-          auto it = ctx.audio_packets.begin();
-          while (it != ctx.audio_packets.end()) {
-            AVPacket *audioPkt = *it;
-            int64_t audioPts = audioPkt->pts;
-            // rescale audio PTS to nanoseconds for comparison
-            AVRational audioTb = ctx.out_audio_stream->time_base;
-            int64_t audioPtsNs = ff.av_rescale_q(audioPts, audioTb, {1, 1000000000});
-
-            if (audioPtsNs <= videoPts) {
-              audioPkt->stream_index = ctx.out_audio_stream->index;
-              ret = ff.av_interleaved_write_frame(ctx.out_fmt_ctx, audioPkt);
-              if (ret < 0) {
-                AppendLog(QString("ERROR: av_interleaved_write_frame (audio) failed: %1").arg(ret));
-                success = false;
-                break;
-              }
-              ff.av_packet_free(&audioPkt);
-              it = ctx.audio_packets.erase(it);
-            } else {
+            if (ret < 0) {
+              AppendLog(QString("ERROR: av_interleaved_write_frame (video) failed: %1").arg(ret));
+              success = false;
+              lock.lock();
               break;
             }
+
+            // Write buffered audio packets with PTS <= this video frame's PTS
+            if (ctx.out_audio_stream && !ctx.audio_packets.empty()) {
+              int64_t videoPts = encPkt.pts;
+              auto it = ctx.audio_packets.begin();
+              while (it != ctx.audio_packets.end()) {
+                AVPacket *audioPkt = *it;
+                int64_t audioPts = audioPkt->pts;
+                AVRational audioTb = ctx.out_audio_stream->time_base;
+                int64_t audioPtsNs = ff.av_rescale_q(audioPts, audioTb, {1, 1000000000});
+
+                if (audioPtsNs <= videoPts) {
+                  audioPkt->stream_index = ctx.out_audio_stream->index;
+                  ret = ff.av_interleaved_write_frame(ctx.out_fmt_ctx, audioPkt);
+                  if (ret < 0) {
+                    AppendLog(QString("ERROR: av_interleaved_write_frame (audio) failed: %1").arg(ret));
+                    success = false;
+                    break;
+                  }
+                  ff.av_packet_free(&audioPkt);
+                  it = ctx.audio_packets.erase(it);
+                } else {
+                  break;
+                }
+              }
+              if (!success)
+                break;
+            }
+
+            lock.lock();
           }
           if (!success)
             break;
@@ -1171,6 +1179,186 @@ void ReEncodeDialog::FeedThreadMain()
         }
       } else {
         ff.av_packet_unref(inPkt);
+      }
+    }
+
+    // --- Loop ended (EOF or stop_requested) ---
+
+    // Helper: convert a decoded frame to NV12, feed to video pipeline,
+    // and collect any available encoded packets (non-blocking).
+    // Returns false on fatal error.
+    auto feedDecodedFrame = [&]() -> bool {
+      // Lazily create swscale context (should already exist after first frame)
+      if (!ctx.sws_ctx) {
+        ctx.sws_ctx = ff.sws_getContext(
+            ctx.decoded_frame->width, ctx.decoded_frame->height,
+            (AVPixelFormat)ctx.decoded_frame->format,
+            ctx.decoded_frame->width, ctx.decoded_frame->height,
+            AV_PIX_FMT_NV12, SWS_BILINEAR, nullptr, nullptr, nullptr);
+        if (!ctx.sws_ctx) {
+          AppendLog("ERROR: Cannot create swscale context");
+          return false;
+        }
+      }
+
+      // Convert to NV12
+      ctx.nv12_frame->format = AV_PIX_FMT_NV12;
+      ctx.nv12_frame->width = ctx.decoded_frame->width;
+      ctx.nv12_frame->height = ctx.decoded_frame->height;
+      int bufSize = ff.av_image_get_buffer_size(AV_PIX_FMT_NV12,
+                                                 ctx.decoded_frame->width,
+                                                 ctx.decoded_frame->height, 1);
+      static thread_local std::vector<uint8_t> nv12_buf;
+      nv12_buf.resize(bufSize);
+      ff.av_image_fill_arrays(ctx.nv12_frame->data, ctx.nv12_frame->linesize,
+                               nv12_buf.data(), AV_PIX_FMT_NV12,
+                               ctx.decoded_frame->width,
+                               ctx.decoded_frame->height, 1);
+      ff.sws_scale(ctx.sws_ctx,
+                    ctx.decoded_frame->data, ctx.decoded_frame->linesize,
+                    0, ctx.decoded_frame->height,
+                    ctx.nv12_frame->data, ctx.nv12_frame->linesize);
+
+      // Feed to OBS video pipeline
+      int64_t ptsNs = ctx.decoded_frame->pts;
+      if (ptsNs == AV_NOPTS_VALUE)
+        ptsNs = ctx.frames_encoded.load();
+      AVRational decTb = ctx.in_fmt_ctx->streams[ctx.video_stream_idx]->time_base;
+      ptsNs = ff.av_rescale_q(ptsNs, decTb, {1, 1000000000});
+
+      video_frame vf = {};
+      if (video_output_lock_frame(m_Video, &vf, 1, ptsNs)) {
+        for (int i = 0; i < MAX_AV_PLANES; i++) {
+          if (vf.data[i] && ctx.nv12_frame->data[i]) {
+            size_t copySize = (size_t)vf.linesize[i] * ctx.decoded_frame->height;
+            if (i > 0)
+              copySize = (size_t)vf.linesize[i] * ctx.decoded_frame->height / 2;
+            memcpy(vf.data[i], ctx.nv12_frame->data[i], copySize);
+          }
+        }
+        video_output_unlock_frame(m_Video);
+      }
+
+      // Collect available encoded packets (non-blocking)
+      {
+        std::unique_lock lock(ctx.pkt_mutex);
+        while (!ctx.pkt_queue.empty()) {
+          ReEncodeCtx::Packet encPkt = std::move(ctx.pkt_queue.front());
+          ctx.pkt_queue.erase(ctx.pkt_queue.begin());
+          lock.unlock();
+
+          AVPacket *outPkt = ff.av_packet_alloc();
+          outPkt->data = encPkt.data.data();
+          outPkt->size = static_cast<int>(encPkt.data.size());
+          outPkt->stream_index = ctx.out_video_stream->index;
+          outPkt->pts = ff.av_rescale_q(encPkt.pts, {1, 1000000000},
+                                        ctx.out_video_stream->time_base);
+          outPkt->dts = ff.av_rescale_q(encPkt.dts, {1, 1000000000},
+                                        ctx.out_video_stream->time_base);
+          outPkt->duration = 1;
+          if (encPkt.keyframe)
+            outPkt->flags |= AV_PKT_FLAG_KEY;
+
+          int wr = ff.av_interleaved_write_frame(ctx.out_fmt_ctx, outPkt);
+          ff.av_packet_free(&outPkt);
+          if (wr < 0) {
+            AppendLog(QString("ERROR: av_interleaved_write_frame (video) failed: %1").arg(wr));
+            return false;
+          }
+
+          // Write buffered audio with PTS <= this video frame
+          if (ctx.out_audio_stream && !ctx.audio_packets.empty()) {
+            int64_t videoPts = encPkt.pts;
+            auto it = ctx.audio_packets.begin();
+            while (it != ctx.audio_packets.end()) {
+              AVPacket *audioPkt = *it;
+              int64_t audioPtsNs = ff.av_rescale_q(
+                  audioPkt->pts, ctx.out_audio_stream->time_base, {1, 1000000000});
+              if (audioPtsNs <= videoPts) {
+                audioPkt->stream_index = ctx.out_audio_stream->index;
+                ff.av_interleaved_write_frame(ctx.out_fmt_ctx, audioPkt);
+                ff.av_packet_free(&audioPkt);
+                it = ctx.audio_packets.erase(it);
+              } else {
+                break;
+              }
+            }
+          }
+
+          lock.lock();
+        }
+      }
+      return true;
+    };
+
+    // Flush the decoder: send null packet, drain remaining frames
+    ff.avcodec_send_packet(ctx.video_decoder, nullptr);
+    while (true) {
+      ret = ff.avcodec_receive_frame(ctx.video_decoder, ctx.decoded_frame);
+      if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+        break;
+      if (ret < 0) {
+        AppendLog(QString("ERROR: decoder drain failed: %1").arg(ret));
+        success = false;
+        break;
+      }
+      if (!feedDecodedFrame()) {
+        success = false;
+        break;
+      }
+      ctx.frames_encoded++;
+      UpdateProgress(ctx.frames_encoded, ctx.total_frames);
+    }
+
+    // Signal that we've finished feeding all frames
+    {
+      std::lock_guard lock(ctx.pkt_mutex);
+      ctx.encoder_done = true;
+    }
+    ctx.pkt_cv.notify_all();
+
+    // If EOF (not user-requested stop), trigger StopEncoding on main thread
+    if (!ctx.stop_requested) {
+      QMetaObject::invokeMethod(this, [this]() {
+        if (m_Encoding)
+          StopEncoding();
+      }, Qt::QueuedConnection);
+    }
+
+    // Wait for StopEncoding to flush the encoder via obs_output_stop
+    {
+      std::unique_lock lock(ctx.pkt_mutex);
+      ctx.pkt_cv.wait(lock, [&ctx] { return ctx.encoder_flushed.load(); });
+    }
+
+    // Collect remaining encoded packets flushed by obs_output_stop
+    {
+      std::unique_lock lock(ctx.pkt_mutex);
+      while (!ctx.pkt_queue.empty()) {
+        ReEncodeCtx::Packet encPkt = std::move(ctx.pkt_queue.front());
+        ctx.pkt_queue.erase(ctx.pkt_queue.begin());
+        lock.unlock();
+
+        AVPacket *outPkt = ff.av_packet_alloc();
+        outPkt->data = encPkt.data.data();
+        outPkt->size = static_cast<int>(encPkt.data.size());
+        outPkt->stream_index = ctx.out_video_stream->index;
+        outPkt->pts = ff.av_rescale_q(encPkt.pts, {1, 1000000000},
+                                      ctx.out_video_stream->time_base);
+        outPkt->dts = ff.av_rescale_q(encPkt.dts, {1, 1000000000},
+                                      ctx.out_video_stream->time_base);
+        outPkt->duration = 1;
+        if (encPkt.keyframe)
+          outPkt->flags |= AV_PKT_FLAG_KEY;
+
+        int wr = ff.av_interleaved_write_frame(ctx.out_fmt_ctx, outPkt);
+        ff.av_packet_free(&outPkt);
+        if (wr < 0) {
+          AppendLog(QString("ERROR: av_interleaved_write_frame (final) failed: %1").arg(wr));
+          success = false;
+        }
+
+        lock.lock();
       }
     }
 
@@ -1237,21 +1425,8 @@ void ReEncodeDialog::FeedThreadMain()
   }
   ctx.audio_packets.clear();
 
-  // Signal output to stop
-  {
-    std::lock_guard lock(ctx.pkt_mutex);
-    ctx.encoder_done = true;
-  }
-
   AppendLog(success ? "Encoding completed" : "Encoding failed");
   UpdateProgress(ctx.total_frames, ctx.total_frames);
-
-  // Stop encoding on the main thread
-  QMetaObject::invokeMethod(this, [this]() {
-    if (m_Encoding) {
-      StopEncoding();
-    }
-  }, Qt::QueuedConnection);
 }
 
 // ============================================================================
