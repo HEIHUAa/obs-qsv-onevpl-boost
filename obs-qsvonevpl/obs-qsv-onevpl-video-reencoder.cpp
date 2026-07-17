@@ -1051,11 +1051,8 @@ void ReEncodeDialog::FeedThreadMain()
                       ctx.nv12_frame->data, ctx.nv12_frame->linesize);
 
         // Feed NV12 frame to OBS video pipeline
-        video_frame vf = {};
-        for (int i = 0; i < MAX_AV_PLANES; i++) {
-          vf.data[i] = ctx.nv12_frame->data[i];
-          vf.linesize[i] = static_cast<uint32_t>(ctx.nv12_frame->linesize[i]);
-        }
+        // IMPORTANT: video_output_lock_frame fills vf with the internal buffer
+        // pointers, so we must lock first, then copy our data into those pointers.
 
         // Use decoded frame PTS as timestamp (in decoder's timebase → convert to
         // nanosec for OBS)
@@ -1067,7 +1064,22 @@ void ReEncodeDialog::FeedThreadMain()
         AVRational decTb = ctx.in_fmt_ctx->streams[ctx.video_stream_idx]->time_base;
         ptsNs = ff.av_rescale_q(ptsNs, decTb, {1, 1000000000});
 
-        video_output_lock_frame(m_Video, &vf, 1, ptsNs);
+        video_frame vf = {};
+        if (!video_output_lock_frame(m_Video, &vf, 1, ptsNs)) {
+          // no free frame in the cache — skip this frame
+          continue;
+        }
+
+        // Copy our NV12 data into the video output's frame buffer
+        for (int i = 0; i < MAX_AV_PLANES; i++) {
+          if (vf.data[i] && ctx.nv12_frame->data[i]) {
+            size_t copySize = (size_t)vf.linesize[i] * ctx.decoded_frame->height;
+            if (i > 0)
+              copySize = (size_t)vf.linesize[i] * ctx.decoded_frame->height / 2;
+            memcpy(vf.data[i], ctx.nv12_frame->data[i], copySize);
+          }
+        }
+
         video_output_unlock_frame(m_Video);
 
         // Wait for encoded packet to appear in queue
