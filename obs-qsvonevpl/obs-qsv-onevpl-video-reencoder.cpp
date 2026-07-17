@@ -770,31 +770,9 @@ bool ReEncodeDialog::StartEncoding()
   }
   dbglog("[QSV VPL ReEncoder] DEBUG: frames allocated OK");
 
-  // 7. Create swscale context for NV12 conversion
-  dbglog("[QSV VPL ReEncoder] DEBUG: creating swscale context...");
-  // pix_fmt may be AV_PIX_FMT_NONE (-1) after avcodec_open2 for some decoders;
-  // fall back to codec's default or YUV420P to avoid sws_getContext crash
-  AVPixelFormat srcFmt = m_Ctx.video_decoder->pix_fmt;
-  if (srcFmt == AV_PIX_FMT_NONE) {
-    if (m_Ctx.video_decoder->codec->pix_fmts &&
-        m_Ctx.video_decoder->codec->pix_fmts[0] != AV_PIX_FMT_NONE) {
-      srcFmt = m_Ctx.video_decoder->codec->pix_fmts[0];
-    } else {
-      srcFmt = AV_PIX_FMT_YUV420P; // safe default for most video files
-    }
-  }
-  dbglog("[QSV VPL ReEncoder] DEBUG: sws_getContext params: %dx%d fmt=%d -> %dx%d NV12(fmt=%d)",
-         srcWidth, srcHeight, (int)srcFmt,
-         srcWidth, srcHeight, (int)AV_PIX_FMT_NV12);
-  m_Ctx.sws_ctx = m_FF.sws_getContext(srcWidth, srcHeight, srcFmt,
-                                       srcWidth, srcHeight, AV_PIX_FMT_NV12,
-                                       SWS_BILINEAR, nullptr, nullptr, nullptr);
-  dbglog("[QSV VPL ReEncoder] DEBUG: sws_getContext returned %p", m_Ctx.sws_ctx);
-  if (!m_Ctx.sws_ctx) {
-    AppendLog("ERROR: Cannot create swscale context");
-    return false;
-  }
-  dbglog("[QSV VPL ReEncoder] DEBUG: swscale context created OK");
+  // 7. swscale context is created lazily in FeedThreadMain after first frame
+  //    is decoded, using decoded_frame->format (100% accurate). This avoids
+  //    the AV_PIX_FMT_NONE issue when avcodec_open2 doesn't set pix_fmt.
 
   // 8. Create OBS video output
   dbglog("[QSV VPL ReEncoder] DEBUG: creating video output...");
@@ -1030,6 +1008,26 @@ void ReEncodeDialog::FeedThreadMain()
           AppendLog(QString("ERROR: avcodec_receive_frame failed: %1").arg(ret));
           success = false;
           break;
+        }
+
+        // Lazily create swscale context after first frame is decoded,
+        // using the actual pixel format from the frame (100% accurate).
+        // This follows the same pattern as OBS media-playback (media.c:296).
+        if (!ctx.sws_ctx) {
+          dbglog("[QSV VPL ReEncoder] Creating sws_context from frame: %dx%d fmt=%d",
+                 ctx.decoded_frame->width, ctx.decoded_frame->height,
+                 ctx.decoded_frame->format);
+          ctx.sws_ctx = ff.sws_getContext(
+              ctx.decoded_frame->width, ctx.decoded_frame->height,
+              (AVPixelFormat)ctx.decoded_frame->format,
+              ctx.decoded_frame->width, ctx.decoded_frame->height,
+              AV_PIX_FMT_NV12, SWS_BILINEAR, nullptr, nullptr, nullptr);
+          if (!ctx.sws_ctx) {
+            AppendLog("ERROR: Cannot create swscale context");
+            success = false;
+            break;
+          }
+          dbglog("[QSV VPL ReEncoder] sws_context created OK");
         }
 
         // Convert to NV12
