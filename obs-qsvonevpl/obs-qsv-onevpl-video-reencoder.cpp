@@ -772,10 +772,21 @@ bool ReEncodeDialog::StartEncoding()
 
   // 7. Create swscale context for NV12 conversion
   dbglog("[QSV VPL ReEncoder] DEBUG: creating swscale context...");
+  // pix_fmt may be AV_PIX_FMT_NONE (-1) after avcodec_open2 for some decoders;
+  // fall back to codec's default or YUV420P to avoid sws_getContext crash
+  AVPixelFormat srcFmt = m_Ctx.video_decoder->pix_fmt;
+  if (srcFmt == AV_PIX_FMT_NONE) {
+    if (m_Ctx.video_decoder->codec->pix_fmts &&
+        m_Ctx.video_decoder->codec->pix_fmts[0] != AV_PIX_FMT_NONE) {
+      srcFmt = m_Ctx.video_decoder->codec->pix_fmts[0];
+    } else {
+      srcFmt = AV_PIX_FMT_YUV420P; // safe default for most video files
+    }
+  }
   dbglog("[QSV VPL ReEncoder] DEBUG: sws_getContext params: %dx%d fmt=%d -> %dx%d NV12(fmt=%d)",
-         srcWidth, srcHeight, (int)m_Ctx.video_decoder->pix_fmt,
+         srcWidth, srcHeight, (int)srcFmt,
          srcWidth, srcHeight, (int)AV_PIX_FMT_NV12);
-  m_Ctx.sws_ctx = m_FF.sws_getContext(srcWidth, srcHeight, m_Ctx.video_decoder->pix_fmt,
+  m_Ctx.sws_ctx = m_FF.sws_getContext(srcWidth, srcHeight, srcFmt,
                                        srcWidth, srcHeight, AV_PIX_FMT_NV12,
                                        SWS_BILINEAR, nullptr, nullptr, nullptr);
   dbglog("[QSV VPL ReEncoder] DEBUG: sws_getContext returned %p", m_Ctx.sws_ctx);
