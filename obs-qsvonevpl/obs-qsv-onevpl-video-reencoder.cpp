@@ -772,9 +772,13 @@ bool ReEncodeDialog::StartEncoding()
 
   // 7. Create swscale context for NV12 conversion
   dbglog("[QSV VPL ReEncoder] DEBUG: creating swscale context...");
+  dbglog("[QSV VPL ReEncoder] DEBUG: sws_getContext params: %dx%d fmt=%d -> %dx%d NV12(fmt=%d)",
+         srcWidth, srcHeight, (int)m_Ctx.video_decoder->pix_fmt,
+         srcWidth, srcHeight, (int)AV_PIX_FMT_NV12);
   m_Ctx.sws_ctx = m_FF.sws_getContext(srcWidth, srcHeight, m_Ctx.video_decoder->pix_fmt,
                                        srcWidth, srcHeight, AV_PIX_FMT_NV12,
                                        SWS_BILINEAR, nullptr, nullptr, nullptr);
+  dbglog("[QSV VPL ReEncoder] DEBUG: sws_getContext returned %p", m_Ctx.sws_ctx);
   if (!m_Ctx.sws_ctx) {
     AppendLog("ERROR: Cannot create swscale context");
     return false;
