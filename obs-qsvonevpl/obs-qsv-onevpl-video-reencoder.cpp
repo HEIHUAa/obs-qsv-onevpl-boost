@@ -1006,169 +1006,179 @@ void ReEncodeDialog::FeedThreadMain()
       if (inPkt->stream_index == ctx.video_stream_idx) {
         // --- Video packet ---
 
-        // Send to decoder
+        // Helper: process one decoded frame (NV12 convert → feed OBS → mux)
+        auto processFrame = [&]() -> bool {
+          // Lazily create swscale context after first frame is decoded
+          if (!ctx.sws_ctx) {
+            dbglog("[QSV VPL ReEncoder] Creating sws_context from frame: %dx%d fmt=%d",
+                   ctx.decoded_frame->width, ctx.decoded_frame->height,
+                   ctx.decoded_frame->format);
+            ctx.sws_ctx = ff.sws_getContext(
+                ctx.decoded_frame->width, ctx.decoded_frame->height,
+                (AVPixelFormat)ctx.decoded_frame->format,
+                ctx.decoded_frame->width, ctx.decoded_frame->height,
+                AV_PIX_FMT_NV12, SWS_BILINEAR, nullptr, nullptr, nullptr);
+            if (!ctx.sws_ctx) {
+              AppendLog("ERROR: Cannot create swscale context");
+              return false;
+            }
+            dbglog("[QSV VPL ReEncoder] sws_context created OK");
+          }
+
+          // Convert to NV12
+          ctx.nv12_frame->format = AV_PIX_FMT_NV12;
+          ctx.nv12_frame->width = ctx.decoded_frame->width;
+          ctx.nv12_frame->height = ctx.decoded_frame->height;
+          int bufSize = ff.av_image_get_buffer_size(AV_PIX_FMT_NV12,
+                                                     ctx.decoded_frame->width,
+                                                     ctx.decoded_frame->height, 1);
+          static thread_local std::vector<uint8_t> nv12_buf;
+          nv12_buf.resize(bufSize);
+          ff.av_image_fill_arrays(ctx.nv12_frame->data, ctx.nv12_frame->linesize,
+                                   nv12_buf.data(), AV_PIX_FMT_NV12,
+                                   ctx.decoded_frame->width,
+                                   ctx.decoded_frame->height, 1);
+
+          ff.sws_scale(ctx.sws_ctx,
+                        ctx.decoded_frame->data, ctx.decoded_frame->linesize,
+                        0, ctx.decoded_frame->height,
+                        ctx.nv12_frame->data, ctx.nv12_frame->linesize);
+
+          // Feed NV12 frame to OBS video pipeline
+          int64_t ptsNs = ctx.decoded_frame->pts;
+          if (ptsNs == AV_NOPTS_VALUE)
+            ptsNs = ctx.frames_encoded.load();
+
+          AVRational decTb = ctx.in_fmt_ctx->streams[ctx.video_stream_idx]->time_base;
+          ptsNs = ff.av_rescale_q(ptsNs, decTb, {1, 1000000000});
+
+          video_frame vf = {};
+          if (!video_output_lock_frame(m_Video, &vf, 1, ptsNs)) {
+            return true; // no free frame in cache, skip
+          }
+
+          for (int i = 0; i < MAX_AV_PLANES; i++) {
+            if (vf.data[i] && ctx.nv12_frame->data[i]) {
+              size_t copySize = (size_t)vf.linesize[i] * ctx.decoded_frame->height;
+              if (i > 0)
+                copySize = (size_t)vf.linesize[i] * ctx.decoded_frame->height / 2;
+              memcpy(vf.data[i], ctx.nv12_frame->data[i], copySize);
+            }
+          }
+
+          video_output_unlock_frame(m_Video);
+
+          // Process available encoded packets (non-blocking)
+          {
+            std::unique_lock lock(ctx.pkt_mutex);
+            while (!ctx.pkt_queue.empty()) {
+              ReEncodeCtx::Packet encPkt = std::move(ctx.pkt_queue.front());
+              ctx.pkt_queue.erase(ctx.pkt_queue.begin());
+              lock.unlock();
+
+              AVPacket *outPkt = ff.av_packet_alloc();
+              outPkt->data = encPkt.data.data();
+              outPkt->size = static_cast<int>(encPkt.data.size());
+              outPkt->stream_index = ctx.out_video_stream->index;
+              outPkt->pts = ff.av_rescale_q(encPkt.pts, {1, 1000000000},
+                                            ctx.out_video_stream->time_base);
+              outPkt->dts = ff.av_rescale_q(encPkt.dts, {1, 1000000000},
+                                            ctx.out_video_stream->time_base);
+              outPkt->duration = 1;
+              if (encPkt.keyframe)
+                outPkt->flags |= AV_PKT_FLAG_KEY;
+
+              int wr = ff.av_interleaved_write_frame(ctx.out_fmt_ctx, outPkt);
+              ff.av_packet_free(&outPkt);
+
+              if (wr < 0) {
+                AppendLog(QString("ERROR: av_interleaved_write_frame (video) failed: %1").arg(wr));
+                return false;
+              }
+
+              // Write buffered audio packets with PTS <= this video frame's PTS
+              if (ctx.out_audio_stream && !ctx.audio_packets.empty()) {
+                int64_t videoPts = encPkt.pts;
+                auto it = ctx.audio_packets.begin();
+                while (it != ctx.audio_packets.end()) {
+                  AVPacket *audioPkt = *it;
+                  int64_t audioPtsNs = ff.av_rescale_q(
+                      audioPkt->pts, ctx.out_audio_stream->time_base, {1, 1000000000});
+                  if (audioPtsNs <= videoPts) {
+                    audioPkt->stream_index = ctx.out_audio_stream->index;
+                    int awr = ff.av_interleaved_write_frame(ctx.out_fmt_ctx, audioPkt);
+                    if (awr < 0) {
+                      AppendLog(QString("ERROR: av_interleaved_write_frame (audio) failed: %1").arg(awr));
+                      return false;
+                    }
+                    ff.av_packet_free(&audioPkt);
+                    it = ctx.audio_packets.erase(it);
+                  } else {
+                    break;
+                  }
+                }
+              }
+
+              lock.lock();
+            }
+          }
+
+          ctx.frames_encoded++;
+          UpdateProgress(ctx.frames_encoded, ctx.total_frames);
+          return true;
+        };
+
+        // Send packet to decoder.
+        // EAGAIN means decoder output buffer is full — drain it first, then retry.
         ret = ff.avcodec_send_packet(ctx.video_decoder, inPkt);
+        if (ret == AVERROR(EAGAIN)) {
+          // drain decoder output
+          while (true) {
+            ret = ff.avcodec_receive_frame(ctx.video_decoder, ctx.decoded_frame);
+            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+              break;
+            if (ret < 0) {
+              AppendLog(QString("ERROR: avcodec_receive_frame (drain) failed: %1").arg(ret));
+              success = false;
+              break;
+            }
+            if (!processFrame()) {
+              success = false;
+              break;
+            }
+          }
+          if (!success) {
+            ff.av_packet_unref(inPkt);
+            break;
+          }
+          // retry sending the same packet
+          ret = ff.avcodec_send_packet(ctx.video_decoder, inPkt);
+        }
         ff.av_packet_unref(inPkt);
 
-        if (ret < 0) {
+        if (ret < 0 && ret != AVERROR_EOF) {
           AppendLog(QString("ERROR: avcodec_send_packet failed: %1").arg(ret));
           success = false;
           break;
         }
 
-        // Receive decoded frame
-        ret = ff.avcodec_receive_frame(ctx.video_decoder, ctx.decoded_frame);
-        if (ret == AVERROR(EAGAIN)) {
-          continue; // need more packets
-        }
-        if (ret < 0) {
-          AppendLog(QString("ERROR: avcodec_receive_frame failed: %1").arg(ret));
-          success = false;
-          break;
-        }
-
-        // Lazily create swscale context after first frame is decoded,
-        // using the actual pixel format from the frame (100% accurate).
-        // This follows the same pattern as OBS media-playback (media.c:296).
-        if (!ctx.sws_ctx) {
-          dbglog("[QSV VPL ReEncoder] Creating sws_context from frame: %dx%d fmt=%d",
-                 ctx.decoded_frame->width, ctx.decoded_frame->height,
-                 ctx.decoded_frame->format);
-          ctx.sws_ctx = ff.sws_getContext(
-              ctx.decoded_frame->width, ctx.decoded_frame->height,
-              (AVPixelFormat)ctx.decoded_frame->format,
-              ctx.decoded_frame->width, ctx.decoded_frame->height,
-              AV_PIX_FMT_NV12, SWS_BILINEAR, nullptr, nullptr, nullptr);
-          if (!ctx.sws_ctx) {
-            AppendLog("ERROR: Cannot create swscale context");
+        // Receive all available decoded frames (one packet may produce multiple)
+        while (true) {
+          ret = ff.avcodec_receive_frame(ctx.video_decoder, ctx.decoded_frame);
+          if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+            break;
+          if (ret < 0) {
+            AppendLog(QString("ERROR: avcodec_receive_frame failed: %1").arg(ret));
             success = false;
             break;
           }
-          dbglog("[QSV VPL ReEncoder] sws_context created OK");
-        }
-
-        // Convert to NV12
-        ctx.nv12_frame->format = AV_PIX_FMT_NV12;
-        ctx.nv12_frame->width = ctx.decoded_frame->width;
-        ctx.nv12_frame->height = ctx.decoded_frame->height;
-        ret = ff.av_image_get_buffer_size(AV_PIX_FMT_NV12,
-                                           ctx.decoded_frame->width,
-                                           ctx.decoded_frame->height, 1);
-        // allocate NV12 buffer (reuse if already allocated)
-        static thread_local std::vector<uint8_t> nv12_buf;
-        nv12_buf.resize(ret);
-        ff.av_image_fill_arrays(ctx.nv12_frame->data, ctx.nv12_frame->linesize,
-                                 nv12_buf.data(), AV_PIX_FMT_NV12,
-                                 ctx.decoded_frame->width,
-                                 ctx.decoded_frame->height, 1);
-
-        ff.sws_scale(ctx.sws_ctx,
-                      ctx.decoded_frame->data, ctx.decoded_frame->linesize,
-                      0, ctx.decoded_frame->height,
-                      ctx.nv12_frame->data, ctx.nv12_frame->linesize);
-
-        // Feed NV12 frame to OBS video pipeline
-        // IMPORTANT: video_output_lock_frame fills vf with the internal buffer
-        // pointers, so we must lock first, then copy our data into those pointers.
-
-        // Use decoded frame PTS as timestamp (in decoder's timebase → convert to
-        // nanosec for OBS)
-        int64_t ptsNs = ctx.decoded_frame->pts;
-        if (ptsNs == AV_NOPTS_VALUE)
-          ptsNs = ctx.frames_encoded.load();
-
-        // rescale from decoder timebase to nanoseconds
-        AVRational decTb = ctx.in_fmt_ctx->streams[ctx.video_stream_idx]->time_base;
-        ptsNs = ff.av_rescale_q(ptsNs, decTb, {1, 1000000000});
-
-        video_frame vf = {};
-        if (!video_output_lock_frame(m_Video, &vf, 1, ptsNs)) {
-          // no free frame in the cache — skip this frame
-          continue;
-        }
-
-        // Copy our NV12 data into the video output's frame buffer
-        for (int i = 0; i < MAX_AV_PLANES; i++) {
-          if (vf.data[i] && ctx.nv12_frame->data[i]) {
-            size_t copySize = (size_t)vf.linesize[i] * ctx.decoded_frame->height;
-            if (i > 0)
-              copySize = (size_t)vf.linesize[i] * ctx.decoded_frame->height / 2;
-            memcpy(vf.data[i], ctx.nv12_frame->data[i], copySize);
-          }
-        }
-
-        video_output_unlock_frame(m_Video);
-
-        // Process any available encoded packets (non-blocking).
-        // QSV encoder may buffer frames (B-frames, lookahead) so we
-        // cannot wait for a packet after each frame — we push all frames
-        // first and collect packets as they arrive.
-        {
-          std::unique_lock lock(ctx.pkt_mutex);
-          while (!ctx.pkt_queue.empty()) {
-            ReEncodeCtx::Packet encPkt = std::move(ctx.pkt_queue.front());
-            ctx.pkt_queue.erase(ctx.pkt_queue.begin());
-            lock.unlock();
-
-            // Write encoded video packet to muxer
-            AVPacket *outPkt = ff.av_packet_alloc();
-            outPkt->data = encPkt.data.data();
-            outPkt->size = static_cast<int>(encPkt.data.size());
-            outPkt->stream_index = ctx.out_video_stream->index;
-            outPkt->pts = ff.av_rescale_q(encPkt.pts, {1, 1000000000},
-                                          ctx.out_video_stream->time_base);
-            outPkt->dts = ff.av_rescale_q(encPkt.dts, {1, 1000000000},
-                                          ctx.out_video_stream->time_base);
-            outPkt->duration = 1;
-            if (encPkt.keyframe)
-              outPkt->flags |= AV_PKT_FLAG_KEY;
-
-            ret = ff.av_interleaved_write_frame(ctx.out_fmt_ctx, outPkt);
-            ff.av_packet_free(&outPkt);
-
-            if (ret < 0) {
-              AppendLog(QString("ERROR: av_interleaved_write_frame (video) failed: %1").arg(ret));
-              success = false;
-              lock.lock();
-              break;
-            }
-
-            // Write buffered audio packets with PTS <= this video frame's PTS
-            if (ctx.out_audio_stream && !ctx.audio_packets.empty()) {
-              int64_t videoPts = encPkt.pts;
-              auto it = ctx.audio_packets.begin();
-              while (it != ctx.audio_packets.end()) {
-                AVPacket *audioPkt = *it;
-                int64_t audioPts = audioPkt->pts;
-                AVRational audioTb = ctx.out_audio_stream->time_base;
-                int64_t audioPtsNs = ff.av_rescale_q(audioPts, audioTb, {1, 1000000000});
-
-                if (audioPtsNs <= videoPts) {
-                  audioPkt->stream_index = ctx.out_audio_stream->index;
-                  ret = ff.av_interleaved_write_frame(ctx.out_fmt_ctx, audioPkt);
-                  if (ret < 0) {
-                    AppendLog(QString("ERROR: av_interleaved_write_frame (audio) failed: %1").arg(ret));
-                    success = false;
-                    break;
-                  }
-                  ff.av_packet_free(&audioPkt);
-                  it = ctx.audio_packets.erase(it);
-                } else {
-                  break;
-                }
-              }
-              if (!success)
-                break;
-            }
-
-            lock.lock();
-          }
-          if (!success)
+          if (!processFrame()) {
+            success = false;
             break;
+          }
         }
-
-        ctx.frames_encoded++;
-        UpdateProgress(ctx.frames_encoded, ctx.total_frames);
+        if (!success)
+          break;
 
       } else if (inPkt->stream_index == ctx.audio_stream_idx) {
         // --- Audio packet: buffer for later writing ---
