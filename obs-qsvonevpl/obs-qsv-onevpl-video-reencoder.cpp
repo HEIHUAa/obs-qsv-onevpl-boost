@@ -12,6 +12,7 @@
 #include <obs-frontend-api.h>
 #include <util/config-file.h>
 #include <util/platform.h>
+#include <util/threading.h>
 #include <cstdio>
 
 using namespace std::chrono_literals;
@@ -23,7 +24,11 @@ static const char *const REENCODE_OUTPUT_ID = "qsv_reencode_output";
 
 // Per-output context — passed to output callbacks via void *data
 struct reencode_output_ctx {
+  obs_output_t *output;
   ReEncodeDialog *dialog;
+
+  pthread_t stop_thread;
+  bool stop_thread_active = false;
 };
 
 // ============================================================================
@@ -192,33 +197,58 @@ static ReEncodeDialog *g_PendingOutputDialog = nullptr;
 static void *reencode_output_create(obs_data_t *, obs_output_t *output)
 {
   auto *ctx = new reencode_output_ctx;
+  ctx->output = output;
   ctx->dialog = g_PendingOutputDialog;
   g_PendingOutputDialog = nullptr;
-  obs_output_set_media(output, obs_get_video(), nullptr);
   return ctx;
 }
 
 static void reencode_output_destroy(void *data)
 {
-  delete static_cast<reencode_output_ctx *>(data);
+  auto *ctx = static_cast<reencode_output_ctx *>(data);
+  if (ctx->stop_thread_active)
+    pthread_join(ctx->stop_thread, nullptr);
+  delete ctx;
 }
 
 static bool reencode_output_start(void *data)
 {
-  // nothing — feed thread handles all I/O
-  UNUSED_PARAMETER(data);
+  auto *ctx = static_cast<reencode_output_ctx *>(data);
+
+  if (!obs_output_can_begin_data_capture(ctx->output, 0))
+    return false;
+  if (!obs_output_initialize_encoders(ctx->output, 0))
+    return false;
+
+  if (ctx->stop_thread_active)
+    pthread_join(ctx->stop_thread, nullptr);
+
+  obs_output_begin_data_capture(ctx->output, 0);
   return true;
+}
+
+static void *reencode_stop_thread(void *data)
+{
+  auto *ctx = static_cast<reencode_output_ctx *>(data);
+  obs_output_end_data_capture(ctx->output);
+  ctx->stop_thread_active = false;
+  return nullptr;
 }
 
 static void reencode_output_stop(void *data, uint64_t)
 {
-  // signal feed thread to drain
   auto *ctx = static_cast<reencode_output_ctx *>(data);
+
+  // signal feed thread to stop
   if (ctx->dialog) {
     auto &rc = ctx->dialog->m_Ctx;
     rc.encoder_done = true;
     rc.pkt_cv.notify_all();
   }
+
+  // end data capture in a separate thread (may block waiting for encoder)
+  ctx->stop_thread_active = pthread_create(&ctx->stop_thread, nullptr,
+                                           reencode_stop_thread, data) == 0;
 }
 
 static void reencode_output_encoded_packet(void *data, struct encoder_packet *packet)
