@@ -215,15 +215,24 @@ static bool reencode_output_start(void *data)
 {
   auto *ctx = static_cast<reencode_output_ctx *>(data);
 
-  if (!obs_output_can_begin_data_capture(ctx->output, 0))
+  blog(LOG_INFO, "[QSV VPL ReEncoder] reencode_output_start: checking can_begin_data_capture");
+  if (!obs_output_can_begin_data_capture(ctx->output, 0)) {
+    blog(LOG_ERROR, "[QSV VPL ReEncoder] obs_output_can_begin_data_capture failed");
     return false;
-  if (!obs_output_initialize_encoders(ctx->output, 0))
+  }
+
+  blog(LOG_INFO, "[QSV VPL ReEncoder] reencode_output_start: initializing encoders");
+  if (!obs_output_initialize_encoders(ctx->output, 0)) {
+    blog(LOG_ERROR, "[QSV VPL ReEncoder] obs_output_initialize_encoders failed");
     return false;
+  }
 
   if (ctx->stop_thread_active)
     pthread_join(ctx->stop_thread, nullptr);
 
+  blog(LOG_INFO, "[QSV VPL ReEncoder] reencode_output_start: beginning data capture");
   obs_output_begin_data_capture(ctx->output, 0);
+  blog(LOG_INFO, "[QSV VPL ReEncoder] reencode_output_start: data capture started");
   return true;
 }
 
@@ -765,6 +774,7 @@ bool ReEncodeDialog::StartEncoding()
   obs_data_set_int(encSettings, "width", srcWidth);
   obs_data_set_int(encSettings, "height", srcHeight);
 
+  blog(LOG_INFO, "[QSV VPL ReEncoder] Creating encoder '%s'...", m_EncoderID.c_str());
   m_Encoder = obs_video_encoder_create(m_EncoderID.c_str(), "qsv-reencode-encoder",
                                        encSettings, nullptr);
   obs_data_release(encSettings);
@@ -775,6 +785,7 @@ bool ReEncodeDialog::StartEncoding()
     AppendLog(QString("ERROR: Cannot create encoder '%1'").arg(QString::fromStdString(m_EncoderID)));
     return false;
   }
+  blog(LOG_INFO, "[QSV VPL ReEncoder] Encoder created, setting video...");
 
   obs_encoder_set_video(m_Encoder, m_Video);
 
@@ -793,6 +804,7 @@ bool ReEncodeDialog::StartEncoding()
   }
 
   obs_output_set_video_encoder(m_Output, m_Encoder);
+  blog(LOG_INFO, "[QSV VPL ReEncoder] Output created, encoder attached");
 
   // 11. Create output file (FFmpeg muxer)
   m_OutputPathBytes = outputPath.toUtf8();
@@ -849,10 +861,13 @@ bool ReEncodeDialog::StartEncoding()
 
   // 12. Start OBS output (this internally initializes encoder, starts encoding,
   //     and begins data capture)
+  blog(LOG_INFO, "[QSV VPL ReEncoder] About to start OBS output...");
   if (!obs_output_start(m_Output)) {
+    blog(LOG_ERROR, "[QSV VPL ReEncoder] obs_output_start failed");
     AppendLog("ERROR: obs_output_start failed");
     return false;
   }
+  blog(LOG_INFO, "[QSV VPL ReEncoder] OBS output started successfully");
 
   AppendLog(QString("Encoding started: %1 -> %2").arg(inputPath, outputPath));
 
