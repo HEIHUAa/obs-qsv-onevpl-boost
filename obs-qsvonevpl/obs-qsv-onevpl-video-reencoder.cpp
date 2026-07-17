@@ -441,7 +441,7 @@ bool ReEncodeDialog::LoadEncoderConfigFromFile()
     }
   }
 
-  true;
+  return true;
 }
 
 // ============================================================================
