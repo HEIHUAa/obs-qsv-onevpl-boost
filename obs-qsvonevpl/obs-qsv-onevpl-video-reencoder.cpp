@@ -114,8 +114,9 @@ bool LoadFFmpegAPI(ffmpeg_api &ff)
       GetProcAddress(avutil, "av_packet_free"));
 
   // avcodec
-  ok = ok && ResolveFunc(avcodec, "avcodec_find_decoder", ff.avcodec_find_decoder);
-  ok = ok && ResolveFunc(avcodec, "avcodec_alloc_context3", ff.avcodec_alloc_context3);
+  ok = ok ResolveFunc(avcodec, "avcodec_find_decoder", ff.avcodec_find_decoder);
+  ok = ok ResolveFunc(avcodec, "avcodec_find_decoder_by_name", ff.avcodec_find_decoder_by_name);
+  ok = ok ResolveFunc(avcodec, "avcodec_alloc_context3", ff.avcodec_alloc_context3);
   ok = ok && ResolveFunc(avcodec, "avcodec_parameters_to_context", ff.avcodec_parameters_to_context);
   ok = ok && ResolveFunc(avcodec, "avcodec_open2", ff.avcodec_open2);
   ok = ok && ResolveFunc(avcodec, "avcodec_send_packet", ff.avcodec_send_packet);
@@ -422,9 +423,25 @@ bool ReEncodeDialog::LoadEncoderConfigFromFile()
     m_FpsDen = 1;
   }
 
-  blog(LOG_INFO, "[QSV VPL ReEncoder] Loaded config from profile: %s %dx%d %d/%d fps",
+  blog(LOG_INFO, "[QSV VPL ReEncoder] Loaded config from: %s %dx%d %d/%d fps",
        m_EncoderID.c_str(), m_Width, m_Height, m_FpsNum, m_FpsDen);
-  return true;
+
+  // Try to load encoder settings from config file.
+  // OBS stores encoder settings as a JSON string under RecEncoderSettings
+  // in the appropriate output section.
+  const char *section = (mode strcmp(mode, "Advanced") == 0) ? "AdvOut" : "SimpleOutput";
+  const char *settingsJson = config_get_string(config, section, "RecEncoderSettings");
+  if (settingsJson *settingsJson) {
+    obs_data_t *settings = obs_data_create_from_json(settingsJson);
+    if (settings) {
+      if (m_EncoderSettings)
+        obs_data_release(m_EncoderSettings);
+      m_EncoderSettings = settings;
+      blog(LOG_INFO, "[QSV VPL ReEncoder] Loaded encoder settings from config");
+    }
+  }
+
+  true;
 }
 
 // ============================================================================
@@ -706,6 +723,25 @@ bool ReEncodeDialog::StartEncoding()
   dbglog("[QSV VPL ReEncoder] DEBUG: video stream idx=%d", m_Ctx.video_stream_idx);
 
   AVStream *inVideoStream = m_Ctx.in_fmt_ctx->streams[m_Ctx.video_stream_idx];
+
+  // Try QSV hardware decoder for better performance
+  const char *qsvDecName = nullptr;
+  switch (inVideoStream->codecpar->codec_id) {
+    case AV_CODEC_ID_H264: qsvDecName = "h264_qsv"; break;
+    case AV_CODEC_ID_HEVC: qsvDecName = "hevc_qsv"; break;
+    case AV_CODEC_ID_AV1:  qsvDecName = "av1_qsv";  break;
+    case AV_CODEC_ID_VP9: qsvDecName = "vp9_qsv";  break;
+    default: break;
+  }
+  if (qsvDecName) {
+    const AVCodec *qsvDecoder = m_FF.avcodec_find_decoder_by_name(qsvDecName);
+    if (qsvDecoder) {
+      videoDecoder = qsvDecoder;
+      dbglog("[QSV VPL ReEncoder] HW decoder: %s", qsvDecName);
+      AppendLog(QString("HW decoder: %1").arg(qsvDecName));
+    }
+  }
+
   int srcWidth = inVideoStream->codecpar->width;
   int srcHeight = inVideoStream->codecpar->height;
   AppendLog(QString("Input: %1x%2").arg(srcWidth).arg(srcHeight));

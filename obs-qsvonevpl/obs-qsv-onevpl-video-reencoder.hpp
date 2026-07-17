@@ -86,6 +86,7 @@ struct ffmpeg_api {
 
   // avcodec
   decltype(&avcodec_find_decoder) avcodec_find_decoder = nullptr;
+  decltype(&avcodec_find_decoder_by_name) avcodec_find_decoder_by_name = nullptr;
   decltype(&avcodec_alloc_context3) avcodec_alloc_context3 = nullptr;
   decltype(&avcodec_parameters_to_context) avcodec_parameters_to_context = nullptr;
   decltype(&avcodec_open2) avcodec_open2 = nullptr;
