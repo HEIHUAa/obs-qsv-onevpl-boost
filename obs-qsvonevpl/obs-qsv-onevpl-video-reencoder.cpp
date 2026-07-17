@@ -114,9 +114,9 @@ bool LoadFFmpegAPI(ffmpeg_api &ff)
       GetProcAddress(avutil, "av_packet_free"));
 
   // avcodec
-  ok = ok ResolveFunc(avcodec, "avcodec_find_decoder", ff.avcodec_find_decoder);
-  ok = ok ResolveFunc(avcodec, "avcodec_find_decoder_by_name", ff.avcodec_find_decoder_by_name);
-  ok = ok ResolveFunc(avcodec, "avcodec_alloc_context3", ff.avcodec_alloc_context3);
+  ok = ok && ResolveFunc(avcodec, "avcodec_find_decoder", ff.avcodec_find_decoder);
+  ok = ok && ResolveFunc(avcodec, "avcodec_find_decoder_by_name", ff.avcodec_find_decoder_by_name);
+  ok = ok && ResolveFunc(avcodec, "avcodec_alloc_context3", ff.avcodec_alloc_context3);
   ok = ok && ResolveFunc(avcodec, "avcodec_parameters_to_context", ff.avcodec_parameters_to_context);
   ok = ok && ResolveFunc(avcodec, "avcodec_open2", ff.avcodec_open2);
   ok = ok && ResolveFunc(avcodec, "avcodec_send_packet", ff.avcodec_send_packet);
@@ -429,9 +429,9 @@ bool ReEncodeDialog::LoadEncoderConfigFromFile()
   // Try to load encoder settings from config file.
   // OBS stores encoder settings as a JSON string under RecEncoderSettings
   // in the appropriate output section.
-  const char *section = (mode strcmp(mode, "Advanced") == 0) ? "AdvOut" : "SimpleOutput";
+  const char *section = (mode && strcmp(mode, "Advanced") == 0) ? "AdvOut" : "SimpleOutput";
   const char *settingsJson = config_get_string(config, section, "RecEncoderSettings");
-  if (settingsJson *settingsJson) {
+  if (settingsJson && *settingsJson) {
     obs_data_t *settings = obs_data_create_from_json(settingsJson);
     if (settings) {
       if (m_EncoderSettings)
