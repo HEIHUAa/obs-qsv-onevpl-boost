@@ -14,8 +14,27 @@
 #include <util/platform.h>
 #include <util/threading.h>
 #include <cstdio>
+#include <windows.h>
 
 using namespace std::chrono_literals;
+
+// Debug helper: writes to a file with immediate flush to survive crashes
+static void dbglog(const char *fmt, ...) {
+  char buf[1024];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, args);
+  va_end(args);
+  OutputDebugStringA(buf);
+  OutputDebugStringA("\n");
+  // also write to a temp file for easy reading
+  FILE *f = fopen("h:\\qsv_reencode_debug.log", "a");
+  if (f) {
+    fprintf(f, "%s\n", buf);
+    fflush(f);
+    fclose(f);
+  }
+}
 
 // ============================================================================
 // Output ID for our custom qsv re-encode output
@@ -215,13 +234,13 @@ static bool reencode_output_start(void *data)
 {
   auto *ctx = static_cast<reencode_output_ctx *>(data);
 
-  blog(LOG_INFO, "[QSV VPL ReEncoder] reencode_output_start: checking can_begin_data_capture");
+  dbglog("[QSV VPL ReEncoder] reencode_output_start: checking can_begin_data_capture");
   if (!obs_output_can_begin_data_capture(ctx->output, 0)) {
     blog(LOG_ERROR, "[QSV VPL ReEncoder] obs_output_can_begin_data_capture failed");
     return false;
   }
 
-  blog(LOG_INFO, "[QSV VPL ReEncoder] reencode_output_start: initializing encoders");
+  dbglog("[QSV VPL ReEncoder] reencode_output_start: initializing encoders");
   if (!obs_output_initialize_encoders(ctx->output, 0)) {
     blog(LOG_ERROR, "[QSV VPL ReEncoder] obs_output_initialize_encoders failed");
     return false;
@@ -230,9 +249,9 @@ static bool reencode_output_start(void *data)
   if (ctx->stop_thread_active)
     pthread_join(ctx->stop_thread, nullptr);
 
-  blog(LOG_INFO, "[QSV VPL ReEncoder] reencode_output_start: beginning data capture");
+  dbglog("[QSV VPL ReEncoder] reencode_output_start: beginning data capture");
   obs_output_begin_data_capture(ctx->output, 0);
-  blog(LOG_INFO, "[QSV VPL ReEncoder] reencode_output_start: data capture started");
+  dbglog("[QSV VPL ReEncoder] reencode_output_start: data capture started");
   return true;
 }
 
@@ -629,6 +648,7 @@ bool ReEncodeDialog::StartEncoding()
                          "Failed to load FFmpeg");
     return false;
   }
+  dbglog("[QSV VPL ReEncoder] DEBUG: LoadFFmpegAPI done, about to reset context");
   AppendLog("FFmpeg loaded");
 
   // 2. Reset context (individual field reset to avoid std::mutex copy issue)
@@ -653,21 +673,27 @@ bool ReEncodeDialog::StartEncoding()
   m_Ctx.error_msg.clear();
 
   // 3. Open input file
+  dbglog("[QSV VPL ReEncoder] DEBUG: opening input file: %s",
+       inputPath.toUtf8().constData());
   int ret = m_FF.avformat_open_input(&m_Ctx.in_fmt_ctx, inputPath.toUtf8().constData(),
                                       nullptr, nullptr);
   if (ret < 0) {
     AppendLog("ERROR: Cannot open input file");
     return false;
   }
+  dbglog("[QSV VPL ReEncoder] DEBUG: input file opened OK");
 
+  dbglog("[QSV VPL ReEncoder] DEBUG: finding stream info...");
   ret = m_FF.avformat_find_stream_info(m_Ctx.in_fmt_ctx, nullptr);
   if (ret < 0) {
     m_FF.avformat_close_input(&m_Ctx.in_fmt_ctx);
     AppendLog("ERROR: Cannot find stream info");
     return false;
   }
+  dbglog("[QSV VPL ReEncoder] DEBUG: stream info found OK");
 
   // Find video stream
+  dbglog("[QSV VPL ReEncoder] DEBUG: finding best video stream...");
   const AVCodec *videoDecoder = nullptr;
   m_Ctx.video_stream_idx = m_FF.av_find_best_stream(m_Ctx.in_fmt_ctx, AVMEDIA_TYPE_VIDEO,
                                                        -1, -1, &videoDecoder, 0);
@@ -676,6 +702,7 @@ bool ReEncodeDialog::StartEncoding()
     AppendLog("ERROR: No video stream found");
     return false;
   }
+  dbglog("[QSV VPL ReEncoder] DEBUG: video stream idx=%d", m_Ctx.video_stream_idx);
 
   AVStream *inVideoStream = m_Ctx.in_fmt_ctx->streams[m_Ctx.video_stream_idx];
   int srcWidth = inVideoStream->codecpar->width;
@@ -697,6 +724,7 @@ bool ReEncodeDialog::StartEncoding()
   }
 
   // 4. Open video decoder
+  dbglog("[QSV VPL ReEncoder] DEBUG: opening video decoder...");
   m_Ctx.video_decoder = m_FF.avcodec_alloc_context3(videoDecoder);
   if (!m_Ctx.video_decoder) {
     m_FF.avformat_close_input(&m_Ctx.in_fmt_ctx);
@@ -713,6 +741,7 @@ bool ReEncodeDialog::StartEncoding()
     return false;
   }
 
+  dbglog("[QSV VPL ReEncoder] DEBUG: opening codec...");
   ret = m_FF.avcodec_open2(m_Ctx.video_decoder, videoDecoder, nullptr);
   if (ret < 0) {
     m_FF.avcodec_free_context(&m_Ctx.video_decoder);
@@ -720,6 +749,7 @@ bool ReEncodeDialog::StartEncoding()
     AppendLog("ERROR: Cannot open decoder");
     return false;
   }
+  dbglog("[QSV VPL ReEncoder] DEBUG: decoder opened OK");
 
   // 5. Find audio stream (optional)
   m_Ctx.audio_stream_idx = m_FF.av_find_best_stream(m_Ctx.in_fmt_ctx, AVMEDIA_TYPE_AUDIO,
@@ -731,14 +761,17 @@ bool ReEncodeDialog::StartEncoding()
   }
 
   // 6. Allocate frames
+  dbglog("[QSV VPL ReEncoder] DEBUG: allocating frames...");
   m_Ctx.decoded_frame = m_FF.av_frame_alloc();
   m_Ctx.nv12_frame = m_FF.av_frame_alloc();
   if (!m_Ctx.decoded_frame || !m_Ctx.nv12_frame) {
     AppendLog("ERROR: Cannot allocate frames");
     return false;
   }
+  dbglog("[QSV VPL ReEncoder] DEBUG: frames allocated OK");
 
   // 7. Create swscale context for NV12 conversion
+  dbglog("[QSV VPL ReEncoder] DEBUG: creating swscale context...");
   m_Ctx.sws_ctx = m_FF.sws_getContext(srcWidth, srcHeight, m_Ctx.video_decoder->pix_fmt,
                                        srcWidth, srcHeight, AV_PIX_FMT_NV12,
                                        SWS_BILINEAR, nullptr, nullptr, nullptr);
@@ -746,8 +779,10 @@ bool ReEncodeDialog::StartEncoding()
     AppendLog("ERROR: Cannot create swscale context");
     return false;
   }
+  dbglog("[QSV VPL ReEncoder] DEBUG: swscale context created OK");
 
   // 8. Create OBS video output
+  dbglog("[QSV VPL ReEncoder] DEBUG: creating video output...");
   video_output_info vi = {};
   vi.name = "qsv-reencode-video";
   vi.format = VIDEO_FORMAT_NV12;
@@ -764,6 +799,7 @@ bool ReEncodeDialog::StartEncoding()
     AppendLog("ERROR: Cannot create video output");
     return false;
   }
+  dbglog("[QSV VPL ReEncoder] DEBUG: video output created OK");
 
   // 9. Create OBS encoder
   obs_data_t *encSettings = obs_data_create();
@@ -807,6 +843,7 @@ bool ReEncodeDialog::StartEncoding()
   blog(LOG_INFO, "[QSV VPL ReEncoder] Output created, encoder attached");
 
   // 11. Create output file (FFmpeg muxer)
+  dbglog("[QSV VPL ReEncoder] DEBUG: creating FFmpeg output context...");
   m_OutputPathBytes = outputPath.toUtf8();
   const char *outPath = m_OutputPathBytes.constData();
   ret = m_FF.avformat_alloc_output_context2(&m_Ctx.out_fmt_ctx, nullptr, nullptr,
@@ -815,6 +852,7 @@ bool ReEncodeDialog::StartEncoding()
     AppendLog("ERROR: Cannot create output context");
     return false;
   }
+  dbglog("[QSV VPL ReEncoder] DEBUG: output context created OK");
 
   // Video stream
   enum AVCodecID outCodecId = EncoderIDToAVCodecID(m_EncoderID);
@@ -844,6 +882,7 @@ bool ReEncodeDialog::StartEncoding()
   }
 
   // Open output file
+  dbglog("[QSV VPL ReEncoder] DEBUG: opening output file...");
   if (!(m_Ctx.out_fmt_ctx->oformat->flags & AVFMT_NOFILE)) {
     ret = m_FF.avio_open(&m_Ctx.out_fmt_ctx->pb, outPath, AVIO_FLAG_WRITE);
     if (ret < 0) {
@@ -853,21 +892,23 @@ bool ReEncodeDialog::StartEncoding()
   }
 
   // Write header
+  dbglog("[QSV VPL ReEncoder] DEBUG: writing header...");
   ret = m_FF.avformat_write_header(m_Ctx.out_fmt_ctx, nullptr);
   if (ret < 0) {
     AppendLog("ERROR: Cannot write header");
     return false;
   }
+  dbglog("[QSV VPL ReEncoder] DEBUG: header written OK");
 
   // 12. Start OBS output (this internally initializes encoder, starts encoding,
   //     and begins data capture)
-  blog(LOG_INFO, "[QSV VPL ReEncoder] About to start OBS output...");
+  dbglog("[QSV VPL ReEncoder] About to start OBS output...");
   if (!obs_output_start(m_Output)) {
     blog(LOG_ERROR, "[QSV VPL ReEncoder] obs_output_start failed");
     AppendLog("ERROR: obs_output_start failed");
     return false;
   }
-  blog(LOG_INFO, "[QSV VPL ReEncoder] OBS output started successfully");
+  dbglog("[QSV VPL ReEncoder] OBS output started successfully");
 
   AppendLog(QString("Encoding started: %1 -> %2").arg(inputPath, outputPath));
 
