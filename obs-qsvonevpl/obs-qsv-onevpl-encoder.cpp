@@ -292,19 +292,51 @@ void GetVideoInfo(void *Data, video_scale_info *Info) {
     if (svProf == "main10") {
       Info->format = VIDEO_FORMAT_P010;
     } else if (svProf == "rext") {
-      // HEVC RExt: 4:2:0 (NV12/P010/P016), 4:2:2 (YUY2/Y210/Y216),
-      // 4:4:4 (AYUV/Y410/Y416).  OBS can output AYUV/P216/P416 directly;
-      // for planar/current formats (I444/I412) we let OBS convert to the
-      // closest MFX packed format instead of handling them here.
-      Info->format = pick_format(
-          {VIDEO_FORMAT_P416, VIDEO_FORMAT_AYUV, VIDEO_FORMAT_P216,
-           VIDEO_FORMAT_YUY2, VIDEO_FORMAT_P010, VIDEO_FORMAT_NV12},
-          VIDEO_FORMAT_AYUV);
+      // HEVC RExt: 4:2:0 (NV12/P010), 4:2:2 (YUY2/P216),
+      // 4:4:4 (AYUV/P416).  Only request a format when the current OBS
+      // format is in the same family; cross bit-depth or planar->packed
+      // conversions often fail with "Bad scale conversion type".
+      switch (current) {
+      case VIDEO_FORMAT_AYUV:
+      case VIDEO_FORMAT_I444:
+        Info->format = VIDEO_FORMAT_AYUV;
+        break;
+      case VIDEO_FORMAT_YUY2:
+      case VIDEO_FORMAT_I422:
+        Info->format = VIDEO_FORMAT_YUY2;
+        break;
+      case VIDEO_FORMAT_P010:
+      case VIDEO_FORMAT_I010:
+        Info->format = VIDEO_FORMAT_P010;
+        break;
+      case VIDEO_FORMAT_P216:
+        // Keep packed 4:2:2 10-bit only if OBS is already in that form.
+        Info->format = VIDEO_FORMAT_P216;
+        break;
+      case VIDEO_FORMAT_P416:
+        // Keep packed 4:4:4 12-bit only if OBS is already in that form.
+        Info->format = VIDEO_FORMAT_P416;
+        break;
+      default:
+        Info->format = VIDEO_FORMAT_NV12;
+        break;
+      }
     } else if (svProf == "scc") {
-      // HEVC SCC: 4:2:0 8/10-bit and 4:4:4 8/10-bit only.
-      Info->format = pick_format(
-          {VIDEO_FORMAT_AYUV, VIDEO_FORMAT_P010, VIDEO_FORMAT_NV12},
-          VIDEO_FORMAT_AYUV);
+      // HEVC SCC: 4:2:0 8/10-bit and 4:4:4 8-bit.  Avoid cross-family
+      // conversions that OBS scaler can't handle.
+      switch (current) {
+      case VIDEO_FORMAT_AYUV:
+      case VIDEO_FORMAT_I444:
+        Info->format = VIDEO_FORMAT_AYUV;
+        break;
+      case VIDEO_FORMAT_P010:
+      case VIDEO_FORMAT_I010:
+        Info->format = VIDEO_FORMAT_P010;
+        break;
+      default:
+        Info->format = VIDEO_FORMAT_NV12;
+        break;
+      }
     } else {
       // main / default
       Info->format = VIDEO_FORMAT_NV12;
