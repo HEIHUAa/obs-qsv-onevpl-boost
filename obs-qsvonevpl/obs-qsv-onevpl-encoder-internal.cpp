@@ -788,6 +788,29 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
     Status = MFX_ERR_NONE;
   }
 
+  // HEVC only: warn if the driver silently downgraded the requested profile
+  // or color format. Helps users understand why e.g. RExt 4:4:4 ends up as
+  // 4:2:0 or SCC falls back to Main.
+  if (Status >= MFX_ERR_NONE &&
+      QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
+    const mfxU16 actual_profile = QSVEncodeParams.mfx.CodecProfile;
+    const mfxU16 actual_chroma = QSVEncodeParams.mfx.FrameInfo.ChromaFormat;
+    const mfxU16 actual_bitdepth = QSVEncodeParams.mfx.FrameInfo.BitDepthLuma;
+    const mfxU16 requested_profile = MFXCopy.CodecProfile;
+    const mfxU16 requested_chroma = MFXCopy.FrameInfo.ChromaFormat;
+    const mfxU16 requested_bitdepth = MFXCopy.FrameInfo.BitDepthLuma;
+
+    if (actual_profile != requested_profile ||
+        actual_chroma != requested_chroma ||
+        actual_bitdepth != requested_bitdepth) {
+      warn("[QSV VPL] Requested HEVC profile/format not fully supported "
+           "by GPU/driver. Requested: profile=%d chroma=%d bitdepth=%d, "
+           "Actual: profile=%d chroma=%d bitdepth=%d",
+           requested_profile, requested_chroma, requested_bitdepth,
+           actual_profile, actual_chroma, actual_bitdepth);
+    }
+  }
+
   if (Status < MFX_ERR_NONE) {
     QSVEncode->Close();
   }
