@@ -461,6 +461,10 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
   mfxStatus Status = SetEncoderParams(InputParams, Codec);
   info("\tSetEncoderParams%s status:  %d", log_prefix, Status);
 
+  // Keep a copy of the user-requested mfx params so we can detect
+  // driver-initiated profile/format downgrades after Init succeeds.
+  mfxInfoMFX MFXCopy = {};
+
   if (Status >= MFX_ERR_NONE) {
     if (!InputParams->CustomCodingOptions.empty()) {
       ParseCustomCodingOptions(InputParams->CustomCodingOptions);
@@ -499,7 +503,7 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
       HEVCCopy = *p; HasHEVC = true;
     }
 
-    mfxInfoMFX MFXCopy = QSVEncodeParams.mfx;
+    MFXCopy = QSVEncodeParams.mfx;
 
     Status = QSVEncode->Query(&QSVEncodeParams, &QSVEncodeParams);
     info("\tMFXVideoENCODE_Query%s status: %d", log_prefix, Status);
