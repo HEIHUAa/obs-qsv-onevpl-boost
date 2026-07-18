@@ -2264,8 +2264,8 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     break;
   case VIDEO_FORMAT_AYUV:
   case VIDEO_FORMAT_I444:
-    // oneVPL 4:4:4 8-bit is packed AYUV; I444 is planar but will be converted
-    // by OBS when the encoder requests AYUV.
+    // oneVPL 4:4:4 8-bit is packed AYUV.  I444 is planar, so GetVideoInfo
+    // keeps I444 and LoadFrameData packs the three planes into VUYA.
     Context->EncoderParams.FourCC = MFX_FOURCC_AYUV;
     Context->EncoderParams.ChromaFormat = MFX_CHROMAFORMAT_YUV444;
     break;

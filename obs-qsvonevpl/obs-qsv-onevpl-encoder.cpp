@@ -293,13 +293,17 @@ void GetVideoInfo(void *Data, video_scale_info *Info) {
       Info->format = VIDEO_FORMAT_P010;
     } else if (svProf == "rext") {
       // HEVC RExt: 4:2:0 (NV12/P010), 4:2:2 (YUY2/P216),
-      // 4:4:4 (AYUV/P416).  Only request a format when the current OBS
+      // 4:4:4 (AYUV/I444/P416).  Only request a format when the current OBS
       // format is in the same family; cross bit-depth or planar->packed
       // conversions often fail with "Bad scale conversion type".
+      // AYUV has no OBS scaler mapping at all, so keep planar I444 and
+      // convert to AYUV inside LoadFrameData.
       switch (current) {
       case VIDEO_FORMAT_AYUV:
-      case VIDEO_FORMAT_I444:
         Info->format = VIDEO_FORMAT_AYUV;
+        break;
+      case VIDEO_FORMAT_I444:
+        Info->format = VIDEO_FORMAT_I444;
         break;
       case VIDEO_FORMAT_YUY2:
       case VIDEO_FORMAT_I422:
@@ -314,6 +318,7 @@ void GetVideoInfo(void *Data, video_scale_info *Info) {
         Info->format = VIDEO_FORMAT_P216;
         break;
       case VIDEO_FORMAT_P416:
+      case VIDEO_FORMAT_I412:
         // Keep packed 4:4:4 12-bit only if OBS is already in that form.
         Info->format = VIDEO_FORMAT_P416;
         break;
@@ -326,8 +331,10 @@ void GetVideoInfo(void *Data, video_scale_info *Info) {
       // conversions that OBS scaler can't handle.
       switch (current) {
       case VIDEO_FORMAT_AYUV:
-      case VIDEO_FORMAT_I444:
         Info->format = VIDEO_FORMAT_AYUV;
+        break;
+      case VIDEO_FORMAT_I444:
+        Info->format = VIDEO_FORMAT_I444;
         break;
       case VIDEO_FORMAT_P010:
       case VIDEO_FORMAT_I010:
@@ -346,9 +353,19 @@ void GetVideoInfo(void *Data, video_scale_info *Info) {
   case QSV_CODEC_AV1: {
     if (svProf == "high") {
       // AV1 High: 4:4:4 8-bit (AYUV) and 10-bit (Y410).  OBS has no Y410,
-      // so we always request AYUV.
-      Info->format = pick_format({VIDEO_FORMAT_AYUV, VIDEO_FORMAT_I444},
-                                 VIDEO_FORMAT_AYUV);
+      // and AYUV has no OBS scaler mapping, so keep the 4:4:4 format OBS
+      // already feeds us and convert internally; otherwise fall back to NV12.
+      switch (current) {
+      case VIDEO_FORMAT_AYUV:
+        Info->format = VIDEO_FORMAT_AYUV;
+        break;
+      case VIDEO_FORMAT_I444:
+        Info->format = VIDEO_FORMAT_I444;
+        break;
+      default:
+        Info->format = VIDEO_FORMAT_NV12;
+        break;
+      }
     } else {
       Info->format = pick_format({VIDEO_FORMAT_P010, VIDEO_FORMAT_NV12},
                                  VIDEO_FORMAT_NV12);
@@ -362,9 +379,19 @@ void GetVideoInfo(void *Data, video_scale_info *Info) {
     bool vp9_10bit = (vp9p == '2' || vp9p == '3');
     bool vp9_444 = (vp9p == '1' || vp9p == '3');
     if (vp9_444) {
-      // OBS has no Y410, so feed 8-bit 4:4:4 and let plugin-init
-      // auto-correct the profile when the user picked 10-bit 444.
-      Info->format = VIDEO_FORMAT_AYUV;
+      // AYUV has no OBS scaler mapping, so keep planar I444 and convert to
+      // packed AYUV internally.  For anything else fall back to 4:2:0.
+      switch (current) {
+      case VIDEO_FORMAT_AYUV:
+        Info->format = VIDEO_FORMAT_AYUV;
+        break;
+      case VIDEO_FORMAT_I444:
+        Info->format = VIDEO_FORMAT_I444;
+        break;
+      default:
+        Info->format = vp9_10bit ? VIDEO_FORMAT_P010 : VIDEO_FORMAT_NV12;
+        break;
+      }
     } else {
       Info->format = vp9_10bit ? VIDEO_FORMAT_P010 : VIDEO_FORMAT_NV12;
     }

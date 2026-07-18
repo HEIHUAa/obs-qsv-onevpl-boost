@@ -3763,10 +3763,28 @@ void QSVEncoder::LoadFrameData(mfxFrameSurface1 *&Surface, uint8_t **FrameData,
     }
   } else if (Surface->Info.FourCC == MFX_FOURCC_AYUV) {
     // OBS AYUV is already packed little-endian VUYA; oneVPL expects the same.
-    const size_t line_size = static_cast<size_t>(Width) * 4;
-    mfxU8 *dst = SurfaceData->V + SurfaceInfo->CropY * Pitch +
-                 SurfaceInfo->CropX * 4;
-    copyPacked(dst, line_size, FrameLinesize[0]);
+    // If OBS fed us planar I444, pack it into VUYA now.
+    mfxU8 *dstBase = SurfaceData->V + SurfaceInfo->CropY * Pitch +
+                     SurfaceInfo->CropX * 4;
+    if (FrameLinesize[1] != 0) {
+      // I444 -> AYUV (V, U, Y, A)
+      for (mfxU16 y = 0; y < Height; y++) {
+        const mfxU8 *srcY = FrameData[0] + y * FrameLinesize[0];
+        const mfxU8 *srcU = FrameData[1] + y * FrameLinesize[1];
+        const mfxU8 *srcV = FrameData[2] + y * FrameLinesize[2];
+        mfxU8 *dst = dstBase + y * Pitch;
+        for (mfxU16 x = 0; x < Width; x++) {
+          dst[0] = srcV[x];
+          dst[1] = srcU[x];
+          dst[2] = srcY[x];
+          dst[3] = 0xFF;
+          dst += 4;
+        }
+      }
+    } else {
+      const size_t line_size = static_cast<size_t>(Width) * 4;
+      copyPacked(dstBase, line_size, FrameLinesize[0]);
+    }
   } else if (Surface->Info.FourCC == MFX_FOURCC_YUY2) {
     const size_t line_size = static_cast<size_t>(Width) * 2;
     mfxU8 *dst = SurfaceData->Y + SurfaceInfo->CropY * Pitch +
