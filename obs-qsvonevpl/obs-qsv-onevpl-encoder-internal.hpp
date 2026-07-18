@@ -159,6 +159,7 @@ private:
 
   struct SystemMemSurface {
     mfxFrameSurface1 Surface{};
+    mfxU8 *Buffer{};
   };
   std::vector<SystemMemSurface> QSVSystemMemPool;
   mfxU16 QSVSystemMemPoolSize{};

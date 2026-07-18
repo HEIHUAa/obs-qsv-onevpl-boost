@@ -426,19 +426,29 @@ bool ReEncodeDialog::LoadEncoderConfigFromFile()
   blog(LOG_INFO, "[QSV VPL ReEncoder] Loaded config from: %s %dx%d %d/%d fps",
        m_EncoderID.c_str(), m_Width, m_Height, m_FpsNum, m_FpsDen);
 
-  // Try to load encoder settings from config file.
-  // OBS stores encoder settings as a JSON string under RecEncoderSettings
-  // in the appropriate output section.
-  const char *section = (mode && strcmp(mode, "Advanced") == 0) ? "AdvOut" : "SimpleOutput";
-  const char *settingsJson = config_get_string(config, section, "RecEncoderSettings");
-  if (settingsJson && *settingsJson) {
-    obs_data_t *settings = obs_data_create_from_json(settingsJson);
-    if (settings) {
-      if (m_EncoderSettings)
-        obs_data_release(m_EncoderSettings);
-      m_EncoderSettings = settings;
-      blog(LOG_INFO, "[QSV VPL ReEncoder] Loaded encoder settings from config");
+  // Load encoder settings from recordEncoder.json in the profile directory.
+  // OBS stores encoder settings as separate JSON files, not in the INI config.
+  char *profilePath = obs_frontend_get_current_profile_path();
+  if (profilePath) {
+    char jsonPath[512];
+    snprintf(jsonPath, sizeof(jsonPath), "%s/recordEncoder.json", profilePath);
+    bfree(profilePath);
+
+    char *jsonData = os_quick_read_utf8_file(jsonPath);
+    if (jsonData) {
+      obs_data_t *settings = obs_data_create_from_json(jsonData);
+      bfree(jsonData);
+      if (settings) {
+        if (m_EncoderSettings)
+          obs_data_release(m_EncoderSettings);
+        m_EncoderSettings = settings;
+        blog(LOG_INFO, "[QSV VPL ReEncoder] Loaded encoder settings from %s", jsonPath);
+      }
+    } else {
+      blog(LOG_WARNING, "[QSV VPL ReEncoder] Failed to read %s", jsonPath);
     }
+  } else {
+    blog(LOG_WARNING, "[QSV VPL ReEncoder] Cannot get profile path");
   }
 
   return true;
@@ -1116,10 +1126,10 @@ void ReEncodeDialog::FeedThreadMain()
               outPkt->data = encPkt.data.data();
               outPkt->size = static_cast<int>(encPkt.data.size());
               outPkt->stream_index = ctx.out_video_stream->index;
-              outPkt->pts = ff.av_rescale_q(encPkt.pts, {1, 1000000000},
-                                            ctx.out_video_stream->time_base);
-              outPkt->dts = ff.av_rescale_q(encPkt.dts, {1, 1000000000},
-                                            ctx.out_video_stream->time_base);
+              // encoder PTS/DTS are in {fps_den, fps_num} time_base
+              // (same as output stream), so no rescaling needed
+              outPkt->pts = encPkt.pts;
+              outPkt->dts = encPkt.dts;
               outPkt->duration = 1;
               if (encPkt.keyframe)
                 outPkt->flags |= AV_PKT_FLAG_KEY;
@@ -1135,12 +1145,15 @@ void ReEncodeDialog::FeedThreadMain()
               // Write buffered audio packets with PTS <= this video frame's PTS
               if (ctx.out_audio_stream && !ctx.audio_packets.empty()) {
                 int64_t videoPts = encPkt.pts;
+                // rescale video PTS to nanoseconds for audio sync comparison
+                int64_t videoPtsNs = ff.av_rescale_q(videoPts, {m_FpsDen, m_FpsNum},
+                                                     {1, 1000000000});
                 auto it = ctx.audio_packets.begin();
                 while (it != ctx.audio_packets.end()) {
                   AVPacket *audioPkt = *it;
                   int64_t audioPtsNs = ff.av_rescale_q(
                       audioPkt->pts, ctx.out_audio_stream->time_base, {1, 1000000000});
-                  if (audioPtsNs <= videoPts) {
+                  if (audioPtsNs <= videoPtsNs) {
                     audioPkt->stream_index = ctx.out_audio_stream->index;
                     int awr = ff.av_interleaved_write_frame(ctx.out_fmt_ctx, audioPkt);
                     if (awr < 0) {
@@ -1294,10 +1307,9 @@ void ReEncodeDialog::FeedThreadMain()
           outPkt->data = encPkt.data.data();
           outPkt->size = static_cast<int>(encPkt.data.size());
           outPkt->stream_index = ctx.out_video_stream->index;
-          outPkt->pts = ff.av_rescale_q(encPkt.pts, {1, 1000000000},
-                                        ctx.out_video_stream->time_base);
-          outPkt->dts = ff.av_rescale_q(encPkt.dts, {1, 1000000000},
-                                        ctx.out_video_stream->time_base);
+          // encoder PTS/DTS are in {fps_den, fps_num}, same as output
+          outPkt->pts = encPkt.pts;
+          outPkt->dts = encPkt.dts;
           outPkt->duration = 1;
           if (encPkt.keyframe)
             outPkt->flags |= AV_PKT_FLAG_KEY;
@@ -1313,12 +1325,14 @@ void ReEncodeDialog::FeedThreadMain()
           // Write buffered audio with PTS <= this video frame
           if (ctx.out_audio_stream && !ctx.audio_packets.empty()) {
             int64_t videoPts = encPkt.pts;
+            int64_t videoPtsNs = ff.av_rescale_q(videoPts, {m_FpsDen, m_FpsNum},
+                                                 {1, 1000000000});
             auto it = ctx.audio_packets.begin();
             while (it != ctx.audio_packets.end()) {
               AVPacket *audioPkt = *it;
               int64_t audioPtsNs = ff.av_rescale_q(
                   audioPkt->pts, ctx.out_audio_stream->time_base, {1, 1000000000});
-              if (audioPtsNs <= videoPts) {
+              if (audioPtsNs <= videoPtsNs) {
                 audioPkt->stream_index = ctx.out_audio_stream->index;
                 ff.av_interleaved_write_frame(ctx.out_fmt_ctx, audioPkt);
                 ff.av_packet_free(&audioPkt);
@@ -1370,10 +1384,8 @@ void ReEncodeDialog::FeedThreadMain()
         outPkt->data = encPkt.data.data();
         outPkt->size = static_cast<int>(encPkt.data.size());
         outPkt->stream_index = ctx.out_video_stream->index;
-        outPkt->pts = ff.av_rescale_q(encPkt.pts, {1, 1000000000},
-                                      ctx.out_video_stream->time_base);
-        outPkt->dts = ff.av_rescale_q(encPkt.dts, {1, 1000000000},
-                                      ctx.out_video_stream->time_base);
+        outPkt->pts = encPkt.pts;
+        outPkt->dts = encPkt.dts;
         outPkt->duration = 1;
         if (encPkt.keyframe)
           outPkt->flags |= AV_PKT_FLAG_KEY;

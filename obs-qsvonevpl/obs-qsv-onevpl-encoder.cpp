@@ -2,6 +2,7 @@
 
 #include "obs-qsv-onevpl-encoder.hpp"
 #include <cstring>
+#include <initializer_list>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -267,54 +268,93 @@ bool GetSEIData(void *Data, uint8_t **SEI, size_t *Size) {
 void GetVideoInfo(void *Data, video_scale_info *Info) {
   plugin_context *Context = static_cast<plugin_context *>(Data);
 
-  bool use10bit = false;
-  bool use444 = false;
+  obs_data_t *settings = obs_encoder_get_settings(Context->EncoderData);
+  const char *profile = obs_data_get_string(settings, "profile");
+  auto svProf = std::string_view(profile);
+
+  // Ask OBS what the current video output format is so we can avoid
+  // unnecessary conversions when the encoder can eat it directly.
+  video_t *video = obs_encoder_video(Context->EncoderData);
+  const video_output_info *voi = video ? video_output_get_info(video) : nullptr;
+  video_format current = voi ? voi->format : VIDEO_FORMAT_NV12;
+
+  auto pick_format = [&](std::initializer_list<video_format> preferred,
+                         video_format fallback) {
+    for (video_format f : preferred) {
+      if (current == f)
+        return f;
+    }
+    return fallback;
+  };
 
   switch (Context->Codec) {
-  case QSV_CODEC_HEVC:
+  case QSV_CODEC_HEVC: {
+    if (svProf == "main10") {
+      Info->format = VIDEO_FORMAT_P010;
+    } else if (svProf == "rext") {
+      // HEVC RExt: 4:2:0 (NV12/P010/P016), 4:2:2 (YUY2/Y210/Y216),
+      // 4:4:4 (AYUV/Y410/Y416).  OBS can output AYUV/P216/P416 directly;
+      // for planar/current formats (I444/I412) we let OBS convert to the
+      // closest MFX packed format instead of handling them here.
+      Info->format = pick_format(
+          {VIDEO_FORMAT_P416, VIDEO_FORMAT_AYUV, VIDEO_FORMAT_P216,
+           VIDEO_FORMAT_YUY2, VIDEO_FORMAT_P010, VIDEO_FORMAT_NV12},
+          VIDEO_FORMAT_AYUV);
+    } else if (svProf == "scc") {
+      // HEVC SCC: 4:2:0 8/10-bit and 4:4:4 8/10-bit only.
+      Info->format = pick_format(
+          {VIDEO_FORMAT_AYUV, VIDEO_FORMAT_P010, VIDEO_FORMAT_NV12},
+          VIDEO_FORMAT_AYUV);
+    } else {
+      // main / default
+      Info->format = VIDEO_FORMAT_NV12;
+    }
+    break;
+  }
   case QSV_CODEC_AV1: {
-    obs_data_t *settings = obs_encoder_get_settings(Context->EncoderData);
-    const char *profile = obs_data_get_string(settings, "profile");
-    auto svProf = std::string_view(profile);
-    use10bit = svProf == "main10";
-    use444 = svProf == "rext";
-    obs_data_release(settings);
+    if (svProf == "high") {
+      // AV1 High: 4:4:4 8-bit (AYUV) and 10-bit (Y410).  OBS has no Y410,
+      // so we always request AYUV.
+      Info->format = pick_format({VIDEO_FORMAT_AYUV, VIDEO_FORMAT_I444},
+                                 VIDEO_FORMAT_AYUV);
+    } else {
+      Info->format = pick_format({VIDEO_FORMAT_P010, VIDEO_FORMAT_NV12},
+                                 VIDEO_FORMAT_NV12);
+    }
     break;
   }
   case QSV_CODEC_VP9: {
-    obs_data_t *settings = obs_encoder_get_settings(Context->EncoderData);
-    const char *profile = obs_data_get_string(settings, "profile");
     // VP9 profiles: "0 (8-bit 4:2:0)", "1 (8-bit 4:4:4)",
     //               "2 (10-bit 4:2:0)", "3 (10-bit 4:4:4)"
-    // Match by leading digit so both legacy "0" and descriptive forms work.
     const char vp9p = profile[0];
-    use10bit = (vp9p == '2' || vp9p == '3');
-    use444 = (vp9p == '1' || vp9p == '3');
-    obs_data_release(settings);
+    bool vp9_10bit = (vp9p == '2' || vp9p == '3');
+    bool vp9_444 = (vp9p == '1' || vp9p == '3');
+    if (vp9_444) {
+      // OBS has no Y410, so feed 8-bit 4:4:4 and let plugin-init
+      // auto-correct the profile when the user picked 10-bit 444.
+      Info->format = VIDEO_FORMAT_AYUV;
+    } else {
+      Info->format = vp9_10bit ? VIDEO_FORMAT_P010 : VIDEO_FORMAT_NV12;
+    }
     break;
   }
   case QSV_CODEC_AVC: {
-    obs_data_t *settings = obs_encoder_get_settings(Context->EncoderData);
-    const char *profile = obs_data_get_string(settings, "profile");
-    use10bit = (std::string_view(profile) == "high10");
-    obs_data_release(settings);
+    if (svProf == "high10") {
+      Info->format = VIDEO_FORMAT_P010;
+    } else {
+      Info->format = VIDEO_FORMAT_NV12;
+    }
     break;
   }
-  default:
-    // AVC with non-high10 profiles: no adjustment needed
-    break;
   }
-
-  if (use444)
-    Info->format = VIDEO_FORMAT_I444;
-  else
-    Info->format = use10bit ? VIDEO_FORMAT_P010 : VIDEO_FORMAT_NV12;
 
   // VP9 encoder hardcodes colorRange=0 (limited range) in the bitstream and
   // doesn't accept mfxExtVideoSignalInfo. Force OBS to convert input to
   // limited range so the YUV values match the colorRange bit written by VPL.
   if (Context->Codec == QSV_CODEC_VP9)
     Info->range = VIDEO_RANGE_PARTIAL;
+
+  obs_data_release(settings);
 }
 
 mfxU64 ConvertTSOBSMFX(int64_t TS, mfxU32 FpsNum) {

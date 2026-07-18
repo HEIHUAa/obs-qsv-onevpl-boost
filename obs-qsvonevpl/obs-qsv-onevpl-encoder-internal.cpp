@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <sstream>
 #include <span>
 #include <string>
@@ -214,29 +215,93 @@ void QSVEncoder::InitSystemMemorySurfacePool() {
     info("\tVideoSignalInfo not found");
   }
 
-  const mfxU32 bpp = (FI.FourCC == MFX_FOURCC_P010) ? 2 : 1;
-  const mfxU32 Align = FI.Width * bpp;
-  const mfxU32 Pitch = Align + ((Align % 16) ? (16 - Align % 16) : 0);
-  const mfxU32 YSize = Pitch * FI.Height;
-  const mfxU32 UVSize = Pitch * (FI.Height / 2);
+  auto align16 = [](mfxU32 value) {
+    return value + ((value % 16) ? (16 - value % 16) : 0);
+  };
+
+  struct SurfaceLayout {
+    mfxU32 Pitch = 0;
+    mfxU32 Size = 0;
+    std::function<void(mfxFrameData &, mfxU8 *)> SetPointers;
+  };
+
+  SurfaceLayout Layout;
+  switch (FI.FourCC) {
+  case MFX_FOURCC_NV12:
+    Layout.Pitch = align16(FI.Width);
+    Layout.Size = Layout.Pitch * FI.Height +
+                  Layout.Pitch * (FI.Height / 2);
+    break;
+  case MFX_FOURCC_P010:
+    Layout.Pitch = align16(FI.Width * 2);
+    Layout.Size = Layout.Pitch * FI.Height +
+                  Layout.Pitch * (FI.Height / 2);
+    break;
+  case MFX_FOURCC_AYUV:
+    Layout.Pitch = align16(FI.Width * 4);
+    Layout.Size = Layout.Pitch * FI.Height;
+    Layout.SetPointers = [](mfxFrameData &data, mfxU8 *buf) {
+      data.V = buf;
+      data.U = buf + 1;
+      data.Y = buf + 2;
+      data.A = buf + 3;
+    };
+    break;
+  case MFX_FOURCC_YUY2:
+    Layout.Pitch = align16(FI.Width * 2);
+    Layout.Size = Layout.Pitch * FI.Height;
+    Layout.SetPointers = [](mfxFrameData &data, mfxU8 *buf) {
+      data.Y = buf;
+    };
+    break;
+  case MFX_FOURCC_Y216:
+    Layout.Pitch = align16(FI.Width * 4);
+    Layout.Size = Layout.Pitch * FI.Height;
+    Layout.SetPointers = [](mfxFrameData &data, mfxU8 *buf) {
+      data.Y16 = reinterpret_cast<mfxU16 *>(buf);
+      data.U16 = data.Y16 + 1;
+      data.V16 = data.Y16 + 3;
+    };
+    break;
+  case MFX_FOURCC_Y416:
+    Layout.Pitch = align16(FI.Width * 8);
+    Layout.Size = Layout.Pitch * FI.Height;
+    Layout.SetPointers = [](mfxFrameData &data, mfxU8 *buf) {
+      data.U16 = reinterpret_cast<mfxU16 *>(buf);
+      data.Y16 = data.U16 + 1;
+      data.V16 = data.Y16 + 1;
+      data.A = reinterpret_cast<mfxU8 *>(data.V16 + 1);
+    };
+    break;
+  default:
+    throw std::runtime_error(
+        "InitSystemMemorySurfacePool: unsupported FourCC for system memory");
+  }
 
   for (mfxU16 i = 0; i < QSVSystemMemPoolSize; i++) {
     SystemMemSurface S = {};
     S.Surface.Info = FI;
 
-    mfxU8 *Buffer = new mfxU8[YSize + UVSize];
-    S.Surface.Data.Y = Buffer;
-    S.Surface.Data.UV = Buffer + YSize;
-    S.Surface.Data.Pitch = static_cast<mfxU16>(Pitch);
+    mfxU8 *Buffer = new mfxU8[Layout.Size];
+    S.Buffer = Buffer;
+    S.Surface.Data.Pitch = static_cast<mfxU16>(Layout.Pitch);
+
+    if (FI.FourCC == MFX_FOURCC_NV12 || FI.FourCC == MFX_FOURCC_P010) {
+      S.Surface.Data.Y = Buffer;
+      S.Surface.Data.UV = Buffer + Layout.Pitch * FI.Height;
+    } else {
+      Layout.SetPointers(S.Surface.Data, Buffer);
+    }
+
     QSVSystemMemPool.push_back(S);
   }
 }
 
 void QSVEncoder::ReleaseSystemMemorySurfacePool() {
   for (auto &S : QSVSystemMemPool) {
-    delete[] S.Surface.Data.Y;
-    S.Surface.Data.Y = nullptr;
-    S.Surface.Data.UV = nullptr;
+    delete[] S.Buffer;
+    S.Buffer = nullptr;
+    S.Surface.Data = {};
   }
   QSVSystemMemPool.clear();
   QSVSystemMemPoolSize = 0;
@@ -3601,6 +3666,18 @@ void QSVEncoder::LoadFrameData(mfxFrameSurface1 *&Surface, uint8_t **FrameData,
   }
   Pitch = SurfaceData->Pitch;
 
+  auto copyPacked = [&](mfxU8 *dst, size_t line_size, uint32_t srcLinesize) {
+    if (Pitch == static_cast<mfxU16>(srcLinesize)) {
+      avx2_memcpy(dst, FrameData[0],
+                  static_cast<size_t>(Height) * Pitch);
+    } else {
+      for (i = 0; i < Height; i++) {
+        avx2_memcpy(dst + i * Pitch, FrameData[0] + i * srcLinesize,
+                    line_size);
+      }
+    }
+  };
+
   if (Surface->Info.FourCC == MFX_FOURCC_NV12) {
     if (Pitch == static_cast<mfxU16>(FrameLinesize[0])) {
       avx2_memcpy(SurfaceData->Y, FrameData[0],
@@ -3657,23 +3734,66 @@ void QSVEncoder::LoadFrameData(mfxFrameSurface1 *&Surface, uint8_t **FrameData,
                line_size);
       }
     }
-  } else if (Surface->Info.FourCC == MFX_MAKEFOURCC('4','4','4','P')) {
-    // I444 / YUV444: three planes, all full resolution
-    const size_t line_size = static_cast<size_t>(Width);
-    auto copyPlane = [&](mfxU8 *dst, uint8_t *src, mfxU16 planePitch, uint32_t srcLinesize) {
-      if (Pitch == static_cast<mfxU16>(srcLinesize)) {
-        avx2_memcpy(dst, src, static_cast<size_t>(Height) * Pitch);
-      } else {
-        PTR = static_cast<mfxU8 *>(dst + SurfaceInfo->CropX +
-                                   SurfaceInfo->CropY * Pitch);
-        for (i = 0; i < Height; i++) {
-          avx2_memcpy(PTR + i * Pitch, src + i * srcLinesize, line_size);
-        }
+  } else if (Surface->Info.FourCC == MFX_FOURCC_AYUV) {
+    // OBS AYUV is already packed little-endian VUYA; oneVPL expects the same.
+    const size_t line_size = static_cast<size_t>(Width) * 4;
+    mfxU8 *dst = SurfaceData->V + SurfaceInfo->CropY * Pitch +
+                 SurfaceInfo->CropX * 4;
+    copyPacked(dst, line_size, FrameLinesize[0]);
+  } else if (Surface->Info.FourCC == MFX_FOURCC_YUY2) {
+    const size_t line_size = static_cast<size_t>(Width) * 2;
+    mfxU8 *dst = SurfaceData->Y + SurfaceInfo->CropY * Pitch +
+                 SurfaceInfo->CropX * 2;
+    copyPacked(dst, line_size, FrameLinesize[0]);
+  } else if (Surface->Info.FourCC == MFX_FOURCC_Y216) {
+    // OBS P216 -> oneVPL Y216 packed conversion.
+    // P216: plane0=Y 16-bit, plane1=UV 16-bit interleaved.
+    // Y216: 8 bytes per 2 pixels: Y0, U, Y1, V.
+    const mfxU32 dstStride = Pitch / 2;
+    mfxU16 *dstBase = SurfaceData->Y16 + SurfaceInfo->CropY * dstStride +
+                      SurfaceInfo->CropX * 2;
+    for (mfxU16 y = 0; y < Height; y++) {
+      const mfxU16 *srcY =
+          reinterpret_cast<const mfxU16 *>(FrameData[0] + y * FrameLinesize[0]);
+      const mfxU16 *srcUV =
+          reinterpret_cast<const mfxU16 *>(FrameData[1] + y * FrameLinesize[1]);
+      mfxU16 *dst = dstBase + y * dstStride;
+      for (mfxU16 x = 0; x + 1 < Width; x += 2) {
+        dst[0] = srcY[x];
+        dst[1] = srcUV[x];
+        dst[2] = srcY[x + 1];
+        dst[3] = srcUV[x + 1];
+        dst += 4;
       }
-    };
-    copyPlane(SurfaceData->Y, FrameData[0], Pitch, FrameLinesize[0]);
-    copyPlane(SurfaceData->U, FrameData[1], Pitch, FrameLinesize[1]);
-    copyPlane(SurfaceData->V, FrameData[2], Pitch, FrameLinesize[2]);
+      if (Width & 1) {
+        const mfxU16 last = Width - 1;
+        dst[0] = srcY[last];
+        dst[1] = srcUV[last];
+        dst[2] = 0;
+        dst[3] = 0;
+      }
+    }
+  } else if (Surface->Info.FourCC == MFX_FOURCC_Y416) {
+    // OBS P416 -> oneVPL Y416 packed conversion.
+    // P416: plane0=Y 16-bit, plane1=UV 16-bit interleaved (4:4:4).
+    // Y416: 8 bytes per pixel: U, Y, V, A (little-endian AYUV word).
+    const mfxU32 dstStride = Pitch / 2;
+    mfxU16 *dstBase = SurfaceData->U16 + SurfaceInfo->CropY * dstStride +
+                      SurfaceInfo->CropX * 4;
+    for (mfxU16 y = 0; y < Height; y++) {
+      const mfxU16 *srcY =
+          reinterpret_cast<const mfxU16 *>(FrameData[0] + y * FrameLinesize[0]);
+      const mfxU16 *srcUV =
+          reinterpret_cast<const mfxU16 *>(FrameData[1] + y * FrameLinesize[1]);
+      mfxU16 *dst = dstBase + y * dstStride;
+      for (mfxU16 x = 0; x < Width; x++) {
+        dst[0] = srcUV[x * 2];
+        dst[1] = srcY[x];
+        dst[2] = srcUV[x * 2 + 1];
+        dst[3] = 0xFFFF;
+        dst += 4;
+      }
+    }
   }
 }
 
@@ -4783,14 +4903,23 @@ void QSVEncoder::WarmUpEncoder() {
              static_cast<size_t>(h / 2) * pitch);
       Surf->FrameInterface->Unmap(Surf);
     }
-  } else if (fi.FourCC == MFX_MAKEFOURCC('4','4','4','P')) {
+  } else if (fi.FourCC == MFX_FOURCC_AYUV ||
+             fi.FourCC == MFX_FOURCC_YUY2 ||
+             fi.FourCC == MFX_FOURCC_Y216 ||
+             fi.FourCC == MFX_FOURCC_Y416) {
     sts = Surf->FrameInterface->Map(Surf, MFX_MAP_WRITE);
     if (sts >= MFX_ERR_NONE) {
       mfxU16 h = fi.CropH > 0 ? fi.CropH : fi.Height;
       mfxU32 pitch = Surf->Data.Pitch;
-      memset(Surf->Data.Y, 16, static_cast<size_t>(h) * pitch);
-      memset(Surf->Data.U, 128, static_cast<size_t>(h) * pitch);
-      memset(Surf->Data.V, 128, static_cast<size_t>(h) * pitch);
+      mfxU8 *base = nullptr;
+      if (fi.FourCC == MFX_FOURCC_AYUV) {
+        base = Surf->Data.V;
+      } else if (fi.FourCC == MFX_FOURCC_Y416) {
+        base = reinterpret_cast<mfxU8 *>(Surf->Data.U16);
+      } else {
+        base = reinterpret_cast<mfxU8 *>(Surf->Data.Y16);
+      }
+      memset(base, 0, static_cast<size_t>(h) * pitch);
       Surf->FrameInterface->Unmap(Surf);
     }
   }

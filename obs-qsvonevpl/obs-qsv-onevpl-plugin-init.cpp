@@ -2233,23 +2233,21 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     if (VOI->format == VIDEO_FORMAT_NV12) {
       Context->EncoderParams.ProcessingEnable = true;
     } else if (VOI->format == VIDEO_FORMAT_P010 ||
-               VOI->format == VIDEO_FORMAT_I444) {
-      // P010 and AYUV(8-bit 4:4:4) are supported on all platforms
+               VOI->format == VIDEO_FORMAT_AYUV) {
+      // P010 and AYUV (8-bit 4:4:4) are supported on all platforms
       Context->EncoderParams.ProcessingEnable = true;
-    } else if (VOI->format == VIDEO_FORMAT_I412 ||
-               VOI->format == VIDEO_FORMAT_P416) {
-      // 12/16-bit 4:4:4 (Y410/Y416) requires TGL_LP (Gen12)+
+    } else if (VOI->format == VIDEO_FORMAT_P416) {
+      // 12/16-bit 4:4:4 (Y416) requires TGL_LP (Gen12)+
       mfxU16 platformCode = QueryPlatformCodeName();
       bool highBitDepth444Supported = platformCode == 0 ||
                                       platformCode >= MFX_PLATFORM_TIGERLAKE;
       if (highBitDepth444Supported) {
         Context->EncoderParams.ProcessingEnable = true;
       } else {
-        warn("VPP with %s is only supported on Tiger Lake+",
-             VOI->format == VIDEO_FORMAT_I412 ? "I412" : "P416");
+        warn("VPP with P416 is only supported on Tiger Lake+");
       }
     } else {
-      warn("VPP is only available with NV12, P010, or 4:4:4 color format");
+      warn("VPP is only available with NV12, P010, AYUV, or P416 color format");
     }
   }
 
@@ -2262,14 +2260,31 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   case VIDEO_FORMAT_P010:
     Context->EncoderParams.FourCC = MFX_FOURCC_P010;
     Context->EncoderParams.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
+    Context->EncoderParams.BitDepth = 10;
     break;
+  case VIDEO_FORMAT_AYUV:
   case VIDEO_FORMAT_I444:
-    Context->EncoderParams.FourCC = MFX_MAKEFOURCC('4','4','4','P');
+    // oneVPL 4:4:4 8-bit is packed AYUV; I444 is planar but will be converted
+    // by OBS when the encoder requests AYUV.
+    Context->EncoderParams.FourCC = MFX_FOURCC_AYUV;
     Context->EncoderParams.ChromaFormat = MFX_CHROMAFORMAT_YUV444;
     break;
-  case VIDEO_FORMAT_I412:
+  case VIDEO_FORMAT_YUY2:
+    Context->EncoderParams.FourCC = MFX_FOURCC_YUY2;
+    Context->EncoderParams.ChromaFormat = MFX_CHROMAFORMAT_YUV422;
+    break;
+  case VIDEO_FORMAT_P216:
+    // OBS P216 is two-plane 4:2:2 10-bit (stored as 16-bit samples);
+    // oneVPL wants packed Y216. LoadFrameData performs the layout conversion.
+    Context->EncoderParams.FourCC = MFX_FOURCC_Y216;
+    Context->EncoderParams.ChromaFormat = MFX_CHROMAFORMAT_YUV422;
+    Context->EncoderParams.BitDepth = 10;
+    break;
   case VIDEO_FORMAT_P416:
-    Context->EncoderParams.FourCC = MFX_MAKEFOURCC('4','4','4','P');
+  case VIDEO_FORMAT_I412:
+    // OBS P416 is two-plane 4:4:4 16-bit; oneVPL wants packed Y416.
+    // I412 is planar 12-bit and will be converted to P416 by OBS first.
+    Context->EncoderParams.FourCC = MFX_FOURCC_Y416;
     Context->EncoderParams.ChromaFormat = MFX_CHROMAFORMAT_YUV444;
     Context->EncoderParams.BitDepth = 12;
     break;
