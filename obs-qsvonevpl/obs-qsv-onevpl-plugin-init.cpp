@@ -41,8 +41,6 @@ const char *const qsv_usage_names_five[] = {
 const char *const qsv_latency_names[] = {"ultra-low", "low", "normal", 0};
 const char *const qsv_params_condition[] = {"ON", "OFF", 0};
 const char *const qsv_params_condition_tristate[] = {"ON", "OFF", "AUTO", 0};
-const char *const qsv_params_deblocking_h264[] = {
-    "FULLY_ENABLED", "PARTIAL", "FULLY_DISABLED", 0};
 const char *const qsv_params_weighted_pred_options[] = {"AUTO", "OFF",
     "DEFAULT", "EXPLICIT", "IMPLICIT", 0};
 const char *const qsv_params_condition_scaling_mode[] = {
@@ -325,7 +323,7 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(Settings, "enc_tools_saliency_map_hint", "ON");
   obs_data_set_default_string(Settings, "hevc_sao", "AUTO");
   obs_data_set_default_string(Settings, "hevc_gpb", "AUTO");
-  obs_data_set_default_string(Settings, "deblocking", "FULLY_DISABLED");
+  obs_data_set_default_string(Settings, "deblocking", "OFF");
 
   obs_data_set_default_string(Settings, "intra_ref_type", "VERTICAL");
   obs_data_set_default_int(Settings, "intra_ref_cycle_size", 2);
@@ -842,16 +840,11 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 
   obs_properties_t *ETGroup = obs_properties_create();
 
-  if (Codec == QSV_CODEC_AVC) {
-    Prop = obs_properties_add_list(ETGroup, "deblocking", TEXT_DEBLOCKING,
-                                   OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-    AddStrings(Prop, qsv_params_deblocking_h264);
-    obs_property_set_long_description(Prop, TEXT_DEBLOCKING_DESC);
-  } else if (Codec == QSV_CODEC_HEVC) {
+  if (Codec == QSV_CODEC_AVC || Codec == QSV_CODEC_HEVC) {
     Prop = obs_properties_add_list(ETGroup, "deblocking", TEXT_DEBLOCKING,
                                    OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
     AddStrings(Prop, qsv_params_condition);
-    obs_property_set_long_description(Prop, TEXT_DEBLOCKING_DESC_HEVC);
+    obs_property_set_long_description(Prop, TEXT_DEBLOCKING_DESC);
   }
 
 #ifdef ONEVPL_EXPERIMENTAL
@@ -1608,15 +1601,11 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   // AUTO leaves AV1Segmentation unset so the driver chooses.
 
   auto svDeblock = std::string_view(DeblockingData);
-  // H.264: FULLY_ENABLED=0, PARTIAL=1, FULLY_DISABLED=2
-  // H.265: ON=0, OFF=1 (HEVC treats any non-zero as disabled)
-  if (svDeblock == "FULLY_ENABLED" || svDeblock == "ON")
+  if (svDeblock == "ON")
     Context->EncoderParams.DisableDeblockingIdc = 0;
-  else if (svDeblock == "PARTIAL")
-    Context->EncoderParams.DisableDeblockingIdc = 1;
-  else if (svDeblock == "FULLY_DISABLED" || svDeblock == "OFF")
+  else if (svDeblock == "OFF")
     Context->EncoderParams.DisableDeblockingIdc = 2;
-  // else: leave unset, driver default (FULLY_ENABLED)
+  // else: leave unset, driver default
 
 #ifdef ONEVPL_EXPERIMENTAL
   Context->EncoderParams.TuneQuality =

@@ -488,13 +488,9 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
     Params.AV1Segmentation = 0;
 
   auto svDeblock = std::string_view(DeblockingData);
-  // H.264: FULLY_ENABLED=0, PARTIAL=1, FULLY_DISABLED=2
-  // H.265: ON=0, OFF=1 (HEVC treats any non-zero as disabled)
-  if (svDeblock == "FULLY_ENABLED" || svDeblock == "ON")
+  if (svDeblock == "ON")
     Params.DisableDeblockingIdc = 0;
-  else if (svDeblock == "PARTIAL")
-    Params.DisableDeblockingIdc = 1;
-  else if (svDeblock == "FULLY_DISABLED" || svDeblock == "OFF")
+  else if (svDeblock == "OFF")
     Params.DisableDeblockingIdc = 2;
 
 #ifdef ONEVPL_EXPERIMENTAL
