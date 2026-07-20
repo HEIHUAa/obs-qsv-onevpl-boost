@@ -325,7 +325,7 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(Settings, "enc_tools_saliency_map_hint", "ON");
   obs_data_set_default_string(Settings, "hevc_sao", "AUTO");
   obs_data_set_default_string(Settings, "hevc_gpb", "AUTO");
-  obs_data_set_default_string(Settings, "deblocking", "FULLY_ENABLED");
+  obs_data_set_default_string(Settings, "deblocking", "FULLY_DISABLED");
 
   obs_data_set_default_string(Settings, "intra_ref_type", "VERTICAL");
   obs_data_set_default_int(Settings, "intra_ref_cycle_size", 2);

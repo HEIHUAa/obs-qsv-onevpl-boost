@@ -2095,7 +2095,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       CO2Params->DisableDeblockingIdc =
           InputParams->DisableDeblockingIdc.value();
     } else {
-      CO2Params->DisableDeblockingIdc = 0; // enable deblocking filter
+      CO2Params->DisableDeblockingIdc = 2; // disable deblocking by default
     }
 
     if (InputParams->IntraRefEncoding == true) {
