@@ -2091,7 +2091,12 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       // handling; leave it UNKNOWN for that path.
       CO2Params->FixedFrameRate = MFX_CODINGOPTION_ON;
     }
-    CO2Params->DisableDeblockingIdc = 0; // enable deblocking filter
+    if (InputParams->DisableDeblockingIdc.has_value()) {
+      CO2Params->DisableDeblockingIdc =
+          InputParams->DisableDeblockingIdc.value();
+    } else {
+      CO2Params->DisableDeblockingIdc = 0; // enable deblocking filter
+    }
 
     if (InputParams->IntraRefEncoding == true) {
       CO2Params->IntRefType =

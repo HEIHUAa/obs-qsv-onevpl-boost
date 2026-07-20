@@ -412,6 +412,7 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
       obs_data_get_string(Settings, "av1_error_resilient");
   const char *AV1SegmentationData =
       obs_data_get_string(Settings, "av1_segmentation");
+  const char *DeblockingData = obs_data_get_string(Settings, "deblocking");
 #ifdef ONEVPL_EXPERIMENTAL
   const char *TuneQualityData = obs_data_get_string(Settings, "tune_quality");
 #endif
@@ -485,6 +486,16 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
     Params.AV1Segmentation = 1;
   else if (svSeg == "OFF")
     Params.AV1Segmentation = 0;
+
+  auto svDeblock = std::string_view(DeblockingData);
+  // H.264: FULLY_ENABLED=0, PARTIAL=1, FULLY_DISABLED=2
+  // H.265: ON=0, OFF=1 (HEVC treats any non-zero as disabled)
+  if (svDeblock == "FULLY_ENABLED" || svDeblock == "ON")
+    Params.DisableDeblockingIdc = 0;
+  else if (svDeblock == "PARTIAL")
+    Params.DisableDeblockingIdc = 1;
+  else if (svDeblock == "FULLY_DISABLED" || svDeblock == "OFF")
+    Params.DisableDeblockingIdc = 2;
 
 #ifdef ONEVPL_EXPERIMENTAL
   Params.TuneQuality =

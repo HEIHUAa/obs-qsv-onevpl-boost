@@ -165,6 +165,10 @@ struct plugin_context {
 #define TEXT_AV1_ERROR_RESILIENT_DESC obs_module_text("AV1ErrorResilientDesc")
 #define TEXT_AV1_SEGMENTATION_DESC obs_module_text("AV1SegmentationDesc")
 
+#define TEXT_DEBLOCKING obs_module_text("Deblocking")
+#define TEXT_DEBLOCKING_DESC obs_module_text("DeblockingDesc")
+#define TEXT_DEBLOCKING_DESC_HEVC obs_module_text("DeblockingDescHEVC")
+
 #define TEXT_VPP_MCTF obs_module_text("VPPMCTF")
 #define TEXT_VPP_MCTF_STRENGTH obs_module_text("VPPMCTFStrength")
 #define TEXT_VPP_MCTF_DESC obs_module_text("VPPMCTFDesc")
@@ -283,6 +287,7 @@ extern const char *const qsv_usage_names[];
 extern const char *const qsv_latency_names[];
 extern const char *const qsv_params_condition[];
 extern const char *const qsv_params_condition_tristate[];
+extern const char *const qsv_params_deblocking_h264[];
 extern const char *const qsv_params_weighted_pred_options[];
 extern const char *const qsv_params_condition_scaling_mode[];
 extern const char *const qsv_params_condition_image_stab_mode[];

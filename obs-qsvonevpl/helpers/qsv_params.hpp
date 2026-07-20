@@ -122,6 +122,7 @@ struct encoder_params {
   std::optional<int> SkipFrame;
   std::optional<bool> RepartitionCheckEnable;
   std::optional<int> AV1Segmentation;
+  std::optional<mfxU16> DisableDeblockingIdc; // 0=all enabled, 1=partial(slice), 2=all disabled
   mfxU32 TuneQuality = 0;
   std::optional<mfxU16> VPPOutWidth;
   std::optional<mfxU16> VPPOutHeight;
