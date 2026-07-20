@@ -840,13 +840,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 
   obs_properties_t *ETGroup = obs_properties_create();
 
-  if (Codec == QSV_CODEC_AVC || Codec == QSV_CODEC_HEVC) {
-    Prop = obs_properties_add_list(ETGroup, "deblocking", TEXT_DEBLOCKING,
-                                   OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-    AddStrings(Prop, qsv_params_condition);
-    obs_property_set_long_description(Prop, TEXT_DEBLOCKING_DESC);
-  }
-
 #ifdef ONEVPL_EXPERIMENTAL
   Prop = obs_properties_add_list(ETGroup, "tune_quality", TEXT_TUNE_QUALITY,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -985,6 +978,13 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(Prop, TEXT_TRANSFORM_SKIP_DESC);
   obs_property_set_visible(Prop, Codec == QSV_CODEC_HEVC &&
                            IsFeatureSupported("transform_skip"));
+
+  if (Codec == QSV_CODEC_AVC || Codec == QSV_CODEC_HEVC) {
+    Prop = obs_properties_add_list(ETGroup, "deblocking", TEXT_DEBLOCKING,
+                                   OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+    AddStrings(Prop, qsv_params_condition);
+    obs_property_set_long_description(Prop, TEXT_DEBLOCKING_DESC);
+  }
 
   obs_properties_t *RMGroup = obs_properties_create();
 
