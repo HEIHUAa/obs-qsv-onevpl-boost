@@ -996,7 +996,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
   obs_property_set_long_description(Prop, TEXT_GLOBAL_MOTION_BIAS_DESC);
-  obs_property_set_visible(Prop, bIsAVCOrHEVC);
+  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC); // HME only for AVC
 
   Prop = obs_properties_add_list(RMGroup, "mv_cost_scaling_factor",
                                  TEXT_MV_COST_SCALING_FACTOR,
