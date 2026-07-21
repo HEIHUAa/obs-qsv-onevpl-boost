@@ -81,7 +81,7 @@ struct encoder_params {
   // Debug group toggles
   bool QPStatistics = true; // default ON to preserve existing behavior
   bool VideoHeaderHexDump = false;
-  bool MBStats = false;
+  bool FrameStatistics = false;
   bool EncTools;
   std::optional<bool> EncToolsSceneChange;
   std::optional<bool> EncToolsAdaptiveRefP;

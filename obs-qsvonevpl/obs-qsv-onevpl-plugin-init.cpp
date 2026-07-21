@@ -384,7 +384,7 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   // Debug group defaults
   obs_data_set_default_bool(Settings, "qp_statistics", true);
   obs_data_set_default_bool(Settings, "video_header_hex_dump", false);
-  obs_data_set_default_bool(Settings, "mb_statistics", false);
+  obs_data_set_default_bool(Settings, "frame_statistics", false);
 }
 
 static inline const char *LocaleKey(const char *str) {
@@ -1433,8 +1433,9 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   Prop = obs_properties_add_bool(DBGGroup, "video_header_hex_dump",
                                  TEXT_VIDEO_HEADER_DUMP);
   obs_property_set_long_description(Prop, TEXT_VIDEO_HEADER_DUMP_DESC);
-  Prop = obs_properties_add_bool(DBGGroup, "mb_statistics", TEXT_MB_STATS);
-  obs_property_set_long_description(Prop, TEXT_MB_STATS_DESC);
+  Prop = obs_properties_add_bool(DBGGroup, "frame_statistics",
+                                 TEXT_FRAME_STATS);
+  obs_property_set_long_description(Prop, TEXT_FRAME_STATS_DESC);
   obs_properties_add_group(Props, "group_debug",
                            TEXT_GROUP_DEBUG,
                            OBS_GROUP_NORMAL, DBGGroup);
@@ -2261,8 +2262,8 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       obs_data_get_bool(Settings, "qp_statistics");
   Context->EncoderParams.VideoHeaderHexDump =
       obs_data_get_bool(Settings, "video_header_hex_dump");
-  Context->EncoderParams.MBStats =
-      obs_data_get_bool(Settings, "mb_statistics");
+  Context->EncoderParams.FrameStatistics =
+      obs_data_get_bool(Settings, "frame_statistics");
 
   Context->EncoderParams.ProcessingEnable = false;
   if ((Context->EncoderParams.VPPDenoiseMode.has_value() ||
