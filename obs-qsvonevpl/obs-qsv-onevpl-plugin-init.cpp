@@ -435,6 +435,10 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   SetVisible("bitrate", !(bIsCQP || bIsICQ));
   SetVisible("accuracy", bIsAVBR);
   SetVisible("convergence", bIsAVBR);
+  // VCM is IPPP-only, no B-frames (H264 GopRefDist forced to 1;
+  // HEVC uses VA_RC_VCM without MB BRC, conceptually IPPP)
+  SetVisible("b_frames", !bIsVCM && codec != QSV_CODEC_VP9);
+  SetVisible("adaptive_b", !bIsVCM && codec != QSV_CODEC_VP9);
   SetVisible("cqp_separate_ipb", bIsCQP);
 
   bool separateIPB = obs_data_get_bool(Settings, "cqp_separate_ipb");
@@ -455,8 +459,9 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   // the oneVPL driver's SetDefaultConfig, the non-BRC features (SceneChange,
   // AdaptiveI, AdaptiveRef, PyramidQuant, etc.) are rate-control agnostic, so
   // we keep the existing broad RC visibility.
-  bool bEncToolsVisible = (bIsCBR || bIsVBR || bIsAVBR || bIsVCM || bIsQVBR)
-                          && codec != QSV_CODEC_VP9;
+  bool bEncToolsVisible = (bIsCBR || bIsVBR || bIsAVBR || bIsQVBR)
+                         && !bIsVCM
+                         && codec != QSV_CODEC_VP9;
   bool bVisible = bEncToolsVisible;
   if (bVisible) bVisible = IsFeatureSupported("enc_tools");
   SetVisible("enctools", bVisible);
@@ -510,7 +515,7 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
     obs_data_set_string(Settings, "enctools", "OFF");
   }
 
-  bVisible = bIsCBR || bIsVBR || bIsAVBR || bIsVCM || bIsQVBR || bIsICQ;
+  bVisible = bIsCBR || bIsVBR || bIsAVBR || bIsQVBR || bIsICQ;
   // "mbbrc" control is not created for VP9 (codec disables MBBRC), so guard
   // against nullptr here.
   if (auto *mbbrc = obs_properties_get(Properties, "mbbrc")) {
@@ -655,11 +660,14 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
     const struct qsv_rate_control_info *rcInfo = qsv_rate_control_info_list;
     while (rcInfo->name) {
       if (platformCode == 0 || platformCode >= rcInfo->min_platform) {
-      // AV1/AVCM do not support VCM; HEVC encoder does not support AVBR;
-      // VP9 only supports CBR/VBR/CQP/ICQ (no AVBR/QVBR/VCM)
+      // AV1 only supports CBR/VBR/CQP/ICQ (AVBR silently falls back to VBR,
+      // QVBR/VCM not in driver's CheckRateControl at all)
+      // HEVC encoder does not support AVBR; VP9 only supports CBR/VBR/CQP/ICQ
       auto sv = [](const char *s) { return std::string_view(s); };
       bool skipForAV1 = Codec == QSV_CODEC_AV1 &&
-                        sv(rcInfo->name) == "VCM";
+                        (sv(rcInfo->name) == "AVBR" ||
+                         sv(rcInfo->name) == "VCM" ||
+                         sv(rcInfo->name) == "QVBR");
       bool skipForHEVC = Codec == QSV_CODEC_HEVC &&
                          sv(rcInfo->name) == "AVBR";
       bool skipForVP9 = Codec == QSV_CODEC_VP9 &&
