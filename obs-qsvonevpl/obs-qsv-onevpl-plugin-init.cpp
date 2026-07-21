@@ -730,14 +730,14 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_int_set_suffix(Prop, " Kbps");
   obs_property_set_long_description(Prop, TEXT_MAX_BITRATE_DESC);
 
-  // AVBR-specific: Accuracy (0.0~100.0%, UI float, *10 → tenth-of-percent for driver)
-  Prop = obs_properties_add_float_slider(RCGroup, "accuracy", TEXT_ACCURACY,
-                                        0.0, 100.0, 0.1);
-  obs_property_set_long_description(Prop, TEXT_ACCURACY_DESC);
-  // Convergence (0~65535, 1 = 100 frames, 0 = driver default)
+  // AVBR-specific: Convergence (0~65535, 1 = 100 frames, 0 = driver default)
   Prop = obs_properties_add_int(RCGroup, "convergence", TEXT_CONVERGENCE,
                                0, 65535, 1);
   obs_property_set_long_description(Prop, TEXT_CONVERGENCE_DESC);
+  // Accuracy (0.0~100.0%, UI float, *10 → tenth-of-percent for driver)
+  Prop = obs_properties_add_float_slider(RCGroup, "accuracy", TEXT_ACCURACY,
+                                        0.0, 100.0, 0.1);
+  obs_property_set_long_description(Prop, TEXT_ACCURACY_DESC);
 
   Prop = obs_properties_add_bool(RCGroup, "custom_buffer_size",
                                  TEXT_CUSTOM_BUFFER_SIZE);
