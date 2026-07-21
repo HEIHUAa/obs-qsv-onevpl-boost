@@ -431,6 +431,10 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   bool bIsVCM  = sv(rate_control) == "VCM";
   bool bIsQVBR = sv(rate_control) == "QVBR";
 
+  // Retrieve codec stored by GetParamProps (needed early for VCM codec gates)
+  auto codec = static_cast<codec_enum>(
+      reinterpret_cast<intptr_t>(obs_properties_get_param(Properties)));
+
   SetVisible("max_bitrate", bIsVBR || bIsVCM);
   SetVisible("bitrate", !(bIsCQP || bIsICQ));
   SetVisible("accuracy", bIsAVBR);
@@ -446,10 +450,6 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   SetVisible("qpb", bIsCQP && separateIPB);
   SetVisible("qpp", bIsCQP && separateIPB);
   SetVisible("cqp", bIsCQP && !separateIPB);
-
-  // Retrieve codec stored by GetParamProps
-  auto codec = static_cast<codec_enum>(
-      reinterpret_cast<intptr_t>(obs_properties_get_param(Properties)));
 
   SetVisible("icq_quality", bIsICQ && codec != QSV_CODEC_VP9);
 
