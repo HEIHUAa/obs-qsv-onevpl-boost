@@ -166,10 +166,9 @@ static mfxU16 ExtractVP9QP(std::span<const uint8_t> data) {
 }
 
 QSVEncoder::~QSVEncoder() {
-  if (QSVEncode || QSVProcessing) {
-    ClearData();
-  }
-ReleaseSystemMemorySurfacePool();
+  // Always clean up — even if QSVEncode is null (partial init failure),
+  // QSVSession may still be open and must be closed.
+  ClearData();
 }
 
 void QSVEncoder::InitSystemMemorySurfacePool() {
@@ -3902,19 +3901,41 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
 
   while (MFX_ERR_NOT_FOUND == TaskID || MFX_ERR_NOT_FOUND == SurfID) {
     // Sync the oldest pending task (QSVSyncTaskID points to it)
-    do {
+    mfxU32 syncRetries = 0;
+    constexpr mfxU32 MAX_SYNC_RETRIES = 50; // 50 * 100ms = 5s max wait
+    for (;;) {
+      // Skip tasks with null sync point — they were never submitted
+      // (e.g. EncodeFrameAsync returned MFX_ERR_MORE_DATA).
+      if (QSVTaskPool[QSVSyncTaskID].SyncPoint == nullptr) {
+        break;
+      }
       SyncStatus = MFXVideoCORE_SyncOperation(
           QSVSession, QSVTaskPool[QSVSyncTaskID].SyncPoint, 100);
+      if (SyncStatus == MFX_ERR_MORE_DATA) {
+        // Driver not ready yet — retry (some drivers return MORE_DATA
+        // instead of WRN_IN_EXECUTION when the GPU is still busy).
+        if (++syncRetries > MAX_SYNC_RETRIES) {
+          error("Encode.EncodeSync error: -2 (timeout after %u retries)",
+                syncRetries);
+          throw std::runtime_error(
+              "Encode(): Sync operation failed - unrecoverable error");
+        }
+        continue;
+      }
+      if (SyncStatus == MFX_WRN_IN_EXECUTION) {
+        continue; // still running, retry
+      }
       if (SyncStatus < MFX_ERR_NONE) {
         error("Encode.EncodeSync error: %d", SyncStatus);
         throw std::runtime_error(
             "Encode(): Sync operation failed - unrecoverable error");
       }
-    } while (SyncStatus == MFX_WRN_IN_EXECUTION);
+      break; // SyncStatus >= MFX_ERR_NONE — done
+    }
 
     // Record QP stats before swap — the task's bitstream still has
     // FrameType and ExtParam intact at this point.
-    if (QPStatsEnabled) {
+    if (QPStatsEnabled && QSVTaskPool[QSVSyncTaskID].SyncPoint) {
       RecordQPFromBitstream(QSVTaskPool[QSVSyncTaskID].Bitstream);
     }
 
@@ -4241,15 +4262,33 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
 #endif
 
   while (GetFreeTaskIndex(&TaskID) == MFX_ERR_NOT_FOUND) {
-    do {
+    mfxU32 syncRetries = 0;
+    constexpr mfxU32 MAX_SYNC_RETRIES = 50;
+    for (;;) {
+      if (QSVTaskPool[QSVSyncTaskID].SyncPoint == nullptr) {
+        break;
+      }
       SyncStatus = MFXVideoCORE_SyncOperation(
           QSVSession, QSVTaskPool[QSVSyncTaskID].SyncPoint, 100);
+      if (SyncStatus == MFX_ERR_MORE_DATA) {
+        if (++syncRetries > MAX_SYNC_RETRIES) {
+          error("Encode.EncodeSync error: -2 (timeout after %u retries)",
+                syncRetries);
+          throw std::runtime_error(
+              "Encode(): Sync operation failed - unrecoverable error");
+        }
+        continue;
+      }
+      if (SyncStatus == MFX_WRN_IN_EXECUTION) {
+        continue;
+      }
       if (SyncStatus < MFX_ERR_NONE) {
         error("Encode.EncodeSync error: %d", SyncStatus);
         throw std::runtime_error(
             "Encode(): Sync operation failed - unrecoverable error");
       }
-    } while (SyncStatus == MFX_WRN_IN_EXECUTION);
+      break;
+    }
 
     mfxU8 *DataTemp = QSVBitstream.Data;
     QSVBitstream = QSVTaskPool[QSVSyncTaskID].Bitstream;
@@ -4410,9 +4449,30 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
   }
 
   while (GetFreeTaskIndex(&TaskID) == MFX_ERR_NOT_FOUND) {
-    do {
+    mfxU32 syncRetries = 0;
+    constexpr mfxU32 MAX_SYNC_RETRIES = 50;
+    for (;;) {
+      if (QSVTaskPool[QSVSyncTaskID].SyncPoint == nullptr) {
+        break;
+      }
       SyncStatus = MFXVideoCORE_SyncOperation(
           QSVSession, QSVTaskPool[QSVSyncTaskID].SyncPoint, 100);
+      if (SyncStatus == MFX_ERR_MORE_DATA) {
+        if (++syncRetries > MAX_SYNC_RETRIES) {
+          error("Encode.EncodeSync error: -2 (timeout after %u retries)",
+                syncRetries);
+          if (QSVEncodeSurface) {
+            QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
+            QSVEncodeSurface = nullptr;
+          }
+          throw std::runtime_error(
+              "Encode(): Sync operation failed - unrecoverable error");
+        }
+        continue;
+      }
+      if (SyncStatus == MFX_WRN_IN_EXECUTION) {
+        continue;
+      }
       if (SyncStatus < MFX_ERR_NONE) {
         error("Encode.EncodeSync error: %d", SyncStatus);
         if (QSVEncodeSurface) {
@@ -4422,11 +4482,12 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
         throw std::runtime_error(
             "Encode(): Sync operation failed - unrecoverable error");
       }
-    } while (SyncStatus == MFX_WRN_IN_EXECUTION);
+      break;
+    }
 
     // Record QP stats before swap — the task's bitstream still has
     // FrameType and ExtParam intact at this point.
-    if (QPStatsEnabled) {
+    if (QPStatsEnabled && QSVTaskPool[QSVSyncTaskID].SyncPoint) {
       RecordQPFromBitstream(QSVTaskPool[QSVSyncTaskID].Bitstream);
     }
 
@@ -5196,14 +5257,17 @@ mfxStatus QSVEncoder::ClearData() {
 
   if (QSVSession) {
     Status = MFXClose(QSVSession);
-    if (Status >= MFX_ERR_NONE) {
-      if (QSVLoader) {
-        MFXDispReleaseImplDescription(QSVLoader, nullptr);
-        MFXUnload(QSVLoader);
-      }
-      QSVSession = nullptr;
-      QSVLoader = nullptr;
+    if (Status < MFX_ERR_NONE) {
+      warn("MFXClose returned %d — forcing cleanup anyway", Status);
     }
+    // Always clean up pointers regardless of MFXClose status.
+    // A stale session pointer would crash the next Init() call.
+    if (QSVLoader) {
+      MFXDispReleaseImplDescription(QSVLoader, nullptr);
+      MFXUnload(QSVLoader);
+    }
+    QSVSession = nullptr;
+    QSVLoader = nullptr;
   }
 
 #if defined(__linux__)
