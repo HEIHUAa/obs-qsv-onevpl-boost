@@ -235,6 +235,8 @@ struct plugin_context {
 #define TEXT_QP_STATS_DESC obs_module_text("QPStatistics.Tooltip")
 #define TEXT_VIDEO_HEADER_DUMP obs_module_text("VideoHeaderHexDump")
 #define TEXT_VIDEO_HEADER_DUMP_DESC obs_module_text("VideoHeaderHexDump.Tooltip")
+#define TEXT_MB_STATS obs_module_text("MBStatistics")
+#define TEXT_MB_STATS_DESC obs_module_text("MBStatistics.Tooltip")
 
 #define TEXT_TARGET_USAGE_DESC obs_module_text("TargetUsageDesc")
 #define TEXT_RATE_CONTROL_DESC obs_module_text("RateControlDesc")

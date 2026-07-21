@@ -223,8 +223,33 @@ private:
   // One mfxExtEncodedFrameInfo per task, attached to each task's
   // bitstream so the encoder fills in frame-level QP after encode.
   std::vector<mfxExtEncodedFrameInfo> QSVTaskEncodedInfo;
-  // Each task's bitstream.ExtParam points into the array below.
-  std::vector<mfxExtBuffer *> QSVTaskEncodedExtPtr;
+
+  // ─ MB statistics (experimental: requires driver MFX_EXTBUFF_ENCODESTATS) ─
+  struct MBTypeFrameStats {
+    uint64_t count = 0;
+    uint64_t intraBlocks = 0;
+    uint64_t interBlocks = 0;
+    uint64_t skippedBlocks = 0;
+    double sumPSNR = 0.0;
+    double sumQP = 0.0;
+    uint64_t totalBits = 0;
+  };
+  struct MBStatsAccum {
+    MBTypeFrameStats i, p, b;
+    uint64_t totalFrames = 0;
+    bool driverSupported = false;
+    bool driverQueried = false;
+  };
+  MBStatsAccum FrameMBStats;
+  bool MBStatsEnabled = false; // cached from InputParams for Drain path
+
+  // Per-task mfxExtEncodeStatsOutput buffer (experimental stats API).
+  // Each task's bitstream.ExtParam points into a small array of 2 pointers:
+  //   [0] → mfxExtEncodedFrameInfo  (frame QP)
+  //   [1] → mfxExtEncodeStatsOutput  (MB stats, if MBStatsEnabled)
+  alignas(alignof(mfxExtBuffer*)) std::vector<
+      std::array<mfxExtBuffer*, 2>> QSVTaskExtPtrs;
+  std::vector<mfxExtEncodeStatsOutput> QSVTaskEncodeStats;
 
   // ─ Per-frame QP tracking ─
   static constexpr size_t QSV_SEI_EXTRA = 1024; // extra bytes per task for SEI injection
@@ -242,6 +267,7 @@ private:
   void RecordQPFromBitstream(const mfxBitstream &bs);
   void LogQPStats();
   void LogVideoHeaderHexDump();
+  void LogMBStats();
 
   // QP stats SEI injection — appends user_data_unregistered SEI per frame
   static constexpr uint8_t QP_SEI_UUID[16] = {

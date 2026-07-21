@@ -985,6 +985,7 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
 
     // Cache debug toggles for use in Drain (InputParams may be gone by then)
     QPStatsEnabled = InputParams->QPStatistics;
+    MBStatsEnabled = InputParams->MBStats;
 
     if (InputParams->VideoHeaderHexDump) {
       LogVideoHeaderHexDump();
@@ -2920,7 +2921,9 @@ mfxStatus QSVEncoder::InitTaskPool([[maybe_unused]] enum codec_enum Codec) {
 
   // Allocate one mfxExtEncodedFrameInfo per task to retrieve per-frame QP
   QSVTaskEncodedInfo.resize(QSVEncodeParams.AsyncDepth);
-  QSVTaskEncodedExtPtr.resize(QSVEncodeParams.AsyncDepth);
+  // Ext-ptr array: [0]=EncodedFrameInfo, [1]=EncodeStatsOutput (if enabled)
+  QSVTaskExtPtrs.resize(QSVEncodeParams.AsyncDepth);
+  QSVTaskEncodeStats.resize(QSVEncodeParams.AsyncDepth);
 
   for (int i = 0; i < QSVEncodeParams.AsyncDepth; i++) {
     mfxU16 brcM = QSVEncodeParams.mfx.BRCParamMultiplier;
@@ -2944,9 +2947,26 @@ mfxStatus QSVEncoder::InitTaskPool([[maybe_unused]] enum codec_enum Codec) {
     memset(&encInfo, 0, sizeof(encInfo));
     encInfo.Header.BufferId = MFX_EXTBUFF_ENCODED_FRAME_INFO;
     encInfo.Header.BufferSz = sizeof(encInfo);
-    NewTask.Bitstream.ExtParam = &QSVTaskEncodedExtPtr[i];
-    QSVTaskEncodedExtPtr[i] = reinterpret_cast<mfxExtBuffer *>(&encInfo);
+
+    // Set up ext-ptr array: [0] = EncodedFrameInfo
+    auto &extPtrs = QSVTaskExtPtrs[i];
+    extPtrs[0] = reinterpret_cast<mfxExtBuffer *>(&encInfo);
+    NewTask.Bitstream.ExtParam = extPtrs.data();
     NewTask.Bitstream.NumExtParam = 1;
+
+    // Optionally attach mfxExtEncodeStatsOutput for MB statistics
+    if (MBStatsEnabled) {
+      auto &statsOut = QSVTaskEncodeStats[i];
+      memset(&statsOut, 0, sizeof(statsOut));
+      statsOut.Header.BufferId = MFX_EXTBUFF_ENCODESTATS;
+      statsOut.Header.BufferSz = sizeof(statsOut);
+      statsOut.EncodeStatsFlags =
+          MFX_ENCODESTATS_LEVEL_FRAME | MFX_ENCODESTATS_LEVEL_BLK;
+      statsOut.Mode = MFX_ENCODESTATS_MODE_ENCODE;
+      statsOut.EncodeStatsContainer = nullptr; // driver fills
+      extPtrs[1] = reinterpret_cast<mfxExtBuffer *>(&statsOut);
+      NewTask.Bitstream.NumExtParam = 2;
+    }
 
     QSVTaskPool.push_back(NewTask);
   }
@@ -2980,6 +3000,12 @@ void QSVEncoder::ReleaseTaskPool() {
     QSVTaskPool.clear();
     QSVTaskPool.shrink_to_fit();
   }
+  QSVTaskEncodedInfo.clear();
+  QSVTaskEncodedInfo.shrink_to_fit();
+  QSVTaskExtPtrs.clear();
+  QSVTaskExtPtrs.shrink_to_fit();
+  QSVTaskEncodeStats.clear();
+  QSVTaskEncodeStats.shrink_to_fit();
 }
 
 mfxStatus QSVEncoder::ChangeBitstreamSize(mfxU32 NewSize) {
@@ -4670,6 +4696,46 @@ void QSVEncoder::LogQPStats() {
   logType("B-frames", FrameQPStats.b);
 }
 
+// Log MB statistics collected via the experimental mfxExtEncodeStatsOutput API.
+// If the driver doesn't support the extension, outputs a single-line notice.
+void QSVEncoder::LogMBStats() {
+  if (!FrameMBStats.driverQueried) {
+    blog(LOG_INFO, "[QSV VPL] MBStats: no frames processed");
+    return;
+  }
+  if (!FrameMBStats.driverSupported) {
+    blog(LOG_INFO,
+         "[QSV VPL] MBStats: driver does not support "
+         "MFX_EXTBUFF_ENCODESTATS (experimental API) — no MB data available");
+    return;
+  }
+
+  auto logSlot = [&](const char *label, const MBTypeFrameStats &s) {
+    if (s.count == 0) return;
+    uint64_t totalMB = s.intraBlocks + s.interBlocks + s.skippedBlocks;
+    double i_pct = 100.0 * s.intraBlocks / totalMB;
+    double inter_pct = 100.0 * s.interBlocks / totalMB;
+    double skip_pct = 100.0 * s.skippedBlocks / totalMB;
+    double avgQP = s.sumQP / s.count;
+    double avgPSNR = s.sumPSNR / s.count;
+    double avgBits = static_cast<double>(s.totalBits) / s.count;
+    blog(LOG_INFO,
+         "[QSV VPL] MBStats: %s  count=%llu  Intra=%6.2f%%  "
+         "Inter=%6.2f%%  Skip=%6.2f%%  avgQP=%.1f  avgPSNR=%.2f dB  "
+         "avgBits=%.0f",
+         label,
+         static_cast<unsigned long long>(s.count),
+         i_pct, inter_pct, skip_pct, avgQP, avgPSNR, avgBits);
+  };
+
+  blog(LOG_INFO,
+       "[QSV VPL] MBStats: === MB-type distribution (total %llu frames) ===",
+       static_cast<unsigned long long>(FrameMBStats.totalFrames));
+  logSlot("I-frames", FrameMBStats.i);
+  logSlot("P-frames", FrameMBStats.p);
+  logSlot("B-frames", FrameMBStats.b);
+}
+
 // Dump SPS/PPS/VPS raw bytes as hex for debugging bitstream header issues.
 void QSVEncoder::LogVideoHeaderHexDump() {
   // VP9 has no SPS/PPS/VPS NAL units (uses uncompressed frame header)
@@ -4909,10 +4975,67 @@ mfxStatus QSVEncoder::Drain() {
       }
       Task.SyncPoint = nullptr;
     }
+
+    // Collect MB statistics from experimental stats container (if driver
+    // filled it in after encode)
+    if (MBStatsEnabled &&
+        Task.Bitstream.NumExtParam >= 2) {
+      auto *statsOut = reinterpret_cast<mfxExtEncodeStatsOutput *>(
+          Task.Bitstream.ExtParam[1]);
+      if (statsOut &&
+          statsOut->Header.BufferId == MFX_EXTBUFF_ENCODESTATS) {
+        auto *container = statsOut->EncodeStatsContainer;
+        if (container) {
+          FrameMBStats.driverSupported = true;
+          FrameMBStats.driverQueried = true;
+
+          // Sync stats before reading
+          if (container->SynchronizeStatistics) {
+            container->SynchronizeStatistics(
+                &container->RefInterface, 5000);
+          }
+
+          // Frame-level stats
+          if (container->EncodeFrameStats) {
+            auto *fs = container->EncodeFrameStats;
+            auto &slot = (Task.Bitstream.FrameType & MFX_FRAMETYPE_I ||
+                          Task.Bitstream.FrameType & MFX_FRAMETYPE_IDR ||
+                          Task.Bitstream.FrameType & MFX_FRAMETYPE_xI ||
+                          Task.Bitstream.FrameType & MFX_FRAMETYPE_xIDR)
+                             ? FrameMBStats.i
+                         : (Task.Bitstream.FrameType & MFX_FRAMETYPE_P ||
+                            Task.Bitstream.FrameType & MFX_FRAMETYPE_xP)
+                             ? FrameMBStats.p
+                             : FrameMBStats.b;
+            slot.count++;
+            slot.intraBlocks += fs->NumIntraBlock;
+            slot.interBlocks += fs->NumInterBlock;
+            slot.skippedBlocks += fs->NumSkippedBlock;
+            slot.sumPSNR += fs->PSNRLuma;
+            slot.sumQP += fs->Qp;
+            slot.totalBits += Task.Bitstream.DataLength;
+            FrameMBStats.totalFrames++;
+          }
+
+          // Release the driver-allocated container
+          if (container->RefInterface.Release) {
+            container->RefInterface.Release(
+                &container->RefInterface);
+          }
+          statsOut->EncodeStatsContainer = nullptr;
+        } else {
+          FrameMBStats.driverQueried = true;
+        }
+      }
+    }
   }
 
   if (QPStatsEnabled) {
     LogQPStats();
+  }
+
+  if (MBStatsEnabled) {
+    LogMBStats();
   }
 
   // Rebuild the SEI buffer with the final cumulative stats
