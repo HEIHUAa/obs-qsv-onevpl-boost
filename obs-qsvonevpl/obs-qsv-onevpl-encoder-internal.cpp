@@ -2225,10 +2225,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CO3Params->TargetChromaFormatPlus1 =
         static_cast<mfxU16>(QSVEncodeParams.mfx.FrameInfo.ChromaFormat + 1);
     CO3Params->TransformSkip = GetCodingOpt(InputParams->TransformSkip);
-    if (!IsUHD600HEVC &&
-        QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC) {
-      CO3Params->EnableMBForceIntra = MFX_CODINGOPTION_ON;
-    }
     CO3Params->FadeDetection = GetCodingOpt(InputParams->FadeDetection);
 
     if (QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_QVBR &&
