@@ -2103,6 +2103,11 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     // Enable MAD computation when Frame Statistics is requested
     if (InputParams->FrameStatistics) {
       CO2Params->EnableMAD = MFX_CODINGOPTION_ON;
+      // Also request per-frame MSE/PSNR via QualityInfo
+      auto *QI = QSVEncodeParams.AddExtBuffer<mfxExtQualityInfoMode>();
+      QI->Header.BufferId = MFX_EXTBUFF_ENCODED_QUALITY_INFO_MODE;
+      QI->Header.BufferSz = sizeof(mfxExtQualityInfoMode);
+      QI->QualityInfoMode = MFX_QUALITY_INFO_LEVEL_FRAME;
     }
     if (InputParams->DisableDeblockingIdc.has_value()) {
       CO2Params->DisableDeblockingIdc =
@@ -2926,6 +2931,10 @@ mfxStatus QSVEncoder::InitTaskPool([[maybe_unused]] enum codec_enum Codec) {
   // Allocate one mfxExtEncodedFrameInfo per task to retrieve per-frame QP
   QSVTaskEncodedInfo.resize(QSVEncodeParams.AsyncDepth);
   QSVTaskEncodedExtPtr.resize(QSVEncodeParams.AsyncDepth);
+  QSVTaskQualityInfo.resize(QSVEncodeParams.AsyncDepth);
+  // Flat storage: each task gets 2 consecutive ExtParam slots
+  QSVTaskExtParamBuf.resize(
+      QSVEncodeParams.AsyncDepth * 2);
 
   for (int i = 0; i < QSVEncodeParams.AsyncDepth; i++) {
     mfxU16 brcM = QSVEncodeParams.mfx.BRCParamMultiplier;
@@ -2949,9 +2958,24 @@ mfxStatus QSVEncoder::InitTaskPool([[maybe_unused]] enum codec_enum Codec) {
     memset(&encInfo, 0, sizeof(encInfo));
     encInfo.Header.BufferId = MFX_EXTBUFF_ENCODED_FRAME_INFO;
     encInfo.Header.BufferSz = sizeof(encInfo);
-    NewTask.Bitstream.ExtParam = &QSVTaskEncodedExtPtr[i];
-    QSVTaskEncodedExtPtr[i] = reinterpret_cast<mfxExtBuffer *>(&encInfo);
-    NewTask.Bitstream.NumExtParam = 1;
+
+    // Build persistent ExtParam array for this task
+    mfxExtBuffer **base = QSVTaskExtParamBuf.data() + i * 2;
+    int numExt = 0;
+    base[numExt++] = reinterpret_cast<mfxExtBuffer *>(&encInfo);
+
+    // Also attach mfxExtQualityInfoOutput when FrameStats is enabled
+    // so the driver fills in per-frame MSE for PSNR computation.
+    if (FrameStatsEnabled) {
+      auto &qi = QSVTaskQualityInfo[i];
+      memset(&qi, 0, sizeof(qi));
+      qi.Header.BufferId = MFX_EXTBUFF_ENCODED_QUALITY_INFO_OUTPUT;
+      qi.Header.BufferSz = sizeof(qi);
+      base[numExt++] = reinterpret_cast<mfxExtBuffer *>(&qi);
+    }
+
+    NewTask.Bitstream.ExtParam = base;
+    NewTask.Bitstream.NumExtParam = static_cast<mfxU16>(numExt);
 
     QSVTaskPool.push_back(NewTask);
   }
@@ -4589,7 +4613,6 @@ void QSVEncoder::RecordQPFromBitstream(const mfxBitstream &bs) {
   mfxU16 qp = 0;
   mfxU32 mad = 0;
   mfxU16 brcPanic = 0;
-  mfxU16 refCount = 0;
 
   if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_VP9) {
     // VP9 encoder doesn't fill mfxExtEncodedFrameInfo; parse bitstream for QP
@@ -4614,14 +4637,27 @@ void QSVEncoder::RecordQPFromBitstream(const mfxBitstream &bs) {
       qp = encInfo->QP;
       mad = encInfo->MAD;
       brcPanic = encInfo->BRCPanicMode;
-      // Count non-zero reference frames in L0 and L1
-      for (int i = 0; i < 32; i++) {
-        if (encInfo->UsedRefListL0[i].FrameOrder != 0 ||
-            encInfo->UsedRefListL0[i].PicStruct != 0)
-          refCount++;
-        if (encInfo->UsedRefListL1[i].FrameOrder != 0 ||
-            encInfo->UsedRefListL1[i].PicStruct != 0)
-          refCount++;
+    }
+  }
+
+  // Extract MSE/PSNR from QualityInfoOutput (present for all codecs when FrameStats is on)
+  double psnr[3] = {0.0, 0.0, 0.0};
+  if (FrameStatsEnabled && bs.ExtParam && bs.NumExtParam > 0) {
+    for (mfxU16 i = 0; i < bs.NumExtParam; i++) {
+      auto *qi = reinterpret_cast<mfxExtQualityInfoOutput *>(bs.ExtParam[i]);
+      if (qi && qi->Header.BufferId == MFX_EXTBUFF_ENCODED_QUALITY_INFO_OUTPUT) {
+        // MSE is U24.8 fixed-point, convert to PSNR: 10*log10(255^2*256/MSE)
+        if (qi->MSE[0] > 0 || qi->MSE[1] > 0 || qi->MSE[2] > 0) {
+          for (int c = 0; c < 3; c++) {
+            if (qi->MSE[c] > 0) {
+              psnr[c] = 10.0 * log10(256.0 * 255.0 * 255.0 /
+                                     static_cast<double>(qi->MSE[c]));
+            } else {
+              psnr[c] = 99.99; // no distortion
+            }
+          }
+        }
+        break;
       }
     }
   }
@@ -4631,7 +4667,7 @@ void QSVEncoder::RecordQPFromBitstream(const mfxBitstream &bs) {
   }
   if (FrameStatsEnabled) {
     uint64_t bytes = static_cast<uint64_t>(bs.DataLength);
-    UpdateFrameStats(bs.FrameType, bytes, mad, brcPanic, refCount);
+    UpdateFrameStats(bs.FrameType, bytes, mad, brcPanic, psnr);
   }
 }
 
@@ -4662,10 +4698,12 @@ void QSVEncoder::UpdateFrameQPStats(mfxU16 frameType, mfxU16 qp) {
 
 void QSVEncoder::UpdateFrameStats(mfxU16 frameType, uint64_t bytes,
                                    mfxU32 mad, mfxU16 brcPanic,
-                                   mfxU16 refCount) {
+                                   const double psnr[3]) {
   Stats.totalFrames++;
   Stats.totalBytes += bytes;
   if (brcPanic) Stats.totalPanicFrames++;
+  if (mad > 0) Stats.hasMAD = true;
+  if (psnr[0] > 0.0 || psnr[1] > 0.0 || psnr[2] > 0.0) Stats.hasPSNR = true;
 
   StatsFrameType *bucket = nullptr;
   if (frameType & MFX_FRAMETYPE_I || frameType & MFX_FRAMETYPE_IDR ||
@@ -4682,8 +4720,9 @@ void QSVEncoder::UpdateFrameStats(mfxU16 frameType, uint64_t bytes,
   bucket->count++;
   bucket->totalBytes += bytes;
   bucket->sumMAD += mad;
+  for (int c = 0; c < 3; c++)
+    bucket->sumPSNR[c] += psnr[c];
   if (brcPanic) bucket->panicFrames++;
-  bucket->sumRefCount += refCount;
 }
 
 void QSVEncoder::LogQPStats() {
@@ -4728,32 +4767,36 @@ void QSVEncoder::LogFrameStats() {
        static_cast<unsigned long long>(Stats.totalFrames),
        static_cast<unsigned long long>(Stats.totalBytes));
 
-  auto logType = [](const char *label, const StatsFrameType &s) {
+  auto logType = [this](const char *label, const StatsFrameType &s) {
     if (s.count == 0) {
       blog(LOG_INFO, "  %s — none", label);
       return;
     }
     double avgBytes = static_cast<double>(s.totalBytes) /
                       static_cast<double>(s.count) / 1024.0;
-    double avgMAD = s.sumMAD > 0
-                        ? static_cast<double>(s.sumMAD) /
-                              static_cast<double>(s.count)
-                        : 0.0;
-    double avgRef = s.count > 0
-                        ? static_cast<double>(s.sumRefCount) /
-                              static_cast<double>(s.count)
-                        : 0.0;
+    // Build PSNR string
+    std::string psnrStr;
+    if (Stats.hasPSNR) {
+      char buf[64];
+      snprintf(buf, sizeof(buf), "  PSNR Y/U/V=%.2f/%.2f/%.2f dB",
+               s.sumPSNR[0] / static_cast<double>(s.count),
+               s.sumPSNR[1] / static_cast<double>(s.count),
+               s.sumPSNR[2] / static_cast<double>(s.count));
+      psnrStr = buf;
+    }
     blog(LOG_INFO,
-         "  %s: count=%llu  avg %.1f kb/frame"
-         "  %sMAD avg=%.0f%s"
-         "  refs avg=%.1f"
-         "%s",
+         "  %s: count=%llu  avg %.1f kb/frame%s%s%s%s%s",
          label,
          static_cast<unsigned long long>(s.count), avgBytes,
-         s.panicFrames > 0 ? "PANIC:" : "",
-         avgMAD,
+         s.panicFrames > 0 ? "  PANIC:" : "",
+         Stats.hasMAD
+             ? "  MAD avg=" +
+               std::to_string(static_cast<int>(
+                   static_cast<double>(s.sumMAD) /
+                   static_cast<double>(s.count)))
+             : "  MAD N/A",
+         psnrStr,
          s.panicFrames > 0 ? " (!)" : "",
-         avgRef,
          s.panicFrames > 0 ? "  BRC Panic" : "");
   };
 
@@ -4972,7 +5015,6 @@ mfxStatus QSVEncoder::Drain() {
           mfxU16 qp = 0;
           mfxU32 mad = 0;
           mfxU16 brcPanic = 0;
-          mfxU16 refCount = 0;
 
           if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_VP9) {
             qp = ExtractVP9QP(std::span<const uint8_t>(
@@ -5000,13 +5042,29 @@ mfxStatus QSVEncoder::Drain() {
               qp = encInfo->QP;
               mad = encInfo->MAD;
               brcPanic = encInfo->BRCPanicMode;
-              for (int i = 0; i < 32; i++) {
-                if (encInfo->UsedRefListL0[i].FrameOrder != 0 ||
-                    encInfo->UsedRefListL0[i].PicStruct != 0)
-                  refCount++;
-                if (encInfo->UsedRefListL1[i].FrameOrder != 0 ||
-                    encInfo->UsedRefListL1[i].PicStruct != 0)
-                  refCount++;
+            }
+          }
+
+          // Extract MSE/PSNR from QualityInfoOutput
+          double psnr[3] = {0.0, 0.0, 0.0};
+          if (FrameStatsEnabled && Task.Bitstream.ExtParam &&
+              Task.Bitstream.NumExtParam > 0) {
+            for (mfxU16 i = 0; i < Task.Bitstream.NumExtParam; i++) {
+              auto *qi = reinterpret_cast<mfxExtQualityInfoOutput *>(
+                  Task.Bitstream.ExtParam[i]);
+              if (qi && qi->Header.BufferId ==
+                            MFX_EXTBUFF_ENCODED_QUALITY_INFO_OUTPUT) {
+                if (qi->MSE[0] > 0 || qi->MSE[1] > 0 || qi->MSE[2] > 0) {
+                  for (int c = 0; c < 3; c++) {
+                    if (qi->MSE[c] > 0) {
+                      psnr[c] = 10.0 * log10(256.0 * 255.0 * 255.0 /
+                                              static_cast<double>(qi->MSE[c]));
+                    } else {
+                      psnr[c] = 99.99;
+                    }
+                  }
+                }
+                break;
               }
             }
           }
@@ -5017,7 +5075,7 @@ mfxStatus QSVEncoder::Drain() {
           if (FrameStatsEnabled) {
             uint64_t bytes = static_cast<uint64_t>(Task.Bitstream.DataLength);
             UpdateFrameStats(Task.Bitstream.FrameType, bytes,
-                             mad, brcPanic, refCount);
+                             mad, brcPanic, psnr);
           }
         }
 

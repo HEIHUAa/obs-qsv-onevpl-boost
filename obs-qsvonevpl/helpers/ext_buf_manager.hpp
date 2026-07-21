@@ -122,6 +122,12 @@ template <> struct MFXExtBufferID<mfxExtVPPProcAmp> {
 template <> struct MFXExtBufferID<mfxExtVPPImageStab> {
   enum { id = MFX_EXTBUFF_VPP_IMAGE_STABILIZATION };
 };
+template <> struct MFXExtBufferID<mfxExtQualityInfoMode> {
+  enum { id = MFX_EXTBUFF_ENCODED_QUALITY_INFO_MODE };
+};
+template <> struct MFXExtBufferID<mfxExtQualityInfoOutput> {
+  enum { id = MFX_EXTBUFF_ENCODED_QUALITY_INFO_OUTPUT };
+};
 template <> struct MFXExtBufferID<mfxExtVPPVideoSignalInfo> {
   enum { id = MFX_EXTBUFF_VPP_VIDEO_SIGNAL_INFO };
 };

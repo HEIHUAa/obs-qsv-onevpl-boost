@@ -220,19 +220,21 @@ private:
   QPFrameStats FrameQPStats;
   bool QPStatsEnabled = true; // cached from InputParams for Drain path
 
-  // ─ Frame-level statistics (MAD, bitrate, BRC Panic, refs) ─
+  // ─ Frame-level statistics (MAD, PSNR, bitrate, BRC Panic) ─
   struct StatsFrameType {
     uint64_t count = 0;
     uint64_t totalBytes = 0;
     uint64_t sumMAD = 0;
     uint64_t panicFrames = 0;
-    uint64_t sumRefCount = 0; // total reference frames used (L0+L1)
+    double sumPSNR[3] = {}; // Y/U/V PSNR in dB
   };
   struct FrameStats {
     StatsFrameType i, p, b;
     uint64_t totalFrames = 0;
     uint64_t totalPanicFrames = 0;
     uint64_t totalBytes = 0;
+    bool hasMAD = false;   // set to true if any frame had non-zero MAD
+    bool hasPSNR = false;  // set to true if any frame had MSE data
   };
   FrameStats Stats;
   bool FrameStatsEnabled = false; // cached from InputParams
@@ -242,6 +244,13 @@ private:
   std::vector<mfxExtEncodedFrameInfo> QSVTaskEncodedInfo;
   // Each task's bitstream.ExtParam points into the array below.
   std::vector<mfxExtBuffer *> QSVTaskEncodedExtPtr;
+
+  // One mfxExtQualityInfoOutput per task for MSE/PSNR reporting.
+  // Attached to the same bitstream alongside EncodedFrameInfo.
+  std::vector<mfxExtQualityInfoOutput> QSVTaskQualityInfo;
+  // Flat storage for multi-buffer ExtParam arrays.
+  // Each task gets 2 consecutive slots: [encInfo, qualityInfo].
+  mutable std::vector<mfxExtBuffer *> QSVTaskExtParamBuf;
 
   // ─ Per-frame QP tracking ─
   static constexpr size_t QSV_SEI_EXTRA = 1024; // extra bytes per task for SEI injection
@@ -261,7 +270,7 @@ private:
   void LogVideoHeaderHexDump();
   void LogFrameStats();
   void UpdateFrameStats(mfxU16 frameType, uint64_t bytes, mfxU32 mad,
-                        mfxU16 brcPanic, mfxU16 refCount);
+                        mfxU16 brcPanic, const double psnr[3]);
 
   // QP stats SEI injection — appends user_data_unregistered SEI per frame
   static constexpr uint8_t QP_SEI_UUID[16] = {
