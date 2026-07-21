@@ -1990,6 +1990,13 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     QSVEncodeParams.mfx.BufferSizeInKB =
         static_cast<mfxU16>(QSVEncodeParams.mfx.TargetKbps / 4);
     ApplyBufferSettings();
+    // AVBR uses Accuracy (shares union with InitialDelayInKB) and Convergence
+    // (shares union with MaxKbps). For AVBR, InitialDelayInKB is not used
+    // (non-HRD), so setting Accuracy is safe.
+    QSVEncodeParams.mfx.Accuracy = InputParams->Accuracy;
+    QSVEncodeParams.mfx.Convergence = InputParams->Convergence;
+    info("\tAVBR Accuracy: %d (tenth of %%), Convergence: %d (x100 frames)",
+         InputParams->Accuracy, InputParams->Convergence);
     break;
   case MFX_RATECONTROL_VCM:
     QSVEncodeParams.mfx.TargetKbps =

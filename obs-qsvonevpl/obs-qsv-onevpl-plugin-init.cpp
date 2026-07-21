@@ -259,6 +259,8 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(Settings, "avc_level", "auto");
   obs_data_set_default_string(Settings, "av1_level", "auto");
   obs_data_set_default_string(Settings, "rate_control", "CBR");
+  obs_data_set_default_double(Settings, "accuracy", 0.0);
+  obs_data_set_default_int(Settings, "convergence", 0);
 
   if (Codec == QSV_CODEC_AV1 || Codec == QSV_CODEC_VP9) {
     obs_data_set_default_double(Settings, "cqp", 23.0);
@@ -431,6 +433,8 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
 
   SetVisible("max_bitrate", bIsVBR || bIsVCM);
   SetVisible("bitrate", !(bIsCQP || bIsICQ));
+  SetVisible("accuracy", bIsAVBR);
+  SetVisible("convergence", bIsAVBR);
   SetVisible("cqp_separate_ipb", bIsCQP);
 
   bool separateIPB = obs_data_get_bool(Settings, "cqp_separate_ipb");
@@ -734,6 +738,15 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                 6553500, 1000);
   obs_property_int_set_suffix(Prop, " KB");
   obs_property_set_long_description(Prop, TEXT_BUFFER_SIZE_DESC);
+
+  // AVBR-specific: Accuracy (0.0~100.0%, UI float, *10 → tenth-of-percent for driver)
+  Prop = obs_properties_add_float_slider(RCGroup, "accuracy", TEXT_ACCURACY,
+                                        0.0, 100.0, 0.1);
+  obs_property_set_long_description(Prop, TEXT_ACCURACY_DESC);
+  // Convergence (0~100, 1 = 100 frames)
+  Prop = obs_properties_add_int_slider(RCGroup, "convergence", TEXT_CONVERGENCE,
+                                      0, 100, 1);
+  obs_property_set_long_description(Prop, TEXT_CONVERGENCE_DESC);
 
   Prop = obs_properties_add_text(RCGroup, "min_qp", TEXT_MIN_QP,
                                  OBS_TEXT_DEFAULT);
@@ -1453,6 +1466,11 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     // Slider is hidden, set to 0 (driver default / auto).
     ICQQualityData = 0;
   }
+  // Accuracy: UI shows 0.0~100.0%, *10 → tenth-of-percent for driver
+  int AccuracyData = static_cast<int>(
+      obs_data_get_double(Settings, "accuracy") * 10.0 + 0.5);
+  int ConvergenceData =
+      static_cast<int>(obs_data_get_int(Settings, "convergence"));
   int KeyIntervalData =
       static_cast<int>(obs_data_get_int(Settings, "keyint_sec"));
   int BFramesData =
@@ -2192,6 +2210,8 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   Context->EncoderParams.BFrames = static_cast<mfxU16>(BFramesData);
   Context->EncoderParams.KeyIntSec = static_cast<mfxU16>(KeyIntervalData);
   Context->EncoderParams.ICQQuality = static_cast<mfxU16>(ICQQualityData);
+  Context->EncoderParams.Accuracy = static_cast<mfxU16>(AccuracyData);
+  Context->EncoderParams.Convergence = static_cast<mfxU16>(ConvergenceData);
   Context->EncoderParams.NumRefFrame = static_cast<mfxU16>(NumRefFrameData);
   Context->EncoderParams.NumRefActiveP = static_cast<mfxU16>(NumRefActivePData);
   Context->EncoderParams.NumRefActiveBL0 =

@@ -41,6 +41,8 @@ struct encoder_params {
   mfxU16 NumRefFrame;
   mfxU16 DenoiseStrength;
   mfxU16 QVBRQuality;
+  mfxU16 Accuracy;     // AVBR: tenth of percent (0=driver default)
+  mfxU16 Convergence;  // AVBR: unit of 100 frames (0=driver default)
 
   mfxI16 IntraRefQPDelta;
 
