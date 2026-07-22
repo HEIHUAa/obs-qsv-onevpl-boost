@@ -91,7 +91,6 @@ struct plugin_context {
 #define TEXT_SCENARIO_INFO obs_module_text("ScenarioInfo")
 #define TEXT_CONTENT_INFO obs_module_text("ContentInfo")
 #define TEXT_TRANSFORM_SKIP obs_module_text("TransformSkip")
-#define TEXT_FADE_DETECTION obs_module_text("FadeDetection")
 
 #define TEXT_VPP obs_module_text("VideoProcessing_Filters")
 #define TEXT_DENOISE_STRENGTH obs_module_text("Denoise_Strength")
@@ -144,7 +143,6 @@ struct plugin_context {
 #define TEXT_SCENARIO_INFO_DESC obs_module_text("ScenarioInfoDesc")
 #define TEXT_CONTENT_INFO_DESC obs_module_text("ContentInfoDesc")
 #define TEXT_TRANSFORM_SKIP_DESC obs_module_text("TransformSkipDesc")
-#define TEXT_FADE_DETECTION_DESC obs_module_text("FadeDetectionDesc")
 
 #define TEXT_GPU_NUMBER_DESC obs_module_text("GPUNumberDesc")
 
@@ -198,9 +196,7 @@ struct plugin_context {
 #define TEXT_VPP_FRC_OUT_FPS_DESC obs_module_text("VPPFRCOutFPSDesc")
 
 #define TEXT_WEIGHTED_PRED obs_module_text("WeightedPred")
-#define TEXT_WEIGHTED_BI_PRED obs_module_text("WeightedBiPred")
 #define TEXT_WEIGHTED_PRED_DESC obs_module_text("WeightedPredDesc")
-#define TEXT_WEIGHTED_BI_PRED_DESC obs_module_text("WeightedBiPredDesc")
 
 #define TEXT_ADAPTIVE_MAX_FRAME_SIZE obs_module_text("AdaptiveMaxFrameSize")
 #define TEXT_ADAPTIVE_MAX_FRAME_SIZE_DESC obs_module_text("AdaptiveMaxFrameSizeDesc")

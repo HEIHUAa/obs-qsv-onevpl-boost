@@ -62,12 +62,10 @@ struct encoder_params {
   std::optional<bool> DirectBiasAdjustment;
   std::optional<bool> GopOptFlag;
   std::optional<mfxU16> WeightedPred;
-  std::optional<mfxU16> WeightedBiPred;
   std::optional<bool> GlobalMotionBiasAdjustment;
   std::optional<bool> HRDConformance;
   std::optional<bool> LowDelayHRD;
   std::optional<bool> LowDelayBRC;
-  std::optional<bool> FadeDetection;
   std::optional<bool> TransformSkip;
   std::optional<int> ScenarioInfo;
 

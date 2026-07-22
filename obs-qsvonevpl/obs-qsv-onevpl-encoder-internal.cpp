@@ -2234,7 +2234,12 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CO3Params->TargetChromaFormatPlus1 =
         static_cast<mfxU16>(QSVEncodeParams.mfx.FrameInfo.ChromaFormat + 1);
     CO3Params->TransformSkip = GetCodingOpt(InputParams->TransformSkip);
-    CO3Params->FadeDetection = GetCodingOpt(InputParams->FadeDetection);
+    // Auto-enable FadeDetection when weighted prediction is explicitly active
+    if (InputParams->WeightedPred.has_value() &&
+        InputParams->WeightedPred.value() > MFX_WEIGHTED_PRED_UNKNOWN) {
+      CO3Params->FadeDetection = MFX_CODINGOPTION_ON;
+    }
+    // AUTO/OFF: leave FadeDetection at driver default (not set)
 
     if (QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_QVBR &&
         InputParams->QVBRQuality > 0 && InputParams->QVBRQuality <= 51) {
@@ -2258,8 +2263,8 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
     CO3Params->WeightedPred =
         InputParams->WeightedPred.value_or(MFX_WEIGHTED_PRED_UNKNOWN);
-    CO3Params->WeightedBiPred =
-        InputParams->WeightedBiPred.value_or(MFX_WEIGHTED_PRED_UNKNOWN);
+    CO3Params->WeightedBiPred = CO3Params->WeightedPred;
+    // WeightedBiPred synced to WeightedPred (no separate UI)
 
     if (InputParams->RepartitionCheckEnable.has_value()) {
       CO3Params->RepartitionCheckEnable =

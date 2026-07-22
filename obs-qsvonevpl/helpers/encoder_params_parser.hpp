@@ -247,13 +247,6 @@ static constexpr std::pair<std::string_view, std::optional<bool>>
         {"OFF", false},
 };
 
-static constexpr std::pair<std::string_view, std::optional<bool>>
-    kFadeDetectionMap[] = {
-        {"AUTO", std::nullopt},
-        {"ON", true},
-        {"OFF", false},
-};
-
 static constexpr std::pair<std::string_view, int> kDenoiseModeMap[] = {
     {"DEFAULT", 0},
     {"AUTO | BDRATE | PRE ENCODE", 1},
@@ -392,8 +385,6 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
       obs_data_get_string(Settings, "content_info");
   const char *TransformSkipData =
       obs_data_get_string(Settings, "transform_skip");
-  const char *FadeDetectionData =
-      obs_data_get_string(Settings, "fade_detection");
   const char *AV1CDEFData = obs_data_get_string(Settings, "av1_cdef");
   const char *AV1RestorationData =
       obs_data_get_string(Settings, "av1_restoration");
@@ -411,8 +402,6 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
   const char *TuneQualityData = obs_data_get_string(Settings, "tune_quality");
 #endif
   const char *WeightedPredData = obs_data_get_string(Settings, "weighted_pred");
-  const char *WeightedBiPredData =
-      obs_data_get_string(Settings, "weighted_bi_pred");
   int AdaptiveMaxFrameSizeData =
       static_cast<int>(obs_data_get_int(Settings, "adaptive_max_frame_size"));
 #ifndef QSV_UHD600_SUPPORT
@@ -497,7 +486,6 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
     Params.AV1InterpFilter = *v;
 
   Params.WeightedPred = ParseWeightedPredMode(WeightedPredData);
-  Params.WeightedBiPred = ParseWeightedPredMode(WeightedBiPredData);
 
   Params.AdaptiveMaxFrameSize = static_cast<mfxU32>(AdaptiveMaxFrameSizeData);
 
@@ -686,9 +674,6 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
 
   if (auto v = MapString(TransformSkipData, kTransformSkipMap))
     Params.TransformSkip = *v;
-
-  if (auto v = MapString(FadeDetectionData, kFadeDetectionMap))
-    Params.FadeDetection = *v;
 
   // RateControl
   if (auto v = MapString(RateControlData, kRateControlMap))

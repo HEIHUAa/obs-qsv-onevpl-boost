@@ -360,8 +360,7 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(Settings, "scenario_info", "AUTO");
   obs_data_set_default_string(Settings, "content_info", "AUTO");
   obs_data_set_default_string(Settings, "transform_skip", "AUTO");
-  obs_data_set_default_string(Settings, "fade_detection", "AUTO");
-
+  obs_data_set_default_string(Settings, "rdo", "AUTO");
   obs_data_set_default_string(Settings, "screen_content_tools", "AUTO");
 
   obs_data_set_default_int(Settings, "gpu_number", 0);
@@ -370,7 +369,6 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(Settings, "max_qp", "-1");
 
   obs_data_set_default_string(Settings, "weighted_pred", "AUTO");
-  obs_data_set_default_string(Settings, "weighted_bi_pred", "AUTO");
 
   // AV1 coding options default to AUTO (driver decides)
   obs_data_set_default_string(Settings, "av1_cdef", "AUTO");
@@ -985,14 +983,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(Prop, TEXT_RDO_DESC);
   obs_property_set_visible(Prop, Codec != QSV_CODEC_VP9);
 
-  Prop = obs_properties_add_list(ETGroup, "fade_detection",
-                                 TEXT_FADE_DETECTION,
-                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition_tristate);
-  obs_property_set_long_description(Prop, TEXT_FADE_DETECTION_DESC);
-  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC ||
-                           Codec == QSV_CODEC_HEVC);
-
   Prop = obs_properties_add_list(ETGroup, "transform_skip",
                                  TEXT_TRANSFORM_SKIP,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -1048,13 +1038,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_weighted_pred_options);
   obs_property_set_long_description(Prop, TEXT_WEIGHTED_PRED_DESC);
-  obs_property_set_visible(Prop, bIsAVCOrHEVC);
-
-  Prop = obs_properties_add_list(RMGroup, "weighted_bi_pred",
-                                 TEXT_WEIGHTED_BI_PRED,
-                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_weighted_pred_options);
-  obs_property_set_long_description(Prop, TEXT_WEIGHTED_BI_PRED_DESC);
   obs_property_set_visible(Prop, bIsAVCOrHEVC);
 
   obs_properties_t *VFGroup = obs_properties_create();
@@ -1515,8 +1498,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
       obs_data_get_string(Settings, "content_info");
   const char *TransformSkipData =
       obs_data_get_string(Settings, "transform_skip");
-  const char *FadeDetectionData =
-      obs_data_get_string(Settings, "fade_detection");
   const char *AV1CDEFData = obs_data_get_string(Settings, "av1_cdef");
   const char *AV1RestorationData = obs_data_get_string(Settings, "av1_restoration");
   const char *AV1LoopFilterData = obs_data_get_string(Settings, "av1_loop_filter");
@@ -1529,7 +1510,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   const char *TuneQualityData = obs_data_get_string(Settings, "tune_quality");
 #endif
   const char *WeightedPredData = obs_data_get_string(Settings, "weighted_pred");
-  const char *WeightedBiPredData = obs_data_get_string(Settings, "weighted_bi_pred");
   int AdaptiveMaxFrameSizeData = static_cast<int>(obs_data_get_int(Settings, "adaptive_max_frame_size"));
 #ifndef QSV_UHD600_SUPPORT
   const char *VPPMCTFData = obs_data_get_string(Settings, "vpp_mctf");
@@ -1635,7 +1615,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   }
 
   Context->EncoderParams.WeightedPred = ParseWeightedPredMode(WeightedPredData);
-  Context->EncoderParams.WeightedBiPred = ParseWeightedPredMode(WeightedBiPredData);
 
   Context->EncoderParams.AdaptiveMaxFrameSize = AdaptiveMaxFrameSizeData;
 
@@ -2011,15 +1990,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   };
   if (auto v = MapString(TransformSkipData, kTransformSkipMap)) {
     Context->EncoderParams.TransformSkip = *v;
-  }
-
-  static constexpr std::pair<std::string_view, std::optional<bool>> kFadeDetectionMap[] = {
-    {"AUTO", std::nullopt},
-    {"ON",   true},
-    {"OFF",  false},
-  };
-  if (auto v = MapString(FadeDetectionData, kFadeDetectionMap)) {
-    Context->EncoderParams.FadeDetection = *v;
   }
 
   // 13. RateControl
