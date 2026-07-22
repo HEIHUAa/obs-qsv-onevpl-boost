@@ -108,10 +108,7 @@ struct encoder_params {
   std::optional<int> LookAheadDS;
   std::optional<bool> MotionVectorsOverPicBoundaries;
   std::optional<int> NumRefFrameLayers;
-  std::optional<int> NumRefActiveP;
-  std::optional<int> NumRefActiveBL0;
-  std::optional<int> NumRefActiveBL1;
-#ifndef QSV_UHD600_SUPPORT
+  #ifndef QSV_UHD600_SUPPORT
   std::optional<int> VPPMCTFMode;
   mfxU16 VPPMCTFStrength;
 #endif

@@ -374,12 +374,6 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
   const char *RDOData = obs_data_get_string(Settings, "rdo");
   const char *TrellisData = obs_data_get_string(Settings, "trellis");
   int NumRefFrameData = static_cast<int>(obs_data_get_int(Settings, "num_ref_frame"));
-  int NumRefActivePData =
-      static_cast<int>(obs_data_get_int(Settings, "num_ref_active_p"));
-  int NumRefActiveBL0Data =
-      static_cast<int>(obs_data_get_int(Settings, "num_ref_active_bl0"));
-  int NumRefActiveBL1Data =
-      static_cast<int>(obs_data_get_int(Settings, "num_ref_active_bl1"));
   const char *GlobalMotionBiasAdjustmentData =
       obs_data_get_string(Settings, "global_motion_bias_adjustment");
   const char *MVCostScalingFactorData =
@@ -817,10 +811,6 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
   Params.KeyIntSec = static_cast<mfxU16>(KeyIntervalData);
   Params.ICQQuality = static_cast<mfxU16>(ICQQualityData);
   Params.NumRefFrame = static_cast<mfxU16>(NumRefFrameData);
-  Params.NumRefActiveP = static_cast<mfxU16>(NumRefActivePData);
-  Params.NumRefActiveBL0 = static_cast<mfxU16>(NumRefActiveBL0Data);
-  Params.NumRefActiveBL1 = static_cast<mfxU16>(NumRefActiveBL1Data);
-
   Params.IntraRefCycleSize = static_cast<mfxU16>(IntraRefCycleSizeData);
   Params.IntraRefQPDelta = static_cast<mfxI16>(IntraRefQPDeltaData);
 

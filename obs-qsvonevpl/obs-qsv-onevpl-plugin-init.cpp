@@ -1057,21 +1057,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(Prop, TEXT_WEIGHTED_BI_PRED_DESC);
   obs_property_set_visible(Prop, bIsAVCOrHEVC);
 
-  Prop = obs_properties_add_int(RMGroup, "num_ref_active_p",
-                                TEXT_NUM_REF_ACTIVE_P, 0, 65535, 1);
-  obs_property_set_long_description(Prop, TEXT_NUM_REF_ACTIVE_P_DESC);
-  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC);
-
-  Prop = obs_properties_add_int(RMGroup, "num_ref_active_bl0",
-                                TEXT_NUM_REF_ACTIVE_BL0, 0, 65535, 1);
-  obs_property_set_long_description(Prop, TEXT_NUM_REF_ACTIVE_BL0_DESC);
-  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC);
-
-  Prop = obs_properties_add_int(RMGroup, "num_ref_active_bl1",
-                                TEXT_NUM_REF_ACTIVE_BL1, 0, 65535, 1);
-  obs_property_set_long_description(Prop, TEXT_NUM_REF_ACTIVE_BL1_DESC);
-  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC);
-
   obs_properties_t *VFGroup = obs_properties_create();
 
   Prop = obs_properties_add_list(VFGroup, "vpp", TEXT_VPP,
@@ -1512,12 +1497,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   const char *TrellisData = obs_data_get_string(Settings, "trellis");
   int NumRefFrameData =
       static_cast<int>(obs_data_get_int(Settings, "num_ref_frame"));
-  int NumRefActivePData =
-      static_cast<int>(obs_data_get_int(Settings, "num_ref_active_p"));
-  int NumRefActiveBL0Data =
-      static_cast<int>(obs_data_get_int(Settings, "num_ref_active_bl0"));
-  int NumRefActiveBL1Data =
-      static_cast<int>(obs_data_get_int(Settings, "num_ref_active_bl1"));
   const char *GlobalMotionBiasAdjustmentData =
       obs_data_get_string(Settings, "global_motion_bias_adjustment");
   const char *MVCostScalingFactorData =
@@ -2225,12 +2204,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   Context->EncoderParams.Accuracy = static_cast<mfxU16>(AccuracyData);
   Context->EncoderParams.Convergence = static_cast<mfxU16>(ConvergenceData);
   Context->EncoderParams.NumRefFrame = static_cast<mfxU16>(NumRefFrameData);
-  Context->EncoderParams.NumRefActiveP = static_cast<mfxU16>(NumRefActivePData);
-  Context->EncoderParams.NumRefActiveBL0 =
-      static_cast<mfxU16>(NumRefActiveBL0Data);
-  Context->EncoderParams.NumRefActiveBL1 =
-      static_cast<mfxU16>(NumRefActiveBL1Data);
-
   Context->EncoderParams.IntraRefCycleSize =
       static_cast<mfxU16>(IntraRefCycleSizeData);
   Context->EncoderParams.IntraRefQPDelta =
