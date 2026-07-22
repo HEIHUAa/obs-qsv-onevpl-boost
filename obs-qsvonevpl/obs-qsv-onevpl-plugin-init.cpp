@@ -546,9 +546,31 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
     obs_data_set_string(Settings, "low_delay_brc", "OFF");
 
   bool bMaxFrameSizeVisible = !(bIsCQP || bIsICQ);
-  SetVisible("adaptive_max_frame_size", bMaxFrameSizeVisible);
-  if (!bMaxFrameSizeVisible)
-    obs_data_set_int(Settings, "adaptive_max_frame_size", 0);
+  SetVisible("max_frame_size_mode", bMaxFrameSizeVisible);
+  const char *MaxFrameSizeMode = obs_data_get_string(Settings, "max_frame_size_mode");
+  // Backward compat: migrate old adaptive_max_frame_size to new mode
+  if (MaxFrameSizeMode[0] == '\0' && bMaxFrameSizeVisible) {
+    int64_t oldVal = obs_data_get_int(Settings, "adaptive_max_frame_size");
+    if (oldVal > 0) {
+      obs_data_set_string(Settings, "max_frame_size_mode", "all");
+      obs_data_set_int(Settings, "max_frame_size_all", oldVal);
+      MaxFrameSizeMode = "all";
+    } else {
+      obs_data_set_string(Settings, "max_frame_size_mode", "auto");
+      MaxFrameSizeMode = "auto";
+    }
+  }
+  bool bMaxFrameSizeAll = bMaxFrameSizeVisible && strcmp(MaxFrameSizeMode, "all") == 0;
+  bool bMaxFrameSizePerType = bMaxFrameSizeVisible && strcmp(MaxFrameSizeMode, "per_type") == 0;
+  SetVisible("max_frame_size_all", bMaxFrameSizeAll);
+  SetVisible("max_frame_size_i", bMaxFrameSizePerType);
+  SetVisible("max_frame_size_p", bMaxFrameSizePerType);
+  if (!bMaxFrameSizeVisible) {
+    obs_data_set_string(Settings, "max_frame_size_mode", "auto");
+    obs_data_set_int(Settings, "max_frame_size_all", 0);
+    obs_data_set_int(Settings, "max_frame_size_i", 0);
+    obs_data_set_int(Settings, "max_frame_size_p", 0);
+  }
 
   bVisible = !(bIsCQP || bIsICQ);
   SetVisible("min_qp", bVisible);
@@ -763,9 +785,28 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                  OBS_TEXT_DEFAULT);
   obs_property_set_long_description(Prop, TEXT_MAX_QP_DESC);
 
-  Prop = obs_properties_add_int(RCGroup, "adaptive_max_frame_size",
-                                TEXT_ADAPTIVE_MAX_FRAME_SIZE, 0, 2147483647, 100);
-  obs_property_set_long_description(Prop, TEXT_ADAPTIVE_MAX_FRAME_SIZE_DESC);
+  Prop = obs_properties_add_list(RCGroup, "max_frame_size_mode",
+                                TEXT_MAX_FRAME_SIZE_MODE,
+                                OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  obs_property_set_long_description(Prop, TEXT_MAX_FRAME_SIZE_MODE_DESC);
+  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
+  obs_property_list_add_string(Prop, TEXT_MAX_FRAME_SIZE_MODE_AUTO, "auto");
+  obs_property_list_add_string(Prop, TEXT_MAX_FRAME_SIZE_MODE_ALL, "all");
+  obs_property_list_add_string(Prop, TEXT_MAX_FRAME_SIZE_MODE_PER_TYPE, "per_type");
+
+  Prop = obs_properties_add_int(RCGroup, "max_frame_size_all",
+                                TEXT_MAX_FRAME_SIZE_ALL, 0, 2147483647, 100);
+  obs_property_set_long_description(Prop, TEXT_MAX_FRAME_SIZE_ALL_DESC);
+  obs_property_int_set_suffix(Prop, " bytes");
+
+  Prop = obs_properties_add_int(RCGroup, "max_frame_size_i",
+                                TEXT_MAX_FRAME_SIZE_I, 0, 2147483647, 100);
+  obs_property_set_long_description(Prop, TEXT_MAX_FRAME_SIZE_I_DESC);
+  obs_property_int_set_suffix(Prop, " bytes");
+
+  Prop = obs_properties_add_int(RCGroup, "max_frame_size_p",
+                                TEXT_MAX_FRAME_SIZE_P, 0, 2147483647, 100);
+  obs_property_set_long_description(Prop, TEXT_MAX_FRAME_SIZE_P_DESC);
   obs_property_int_set_suffix(Prop, " bytes");
 
   // VBV settings at bottom of Rate Control group
@@ -789,6 +830,12 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_long_description(Prop, TEXT_LOW_DELAY_BRC_DESC);
   obs_property_set_visible(Prop, Codec != QSV_CODEC_VP9);
+
+  Prop = obs_properties_add_list(RCGroup, "brc_panic_mode", TEXT_BRC_PANIC_MODE,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition_tristate);
+  obs_property_set_long_description(Prop, TEXT_BRC_PANIC_MODE_DESC);
+  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC);
 
   Prop = obs_properties_add_list(RCGroup, "skip_frame", TEXT_SKIP_FRAME,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);

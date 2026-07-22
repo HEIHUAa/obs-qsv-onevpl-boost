@@ -404,6 +404,14 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
   const char *WeightedPredData = obs_data_get_string(Settings, "weighted_pred");
   int AdaptiveMaxFrameSizeData =
       static_cast<int>(obs_data_get_int(Settings, "adaptive_max_frame_size"));
+  const char *MaxFrameSizeModeData = obs_data_get_string(Settings, "max_frame_size_mode");
+  int MaxFrameSizeAllData =
+      static_cast<int>(obs_data_get_int(Settings, "max_frame_size_all"));
+  int MaxFrameSizeIData =
+      static_cast<int>(obs_data_get_int(Settings, "max_frame_size_i"));
+  int MaxFrameSizePData =
+      static_cast<int>(obs_data_get_int(Settings, "max_frame_size_p"));
+  const char *BRCPanicModeData = obs_data_get_string(Settings, "brc_panic_mode");
 #ifndef QSV_UHD600_SUPPORT
   const char *VPPMCTFData = obs_data_get_string(Settings, "vpp_mctf");
   int VPPMCTFStrengthData =
@@ -487,7 +495,49 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
 
   Params.WeightedPred = ParseWeightedPredMode(WeightedPredData);
 
-  Params.AdaptiveMaxFrameSize = static_cast<mfxU32>(AdaptiveMaxFrameSizeData);
+  // Max frame size mode: auto/all/per_type
+  {
+    auto svMode = std::string_view(MaxFrameSizeModeData);
+    if (svMode == "per_type") {
+      Params.MaxFrameSizeMode = 2;
+      Params.MaxFrameSizeI = static_cast<mfxU32>(MaxFrameSizeIData);
+      Params.MaxFrameSizeP = static_cast<mfxU32>(MaxFrameSizePData);
+      Params.AdaptiveMaxFrameSize = 0;
+    } else if (svMode == "all") {
+      Params.MaxFrameSizeMode = 1;
+      Params.AdaptiveMaxFrameSize = static_cast<mfxU32>(MaxFrameSizeAllData);
+      Params.MaxFrameSizeI = 0;
+      Params.MaxFrameSizeP = 0;
+    } else if (svMode == "auto") {
+      Params.MaxFrameSizeMode = 0;
+      Params.AdaptiveMaxFrameSize = 0;
+      Params.MaxFrameSizeI = 0;
+      Params.MaxFrameSizeP = 0;
+    } else {
+      // Backward compat: old profile with adaptive_max_frame_size set
+      if (AdaptiveMaxFrameSizeData > 0) {
+        Params.MaxFrameSizeMode = 1;
+        Params.AdaptiveMaxFrameSize = static_cast<mfxU32>(AdaptiveMaxFrameSizeData);
+        Params.MaxFrameSizeI = 0;
+        Params.MaxFrameSizeP = 0;
+      } else {
+        Params.MaxFrameSizeMode = 0;
+        Params.AdaptiveMaxFrameSize = 0;
+        Params.MaxFrameSizeI = 0;
+        Params.MaxFrameSizeP = 0;
+      }
+    }
+  }
+
+  // BRCPanicMode
+  {
+    auto sv = std::string_view(BRCPanicModeData);
+    if (sv == "ON")
+      Params.BRCPanicMode = true;
+    else if (sv == "OFF")
+      Params.BRCPanicMode = false;
+    // else AUTO: leave as std::nullopt (driver default)
+  }
 
   // SkipFrame
   auto svSkip = std::string_view(SkipFrameData);

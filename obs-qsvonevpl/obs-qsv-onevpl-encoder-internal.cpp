@@ -2220,6 +2220,10 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
           static_cast<mfxU16>(InputParams->SkipFrame.value());
     }
 
+    // MaxFrameSize: set based on mode
+    //   mode=auto: 0 (driver decides)
+    //   mode=all: user value applied to all frames
+    //   mode=per_type: 0 (CO3 values take over)
     CO2Params->MaxFrameSize = InputParams->AdaptiveMaxFrameSize;
   }
 
@@ -2360,6 +2364,22 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
     CO3Params->DirectBiasAdjustment =
         GetCodingOpt(InputParams->DirectBiasAdjustment);
+
+    // Per-frame-type max frame size (CO3) takes priority over CO2 MaxFrameSize
+    // for their respective frame types. Only active in per_type mode.
+    if (InputParams->MaxFrameSizeMode == 2) {
+      CO3Params->MaxFrameSizeI = InputParams->MaxFrameSizeI;
+      CO3Params->MaxFrameSizeP = InputParams->MaxFrameSizeP;
+      if (CO3Params->MaxFrameSizeP > 0 && CO3Params->MaxFrameSizeI == 0) {
+        // Per API spec: MaxFrameSizeI must be set if MaxFrameSizeP is set
+        CO3Params->MaxFrameSizeI = CO3Params->MaxFrameSizeP;
+      }
+    }
+
+    // BRCPanicMode
+    if (InputParams->BRCPanicMode.has_value()) {
+      CO3Params->BRCPanicMode = GetCodingOpt(InputParams->BRCPanicMode.value());
+    }
   }
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -3437,6 +3457,14 @@ void QSVEncoder::LogActualParams() {
     }
     if (CO3->AdaptiveMaxFrameSize > 0) {
       info("\tAdaptiveMaxFrameSize (CO3) set: %d", CO3->AdaptiveMaxFrameSize);
+    }
+    if (CO3->MaxFrameSizeI > 0 || CO3->MaxFrameSizeP > 0) {
+      info("\tMaxFrameSizeI (CO3) set: %u", CO3->MaxFrameSizeI);
+      info("\tMaxFrameSizeP (CO3) set: %u", CO3->MaxFrameSizeP);
+    }
+    if (CO3->BRCPanicMode != MFX_CODINGOPTION_UNKNOWN) {
+      info("\tBRCPanicMode (CO3) set: %s",
+           GetCodingOptStatus(CO3->BRCPanicMode).c_str());
     }
   }
 

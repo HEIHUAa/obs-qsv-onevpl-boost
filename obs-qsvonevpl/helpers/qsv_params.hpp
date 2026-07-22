@@ -56,6 +56,10 @@ struct encoder_params {
   std::optional<bool> AdaptiveLTR;
 #endif
   mfxU32 AdaptiveMaxFrameSize;
+  mfxU32 MaxFrameSizeMode; // 0=auto(driver), 1=all, 2=per_type
+  mfxU32 MaxFrameSizeI;
+  mfxU32 MaxFrameSizeP;
+  std::optional<bool> BRCPanicMode;
   std::optional<bool> RDO;
   std::optional<bool> RawRef;
   std::optional<bool> GPB;
