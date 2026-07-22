@@ -10,12 +10,12 @@ on:
 
 env:
   PLUGIN_NAME: obs-qsv-onevpl
-  OBS_VERSION: 32.1.2
+  OBS_VERSION: 32.2.0
 
 jobs:
   windows:
     name: Windows (x64)
-    runs-on: windows-2022
+    runs-on: windows-2025
     defaults:
       run:
         shell: pwsh
