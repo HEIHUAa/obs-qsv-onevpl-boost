@@ -1212,9 +1212,9 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 
   Prop = obs_properties_add_list(CSGroup, "profile", TEXT_PROFILE,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  obs_property_set_long_description(Prop, TEXT_PROFILE_DESC);
 
   if (Codec == QSV_CODEC_AVC) {
+    obs_property_set_long_description(Prop, TEXT_PROFILE_DESC_AVC);
     const char *const *profileEntryH264 = qsv_profile_names_h264;
     while (*profileEntryH264) {
       obs_property_list_add_string(Prop, *profileEntryH264,
@@ -1222,10 +1222,13 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
       profileEntryH264++;
     }
   } else if (Codec == QSV_CODEC_AV1) {
+    obs_property_set_long_description(Prop, TEXT_PROFILE_DESC_AV1);
     AddStrings(Prop, qsv_profile_names_av1);
   } else if (Codec == QSV_CODEC_VP9) {
+    obs_property_set_long_description(Prop, TEXT_PROFILE_DESC_VP9);
     AddStrings(Prop, qsv_profile_names_vp9);
   } else if (Codec == QSV_CODEC_HEVC) {
+    obs_property_set_long_description(Prop, TEXT_PROFILE_DESC_HEVC);
     const char *const *profileEntryHEVC = qsv_profile_names_hevc;
     while (*profileEntryHEVC) {
       bool showProfileHEVC = true;
@@ -1394,11 +1397,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(Prop,
                                     obs_module_text("AsyncDepth.Tooltip"));
 
-  Prop = obs_properties_add_int(MXGroup, "gpu_number", TEXT_GPU_NUMBER,
-                                0, 4, 1);
-  obs_property_set_long_description(Prop, TEXT_GPU_NUMBER_DESC);
-  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
-
   Prop = obs_properties_add_list(MXGroup, "scenario_info", TEXT_SCENARIO_INFO,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_scenario_info);
@@ -1409,6 +1407,11 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   AddStrings(Prop, qsv_params_condition_content_info);
   obs_property_set_long_description(Prop, TEXT_CONTENT_INFO_DESC);
   obs_property_set_visible(Prop, Codec != QSV_CODEC_VP9);
+
+  Prop = obs_properties_add_int(MXGroup, "gpu_number", TEXT_GPU_NUMBER,
+                                0, 4, 1);
+  obs_property_set_long_description(Prop, TEXT_GPU_NUMBER_DESC);
+  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
   Prop = obs_properties_add_text(MXGroup, "custom_coding_options",
                                  TEXT_CUSTOM_CODING_OPTIONS,

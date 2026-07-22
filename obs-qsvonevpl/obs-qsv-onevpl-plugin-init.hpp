@@ -243,7 +243,10 @@ struct plugin_context {
 
 #define TEXT_TARGET_USAGE_DESC obs_module_text("TargetUsageDesc")
 #define TEXT_RATE_CONTROL_DESC obs_module_text("RateControlDesc")
-#define TEXT_PROFILE_DESC obs_module_text("ProfileDesc")
+#define TEXT_PROFILE_DESC_AVC obs_module_text("ProfileDescAVC")
+#define TEXT_PROFILE_DESC_HEVC obs_module_text("ProfileDescHEVC")
+#define TEXT_PROFILE_DESC_AV1 obs_module_text("ProfileDescAV1")
+#define TEXT_PROFILE_DESC_VP9 obs_module_text("ProfileDescVP9")
 #define TEXT_TIER_DESC obs_module_text("TierDesc")
 #define TEXT_LEVEL_DESC obs_module_text("LevelDesc")
 #define TEXT_ICQ_QUALITY_DESC obs_module_text("ICQQualityDesc")
