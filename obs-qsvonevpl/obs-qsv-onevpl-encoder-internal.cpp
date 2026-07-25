@@ -3942,6 +3942,13 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
       }
       if (SyncStatus < MFX_ERR_NONE) {
         error("Encode.EncodeSync error: %d", SyncStatus);
+        // MFX_ERR_DEVICE_FAILED: hardware is dead, mark it so cleanup
+        // skips drain and avoids a double-crash on the dead device.
+        if (SyncStatus == MFX_ERR_DEVICE_FAILED) {
+          m_DeviceFailed = true;
+          // Clear the sync point — the driver won't complete it.
+          QSVTaskPool[QSVSyncTaskID].SyncPoint = nullptr;
+        }
         throw std::runtime_error(
             "Encode(): Sync operation failed - unrecoverable error");
       }
@@ -4132,6 +4139,10 @@ mfxStatus QSVEncoder::DrainAndRetrieveBitstream(mfxBitstream **Bitstream) {
     return MFX_ERR_MORE_DATA;
   }
 
+  if (m_DeviceFailed) {
+    return MFX_ERR_DEVICE_FAILED;
+  }
+
   if (!m_DrainSubmitted) {
     m_DrainSubmitted = true;
     // Submit drain markers until the encoder reports no more buffered frames.
@@ -4250,6 +4261,9 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
             QSVEncodeParams.mfx.CodecId,
             QSVEncodeParams.mfx.LowPower,
             QSVEncodeParams.AsyncDepth);
+      if (Status == MFX_ERR_DEVICE_FAILED) {
+        m_DeviceFailed = true;
+      }
       throw std::runtime_error("Encode(): EncodeFrameAsync fatal error");
     }
   }
@@ -4299,6 +4313,10 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
       }
       if (SyncStatus < MFX_ERR_NONE) {
         error("Encode.EncodeSync error: %d", SyncStatus);
+        if (SyncStatus == MFX_ERR_DEVICE_FAILED) {
+          m_DeviceFailed = true;
+          QSVTaskPool[QSVSyncTaskID].SyncPoint = nullptr;
+        }
         throw std::runtime_error(
             "Encode(): Sync operation failed - unrecoverable error");
       }
@@ -5051,6 +5069,13 @@ void QSVEncoder::GetQpStatsSei(uint8_t **data, size_t *size) {
 mfxStatus QSVEncoder::Drain() {
   mfxStatus Status = MFX_ERR_NONE;
 
+  // Don't touch a dead device — the caller (ClearData) already skips us,
+  // but this guards the offline re-encoder path too.
+  if (m_DeviceFailed) {
+    warn("Drain: skipping — device already failed");
+    return MFX_ERR_DEVICE_FAILED;
+  }
+
   // Drain the encoder: repeatedly submit nullptr surface until MFX_ERR_MORE_DATA
   // (OneVPL spec: in drain mode, MORE_DATA means no more buffered frames)
   constexpr int MAX_DRAIN_ITERS = 1024;
@@ -5241,7 +5266,13 @@ mfxStatus QSVEncoder::ClearData() {
   m_DrainSubmitted = false;
 
   if (QSVEncode) {
-    Drain();
+    // Skip drain if the device has already failed — calling EncodeFrameAsync
+    // on a dead device may crash or hang the driver.
+    if (!m_DeviceFailed) {
+      Drain();
+    } else {
+      warn("ClearData: skipping drain — device already failed");
+    }
     Status = QSVEncode->Close();
     QSVEncode = nullptr;
   }

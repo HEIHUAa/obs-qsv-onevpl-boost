@@ -167,6 +167,9 @@ private:
   bool QSVIsTextureEncoder{};
   // Tracks whether a drain marker has been submitted for offline re-encoder.
   bool m_DrainSubmitted{false};
+  // Set when the hardware device fails (MFX_ERR_DEVICE_FAILED).
+  // Skip drain/encode ops in cleanup to avoid double-crash on a dead device.
+  bool m_DeviceFailed{false};
   mfxMemoryInterface *QSVMemoryInterface{};
 
   std::unique_ptr<class HWManager> HWManager{};
