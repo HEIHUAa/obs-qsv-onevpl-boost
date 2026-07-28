@@ -79,7 +79,6 @@ struct encoder_params {
   bool PPyramid;
   bool IntraRefEncoding;
   mfxU16 IntraRefType;
-  bool CustomBufferSize;
   // Debug group toggles
   bool QPStatistics = true; // default ON to preserve existing behavior
   bool VideoHeaderHexDump = false;

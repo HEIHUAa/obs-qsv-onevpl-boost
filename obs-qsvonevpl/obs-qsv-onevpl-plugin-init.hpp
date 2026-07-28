@@ -33,7 +33,6 @@ struct plugin_context {
 
 #define TEXT_SPEED obs_module_text("TargetUsage")
 #define TEXT_TARGET_BITRATE obs_module_text("Bitrate")
-#define TEXT_CUSTOM_BUFFER_SIZE obs_module_text("CustomBufferSize")
 #define TEXT_BUFFER_SIZE obs_module_text("BufferSize")
 #define TEXT_MAX_BITRATE obs_module_text("MaxBitrate")
 #define TEXT_PROFILE obs_module_text("Profile")
@@ -255,7 +254,6 @@ struct plugin_context {
 #define TEXT_QP_DESC obs_module_text("QPIQPPQPDesc")
 #define TEXT_BITRATE_DESC obs_module_text("BitrateDesc")
 #define TEXT_MAX_BITRATE_DESC obs_module_text("MaxBitrateDesc")
-#define TEXT_CUSTOM_BUFFER_SIZE_DESC obs_module_text("CustomBufferSizeDesc")
 #define TEXT_BUFFER_SIZE_DESC obs_module_text("BufferSizeDesc")
 #define TEXT_KEYFRAME_INTERVAL_SEC_DESC obs_module_text("KeyframeIntervalSecDesc")
 #define TEXT_LOOKAHEAD_DESC obs_module_text("LookaheadDesc")

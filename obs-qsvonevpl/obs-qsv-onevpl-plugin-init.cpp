@@ -247,7 +247,6 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   }
   obs_data_set_default_int(Settings, "bitrate", 6000);
   obs_data_set_default_int(Settings, "max_bitrate", 6000);
-  obs_data_set_default_bool(Settings, "custom_buffer_size", false);
   obs_data_set_default_int(Settings, "buffer_size", 0);
   obs_data_set_default_string(
       Settings, "profile",
@@ -524,11 +523,7 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   }
 
   bool bRateControlVisible = !bIsICQ && !bIsCQP;
-  bool use_bufsize = obs_data_get_bool(Settings, "custom_buffer_size");
-  SetVisible("custom_buffer_size", bRateControlVisible);
-  SetVisible("buffer_size", bRateControlVisible && use_bufsize);
-  if (!bRateControlVisible)
-    obs_data_set_bool(Settings, "custom_buffer_size", false);
+  SetVisible("buffer_size", bRateControlVisible);
 
   const char *hrd_conformance =
       obs_data_get_string(Settings, "hrd_conformance");
@@ -768,10 +763,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                         0.0, 100.0, 0.1);
   obs_property_set_long_description(Prop, TEXT_ACCURACY_DESC);
 
-  Prop = obs_properties_add_bool(RCGroup, "custom_buffer_size",
-                                 TEXT_CUSTOM_BUFFER_SIZE);
-  obs_property_set_long_description(Prop, TEXT_CUSTOM_BUFFER_SIZE_DESC);
-  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
   Prop = obs_properties_add_int(RCGroup, "buffer_size", TEXT_BUFFER_SIZE, 0,
                                 6553500, 1000);
   obs_property_int_set_suffix(Prop, " KB");
@@ -1478,7 +1469,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   const char *RateControlData = obs_data_get_string(Settings, "rate_control");
   int TargetBitrateData =
       static_cast<int>(obs_data_get_int(Settings, "bitrate"));
-  bool CustomBufferSizeData = obs_data_get_bool(Settings, "custom_buffer_size");
   int BufferSizeData =
       static_cast<int>(obs_data_get_int(Settings, "buffer_size"));
   int MaxBitrateData =
@@ -2210,7 +2200,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   }
 
   Context->EncoderParams.TargetBitRate = TargetBitrateData;
-  Context->EncoderParams.CustomBufferSize = CustomBufferSizeData;
   Context->EncoderParams.BufferSize = BufferSizeData;
   Context->EncoderParams.MaxBitRate = MaxBitrateData;
   Context->EncoderParams.Width = static_cast<mfxU16>(VideoWidth);

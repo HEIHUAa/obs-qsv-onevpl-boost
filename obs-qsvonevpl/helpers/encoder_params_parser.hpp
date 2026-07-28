@@ -328,7 +328,6 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
   const char *RateControlData = obs_data_get_string(Settings, "rate_control");
 
   int TargetBitrateData = static_cast<int>(obs_data_get_int(Settings, "bitrate"));
-  bool CustomBufferSizeData = obs_data_get_bool(Settings, "custom_buffer_size");
   int BufferSizeData = static_cast<int>(obs_data_get_int(Settings, "buffer_size"));
   int MaxBitrateData = static_cast<int>(obs_data_get_int(Settings, "max_bitrate"));
 
@@ -838,7 +837,6 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
   }
 
   Params.TargetBitRate = static_cast<uint32_t>(TargetBitrateData);
-  Params.CustomBufferSize = CustomBufferSizeData;
   Params.BufferSize = static_cast<uint32_t>(BufferSizeData);
   Params.MaxBitRate = static_cast<uint32_t>(MaxBitrateData);
 

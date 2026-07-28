@@ -1924,10 +1924,9 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
   // Common buffer/init-delay boilerplate for all RC modes
   auto ApplyBufferSettings = [&]() {
-    if (InputParams->CustomBufferSize == true && InputParams->BufferSize > 0) {
+    if (InputParams->BufferSize > 0) {
       QSVEncodeParams.mfx.BufferSizeInKB =
           static_cast<mfxU16>(brcClamp(InputParams->BufferSize) / brcMultiplier);
-      info("\tCustomBufferSize set: ON");
     }
     QSVEncodeParams.mfx.InitialDelayInKB =
         static_cast<mfxU16>(QSVEncodeParams.mfx.BufferSizeInKB / 2);
