@@ -3332,8 +3332,6 @@ void QSVEncoder::LogActualParams() {
   // ─ CO2 (mfxExtCodingOption2) ─
   auto *CO2 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
   if (CO2) {
-    info("\tExtBRC set: %s",
-         GetCodingOptStatus(CO2->ExtBRC).c_str());
     info("\tMBBRC set: %s",
          GetCodingOptStatus(CO2->MBBRC).c_str());
     info("\tTrellis set: %s",
