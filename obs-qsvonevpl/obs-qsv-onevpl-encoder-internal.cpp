@@ -598,6 +598,10 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
            log_prefix, Status);
       QSVEncode->Close();
       EncToolsParams->BRC = MFX_CODINGOPTION_OFF;
+      // Re-enable ExtBRC since EncTools.BRC is now off
+      if (auto *CO2 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>()) {
+        CO2->ExtBRC = MFX_CODINGOPTION_ON;
+      }
       Status = QSVEncode->Init(&QSVEncodeParams);
       info("\tMFXVideoENCODE_Init%s retry (BRC disabled) status: %d",
            log_prefix, Status);
@@ -608,6 +612,10 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
            log_prefix, Status);
       QSVEncode->Close();
       QSVEncodeParams.RemoveExtBuffer<mfxExtEncToolsConfig>();
+      // Re-enable ExtBRC since EncTools is fully removed
+      if (auto *CO2 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>()) {
+        CO2->ExtBRC = MFX_CODINGOPTION_ON;
+      }
       Status = QSVEncode->Init(&QSVEncodeParams);
       info("\tMFXVideoENCODE_Init%s retry "
            "(without EncTools) status: %d",
@@ -2093,6 +2101,12 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CO2Params->Header.BufferSz = sizeof(mfxExtCodingOption2);
     CO2Params->BufferingPeriodSEI = MFX_BPSEI_IFRAME;
     CO2Params->RepeatPPS = MFX_CODINGOPTION_OFF;
+    // ExtBRC enables the driver's built-in software BRC (ExtBRC class),
+    // which provides per-frame-type QP tracking, HRD conformance,
+    // sliding window bitrate control, and re-encode feedback.
+    // Only effective for CBR/VBR; driver ignores it for CQP/ICQ/etc.
+    // Mutually exclusive with EncTools.BRC (both trigger SW BRC path).
+    CO2Params->ExtBRC = MFX_CODINGOPTION_ON;
     if (!IsUHD600HEVC) {
       // FixedFrameRate=ON can confuse the UHD600 legacy runtime's timestamp
       // handling; leave it UNKNOWN for that path.
@@ -2399,12 +2413,24 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 #ifndef QSV_UHD600_SUPPORT
     EncToolsParams->AdaptiveQuantMatrices = GetCodingOpt(InputParams->AdaptiveCQM);
 #endif
-    // ExtBRC is always OFF now, so AdaptiveMBQP and BRC can freely use user
-    // settings — they work with the driver's built-in BRC, not ExtBRC.
+    // ExtBRC is ON by default now; EncTools.BRC is the mutually exclusive
+    // alternative — both trigger the driver's SW BRC path.
+    // AdaptiveMBQP works fine with either BRC mode.
     EncToolsParams->AdaptiveMBQP = GetCodingOpt(InputParams->EncToolsAdaptiveMBQP);
     EncToolsParams->BRC = GetCodingOpt(InputParams->EncToolsBRC);
     EncToolsParams->BRCBufferHints = GetCodingOpt(InputParams->EncToolsBRCBufferHints);
     EncToolsParams->SaliencyMapHint = GetCodingOpt(InputParams->EncToolsSaliencyMapHint);
+
+    // ExtBRC and EncTools.BRC are mutually exclusive (both use SW BRC path).
+    // If user explicitly enabled EncTools.BRC, disable ExtBRC.
+    if (EncToolsParams->BRC == MFX_CODINGOPTION_ON) {
+      auto *CO2ForExtBRC =
+          QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
+      if (CO2ForExtBRC) {
+        CO2ForExtBRC->ExtBRC = MFX_CODINGOPTION_OFF;
+        info("EncTools.BRC=ON → ExtBRC disabled (mutually exclusive)");
+      }
+    }
   }
 
   /*Don't touch it! Magic beyond the control of mere mortals takes place
@@ -3327,6 +3353,8 @@ void QSVEncoder::LogActualParams() {
   // ─ CO2 (mfxExtCodingOption2) ─
   auto *CO2 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
   if (CO2) {
+    info("\tExtBRC set: %s",
+         GetCodingOptStatus(CO2->ExtBRC).c_str());
     info("\tMBBRC set: %s",
          GetCodingOptStatus(CO2->MBBRC).c_str());
     info("\tTrellis set: %s",
