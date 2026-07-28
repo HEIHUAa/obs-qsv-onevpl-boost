@@ -854,8 +854,9 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_int_set_suffix(Prop, " s");
   obs_property_set_long_description(Prop, TEXT_KEYFRAME_INTERVAL_SEC_DESC);
 
-  // VP9 max NumRefFrame is 3 (per driver, depends on target usage)
-  int ref_max = (Codec == QSV_CODEC_VP9) ? 3 : 15;
+  // Codec-specific NumRefFrame max (per driver caps):
+  //   VP9: 3, AV1: 8, AVC/HEVC: 16
+  int ref_max = (Codec == QSV_CODEC_VP9) ? 3 : (Codec == QSV_CODEC_AV1) ? 8 : 16;
   Prop = obs_properties_add_int(IFGroup, "num_ref_frame", TEXT_NUM_REF_FRAME,
                                 0, ref_max, 1);
   obs_property_set_long_description(Prop,
