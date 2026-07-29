@@ -41,6 +41,7 @@ const char *const qsv_usage_names_five[] = {
 const char *const qsv_latency_names[] = {"ultra-low", "low", "normal", 0};
 const char *const qsv_params_condition[] = {"ON", "OFF", 0};
 const char *const qsv_params_condition_tristate[] = {"ON", "OFF", "AUTO", 0};
+const char *const qsv_params_gop_opt_flag[] = {"AUTO", "OPEN", "CLOSED", "STRICT", 0};
 const char *const qsv_params_weighted_pred_options[] = {"AUTO", "OFF",
     "DEFAULT", "EXPLICIT", "IMPLICIT", 0};
 const char *const qsv_params_condition_scaling_mode[] = {
@@ -968,6 +969,12 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   AddStrings(Prop, qsv_params_condition);
   obs_property_set_long_description(Prop, TEXT_ENC_TOOLS_SALIENCY_MAP_HINT_DESC);
 
+  Prop = obs_properties_add_list(ETGroup, "gop_opt_flag", TEXT_GOP_OPT_FLAG,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_gop_opt_flag);
+  obs_property_set_long_description(Prop, TEXT_GOP_OPT_FLAG_DESC);
+  obs_property_set_visible(Prop, Codec != QSV_CODEC_VP9);
+
   Prop = obs_properties_add_list(ETGroup, "adaptive_i", TEXT_ADAPTIVE_I,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_tristate);
@@ -1510,6 +1517,7 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
 
   const char *AdaptiveIData = obs_data_get_string(Settings, "adaptive_i");
   const char *AdaptiveBData = obs_data_get_string(Settings, "adaptive_b");
+  const char *GopOptFlagData = obs_data_get_string(Settings, "gop_opt_flag");
 #ifndef QSV_UHD600_SUPPORT
   const char *AdaptiveRefData = obs_data_get_string(Settings, "adaptive_ref");
   const char *AdaptiveCQMData = obs_data_get_string(Settings, "adaptive_cqm");
@@ -1947,6 +1955,15 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   ParseOptionalBool(AdaptiveIData, Context->EncoderParams.AdaptiveI);
 
   ParseOptionalBool(AdaptiveBData, Context->EncoderParams.AdaptiveB);
+
+  static constexpr std::pair<std::string_view, mfxU16> kGopOptFlagMap[] = {
+    {"OPEN",    0},
+    {"CLOSED",  MFX_GOP_CLOSED},
+    {"STRICT",  MFX_GOP_STRICT},
+  };
+  if (auto v = MapString(GopOptFlagData, kGopOptFlagMap)) {
+    Context->EncoderParams.GopOptFlag = *v;
+  }
 
 #ifndef QSV_UHD600_SUPPORT
   ParseOptionalBool(AdaptiveRefData, Context->EncoderParams.AdaptiveRef);

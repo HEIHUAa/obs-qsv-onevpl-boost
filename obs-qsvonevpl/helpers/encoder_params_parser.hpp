@@ -356,6 +356,7 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
   const char *MBBRCData = obs_data_get_string(Settings, "mbbrc");
   const char *AdaptiveIData = obs_data_get_string(Settings, "adaptive_i");
   const char *AdaptiveBData = obs_data_get_string(Settings, "adaptive_b");
+  const char *GopOptFlagData = obs_data_get_string(Settings, "gop_opt_flag");
 #ifndef QSV_UHD600_SUPPORT
   const char *AdaptiveRefData = obs_data_get_string(Settings, "adaptive_ref");
   const char *AdaptiveCQMData = obs_data_get_string(Settings, "adaptive_cqm");
@@ -696,6 +697,15 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
 
   ParseOptionalBool(AdaptiveIData, Params.AdaptiveI);
   ParseOptionalBool(AdaptiveBData, Params.AdaptiveB);
+
+  static constexpr std::pair<std::string_view, mfxU16> kGopOptFlagMap[] = {
+    {"OPEN",    0},
+    {"CLOSED",  MFX_GOP_CLOSED},
+    {"STRICT",  MFX_GOP_STRICT},
+  };
+  if (auto v = MapString(GopOptFlagData, kGopOptFlagMap)) {
+    Params.GopOptFlag = *v;
+  }
 #ifndef QSV_UHD600_SUPPORT
   ParseOptionalBool(AdaptiveRefData, Params.AdaptiveRef);
   ParseOptionalBool(AdaptiveCQMData, Params.AdaptiveCQM);

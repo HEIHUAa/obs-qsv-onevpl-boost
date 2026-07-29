@@ -53,6 +53,8 @@ struct plugin_context {
 #define TEXT_DIRECT_BIAS_ADJUSTMENT obs_module_text("DirectBiasAdjusment")
 #define TEXT_ADAPTIVE_I obs_module_text("AdaptiveI")
 #define TEXT_ADAPTIVE_B obs_module_text("AdaptiveB")
+#define TEXT_GOP_OPT_FLAG obs_module_text("GOPOptFlag")
+#define TEXT_GOP_OPT_FLAG_DESC obs_module_text("GOPOptFlag.Tooltip")
 #define TEXT_ADAPTIVE_REF obs_module_text("AdaptiveRef")
 #define TEXT_ADAPTIVE_CQM obs_module_text("AdaptiveCQM")
 #define TEXT_PYRAMID obs_module_text("Pyramid")

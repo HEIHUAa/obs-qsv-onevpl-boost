@@ -2028,8 +2028,12 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
   const bool adaptiveIOn = InputParams->AdaptiveI == true;
   const bool adaptiveBOn = InputParams->AdaptiveB == true;
-  QSVEncodeParams.mfx.GopOptFlag =
-      (!adaptiveIOn && !adaptiveBOn) ? MFX_GOP_STRICT : MFX_GOP_CLOSED;
+  if (InputParams->GopOptFlag.has_value()) {
+    QSVEncodeParams.mfx.GopOptFlag = *InputParams->GopOptFlag;
+  } else {
+    QSVEncodeParams.mfx.GopOptFlag =
+        (!adaptiveIOn && !adaptiveBOn) ? MFX_GOP_STRICT : MFX_GOP_CLOSED;
+  }
 
   switch (QSVEncodeParams.mfx.CodecId) {
   case MFX_CODEC_HEVC:
