@@ -18,7 +18,9 @@
 
 using namespace std::chrono_literals;
 
-// Debug helper: writes to a file with immediate flush to survive crashes
+// Debug helper: writes to debugger output (cheap — no-op without a debugger).
+// The old version opened/flushed/closed a log file on EVERY call (per-frame
+// disk I/O on the feed thread).  Define REENCODE_DEBUG_LOG_FILE to re-enable.
 static void dbglog(const char *fmt, ...) {
   char buf[1024];
   va_list args;
@@ -27,13 +29,14 @@ static void dbglog(const char *fmt, ...) {
   va_end(args);
   OutputDebugStringA(buf);
   OutputDebugStringA("\n");
-  // also write to a temp file for easy reading
+#ifdef REENCODE_DEBUG_LOG_FILE
   FILE *f = fopen("h:\\qsv_reencode_debug.log", "a");
   if (f) {
     fprintf(f, "%s\n", buf);
     fflush(f);
     fclose(f);
   }
+#endif
 }
 
 // ============================================================================
@@ -259,7 +262,12 @@ static bool reencode_output_start(void *data)
 static void *reencode_stop_thread(void *data)
 {
   auto *ctx = static_cast<reencode_output_ctx *>(data);
+  // Hold a reference while calling end_data_capture: StopEncoding() may
+  // obs_output_release() the last reference and destroy the output before
+  // this thread runs, which would be a use-after-free.
+  obs_output_addref(ctx->output);
   obs_output_end_data_capture(ctx->output);
+  obs_output_release(ctx->output);
   ctx->stop_thread_active = false;
   return nullptr;
 }
@@ -363,9 +371,11 @@ bool ReEncodeDialog::LoadEncoderConfigFromActive()
     }
 
     // copy encoder settings as obs_data
-    obs_data_t *settings = obs_encoder_get_settings(ctx->EncoderData);
-    obs_data_addref(settings);
-    m_EncoderSettings = settings;
+    // obs_encoder_get_settings() already returns an addref'd reference; the
+    // extra addref here leaked one reference on every call/refresh.
+    if (m_EncoderSettings)
+      obs_data_release(m_EncoderSettings);
+    m_EncoderSettings = obs_encoder_get_settings(ctx->EncoderData);
 
     blog(LOG_INFO, "[QSV VPL ReEncoder] Loaded config from active encoder: %s %dx%d %d/%d fps",
          m_EncoderID.c_str(), m_Width, m_Height, m_FpsNum, m_FpsDen);
@@ -557,6 +567,14 @@ void ReEncodeDialog::AppendLog(const QString &Msg)
 
 void ReEncodeDialog::UpdateProgress(int64_t Current, int64_t Total)
 {
+  // Throttle GUI updates (~12/s).  Each call queues a lambda onto the UI
+  // thread; doing that per frame at 60fps is pure allocation overhead.
+  static thread_local int64_t lastReported = -1;
+  constexpr int64_t REPORT_STEP = 5; // frames between UI updates
+  if (Total > 0 && Current < Total && (Current - lastReported) < REPORT_STEP)
+    return;
+  lastReported = Current;
+
   QMetaObject::invokeMethod(this, [this, Current, Total]() {
     if (Total > 0) {
       int pct = static_cast<int>((Current * 100) / Total);
@@ -813,7 +831,7 @@ bool ReEncodeDialog::StartEncoding()
   m_Ctx.nv12_frame = m_FF.av_frame_alloc();
   if (!m_Ctx.decoded_frame || !m_Ctx.nv12_frame) {
     AppendLog("ERROR: Cannot allocate frames");
-    return false;
+    goto cleanup_failed;
   }
   dbglog("[QSV VPL ReEncoder] DEBUG: frames allocated OK");
 
@@ -837,7 +855,7 @@ bool ReEncodeDialog::StartEncoding()
   ret = video_output_open(&m_Video, &vi);
   if (ret != VIDEO_OUTPUT_SUCCESS) {
     AppendLog("ERROR: Cannot create video output");
-    return false;
+    goto cleanup_failed;
   }
   dbglog("[QSV VPL ReEncoder] DEBUG: video output created OK");
 
@@ -856,10 +874,8 @@ bool ReEncodeDialog::StartEncoding()
   obs_data_release(encSettings);
 
   if (!m_Encoder) {
-    video_output_close(m_Video);
-    m_Video = nullptr;
     AppendLog(QString("ERROR: Cannot create encoder '%1'").arg(QString::fromStdString(m_EncoderID)));
-    return false;
+    goto cleanup_failed;
   }
   blog(LOG_INFO, "[QSV VPL ReEncoder] Encoder created, setting video...");
 
@@ -871,12 +887,8 @@ bool ReEncodeDialog::StartEncoding()
   m_Output = obs_output_create(REENCODE_OUTPUT_ID, "qsv-reencode-output", nullptr, nullptr);
   if (!m_Output) {
     g_PendingOutputDialog = nullptr;
-    obs_encoder_release(m_Encoder);
-    m_Encoder = nullptr;
-    video_output_close(m_Video);
-    m_Video = nullptr;
     AppendLog("ERROR: Cannot create output");
-    return false;
+    goto cleanup_failed;
   }
 
   obs_output_set_video_encoder(m_Output, m_Encoder);
@@ -890,7 +902,7 @@ bool ReEncodeDialog::StartEncoding()
                                              outPath);
   if (ret < 0 || !m_Ctx.out_fmt_ctx) {
     AppendLog("ERROR: Cannot create output context");
-    return false;
+    goto cleanup_failed;
   }
   dbglog("[QSV VPL ReEncoder] DEBUG: output context created OK");
 
@@ -899,7 +911,7 @@ bool ReEncodeDialog::StartEncoding()
   m_Ctx.out_video_stream = m_FF.avformat_new_stream(m_Ctx.out_fmt_ctx, nullptr);
   if (!m_Ctx.out_video_stream) {
     AppendLog("ERROR: Cannot create output video stream");
-    return false;
+    goto cleanup_failed;
   }
   m_Ctx.out_video_stream->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
   m_Ctx.out_video_stream->codecpar->codec_id = outCodecId;
@@ -927,7 +939,7 @@ bool ReEncodeDialog::StartEncoding()
     ret = m_FF.avio_open(&m_Ctx.out_fmt_ctx->pb, outPath, AVIO_FLAG_WRITE);
     if (ret < 0) {
       AppendLog("ERROR: Cannot open output file");
-      return false;
+      goto cleanup_failed;
     }
   }
 
@@ -936,7 +948,7 @@ bool ReEncodeDialog::StartEncoding()
   ret = m_FF.avformat_write_header(m_Ctx.out_fmt_ctx, nullptr);
   if (ret < 0) {
     AppendLog("ERROR: Cannot write header");
-    return false;
+    goto cleanup_failed;
   }
   dbglog("[QSV VPL ReEncoder] DEBUG: header written OK");
 
@@ -946,7 +958,7 @@ bool ReEncodeDialog::StartEncoding()
   if (!obs_output_start(m_Output)) {
     blog(LOG_ERROR, "[QSV VPL ReEncoder] obs_output_start failed");
     AppendLog("ERROR: obs_output_start failed");
-    return false;
+    goto cleanup_failed;
   }
   dbglog("[QSV VPL ReEncoder] OBS output started successfully");
 
@@ -961,6 +973,44 @@ bool ReEncodeDialog::StartEncoding()
   m_FeedThread = std::thread(&ReEncodeDialog::FeedThreadMain, this);
 
   return true;
+
+cleanup_failed:
+  // Release everything allocated so far — the per-step `return false` paths
+  // used to leak whichever resources were created before the failure.
+  g_PendingOutputDialog = nullptr;
+  if (m_Output) {
+    obs_output_release(m_Output);
+    m_Output = nullptr;
+  }
+  if (m_Encoder) {
+    obs_encoder_release(m_Encoder);
+    m_Encoder = nullptr;
+  }
+  if (m_Video) {
+    video_output_close(m_Video);
+    m_Video = nullptr;
+  }
+  if (m_Ctx.in_fmt_ctx) {
+    m_FF.avformat_close_input(&m_Ctx.in_fmt_ctx);
+  }
+  if (m_Ctx.video_decoder) {
+    m_FF.avcodec_free_context(&m_Ctx.video_decoder);
+  }
+  if (m_Ctx.decoded_frame) {
+    m_FF.av_frame_free(&m_Ctx.decoded_frame);
+  }
+  if (m_Ctx.nv12_frame) {
+    m_FF.av_frame_free(&m_Ctx.nv12_frame);
+  }
+  if (m_Ctx.out_fmt_ctx) {
+    if (!(m_Ctx.out_fmt_ctx->oformat->flags & AVFMT_NOFILE) &&
+        m_Ctx.out_fmt_ctx->pb) {
+      m_FF.avio_closep(&m_Ctx.out_fmt_ctx->pb);
+    }
+    m_FF.avformat_free_context(m_Ctx.out_fmt_ctx);
+    m_Ctx.out_fmt_ctx = nullptr;
+  }
+  return false;
 }
 
 void ReEncodeDialog::StopEncoding()
@@ -1032,6 +1082,13 @@ void ReEncodeDialog::FeedThreadMain()
     AVPacket *inPkt = ff.av_packet_alloc();
     if (!inPkt) {
       AppendLog("ERROR: Cannot allocate input packet");
+      // Must signal completion — StopEncoding() waits on encoder_done and
+      // would block forever otherwise.
+      {
+        std::lock_guard lock(ctx.pkt_mutex);
+        ctx.encoder_done = true;
+      }
+      ctx.pkt_cv.notify_all();
       return;
     }
 
@@ -1105,10 +1162,19 @@ void ReEncodeDialog::FeedThreadMain()
 
           for (int i = 0; i < MAX_AV_PLANES; i++) {
             if (vf.data[i] && ctx.nv12_frame->data[i]) {
-              size_t copySize = (size_t)vf.linesize[i] * ctx.decoded_frame->height;
-              if (i > 0)
-                copySize = (size_t)vf.linesize[i] * ctx.decoded_frame->height / 2;
-              memcpy(vf.data[i], ctx.nv12_frame->data[i], copySize);
+              // Copy row-wise but never read past the tightly-packed source:
+              // nv12_buf is allocated with align=1 (linesize == width) while
+              // OBS's vf.linesize may be larger (aligned) — the old memcpy by
+              // vf.linesize could over-read the source buffer.
+              const size_t srcLine = (size_t)ctx.nv12_frame->linesize[i];
+              const size_t dstLine = (size_t)vf.linesize[i];
+              const size_t rows =
+                  (i > 0) ? (size_t)ctx.decoded_frame->height / 2
+                          : (size_t)ctx.decoded_frame->height;
+              const size_t copyLine = dstLine < srcLine ? dstLine : srcLine;
+              for (size_t row = 0; row < rows; row++)
+                memcpy(vf.data[i] + row * dstLine,
+                       ctx.nv12_frame->data[i] + row * srcLine, copyLine);
             }
           }
 
@@ -1119,7 +1185,7 @@ void ReEncodeDialog::FeedThreadMain()
             std::unique_lock lock(ctx.pkt_mutex);
             while (!ctx.pkt_queue.empty()) {
               ReEncodeCtx::Packet encPkt = std::move(ctx.pkt_queue.front());
-              ctx.pkt_queue.erase(ctx.pkt_queue.begin());
+              ctx.pkt_queue.pop_front();
               lock.unlock();
 
               AVPacket *outPkt = ff.av_packet_alloc();
@@ -1286,10 +1352,17 @@ void ReEncodeDialog::FeedThreadMain()
       if (video_output_lock_frame(m_Video, &vf, 1, ptsNs)) {
         for (int i = 0; i < MAX_AV_PLANES; i++) {
           if (vf.data[i] && ctx.nv12_frame->data[i]) {
-            size_t copySize = (size_t)vf.linesize[i] * ctx.decoded_frame->height;
-            if (i > 0)
-              copySize = (size_t)vf.linesize[i] * ctx.decoded_frame->height / 2;
-            memcpy(vf.data[i], ctx.nv12_frame->data[i], copySize);
+            // Copy row-wise but never read past the tightly-packed source —
+            // see processFrame() for details.
+            const size_t srcLine = (size_t)ctx.nv12_frame->linesize[i];
+            const size_t dstLine = (size_t)vf.linesize[i];
+            const size_t rows =
+                (i > 0) ? (size_t)ctx.decoded_frame->height / 2
+                        : (size_t)ctx.decoded_frame->height;
+            const size_t copyLine = dstLine < srcLine ? dstLine : srcLine;
+            for (size_t row = 0; row < rows; row++)
+              memcpy(vf.data[i] + row * dstLine,
+                     ctx.nv12_frame->data[i] + row * srcLine, copyLine);
           }
         }
         video_output_unlock_frame(m_Video);
@@ -1300,7 +1373,7 @@ void ReEncodeDialog::FeedThreadMain()
         std::unique_lock lock2(ctx.pkt_mutex);
         while (!ctx.pkt_queue.empty()) {
           ReEncodeCtx::Packet encPkt = std::move(ctx.pkt_queue.front());
-          ctx.pkt_queue.erase(ctx.pkt_queue.begin());
+          ctx.pkt_queue.pop_front();
           lock2.unlock();
 
           AVPacket *outPkt = ff.av_packet_alloc();
@@ -1423,9 +1496,22 @@ void ReEncodeDialog::FeedThreadMain()
   } catch (const std::exception &e) {
     AppendLog(QString("EXCEPTION: %1").arg(e.what()));
     success = false;
+    // Signal completion on the exception path too — StopEncoding() waits on
+    // encoder_done and would otherwise deadlock (the normal signal below is
+    // skipped when an exception jumps straight to cleanup).
+    {
+      std::lock_guard lock(ctx.pkt_mutex);
+      ctx.encoder_done = true;
+    }
+    ctx.pkt_cv.notify_all();
   } catch (...) {
     AppendLog("UNKNOWN EXCEPTION in feed thread");
     success = false;
+    {
+      std::lock_guard lock(ctx.pkt_mutex);
+      ctx.encoder_done = true;
+    }
+    ctx.pkt_cv.notify_all();
   }
 
   // Cleanup FFmpeg resources

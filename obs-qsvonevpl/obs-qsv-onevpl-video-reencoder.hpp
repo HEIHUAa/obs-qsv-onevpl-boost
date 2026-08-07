@@ -11,6 +11,7 @@
 #include <QCloseEvent>
 #include <atomic>
 #include <condition_variable>
+#include <deque>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -157,7 +158,9 @@ public:
     };
     std::mutex pkt_mutex;
     std::condition_variable pkt_cv;
-    std::vector<Packet> pkt_queue;
+    // deque: pop_front() is O(1); the old vector + erase(begin()) shifted the
+    // whole queue on every encoded frame.
+    std::deque<Packet> pkt_queue;
     bool encoder_done = false;
 
     // Audio packets from input (stream copy, re-timestamped for output)

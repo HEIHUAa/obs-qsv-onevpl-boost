@@ -13,6 +13,7 @@
 #include <QShowEvent>
 #include <QCloseEvent>
 #include <QTimer>
+#include <mutex>
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 #include "obs-qsv-onevpl-encoder.hpp"
@@ -84,7 +85,16 @@ private:
   bool m_IsSettingText = false;
 
   // Cached gradient grid for DrawROIOverlay. Rebuilt when ROI data or output dims change.
+  // m_CacheMutex guards all three members: InvalidateROICache() runs on the UI
+  // thread (textChanged) while DrawROIOverlay() reads them on the render thread.
+  std::mutex m_CacheMutex;
   std::vector<encoder_params::roi_region> m_CachedDrawRects;
   bool m_CachedUseSegmented = false;
   size_t m_GridCacheHash = 0;
+
+  // Reusable GS_DYNAMIC vertex buffer for the ROI rects — created once and
+  // resized only when the rect count grows, instead of create/destroy per rect
+  // on the render thread every frame.
+  gs_vertbuffer_t *m_CachedVB = nullptr;
+  size_t m_CachedVBCapacity = 0;
 };

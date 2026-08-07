@@ -18,7 +18,7 @@ struct plugin_context {
   std::pair<uint8_t*, size_t> ExtraData;
   std::pair<uint8_t*, size_t> SEI;
 
-  os_performance_token_t *PerformanceToken;
+  os_performance_token_t *PerformanceToken = nullptr;
 
   uint32_t roi_increment;
 

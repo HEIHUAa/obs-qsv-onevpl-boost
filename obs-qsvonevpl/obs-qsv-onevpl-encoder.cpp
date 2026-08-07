@@ -23,6 +23,10 @@ bool OpenEncoder(std::unique_ptr<QSVEncoder> &EncoderPTR,
       obs_get_video_info(&OVI);
       EncoderParams->dxgiAdapterIndex = OVI.adapter; // save raw DXGI index before adjustment
       mfxU32 AdapterID = OVI.adapter;
+      // AdaptersInfo is a fixed-size table (MAX_ADAPTERS) — an out-of-range
+      // DXGI index would be an out-of-bounds read.
+      if (AdapterID >= MAX_ADAPTERS)
+        AdapterID = 0;
       mfxU32 AdapterIDAdjustment = 0;
       // Select current adapter; handle adapter reordering
       if (Codec == QSV_CODEC_AV1 && !AdaptersInfo[AdapterID].SupportAV1) {
@@ -120,13 +124,23 @@ void DestroyPluginContext(void *Data) {
     // Unregister from the global encoder data map
     UnregisterEncoderData(Context->EncoderData);
 
-    // Wait for in-progress encodes to finish before ending high-performance mode,
+    // EncodeTexture/EncodeFrame hold EncoderMutex for the whole encode call,
+    // so once we hold the lock no encode is in flight.  Keep a bounded wait as
+    // a safety net; do not ignore its result (a 10ms timeout here used to
+    // ClearData()+delete while the encode thread was still touching the encoder).
+    os_performance_token_t *PerformanceToken = Context->PerformanceToken;
+
     {
       std::unique_lock<std::mutex> lock(Context->EncoderMutex);
-      Context->EncodingCV.wait_for(lock, std::chrono::milliseconds(10),
-        [&Context]() {
-          return Context->EncodingCount.load(std::memory_order_acquire) == 0;
-        });
+      if (!Context->EncodingCV.wait_for(
+              lock, std::chrono::seconds(2),
+              [&Context]() {
+                return Context->EncodingCount.load(std::memory_order_acquire) ==
+                       0;
+              })) {
+        error("QSV: encoder still busy during destroy; "
+              "forcing cleanup is unsafe");
+      }
 
       if (Context->EncoderPTR) {
         try {
@@ -137,10 +151,17 @@ void DestroyPluginContext(void *Data) {
         }
       }
 
+      // Free the bmalloc'd SPS/PPS/SEI buffers allocated by
+      // obs_extract_*_headers() in ParseEncodedPacket (bfree(NULL) is a no-op).
+      bfree(Context->ExtraData.first);
+      bfree(Context->SEI.first);
+      Context->ExtraData = {};
+      Context->SEI = {};
+
       delete Context;
     }
 
-    os_end_high_performance(Context->PerformanceToken);
+    os_end_high_performance(PerformanceToken);
   }
 }
 
@@ -151,6 +172,9 @@ bool UpdateEncoderParams(void *Data, obs_data_t *Params) {
   const bool isICQ = bitrate_control == "ICQ";
 
   std::lock_guard<std::mutex> lock(Context->EncoderMutex);
+
+  if (!Context->EncoderPTR)
+    return false;
 
   if (bitrate_control == "CBR") {
     Context->EncoderParams.TargetBitRate =
@@ -427,41 +451,6 @@ int64_t ConvertTSMFXOBS(mfxI64 TS, mfxU32 FpsNum, mfxU32 FpsDen, int64_t Div) {
   return (numerator + rounding) / Div * static_cast<int64_t>(FpsDen);
 }
 
-static size_t hevc_extract_rbsp(uint8_t *dst, std::span<const uint8_t> src) {
-  size_t dst_pos = 0;
-  size_t i = 0;
-  while (i < src.size()) {
-    if (i + 2 < src.size() && src[i] == 0 && src[i + 1] == 0 &&
-        src[i + 2] == 3) {
-      dst[dst_pos++] = 0;
-      dst[dst_pos++] = 0;
-      i += 3;
-    } else {
-      dst[dst_pos++] = src[i++];
-    }
-  }
-  return dst_pos;
-}
-
-static size_t hevc_add_emulation_prevention(uint8_t *dst,
-                                             std::span<const uint8_t> src) {
-  size_t dst_pos = 0;
-  int zero_count = 0;
-  for (size_t i = 0; i < src.size(); i++) {
-    if (zero_count >= 2 && src[i] <= 3) {
-      dst[dst_pos++] = 3;
-      zero_count = 0;
-    }
-    dst[dst_pos++] = src[i];
-    if (src[i] == 0) {
-      zero_count++;
-    } else {
-      zero_count = 0;
-    }
-  }
-  return dst_pos;
-}
-
 uint32_t hevc_read_bits(const uint8_t *data, size_t max_size,
                                 size_t &byte_pos, int &bit_pos, int n) {
   uint32_t val = 0;
@@ -488,53 +477,6 @@ uint32_t hevc_read_uev(const uint8_t *data, size_t max_size,
     return 0;
   return (1u << leading_zeros) - 1 +
          hevc_read_bits(data, max_size, byte_pos, bit_pos, leading_zeros);
-}
-
-static void hevc_skip_bits(size_t &byte_pos, int &bit_pos, int n) {
-  bit_pos -= n;
-  while (bit_pos < 0) {
-    byte_pos++;
-    bit_pos += 8;
-  }
-}
-
-static size_t hevc_current_bit(const size_t &byte_pos, const int &bit_pos) {
-  return byte_pos * 8 + (7 - bit_pos);
-}
-
-static void hevc_write_bits(uint8_t *data, size_t &byte_pos, int &bit_pos,
-                             uint32_t val, int n) {
-  for (int i = n - 1; i >= 0; i--) {
-    if (bit_pos < 0) {
-      byte_pos++;
-      bit_pos = 7;
-    }
-    data[byte_pos] = (data[byte_pos] & ~(1 << bit_pos)) |
-                     (((val >> i) & 1) << bit_pos);
-    bit_pos--;
-  }
-}
-
-static void hevc_flush_byte(uint8_t *data, size_t &byte_pos, int &bit_pos) {
-  if (bit_pos < 7) {
-    byte_pos++;
-    bit_pos = 7;
-  }
-}
-
-static void hevc_write_uev(uint8_t *data, size_t &byte_pos, int &bit_pos,
-                            uint32_t val) {
-  if (val == 0) {
-    hevc_write_bits(data, byte_pos, bit_pos, 1, 1);
-    return;
-  }
-  int leading_zeros = 0;
-  uint32_t tmp = val + 1;
-  while (tmp >>= 1)
-    leading_zeros++;
-  for (int i = 0; i < leading_zeros; i++)
-    hevc_write_bits(data, byte_pos, bit_pos, 0, 1);
-  hevc_write_bits(data, byte_pos, bit_pos, val + 1, leading_zeros + 1);
 }
 
 void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
@@ -564,18 +506,24 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
                               Bitstream->DataLength, &NewPacket,
                               &NewPacketSize, &Context->ExtraData.first,
                               &Context->ExtraData.second);
-    } else if (Context->Codec == QSV_CODEC_VP9) {
-      // VP9 has no parameter sets; bitstream is already raw frames.
-      // Just copy through; no extradata needed (mkv/webm containers
-      // don't require VP9 codec private data).
+    }
+    // VP9 has no parameter sets; the bitstream is already raw frames and
+    // needs no extradata (mkv/webm containers don't require VP9 codec
+    // private data).  NewPacket stays null there, so copy straight from
+    // the bitstream into the reusable PacketData buffer — no per-frame
+    // intermediate bmemdup/bfree.
+    if (Context->Codec == QSV_CODEC_VP9) {
       NewPacketSize = Bitstream->DataLength;
-      NewPacket = static_cast<uint8_t *>(
-          bmemdup(Bitstream->Data + Bitstream->DataOffset, NewPacketSize));
     }
 
     Context->PacketData.resize(NewPacketSize);
-    std::memcpy(Context->PacketData.data(), NewPacket, NewPacketSize);
-    bfree(NewPacket);
+    if (NewPacket) {
+      std::memcpy(Context->PacketData.data(), NewPacket, NewPacketSize);
+      bfree(NewPacket);
+    } else {
+      std::memcpy(Context->PacketData.data(),
+                  Bitstream->Data + Bitstream->DataOffset, NewPacketSize);
+    }
   } else {
     Context->PacketData.resize(Bitstream->DataLength);
     std::memcpy(Context->PacketData.data(),
@@ -684,24 +632,23 @@ bool EncodeTexture(void *Data, encoder_texture *Texture, int64_t PTS,
   if (!Packet || !ReceivedPacketStatus)
     return false;
 
-  // Quick snapshot under mutex, then release so encode does not block
-  // concurrent parameter/ROI updates or plugin destruction.
-  mfxU32 fpsNum;
-  {
-    std::lock_guard<std::mutex> lock(Context->EncoderMutex);
-    if (!Context->EncoderPTR)
-      return false;
-    fpsNum = Context->CachedFpsNum;
-    Context->EncodingCount.fetch_add(1, std::memory_order_acquire);
-  }
+  // Hold the mutex for the whole encode call.  MFXVideoENCODE_Reset
+  // (parameter updates) and plugin destruction are serialized against
+  // in-flight encoding; a Reset racing EncodeFrameAsync is undefined
+  // behavior in the driver.
+  std::lock_guard<std::mutex> lock(Context->EncoderMutex);
+  if (!Context->EncoderPTR)
+    return false;
+
+  Context->EncodingCount.fetch_add(1, std::memory_order_acquire);
 
   mfxBitstream *Bitstream = nullptr;
   bool success = true;
 
   try {
     Context->EncoderPTR->EncodeTexture(
-        ConvertTSOBSMFX(PTS, fpsNum), static_cast<void *>(Texture), LockKey,
-        NextKey, &Bitstream);
+        ConvertTSOBSMFX(PTS, Context->CachedFpsNum),
+        static_cast<void *>(Texture), LockKey, NextKey, &Bitstream);
   } catch (const std::exception &e) {
     error("%s", e.what());
     error("encode failed");
@@ -709,16 +656,11 @@ bool EncodeTexture(void *Data, encoder_texture *Texture, int64_t PTS,
   }
 
   if (success) {
-    std::lock_guard<std::mutex> lock(Context->EncoderMutex);
-    ParseEncodedPacket(Context, Packet, Bitstream,
-                       ReceivedPacketStatus);
+    ParseEncodedPacket(Context, Packet, Bitstream, ReceivedPacketStatus);
   }
 
-  {
-    std::lock_guard<std::mutex> lock(Context->EncoderMutex);
-    if (Context->EncodingCount.fetch_sub(1, std::memory_order_release) == 1)
-      Context->EncodingCV.notify_one();
-  }
+  if (Context->EncodingCount.fetch_sub(1, std::memory_order_release) == 1)
+    Context->EncodingCV.notify_one();
   return success;
 }
 
@@ -731,15 +673,12 @@ bool EncodeFrame(void *Data, encoder_frame *Frame, encoder_packet *Packet,
     return false;
   }
 
-  // Quick snapshot under mutex, then release for the actual encode.
-  mfxU32 fpsNum;
-  {
-    std::lock_guard<std::mutex> lock(Context->EncoderMutex);
-    if (!Context->EncoderPTR)
-      return false;
-    fpsNum = Context->CachedFpsNum;
-    Context->EncodingCount.fetch_add(1, std::memory_order_acquire);
-  }
+  // Hold the mutex for the whole encode call — see EncodeTexture above.
+  std::lock_guard<std::mutex> lock(Context->EncoderMutex);
+  if (!Context->EncoderPTR)
+    return false;
+
+  Context->EncodingCount.fetch_add(1, std::memory_order_acquire);
 
   mfxBitstream *Bitstream = nullptr;
   bool success = true;
@@ -747,11 +686,11 @@ bool EncodeFrame(void *Data, encoder_frame *Frame, encoder_packet *Packet,
   try {
     if (Frame->data[0]) {
       Context->EncoderPTR->EncodeFrame(
-          ConvertTSOBSMFX(Frame->pts, fpsNum), Frame->data,
+          ConvertTSOBSMFX(Frame->pts, Context->CachedFpsNum), Frame->data,
           Frame->linesize, &Bitstream);
     } else {
       Context->EncoderPTR->EncodeFrame(
-          ConvertTSOBSMFX(Frame->pts, fpsNum), nullptr, 0,
+          ConvertTSOBSMFX(Frame->pts, Context->CachedFpsNum), nullptr, 0,
           &Bitstream);
     }
   } catch (const std::exception &e) {
@@ -761,15 +700,10 @@ bool EncodeFrame(void *Data, encoder_frame *Frame, encoder_packet *Packet,
   }
 
   if (success) {
-    std::lock_guard<std::mutex> lock(Context->EncoderMutex);
-    ParseEncodedPacket(Context, Packet, Bitstream,
-                       ReceivedPacketStatus);
+    ParseEncodedPacket(Context, Packet, Bitstream, ReceivedPacketStatus);
   }
 
-  {
-    std::lock_guard<std::mutex> lock(Context->EncoderMutex);
-    if (Context->EncodingCount.fetch_sub(1, std::memory_order_release) == 1)
-      Context->EncodingCV.notify_one();
-  }
+  if (Context->EncodingCount.fetch_sub(1, std::memory_order_release) == 1)
+    Context->EncodingCV.notify_one();
   return success;
 }

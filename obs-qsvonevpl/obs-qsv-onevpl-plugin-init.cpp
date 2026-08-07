@@ -138,7 +138,6 @@ static bool IsFeatureSupported(const char *PropertyName) {
 
 static mfxPlatform CachedQSVPlatform{};
 static bool CachedQSVPlatformValid = false;
-static std::once_flag QueryPlatformOnceFlag;
 
 static bool TryQueryPlatformCodeName(mfxLoader Loader) {
     mfxConfig Config = MFXCreateConfig(Loader);
@@ -175,33 +174,37 @@ static bool TryQueryPlatformCodeName(mfxLoader Loader) {
 }
 
 mfxU16 QueryPlatformCodeName() {
-    std::call_once(QueryPlatformOnceFlag, []() {
-        mfxLoader GlobalLoader = nullptr;
-        {
-            std::lock_guard<std::mutex> Lock(GlobalLoaderMutex);
-            GlobalLoader = GlobalQSVLoader;
-        }
+  // Unlike std::call_once (which caches a failed probe forever), a failed
+  // probe is retried on the next call — the driver may still be loading when
+  // OBS first asks.  ProbeMutex also serializes cache writes (probe) against
+  // reads, so callers never race CachedQSVPlatform.
+  static std::mutex ProbeMutex;
+  static std::atomic<bool> Probing{false};
 
-        if (GlobalLoader != nullptr) {
-            if (TryQueryPlatformCodeName(GlobalLoader)) {
-                return;
-            }
-        } else {
-            mfxLoader Loader = MFXLoad();
-            if (Loader != nullptr) {
-                bool ok = TryQueryPlatformCodeName(Loader);
-                MFXUnload(Loader);
-                if (ok) {
-                    return;
-                }
-            }
-        }
-    });
-
-    if (CachedQSVPlatformValid) {
-        return CachedQSVPlatform.CodeName;
+  std::lock_guard<std::mutex> Lock(ProbeMutex);
+  if (!Probing.exchange(true)) {
+    bool ok = false;
+    mfxLoader GlobalLoader = nullptr;
+    {
+      std::lock_guard<std::mutex> LoaderLock(GlobalLoaderMutex);
+      GlobalLoader = GlobalQSVLoader;
     }
-    return 0;
+
+    if (GlobalLoader != nullptr) {
+      ok = TryQueryPlatformCodeName(GlobalLoader);
+    } else {
+      mfxLoader Loader = MFXLoad();
+      if (Loader != nullptr) {
+        ok = TryQueryPlatformCodeName(Loader);
+        MFXUnload(Loader);
+      }
+    }
+    Probing.store(false);
+    return ok ? CachedQSVPlatform.CodeName : 0;
+  }
+
+  // Another thread is probing right now (or a previous probe succeeded).
+  return CachedQSVPlatformValid ? CachedQSVPlatform.CodeName : 0;
 }
 
 enum class TargetUsageUIMode {
@@ -360,7 +363,6 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(Settings, "scenario_info", "AUTO");
   obs_data_set_default_string(Settings, "content_info", "AUTO");
   obs_data_set_default_string(Settings, "transform_skip", "AUTO");
-  obs_data_set_default_string(Settings, "rdo", "AUTO");
   obs_data_set_default_string(Settings, "screen_content_tools", "AUTO");
 
   obs_data_set_default_int(Settings, "gpu_number", 0);
@@ -576,8 +578,9 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
       obs_data_get_string(Settings, "global_motion_bias_adjustment");
   bVisible = sv(global_motion_bias_adjustment_enable) == "ON";
   SetVisible("mv_cost_scaling_factor", bVisible);
-  if (!bVisible)
-    obs_data_erase(Settings, "mv_cost_scaling_factor");
+  // Keep the stored value even when hidden: MVCostScalingFactor is only applied
+  // when GlobalMotionBiasAdjustment is ON (see internal.cpp), and erasing it
+  // here would permanently delete the user's configured choice from the profile.
 
   const char *vpp = obs_data_get_string(Settings, "vpp");
   bool bVisibleVPP = sv(vpp) == "ON";
@@ -1465,324 +1468,43 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 // derived fields (resolution, fps, color info, format) on top of it.
 static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   video_t *Video = obs_encoder_video(Context->EncoderData);
+  if (!Video)
+    return; // no video output attached yet — keep encoder params at defaults
   const video_output_info *VOI = video_output_get_info(Video);
   const char *Codec = "";
 
-  const char *TargetUsageData = obs_data_get_string(Settings, "target_usage");
-  const char *CodecProfileData = obs_data_get_string(Settings, "profile");
-  const char *CodecProfileTierData = obs_data_get_string(Settings, "hevc_tier");
-  const char *CodecLevelData = obs_data_get_string(Settings, "hevc_level");
-  const char *CodecLevelDataAVC = obs_data_get_string(Settings, "avc_level");
-  const char *CodecLevelDataAV1 = obs_data_get_string(Settings, "av1_level");
-  const char *RateControlData = obs_data_get_string(Settings, "rate_control");
-  int TargetBitrateData =
-      static_cast<int>(obs_data_get_int(Settings, "bitrate"));
-  int BufferSizeData =
-      static_cast<int>(obs_data_get_int(Settings, "buffer_size"));
-  int MaxBitrateData =
-      static_cast<int>(obs_data_get_int(Settings, "max_bitrate"));
-  double CQPData;
-  if (Context->Codec == QSV_CODEC_AV1 || Context->Codec == QSV_CODEC_VP9) {
-    CQPData = obs_data_get_double(Settings, "cqp");
-  } else {
-    CQPData = static_cast<double>(obs_data_get_int(Settings, "cqp"));
+  switch (Context->Codec) {
+  case QSV_CODEC_AVC:
+    Codec = "H.264";
+    break;
+  case QSV_CODEC_HEVC:
+    Codec = "HEVC";
+    break;
+  case QSV_CODEC_AV1:
+    Codec = "AV1";
+    break;
+  case QSV_CODEC_VP9:
+    Codec = "VP9";
+    break;
   }
-  int ICQQualityData =
-      static_cast<int>(obs_data_get_int(Settings, "icq_quality"));
-  if (Context->Codec == QSV_CODEC_VP9) {
-    // VP9 driver's VAAPI layer ignores ICQ_quality_factor (driver bug).
-    // Slider is hidden, set to 0 (driver default / auto).
-    ICQQualityData = 0;
-  }
-  // Accuracy: UI shows 0.0~100.0%, *10 → tenth-of-percent for driver
-  int AccuracyData = static_cast<int>(
-      obs_data_get_double(Settings, "accuracy") * 10.0 + 0.5);
-  int ConvergenceData =
-      static_cast<int>(obs_data_get_int(Settings, "convergence"));
-  int KeyIntervalData =
-      static_cast<int>(obs_data_get_int(Settings, "keyint_sec"));
-  int BFramesData =
-      static_cast<int>(obs_data_get_int(Settings, "b_frames"));
 
-  const char *HRDConformanceData =
-      obs_data_get_string(Settings, "hrd_conformance");
-
-  const char *LowDelayHRDData = obs_data_get_string(Settings, "low_delay_hrd");
-  const char *LowDelayBRCData = obs_data_get_string(Settings, "low_delay_brc");
-  const char *SkipFrameData = obs_data_get_string(Settings, "skip_frame");
-  const char *RepartitionCheckData =
-      obs_data_get_string(Settings, "repartition_check");
-
-  const char *MBBRCData = obs_data_get_string(Settings, "mbbrc");
-
-  const char *AdaptiveIData = obs_data_get_string(Settings, "adaptive_i");
-  const char *AdaptiveBData = obs_data_get_string(Settings, "adaptive_b");
-  const char *GopOptFlagData = obs_data_get_string(Settings, "gop_opt_flag");
-#ifndef QSV_UHD600_SUPPORT
-  const char *AdaptiveRefData = obs_data_get_string(Settings, "adaptive_ref");
-  const char *AdaptiveCQMData = obs_data_get_string(Settings, "adaptive_cqm");
-  const char *AdaptiveLTRData = obs_data_get_string(Settings, "adaptive_ltr");
-#endif
-  const char *LowPowerData = obs_data_get_string(Settings, "low_power");
-  const char *UseRawRefData = obs_data_get_string(Settings, "use_raw_ref");
-  const char *RDOData = obs_data_get_string(Settings, "rdo");
-  const char *TrellisData = obs_data_get_string(Settings, "trellis");
-  int NumRefFrameData =
-      static_cast<int>(obs_data_get_int(Settings, "num_ref_frame"));
-  const char *GlobalMotionBiasAdjustmentData =
-      obs_data_get_string(Settings, "global_motion_bias_adjustment");
-  const char *MVCostScalingFactorData =
-      obs_data_get_string(Settings, "mv_cost_scaling_factor");
-  const char *LookaheadData = obs_data_get_string(Settings, "lookahead");
-  const char *LookaheadDSData = obs_data_get_string(Settings, "lookahead_ds");
-  const char *DirectBiasAdjustmentData =
-      obs_data_get_string(Settings, "direct_bias_adjustment");
-  const char *MVOverPicBoundariesData =
-      obs_data_get_string(Settings, "mv_overpic_boundaries");
-  const char *SAOData = obs_data_get_string(Settings, "hevc_sao");
-  const char *GPBData = obs_data_get_string(Settings, "hevc_gpb");
-  const char *ScenarioInfoData =
-      obs_data_get_string(Settings, "scenario_info");
-  const char *ContentInfoData =
-      obs_data_get_string(Settings, "content_info");
-  const char *TransformSkipData =
-      obs_data_get_string(Settings, "transform_skip");
-  const char *AV1CDEFData = obs_data_get_string(Settings, "av1_cdef");
-  const char *AV1RestorationData = obs_data_get_string(Settings, "av1_restoration");
-  const char *AV1LoopFilterData = obs_data_get_string(Settings, "av1_loop_filter");
-  const char *AV1SuperResData = obs_data_get_string(Settings, "av1_super_res");
-  const char *AV1InterpFilterData = obs_data_get_string(Settings, "av1_interp_filter");
-  const char *AV1ErrorResilientData = obs_data_get_string(Settings, "av1_error_resilient");
-  const char *AV1SegmentationData = obs_data_get_string(Settings, "av1_segmentation");
-  const char *DeblockingData = obs_data_get_string(Settings, "deblocking");
-#ifdef ONEVPL_EXPERIMENTAL
-  const char *TuneQualityData = obs_data_get_string(Settings, "tune_quality");
-#endif
-  const char *WeightedPredData = obs_data_get_string(Settings, "weighted_pred");
-  int AdaptiveMaxFrameSizeData = static_cast<int>(obs_data_get_int(Settings, "adaptive_max_frame_size"));
-#ifndef QSV_UHD600_SUPPORT
-  const char *VPPMCTFData = obs_data_get_string(Settings, "vpp_mctf");
-  int VPPMCTFStrengthData = static_cast<int>(obs_data_get_int(Settings, "vpp_mctf_strength"));
-#endif
-  const char *PPyramidData = obs_data_get_string(Settings, "p_pyramid");
-  const char *EncToolsData = obs_data_get_string(Settings, "enctools");
-  const char *IntraRefEncodingData =
-      obs_data_get_string(Settings, "intra_ref_encoding");
-  const char *IntraRefTypeData =
-      obs_data_get_string(Settings, "intra_ref_type");
-  int IntraRefCycleSizeData =
-      static_cast<int>(obs_data_get_int(Settings, "intra_ref_cycle_size"));
-  int IntraRefQPDeltaData =
-      static_cast<int>(obs_data_get_int(Settings, "intra_ref_qp_delta"));
-
-  const char *ScreenContentToolsData =
-      obs_data_get_string(Settings, "screen_content_tools");
-
-  const char *MinQPData = obs_data_get_string(Settings, "min_qp");
-  const char *MaxQPData = obs_data_get_string(Settings, "max_qp");
-
-  int VideoWidth =
-      static_cast<int>(obs_encoder_get_width(Context->EncoderData));
-  int VideoHeight =
-      static_cast<int>(obs_encoder_get_height(Context->EncoderData));
-
-  const char *VideoProcessingStatusData = obs_data_get_string(Settings, "vpp");
-  int DenoiseStrengthData =
-      static_cast<int>(obs_data_get_int(Settings, "denoise_strength"));
-  const char *DenoiseModeData = obs_data_get_string(Settings, "denoise_mode");
-  const char *DetailData = obs_data_get_string(Settings, "detail");
-  int DetailFactorData =
-      static_cast<int>(obs_data_get_int(Settings, "detail_factor"));
-  const char *ScalingModeData = obs_data_get_string(Settings, "scaling_mode");
-  const char *ImageStabModeData =
-      obs_data_get_string(Settings, "image_stab_mode");
-  const char *PercEncPrefilterData =
-      obs_data_get_string(Settings, "perc_enc_prefilter");
-
-  int GPUNumData = static_cast<int>(obs_data_get_int(Settings, "gpu_number"));
-
-  Context->EncoderParams.GPUNum = GPUNumData;
+  // All UI-configurable fields are parsed by the shared parser in
+  // helpers/encoder_params_parser.hpp — the single source of truth.
+  // This function only adds the OBS video-output derived fields below.
+  ParseEncoderParamsFromObsData(Settings, Context->Codec,
+                                Context->EncoderParams);
 
   Context->CachedFpsNum = static_cast<mfxU32>(VOI->fps_num);
   Context->CachedFpsDen = static_cast<mfxU32>(VOI->fps_den);
   Context->CachedTSDiv = 90000 * static_cast<int64_t>(VOI->fps_den);
 
-  // 1. TargetUsage
-  static constexpr std::pair<std::string_view, mfxU16> kTargetUsageMap[] = {
-    {"TU1 (Veryslow)",          MFX_TARGETUSAGE_1},
-    {"TU2 (Slower)",            MFX_TARGETUSAGE_2},
-    {"TU3 (Slow)",              MFX_TARGETUSAGE_3},
-    {"TU4 (Balanced)",          MFX_TARGETUSAGE_4},
-    {"TU5 (Fast)",              MFX_TARGETUSAGE_5},
-    {"TU6 (Faster)",            MFX_TARGETUSAGE_6},
-    {"TU7 (Veryfast)",          MFX_TARGETUSAGE_7},
-    {"Best Quality (TU1-TU2)",  MFX_TARGETUSAGE_1},
-    {"Balanced (TU3-TU5)",      MFX_TARGETUSAGE_4},
-    {"Fastest (TU6-TU7)",       MFX_TARGETUSAGE_7},
-  };
-  if (auto v = MapString(TargetUsageData, kTargetUsageMap)) {
-    Context->EncoderParams.TargetUsage = *v;
-  }
+  Context->EncoderParams.Width =
+      static_cast<mfxU16>(obs_encoder_get_width(Context->EncoderData));
+  Context->EncoderParams.Height =
+      static_cast<mfxU16>(obs_encoder_get_height(Context->EncoderData));
+  Context->EncoderParams.FpsNum = static_cast<mfxU32>(VOI->fps_num);
+  Context->EncoderParams.FpsDen = static_cast<mfxU32>(VOI->fps_den);
 
-  Context->EncoderParams.AV1CDEF = ParseAV1Ternary(AV1CDEFData);
-  Context->EncoderParams.AV1Restoration = ParseAV1Ternary(AV1RestorationData);
-  Context->EncoderParams.AV1LoopFilter = ParseAV1Ternary(AV1LoopFilterData);
-  Context->EncoderParams.AV1SuperRes = ParseAV1Ternary(AV1SuperResData);
-  Context->EncoderParams.AV1ErrorResilient = ParseAV1Ternary(AV1ErrorResilientData);
-
-  auto svSeg = std::string_view(AV1SegmentationData);
-  if (svSeg == "ON") {
-    Context->EncoderParams.AV1Segmentation = 1;
-  } else if (svSeg == "OFF") {
-    Context->EncoderParams.AV1Segmentation = 0;
-  }
-  // AUTO leaves AV1Segmentation unset so the driver chooses.
-
-  auto svDeblock = std::string_view(DeblockingData);
-  if (svDeblock == "ON")
-    Context->EncoderParams.DisableDeblockingIdc = 0;
-  else if (svDeblock == "OFF")
-    Context->EncoderParams.DisableDeblockingIdc = 2;
-  // else: leave unset, driver default
-
-#ifdef ONEVPL_EXPERIMENTAL
-  Context->EncoderParams.TuneQuality =
-      (Context->Codec == QSV_CODEC_AV1) ? ParseTuneQuality(TuneQualityData) : 0;
-#endif
-
-  // 3. AV1InterpFilter
-  static constexpr std::pair<std::string_view, mfxU16> kAV1InterpFilterMap[] = {
-    {"DEFAULT",          0},
-    {"EIGHTTAP",         1},
-    {"EIGHTTAP_SMOOTH",  2},
-    {"EIGHTTAP_SHARP",   3},
-    {"BILINEAR",         4},
-    {"SWITCHABLE",       5},
-  };
-  if (auto v = MapString(AV1InterpFilterData, kAV1InterpFilterMap)) {
-    Context->EncoderParams.AV1InterpFilter = *v;
-  }
-
-  Context->EncoderParams.WeightedPred = ParseWeightedPredMode(WeightedPredData);
-
-  Context->EncoderParams.AdaptiveMaxFrameSize = AdaptiveMaxFrameSizeData;
-
-  // SkipFrame: map all 4 VPL modes + AUTO (driver decides)
-  auto svSkip = std::string_view(SkipFrameData);
-  if (svSkip == "NO_SKIP")
-    Context->EncoderParams.SkipFrame = MFX_SKIPFRAME_NO_SKIP;
-  else if (svSkip == "INSERT_DUMMY")
-    Context->EncoderParams.SkipFrame = MFX_SKIPFRAME_INSERT_DUMMY;
-  else if (svSkip == "INSERT_NOTHING")
-    Context->EncoderParams.SkipFrame = MFX_SKIPFRAME_INSERT_NOTHING;
-  else if (svSkip == "BRC_ONLY")
-    Context->EncoderParams.SkipFrame = MFX_SKIPFRAME_BRC_ONLY;
-  // AUTO leaves SkipFrame unset so the driver chooses.
-
-  auto svRepart = std::string_view(RepartitionCheckData);
-  if (svRepart == "OFF") {
-    Context->EncoderParams.RepartitionCheckEnable = false;
-  } else if (svRepart == "ON") {
-    Context->EncoderParams.RepartitionCheckEnable = true;
-  }
-
-#ifndef QSV_UHD600_SUPPORT
-  if (std::string_view(VPPMCTFData) == "ON")
-    Context->EncoderParams.VPPMCTFMode = 1;
-  else
-    Context->EncoderParams.VPPMCTFMode = 0;
-  Context->EncoderParams.VPPMCTFStrength = static_cast<mfxU16>(VPPMCTFStrengthData);
-#endif
-
-  switch (Context->Codec) {
-  case QSV_CODEC_AVC: {
-    Codec = "H.264";
-    // 4. CodecProfile AVC
-    static constexpr std::pair<std::string_view, mfxU16> kCodecProfileAVCMap[] = {
-      {"baseline",               MFX_PROFILE_AVC_BASELINE},
-      {"main",                   MFX_PROFILE_AVC_MAIN},
-      {"high",                   MFX_PROFILE_AVC_HIGH},
-      {"extended",               MFX_PROFILE_AVC_EXTENDED},
-      {"high10",                 MFX_PROFILE_AVC_HIGH10},
-      {"constrained_baseline",   MFX_PROFILE_AVC_CONSTRAINED_BASELINE},
-      {"constrained_high",       MFX_PROFILE_AVC_CONSTRAINED_HIGH},
-    };
-    if (auto v = MapString(CodecProfileData, kCodecProfileAVCMap)) {
-      Context->EncoderParams.CodecProfile = *v;
-    }
-
-    Context->EncoderParams.CodecLevel =
-        ParseCodecLevel(CodecLevelDataAVC, kAVCLevels,
-                        sizeof(kAVCLevels) / sizeof(kAVCLevels[0]));
-    break;
-  }
-  case QSV_CODEC_HEVC: {
-    Codec = "HEVC";
-    // 5. CodecProfile HEVC
-    static constexpr std::pair<std::string_view, mfxU16> kCodecProfileHEVCMap[] = {
-      {"main",    MFX_PROFILE_HEVC_MAIN},
-      {"main10",  MFX_PROFILE_HEVC_MAIN10},
-      {"rext",    MFX_PROFILE_HEVC_REXT},
-      {"scc",     MFX_PROFILE_HEVC_SCC},
-    };
-    if (auto v = MapString(CodecProfileData, kCodecProfileHEVCMap)) {
-      Context->EncoderParams.CodecProfile = *v;
-    }
-
-    if (std::string_view(CodecProfileTierData) == "main") {
-      Context->EncoderParams.CodecProfileTier = MFX_TIER_HEVC_MAIN;
-    } else {
-      mfxU16 platformCode = QueryPlatformCodeName();
-      bool highTierUnsupported = platformCode != 0 &&
-                                 platformCode < MFX_PLATFORM_SKYLAKE;
-      if (highTierUnsupported) {
-        info("\tHEVC High Tier not supported on this GPU "
-             "(platform < Skylake), falling back to Main Tier");
-        Context->EncoderParams.CodecProfileTier = MFX_TIER_HEVC_MAIN;
-      } else {
-        Context->EncoderParams.CodecProfileTier = MFX_TIER_HEVC_HIGH;
-      }
-    }
-
-    Context->EncoderParams.CodecLevel =
-        ParseCodecLevel(CodecLevelData, kHEVCLevels,
-                        sizeof(kHEVCLevels) / sizeof(kHEVCLevels[0]));
-    break;
-  }
-  case QSV_CODEC_AV1: {
-    Codec = "AV1";
-    // 6. CodecProfile AV1
-    static constexpr std::pair<std::string_view, mfxU16> kCodecProfileAV1Map[] = {
-      {"main",  MFX_PROFILE_AV1_MAIN},
-      {"high",  MFX_PROFILE_AV1_HIGH},
-      {"pro",   MFX_PROFILE_AV1_PRO},
-    };
-    if (auto v = MapString(CodecProfileData, kCodecProfileAV1Map)) {
-      Context->EncoderParams.CodecProfile = *v;
-    }
-
-    Context->EncoderParams.CodecLevel =
-        ParseCodecLevel(CodecLevelDataAV1, kAV1Levels,
-                        sizeof(kAV1Levels) / sizeof(kAV1Levels[0]));
-    break;
-  }
-  case QSV_CODEC_VP9: {
-    Codec = "VP9";
-    // VP9 profiles: 0=8bit420, 1=8bit444, 2=10bit420, 3=10bit444
-    static constexpr std::pair<std::string_view, mfxU16> kCodecProfileVP9Map[] = {
-      {"0 (8-bit 4:2:0)", MFX_PROFILE_VP9_0},
-      {"1 (8-bit 4:4:4)", MFX_PROFILE_VP9_1},
-      {"2 (10-bit 4:2:0)", MFX_PROFILE_VP9_2},
-      {"3 (10-bit 4:4:4)", MFX_PROFILE_VP9_3},
-    };
-    if (auto v = MapString(CodecProfileData, kCodecProfileVP9Map)) {
-      Context->EncoderParams.CodecProfile = *v;
-    }
-    // VP9 has no codec level concept in OneVPL
-    break;
-  }
-  }
-  Context->EncoderParams.VideoFormat = 5;
   Context->EncoderParams.VideoFullRange = VOI->range == VIDEO_RANGE_FULL;
 
   switch (VOI->colorspace) {
@@ -1849,458 +1571,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
         static_cast<mfxU16>(HRDNominalPeakLevel);
   }
 
-  ParseOptionalBool(LowDelayHRDData, Context->EncoderParams.LowDelayHRD);
-
-  ParseOptionalBool(LowDelayBRCData, Context->EncoderParams.LowDelayBRC);
-
-  ParseOptionalBool(MVOverPicBoundariesData,
-                    Context->EncoderParams.MotionVectorsOverPicBoundaries);
-
-  ParseOptionalBool(HRDConformanceData, Context->EncoderParams.HRDConformance);
-
-  ParseOptionalBool(MBBRCData, Context->EncoderParams.MBBRC);
-
-  static constexpr std::pair<std::string_view, bool> kEncToolsMap[] = {
-    {"ON", true},
-  };
-  Context->EncoderParams.EncTools = MapString(EncToolsData, kEncToolsMap).value_or(false);
-
-  ParseOptionalBool(obs_data_get_string(Settings, "enc_tools_scene_change"),
-                    Context->EncoderParams.EncToolsSceneChange);
-  ParseOptionalBool(obs_data_get_string(Settings, "enc_tools_adaptive_ref_p"),
-                    Context->EncoderParams.EncToolsAdaptiveRefP);
-  ParseOptionalBool(obs_data_get_string(Settings, "enc_tools_adaptive_ref_b"),
-                    Context->EncoderParams.EncToolsAdaptiveRefB);
-  ParseOptionalBool(obs_data_get_string(Settings, "enc_tools_adaptive_pyramid_quant_p"),
-                    Context->EncoderParams.EncToolsAdaptivePyramidQuantP);
-  ParseOptionalBool(obs_data_get_string(Settings, "enc_tools_adaptive_pyramid_quant_b"),
-                    Context->EncoderParams.EncToolsAdaptivePyramidQuantB);
-  ParseOptionalBool(obs_data_get_string(Settings, "enc_tools_adaptive_mbqp"),
-                    Context->EncoderParams.EncToolsAdaptiveMBQP);
-  ParseOptionalBool(obs_data_get_string(Settings, "enc_tools_brc_buffer_hints"),
-                    Context->EncoderParams.EncToolsBRCBufferHints);
-  ParseOptionalBool(obs_data_get_string(Settings, "enc_tools_brc"),
-                    Context->EncoderParams.EncToolsBRC);
-  ParseOptionalBool(obs_data_get_string(Settings, "enc_tools_saliency_map_hint"),
-                    Context->EncoderParams.EncToolsSaliencyMapHint);
-
-  ParseOptionalBool(DirectBiasAdjustmentData,
-                    Context->EncoderParams.DirectBiasAdjustment);
-
-  // 7. MVCostScalingFactor. 0=most aggressive, 3=most conservative; "AUTO" (unmapped)
-  static constexpr std::pair<std::string_view, int> kMVCostScalingFactorMap[] = {
-    {"AGGRESSIVE_0", 0},
-    {"AGGRESSIVE_1", 1},
-    {"MODERATE_2",   2},
-    {"CONSERVATIVE_3", 3},
-  };
-  if (auto v = MapString(MVCostScalingFactorData, kMVCostScalingFactorMap)) {
-    Context->EncoderParams.MVCostScalingFactor = *v;
-  }
-
-  ParseOptionalBool(UseRawRefData, Context->EncoderParams.RawRef);
-
-  Context->EncoderParams.PPyramid = (std::string_view(PPyramidData) == "ON");
-
-  ParseOptionalBool(GlobalMotionBiasAdjustmentData,
-                    Context->EncoderParams.GlobalMotionBiasAdjustment);
-
-  auto svLookahead = std::string_view(LookaheadData);
-  if (svLookahead == "HQ") {
-    Context->EncoderParams.Lookahead = true;
-
-    {
-      int Depth =
-          static_cast<int>(obs_data_get_int(Settings, "la_depth"));
-      if (Depth < 1)
-        Depth = 60;
-      else if (Depth > 100)
-        Depth = 100;
-      Context->EncoderParams.LADepth = static_cast<mfxU16>(Depth);
-    }
-  } else if (svLookahead == "LP") {
-    if (BFramesData > 0) {
-      Context->EncoderParams.Lookahead = true;
-      Context->EncoderParams.LADepth =
-          BFramesData > 7 ? 8 : static_cast<mfxU16>(BFramesData + 1);
-    }
-  } else {
-    Context->EncoderParams.Lookahead = false;
-  }
-
-  // LookAheadDS is parsed in all modes so the user setting is honored in
-  static constexpr std::pair<std::string_view, int> kLookaheadDSMap[] = {
-    {"1X",    0},
-    {"2X",    1},
-    {"4X",    2},
-  };
-  if (auto v = MapString(LookaheadDSData, kLookaheadDSMap)) {
-    Context->EncoderParams.LookAheadDS = *v;
-  }
-
-  static constexpr std::pair<std::string_view, int> kIntraRefEncodingMap[] = {
-    {"ON",  1},
-    {"OFF", 0},
-  };
-  if (auto v = MapString(IntraRefEncodingData, kIntraRefEncodingMap)) {
-    Context->EncoderParams.IntraRefEncoding = *v;
-  }
-
-  if (std::string_view(IntraRefTypeData) == "VERTICAL") {
-    Context->EncoderParams.IntraRefType = MFX_REFRESH_VERTICAL;
-  } else {
-    Context->EncoderParams.IntraRefType = MFX_REFRESH_HORIZONTAL;
-  }
-
-  ParseOptionalBool(AdaptiveIData, Context->EncoderParams.AdaptiveI);
-
-  ParseOptionalBool(AdaptiveBData, Context->EncoderParams.AdaptiveB);
-
-  static constexpr std::pair<std::string_view, mfxU16> kGopOptFlagMap[] = {
-    {"OPEN",    0},
-    {"CLOSED",  MFX_GOP_CLOSED},
-    {"STRICT",  MFX_GOP_STRICT},
-  };
-  if (auto v = MapString(GopOptFlagData, kGopOptFlagMap)) {
-    Context->EncoderParams.GopOptFlag = *v;
-  }
-
-#ifndef QSV_UHD600_SUPPORT
-  ParseOptionalBool(AdaptiveRefData, Context->EncoderParams.AdaptiveRef);
-
-  ParseOptionalBool(AdaptiveCQMData, Context->EncoderParams.AdaptiveCQM);
-
-  ParseOptionalBool(AdaptiveLTRData, Context->EncoderParams.AdaptiveLTR);
-#endif
-
-  static constexpr std::pair<std::string_view, bool> kLowPowerMap[] = {
-    {"ON",  true},
-    {"OFF", false},
-  };
-  if (auto v = MapString(LowPowerData, kLowPowerMap)) {
-    Context->EncoderParams.Lowpower = *v;
-  }
-
-  ParseOptionalBool(RDOData, Context->EncoderParams.RDO);
-
-  // 9. Trellis. "AUTO" stays unmapped so Trellis remains nullopt and the
-  static constexpr std::pair<std::string_view, int> kTrellisMap[] = {
-    {"OFF", 0},
-    {"I",   1},
-    {"IP",  2},
-    {"IPB", 3},
-    {"IB",  4},
-    {"P",   5},
-    {"PB",  6},
-    {"B",   7},
-  };
-  if (auto v = MapString(TrellisData, kTrellisMap)) {
-    Context->EncoderParams.Trellis = *v;
-  }
-
-  // 10. SAO
-  static constexpr std::pair<std::string_view, int> kSAOMap[] = {
-    {"DISABLE", 0},
-    {"LUMA",    1},
-    {"CHROMA",  2},
-    {"ALL",     3},
-  };
-  if (auto v = MapString(SAOData, kSAOMap)) {
-    Context->EncoderParams.SAO = *v;
-  }
-
-  ParseOptionalBool(GPBData, Context->EncoderParams.GPB);
-
-  // 11. ScenarioInfo (special: OFF -> nullopt, AUTO -> 0)
-  static constexpr std::pair<std::string_view, std::optional<mfxU16>> kScenarioInfoMap[] = {
-    {"OFF",                std::nullopt},
-    {"AUTO",               std::optional<mfxU16>(0)},
-    {"DISPLAY_REMOTING",   std::optional<mfxU16>(1)},
-    {"VIDEO_CONFERENCE",   std::optional<mfxU16>(2)},
-    {"ARCHIVE",            std::optional<mfxU16>(3)},
-    {"LIVE_STREAMING",     std::optional<mfxU16>(4)},
-    {"CAMERA_CAPTURE",     std::optional<mfxU16>(5)},
-    {"VIDEO_SURVEILLANCE", std::optional<mfxU16>(6)},
-    {"GAME_STREAMING",     std::optional<mfxU16>(7)},
-    {"REMOTE_GAMING",      std::optional<mfxU16>(8)},
-  };
-  if (auto v = MapString(ScenarioInfoData, kScenarioInfoMap)) {
-    Context->EncoderParams.ScenarioInfo = *v;
-  }
-
-  // 12. ContentInfo (special: OFF -> nullopt, AUTO -> 0)
-  // Uses mfxExtCodingOption3::ContentInfo values from API
-  static constexpr std::pair<std::string_view, std::optional<mfxU16>> kContentInfoMap[] = {
-    {"OFF",                std::nullopt},
-    {"AUTO",               std::optional<mfxU16>(MFX_CONTENT_UNKNOWN)},
-    {"FULL_SCREEN_VIDEO",  std::optional<mfxU16>(MFX_CONTENT_FULL_SCREEN_VIDEO)},
-    {"NON_VIDEO_SCREEN",   std::optional<mfxU16>(MFX_CONTENT_NON_VIDEO_SCREEN)},
-    {"NOISY_VIDEO",        std::optional<mfxU16>(MFX_CONTENT_NOISY_VIDEO)},
-  };
-  if (auto v = MapString(ContentInfoData, kContentInfoMap)) {
-    Context->EncoderParams.ContentInfo = *v;
-  }
-
-  static constexpr std::pair<std::string_view, std::optional<bool>> kTransformSkipMap[] = {
-    {"AUTO", std::nullopt},
-    {"ON",   true},
-    {"OFF",  false},
-  };
-  if (auto v = MapString(TransformSkipData, kTransformSkipMap)) {
-    Context->EncoderParams.TransformSkip = *v;
-  }
-
-  // 13. RateControl
-  static constexpr std::pair<std::string_view, mfxU16> kRateControlMap[] = {
-    {"CBR",  MFX_RATECONTROL_CBR},
-    {"VBR",  MFX_RATECONTROL_VBR},
-    {"CQP",  MFX_RATECONTROL_CQP},
-    {"AVBR", MFX_RATECONTROL_AVBR},
-    {"ICQ",  MFX_RATECONTROL_ICQ},
-    {"VCM",  MFX_RATECONTROL_VCM},
-    {"QVBR", MFX_RATECONTROL_QVBR},
-  };
-  if (auto v = MapString(RateControlData, kRateControlMap)) {
-    Context->EncoderParams.RateControl = *v;
-  }
-
-  // 14. DenoiseMode
-  static constexpr std::pair<std::string_view, int> kDenoiseModeMap[] = {
-    {"DEFAULT",                        0},
-    {"AUTO | BDRATE | PRE ENCODE",     1},
-    {"AUTO | ADJUST | POST ENCODE",    2},
-    {"AUTO | SUBJECTIVE | PRE ENCODE", 3},
-    {"MANUAL | PRE ENCODE",            4},
-    {"MANUAL | POST ENCODE",           5},
-  };
-  if (auto v = MapString(DenoiseModeData, kDenoiseModeMap)) {
-    Context->EncoderParams.VPPDenoiseMode = *v;
-  }
-  // MANUAL modes: set DenoiseStrength
-  auto svDenoise = std::string_view(DenoiseModeData);
-  if (svDenoise == "MANUAL | PRE ENCODE" ||
-      svDenoise == "MANUAL | POST ENCODE") {
-    Context->EncoderParams.DenoiseStrength =
-        static_cast<mfxU16>(DenoiseStrengthData);
-  }
-
-  // 15. ScalingMode
-  static constexpr std::pair<std::string_view, std::optional<int>> kScalingModeMap[] = {
-    {"OFF",                           std::nullopt},
-    {"QUALITY | ADVANCED",            std::optional<int>(1)},
-    {"VEBOX | ADVANCED",              std::optional<int>(2)},
-    {"LOWPOWER | NEAREST NEIGHBOR",   std::optional<int>(3)},
-    {"LOWPOWER | ADVANCED",           std::optional<int>(4)},
-    {"AUTO",                          std::optional<int>(0)},
-  };
-  auto svScalingPost = std::string_view(ScalingModeData);
-  if (auto v = MapString(ScalingModeData, kScalingModeMap)) {
-    Context->EncoderParams.VPPScalingMode = *v;
-  }
-
-  // Only parse VPPOutWidth/Height when scaling mode is actually active.
-  // If scaling is OFF, width/height values should NOT be applied even if
-  // they happen to have stale non-zero values in settings.
-  if (svScalingPost != "OFF") {
-    int64_t VPPOutWidthData = obs_data_get_int(Settings, "vpp_out_width");
-    int64_t VPPOutHeightData = obs_data_get_int(Settings, "vpp_out_height");
-    if (VPPOutWidthData > 0 && VPPOutHeightData > 0) {
-      Context->EncoderParams.VPPOutWidth =
-          static_cast<mfxU16>(VPPOutWidthData);
-      Context->EncoderParams.VPPOutHeight =
-          static_cast<mfxU16>(VPPOutHeightData);
-    }
-  }
-
-  // 16. ImageStabMode
-  static constexpr std::pair<std::string_view, int> kImageStabModeMap[] = {
-    {"UPSCALE", 1},
-    {"BOXING",  2},
-    {"AUTO",    0},
-  };
-  if (auto v = MapString(ImageStabModeData, kImageStabModeMap)) {
-    Context->EncoderParams.VPPImageStabMode = *v;
-  }
-
-  std::string_view DetailSV(DetailData);
-  if (DetailSV == "ON") {
-    Context->EncoderParams.VPPDetail = DetailFactorData;
-  } else if (DetailSV == "OFF") {
-    Context->EncoderParams.VPPDetail = 0;
-  }
-
-  static constexpr std::pair<std::string_view, int> kPercEncPrefilterMap[] = {
-    {"ON",  1},
-    {"OFF", 0},
-  };
-  if (auto v = MapString(PercEncPrefilterData, kPercEncPrefilterMap)) {
-    Context->EncoderParams.PercEncPrefilter = *v;
-  }
-
-  // New VPP filters: ProcAmp, Rotation, Mirroring, FRC
-  const char *VPPProcAmpData = obs_data_get_string(Settings, "vpp_procamp");
-  if (std::string_view(VPPProcAmpData) == "ON") {
-    Context->EncoderParams.VPPProcAmpMode = 1;
-    Context->EncoderParams.VPPProcAmpBrightness =
-        obs_data_get_double(Settings, "vpp_procamp_brightness");
-    Context->EncoderParams.VPPProcAmpContrast =
-        obs_data_get_double(Settings, "vpp_procamp_contrast");
-    Context->EncoderParams.VPPProcAmpHue =
-        obs_data_get_double(Settings, "vpp_procamp_hue");
-    Context->EncoderParams.VPPProcAmpSaturation =
-        obs_data_get_double(Settings, "vpp_procamp_saturation");
-  }
-
-  const char *VPPRotationData = obs_data_get_string(Settings, "vpp_rotation");
-  if (std::string_view(VPPRotationData) == "90") {
-    Context->EncoderParams.VPPRotation = 90;
-  } else if (std::string_view(VPPRotationData) == "180") {
-    Context->EncoderParams.VPPRotation = 180;
-  } else if (std::string_view(VPPRotationData) == "270") {
-    Context->EncoderParams.VPPRotation = 270;
-  }
-
-  const char *VPPMirroringData = obs_data_get_string(Settings, "vpp_mirroring");
-  if (std::string_view(VPPMirroringData) == "HORIZONTAL") {
-    Context->EncoderParams.VPPMirroring = 1;
-  } else if (std::string_view(VPPMirroringData) == "VERTICAL") {
-    Context->EncoderParams.VPPMirroring = 2;
-  } else if (std::string_view(VPPMirroringData) == "BOTH") {
-    Context->EncoderParams.VPPMirroring = 3;
-  }
-
-  const char *VPPFRCData = obs_data_get_string(Settings, "vpp_frc");
-  static constexpr std::pair<std::string_view, int> kFRCModeMap[] = {
-    {"PRESERVE_TIMESTAMP",                    0},
-    {"DISTRIBUTED_TIMESTAMP",                 1},
-    {"FRAME_INTERPOLATION",                   2},
-    {"PRESERVE_TIMESTAMP + INTERPOLATION",    3},
-    {"DISTRIBUTED_TIMESTAMP + INTERPOLATION", 4},
-  };
-  if (auto v = MapString(VPPFRCData, kFRCModeMap)) {
-    Context->EncoderParams.VPPFRCMode = *v;
-    Context->EncoderParams.VPPOutFpsNum =
-        static_cast<mfxU32>(obs_data_get_int(Settings, "vpp_frc_out_fps"));
-    Context->EncoderParams.VPPOutFpsDen = 1;
-  }
-
-  Context->EncoderParams.AsyncDepth =
-      static_cast<mfxU16>(obs_data_get_int(Settings, "async_depth"));
-
-  auto ActualCQPData = CQPData;
-  bool CQPSeparateIPB = obs_data_get_bool(Settings, "cqp_separate_ipb");
-  if (CQPSeparateIPB) {
-    double QPIData, QPPData, QPBData;
-    if (Context->Codec == QSV_CODEC_AV1 || Context->Codec == QSV_CODEC_VP9) {
-      QPIData = obs_data_get_double(Settings, "qpi");
-      QPPData = obs_data_get_double(Settings, "qpp");
-      QPBData = obs_data_get_double(Settings, "qpb");
-    } else {
-      QPIData = static_cast<double>(obs_data_get_int(Settings, "qpi"));
-      QPPData = static_cast<double>(obs_data_get_int(Settings, "qpp"));
-      QPBData = static_cast<double>(obs_data_get_int(Settings, "qpb"));
-    }
-    if (Context->Codec == QSV_CODEC_VP9 || Context->Codec == QSV_CODEC_AV1) {
-      QPIData *= 4.0;
-      QPPData *= 4.0;
-      QPBData *= 4.0;
-    }
-    Context->EncoderParams.QPI = static_cast<mfxU16>(QPIData);
-    Context->EncoderParams.QPP = static_cast<mfxU16>(QPPData);
-    Context->EncoderParams.QPB = static_cast<mfxU16>(QPBData);
-  } else {
-    if (Context->Codec == QSV_CODEC_VP9 || Context->Codec == QSV_CODEC_AV1) {
-      ActualCQPData *= 4.0;
-    }
-    Context->EncoderParams.QPI = static_cast<mfxU16>(ActualCQPData);
-    Context->EncoderParams.QPP = static_cast<mfxU16>(ActualCQPData);
-    Context->EncoderParams.QPB = static_cast<mfxU16>(ActualCQPData);
-  }
-
-  Context->EncoderParams.TargetBitRate = TargetBitrateData;
-  Context->EncoderParams.BufferSize = BufferSizeData;
-  Context->EncoderParams.MaxBitRate = MaxBitrateData;
-  Context->EncoderParams.Width = static_cast<mfxU16>(VideoWidth);
-  Context->EncoderParams.Height = static_cast<mfxU16>(VideoHeight);
-  Context->EncoderParams.FpsNum = static_cast<mfxU32>(VOI->fps_num);
-  Context->EncoderParams.FpsDen = static_cast<mfxU32>(VOI->fps_den);
-
-  Context->EncoderParams.BFrames = static_cast<mfxU16>(BFramesData);
-  Context->EncoderParams.KeyIntSec = static_cast<mfxU16>(KeyIntervalData);
-  Context->EncoderParams.ICQQuality = static_cast<mfxU16>(ICQQualityData);
-  Context->EncoderParams.Accuracy = static_cast<mfxU16>(AccuracyData);
-  Context->EncoderParams.Convergence = static_cast<mfxU16>(ConvergenceData);
-  Context->EncoderParams.NumRefFrame = static_cast<mfxU16>(NumRefFrameData);
-  Context->EncoderParams.IntraRefCycleSize =
-      static_cast<mfxU16>(IntraRefCycleSizeData);
-  Context->EncoderParams.IntraRefQPDelta =
-      static_cast<mfxU16>(IntraRefQPDeltaData);
-
-  Context->EncoderParams.QVBRQuality =
-      static_cast<mfxU16>(obs_data_get_int(Settings, "qvbr_quality"));
-
-  static constexpr std::pair<std::string_view, int> kScreenContentToolsMap[] = {
-    {"AUTO", 0},
-    {"OFF",  1},
-    {"ON",   2},
-  };
-  if (auto v = MapString(ScreenContentToolsData, kScreenContentToolsMap)) {
-    Context->EncoderParams.ScreenContentTools = *v;
-  }
-
-  const char *CustomCodingOptionsData =
-      obs_data_get_string(Settings, "custom_coding_options");
-  if (CustomCodingOptionsData) {
-    Context->EncoderParams.CustomCodingOptions = CustomCodingOptionsData;
-  }
-
-  Context->EncoderParams.MinQP = MinQPData ? MinQPData : "-1";
-  Context->EncoderParams.MaxQP = MaxQPData ? MaxQPData : "-1";
-
-  // Debug group toggles
-  Context->EncoderParams.QPStatistics =
-      obs_data_get_bool(Settings, "qp_statistics");
-  Context->EncoderParams.VideoHeaderHexDump =
-      obs_data_get_bool(Settings, "video_header_hex_dump");
-  Context->EncoderParams.FrameStatistics =
-      obs_data_get_bool(Settings, "frame_statistics");
-
-  Context->EncoderParams.ProcessingEnable = false;
-  if ((Context->EncoderParams.VPPDenoiseMode.has_value() ||
-       Context->EncoderParams.VPPDetail.has_value() ||
-       Context->EncoderParams.VPPScalingMode.has_value() ||
-       Context->EncoderParams.VPPImageStabMode.has_value() ||
-       Context->EncoderParams.PercEncPrefilter == true ||
-       Context->EncoderParams.VPPProcAmpMode.has_value() ||
-       Context->EncoderParams.VPPRotation.has_value() ||
-       Context->EncoderParams.VPPMirroring.has_value() ||
-       Context->EncoderParams.VPPFRCMode.has_value()
-#ifndef QSV_UHD600_SUPPORT
-       || Context->EncoderParams.VPPMCTFMode.has_value()
-#endif
-      ) &&
-      std::string_view(VideoProcessingStatusData) == "ON") {
-    if (VOI->format == VIDEO_FORMAT_NV12) {
-      Context->EncoderParams.ProcessingEnable = true;
-    } else if (VOI->format == VIDEO_FORMAT_P010 ||
-               VOI->format == VIDEO_FORMAT_AYUV) {
-      // P010 and AYUV (8-bit 4:4:4) are supported on all platforms
-      Context->EncoderParams.ProcessingEnable = true;
-    } else if (VOI->format == VIDEO_FORMAT_P416) {
-      // 12/16-bit 4:4:4 (Y416) requires TGL_LP (Gen12)+
-      mfxU16 platformCode = QueryPlatformCodeName();
-      bool highBitDepth444Supported = platformCode == 0 ||
-                                      platformCode >= MFX_PLATFORM_TIGERLAKE;
-      if (highBitDepth444Supported) {
-        Context->EncoderParams.ProcessingEnable = true;
-      } else {
-        warn("VPP with P416 is only supported on Tiger Lake+");
-      }
-    } else {
-      warn("VPP is only available with NV12, P010, AYUV, or P416 color format");
-    }
-  }
-
   switch (VOI->format) {
   default:
   case VIDEO_FORMAT_NV12:
@@ -2364,6 +1634,44 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     }
   }
 
+  const char *VideoProcessingStatusData = obs_data_get_string(Settings, "vpp");
+  Context->EncoderParams.ProcessingEnable = false;
+  if ((Context->EncoderParams.VPPDenoiseMode.has_value() ||
+       Context->EncoderParams.VPPDetail.has_value() ||
+       Context->EncoderParams.VPPScalingMode.has_value() ||
+       Context->EncoderParams.VPPImageStabMode.has_value() ||
+       Context->EncoderParams.PercEncPrefilter == true ||
+       Context->EncoderParams.VPPProcAmpMode.has_value() ||
+       Context->EncoderParams.VPPRotation.has_value() ||
+       Context->EncoderParams.VPPMirroring.has_value() ||
+       Context->EncoderParams.VPPFRCMode.has_value()
+#ifndef QSV_UHD600_SUPPORT
+       || Context->EncoderParams.VPPMCTFMode.has_value()
+#endif
+      ) &&
+      std::string_view(VideoProcessingStatusData) == "ON") {
+    if (VOI->format == VIDEO_FORMAT_NV12) {
+      Context->EncoderParams.ProcessingEnable = true;
+    } else if (VOI->format == VIDEO_FORMAT_P010 ||
+               VOI->format == VIDEO_FORMAT_AYUV) {
+      // P010 and AYUV (8-bit 4:4:4) are supported on all platforms
+      Context->EncoderParams.ProcessingEnable = true;
+    } else if (VOI->format == VIDEO_FORMAT_P416) {
+      // 12/16-bit 4:4:4 (Y416) requires TGL_LP (Gen12)+
+      mfxU16 platformCode = QueryPlatformCodeName();
+      bool highBitDepth444Supported = platformCode == 0 ||
+                                      platformCode >= MFX_PLATFORM_TIGERLAKE;
+      if (highBitDepth444Supported) {
+        Context->EncoderParams.ProcessingEnable = true;
+      } else {
+        warn("VPP with P416 is only supported on Tiger Lake+");
+      }
+    } else {
+      warn("VPP is only available with NV12, P010, AYUV, or P416 color format");
+    }
+  }
+
+  const char *RateControlData = obs_data_get_string(Settings, "rate_control");
   info("\tDebug info:");
   info("\tCodec: %s", Codec);
   info("\tRate control: %s", RateControlData);
@@ -2384,20 +1692,21 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     info("\tICQ Quality: %d", Context->EncoderParams.ICQQuality);
 
   if (Context->EncoderParams.RateControl == MFX_RATECONTROL_CQP) {
-    if (CQPSeparateIPB) {
+    if (obs_data_get_bool(Settings, "cqp_separate_ipb")) {
       info("\tQPI: %d, QPP: %d, QPB: %d",
            Context->EncoderParams.QPI,
            Context->EncoderParams.QPP,
            Context->EncoderParams.QPB);
     } else {
-      info("\tCQP: %d", ActualCQPData);
+      // Print the applied (scaled) QP value
+      info("\tCQP: %d", Context->EncoderParams.QPI);
     }
   }
 
   info("\tFPS numerator: %d", VOI->fps_num);
   info("\tFPS denominator: %d", VOI->fps_den);
-  info("\tOutput width: %d", VideoWidth);
-  info("\tOutput height: %d", VideoHeight);
+  info("\tOutput width: %d", Context->EncoderParams.Width);
+  info("\tOutput height: %d", Context->EncoderParams.Height);
 }
 
 // Forwarding function macros
@@ -2465,7 +1774,13 @@ plugin_context *InitPluginContext(enum codec_enum Codec, obs_data_t *Settings,
   Context->EncoderData = EncoderData;
   Context->Codec = Codec;
 
+  // The encoder can be created before a video output is attached (reroute /
+  // non-video output scenarios) — match GetVideoInfo()'s null-safe pattern.
   video_t *Video = obs_encoder_video(Context->EncoderData);
+  if (!Video) {
+    delete Context;
+    return nullptr;
+  }
   const video_output_info *VOI = video_output_get_info(Video);
   switch (VOI->format) {
   case VIDEO_FORMAT_I010:
@@ -2496,9 +1811,11 @@ plugin_context *InitPluginContext(enum codec_enum Codec, obs_data_t *Settings,
   GetEncoderParams(Context, Settings);
 
   try {
-
-    static std::mutex InitMutex;
-    std::lock_guard<std::mutex> lock(InitMutex);
+    // No global init mutex here: loader pointer reads are already guarded by
+    // GlobalLoaderMutex (see GetVPLSession/CreateSession in
+    // obs-qsv-onevpl-encoder-internal.cpp) and MFXLoad/MFXCreateSession are
+    // thread-safe in oneVPL.  A per-init serialization mutex used to make
+    // dual-output setups (stream + record) start sequentially for no reason.
     if (!OpenEncoder(Context->EncoderPTR, &Context->EncoderParams,
                      Context->Codec, IsTextureEncoder)) {
       blog(LOG_WARNING, "QSV failed to init encoder.");
@@ -2535,6 +1852,15 @@ static void *InitTextureEncoder(enum codec_enum Codec, obs_data_t *Settings,
                                 const char *FallbackID) {
   struct obs_video_info OVI {};
   obs_get_video_info(&OVI);
+
+  // AdaptersInfo is a fixed-size table (MAX_ADAPTERS); a DXGI adapter index
+  // beyond that would be an out-of-bounds read.
+  if (OVI.adapter >= MAX_ADAPTERS) {
+    info(">>> adapter index %u out of probe table, fall back to non-texture "
+         "encoder",
+         OVI.adapter);
+    return obs_encoder_create_rerouted(EncoderData, FallbackID);
+  }
 
   if (!AdaptersInfo[OVI.adapter].IsIntel) {
     info(">>> app not on intel GPU, fall back to non-texture encoder");

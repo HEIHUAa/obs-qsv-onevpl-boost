@@ -339,8 +339,11 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
   }
 
   int ICQQualityData = static_cast<int>(obs_data_get_int(Settings, "icq_quality"));
-  if (Codec == QSV_CODEC_VP9)
-    ICQQualityData *= 4;
+  if (Codec == QSV_CODEC_VP9) {
+    // VP9 driver's VAAPI layer ignores ICQ_quality_factor (driver bug).
+    // Slider is hidden, set to 0 (driver default / auto).
+    ICQQualityData = 0;
+  }
 
   int KeyIntervalData = static_cast<int>(obs_data_get_int(Settings, "keyint_sec"));
   int BFramesData = static_cast<int>(obs_data_get_int(Settings, "b_frames"));
@@ -750,11 +753,15 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
   if (auto v = MapString(ScalingModeData, kScalingModeMap))
     Params.VPPScalingMode = *v;
 
-  int64_t VPPOutWidthData = obs_data_get_int(Settings, "vpp_out_width");
-  int64_t VPPOutHeightData = obs_data_get_int(Settings, "vpp_out_height");
-  if (VPPOutWidthData > 0 && VPPOutHeightData > 0) {
-    Params.VPPOutWidth = static_cast<mfxU16>(VPPOutWidthData);
-    Params.VPPOutHeight = static_cast<mfxU16>(VPPOutHeightData);
+  // Only apply VPPOutWidth/Height when scaling mode is actually active.
+  // If scaling is OFF, stale non-zero width/height values must not be applied.
+  if (std::string_view(ScalingModeData) != "OFF") {
+    int64_t VPPOutWidthData = obs_data_get_int(Settings, "vpp_out_width");
+    int64_t VPPOutHeightData = obs_data_get_int(Settings, "vpp_out_height");
+    if (VPPOutWidthData > 0 && VPPOutHeightData > 0) {
+      Params.VPPOutWidth = static_cast<mfxU16>(VPPOutWidthData);
+      Params.VPPOutHeight = static_cast<mfxU16>(VPPOutHeightData);
+    }
   }
 
   if (auto v = MapString(ImageStabModeData, kImageStabModeMap))
@@ -860,6 +867,13 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
   Params.QVBRQuality =
       static_cast<mfxU16>(obs_data_get_int(Settings, "qvbr_quality"));
 
+  // AVBR-specific: Accuracy (UI 0.0~100.0%, *10 -> tenth of percent for the
+  // driver) and Convergence (unit of 100 frames).
+  Params.Accuracy = static_cast<mfxU16>(
+      obs_data_get_double(Settings, "accuracy") * 10.0 + 0.5);
+  Params.Convergence =
+      static_cast<mfxU16>(obs_data_get_int(Settings, "convergence"));
+
   if (auto v = MapString(ScreenContentToolsData, kScreenContentToolsMap))
     Params.ScreenContentTools = *v;
 
@@ -874,6 +888,7 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
   Params.QPStatistics = obs_data_get_bool(Settings, "qp_statistics");
   Params.VideoHeaderHexDump =
       obs_data_get_bool(Settings, "video_header_hex_dump");
+  Params.FrameStatistics = obs_data_get_bool(Settings, "frame_statistics");
 
   Params.GPUNum = GPUNumData;
 

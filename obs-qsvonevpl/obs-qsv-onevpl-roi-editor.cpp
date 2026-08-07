@@ -204,6 +204,11 @@ void ROIDialog::DestroyPreview() {
     obs_display_destroy(PreviewDisplay);
     PreviewDisplay = nullptr;
   }
+  if (m_CachedVB) {
+    gs_vertexbuffer_destroy(m_CachedVB);
+    m_CachedVB = nullptr;
+    m_CachedVBCapacity = 0;
+  }
 }
 
 void ROIDialog::ResizePreview() {
@@ -217,6 +222,11 @@ void ROIDialog::ResizePreview() {
 void ROIDialog::ForceRefreshPreview() {
   if (!PreviewDisplay)
     return;
+  {
+    std::lock_guard<std::mutex> lock(m_CacheMutex);
+    if (m_GridCacheHash == 0)
+      return; // nothing to draw — skip the pointless toggle
+  }
   // Toggle enabled state to force obs_display to re-evaluate and redraw
   obs_display_set_enabled(PreviewDisplay, false);
   obs_display_set_enabled(PreviewDisplay, true);
@@ -274,6 +284,7 @@ static void DrawROIRects(
     const std::vector<encoder_params::roi_region> &Rects,
     float vp_x, float vp_y, float vp_w, float vp_h,
     float out_w, float out_h, float cx, float cy,
+    gs_vertbuffer_t **CachedVB, size_t *CachedVBCapacity,
     mfxU16 mode = 1) {
   gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
   if (!solid)
@@ -293,6 +304,35 @@ static void DrawROIRects(
   if (dynMaxAbs < 1.0f)
     dynMaxAbs = (mode == 0) ? 3.0f : 51.0f; // fallback when all QP are 0
 
+  auto clamp = [](float v, float lo, float hi) {
+    return v < lo ? lo : (v > hi ? hi : v);
+  };
+
+  // Reuse one cached GS_DYNAMIC vertex buffer instead of creating and
+  // destroying a new buffer per rect on the render thread every frame.
+  const size_t needed = Rects.size() * 4;
+  if (!*CachedVB || *CachedVBCapacity < needed) {
+    if (*CachedVB) {
+      gs_vertexbuffer_destroy(*CachedVB);
+      *CachedVB = nullptr;
+    }
+    *CachedVBCapacity = 0;
+    struct gs_vb_data *vbd = gs_vbdata_create();
+    vbd->num = static_cast<uint32_t>(needed);
+    vbd->points = (struct vec3 *)bzalloc(sizeof(struct vec3) * needed);
+    *CachedVB = gs_vertexbuffer_create(vbd, GS_DYNAMIC);
+    if (!*CachedVB)
+      return;
+    *CachedVBCapacity = needed;
+  }
+
+  struct gs_vb_data *vbd = nullptr;
+  gs_vertexbuffer_map(*CachedVB, &vbd);
+  if (!vbd)
+    return;
+  vbd->num = static_cast<uint32_t>(needed);
+
+  size_t vertIdx = 0;
   for (auto &r : Rects) {
     // Map from output resolution → preview widget pixel coords
     float x1 = vp_x + (float)r.Left * (vp_w / out_w);
@@ -301,9 +341,30 @@ static void DrawROIRects(
     float y2 = vp_y + (float)r.Bottom * (vp_h / out_h);
 
     // Clamp
-    auto clamp = [](float v, float lo, float hi) {
-      return v < lo ? lo : (v > hi ? hi : v);
-    };
+    x1 = clamp(x1, 0.0f, (float)cx);
+    y1 = clamp(y1, 0.0f, (float)cy);
+    x2 = clamp(x2, 0.0f, (float)cx);
+    y2 = clamp(y2, 0.0f, (float)cy);
+    if (x2 <= x1 || y2 <= y1)
+      continue;
+
+    struct vec3 *pts = vbd->points + vertIdx * 4;
+    pts[0].x = x1; pts[0].y = y1; pts[0].z = 0.0f;
+    pts[1].x = x2; pts[1].y = y1; pts[1].z = 0.0f;
+    pts[2].x = x1; pts[2].y = y2; pts[2].z = 0.0f;
+    pts[3].x = x2; pts[3].y = y2; pts[3].z = 0.0f;
+    vertIdx++;
+  }
+  gs_vertexbuffer_unmap(*CachedVB);
+
+  gs_load_vertexbuffer(*CachedVB);
+  size_t rectIdx = 0;
+  for (auto &r : Rects) {
+    // Recompute geometry to mirror the fill pass above (skip same rects)
+    float x1 = vp_x + (float)r.Left * (vp_w / out_w);
+    float y1 = vp_y + (float)r.Top * (vp_h / out_h);
+    float x2 = vp_x + (float)r.Right * (vp_w / out_w);
+    float y2 = vp_y + (float)r.Bottom * (vp_h / out_h);
     x1 = clamp(x1, 0.0f, (float)cx);
     y1 = clamp(y1, 0.0f, (float)cy);
     x2 = clamp(x2, 0.0f, (float)cx);
@@ -327,21 +388,8 @@ static void DrawROIRects(
       vec4_set(&color, intensity, 0.1f, 0.1f, 0.35f); // Red = worse
 
     gs_effect_set_vec4(color_param, &color);
-
-    struct gs_vb_data *vbd = gs_vbdata_create();
-    vbd->num = 4;
-    vbd->points = (struct vec3 *)bzalloc(sizeof(struct vec3) * 4);
-    vbd->points[0].x = x1; vbd->points[0].y = y1; vbd->points[0].z = 0.0f;
-    vbd->points[1].x = x2; vbd->points[1].y = y1; vbd->points[1].z = 0.0f;
-    vbd->points[2].x = x1; vbd->points[2].y = y2; vbd->points[2].z = 0.0f;
-    vbd->points[3].x = x2; vbd->points[3].y = y2; vbd->points[3].z = 0.0f;
-
-    gs_vertbuffer_t *vb = gs_vertexbuffer_create(vbd, GS_DYNAMIC);
-    if (vb) {
-      gs_load_vertexbuffer(vb);
-      gs_draw(GS_TRISTRIP, 0, 4);
-      gs_vertexbuffer_destroy(vb);
-    }
+    gs_draw(GS_TRISTRIP, static_cast<uint32_t>(rectIdx * 4), 4);
+    rectIdx++;
   }
 
   gs_technique_end_pass(tech);
@@ -349,6 +397,9 @@ static void DrawROIRects(
 }
 
 void ROIDialog::InvalidateROICache() {
+  // Guarded: called from the UI thread while DrawROIOverlay (render thread)
+  // may be reading the same members — a concurrent vector clear/read is UB.
+  std::lock_guard<std::mutex> lock(m_CacheMutex);
   m_GridCacheHash = 0;
   m_CachedDrawRects.clear();
   m_CachedUseSegmented = false;
@@ -402,16 +453,22 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy,
   }
 
   // --- 2. Retrieve or compute the segmented grid ---
-  const std::vector<encoder_params::roi_region> *drawRectsPtr = nullptr;
+  // Local copy — the shared cache may be cleared concurrently by the UI thread
+  // (InvalidateROICache from textChanged); never iterate the shared vector.
+  std::vector<encoder_params::roi_region> drawRects;
   bool useSegmented = false;
+  bool cacheHit = false;
+  {
+    std::lock_guard<std::mutex> lock(m_CacheMutex);
+    if (newHash == m_GridCacheHash && !m_CachedDrawRects.empty()) {
+      drawRects = m_CachedDrawRects;
+      useSegmented = m_CachedUseSegmented;
+      cacheHit = true;
+    }
+  }
 
-  if (newHash == m_GridCacheHash && !m_CachedDrawRects.empty()) {
-    drawRectsPtr = &m_CachedDrawRects;
-    useSegmented = m_CachedUseSegmented;
-  } else {
+  if (!cacheHit) {
     // Cache miss — recompute
-    std::vector<encoder_params::roi_region> drawRects;
-
     // Convert normalized regions → pixel (inside lock for data integrity)
     mfxU16 outW = (mfxU16)ovi.output_width;
     mfxU16 outH = (mfxU16)ovi.output_height;
@@ -461,14 +518,14 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy,
     if (!useSegmented)
       drawRects = regions;
 
-    // Store in cache
-    m_GridCacheHash = newHash;
-    m_CachedDrawRects = std::move(drawRects);
-    m_CachedUseSegmented = useSegmented;
-    drawRectsPtr = &m_CachedDrawRects;
+    // Store in cache (guarded — UI thread may invalidate concurrently)
+    {
+      std::lock_guard<std::mutex> lock(m_CacheMutex);
+      m_GridCacheHash = newHash;
+      m_CachedDrawRects = drawRects;
+      m_CachedUseSegmented = useSegmented;
+    }
   }
-
-  const auto &drawRects = *drawRectsPtr;
 
   // --- 3. Viewport (same as PreviewDraw) ---
   float out_w = (float)ovi.output_width;
@@ -484,7 +541,7 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy,
 
   // --- 4. Draw ---
   DrawROIRects(drawRects, vp_x, vp_y, vp_w, vp_h, out_w, out_h, cx, cy,
-               previewMode);
+               &m_CachedVB, &m_CachedVBCapacity, previewMode);
 }
 
 // Convert normalized regions to space-separated UI text

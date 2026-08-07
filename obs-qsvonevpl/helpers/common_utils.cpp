@@ -693,6 +693,9 @@ void avx2_memcpy(uint8_t *Dst, const uint8_t *Src,
   _mm256_storeu_si256(reinterpret_cast<__m256i *>(DstTmpl + 32), Y1);
   _mm256_storeu_si256(reinterpret_cast<__m256i *>(DstTmpl + 64), Y2);
   _mm256_storeu_si256(reinterpret_cast<__m256i *>(DstTmpl + 96), Y3);
+  // The streamed (MOVNTDQ) stores above are weakly ordered — make them
+  // globally visible before the DMA/GPU engine reads this buffer.
+  _mm_sfence();
   _mm256_zeroupper();
 }
 

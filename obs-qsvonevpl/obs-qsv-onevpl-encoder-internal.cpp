@@ -2919,8 +2919,14 @@ QSVEncoder::InitBitstreamBuffer([[maybe_unused]] enum codec_enum Codec) {
   mfxU16 brcM = QSVEncodeParams.mfx.BRCParamMultiplier;
   if (brcM == 0)
     brcM = 1;
-  QSVBitstream.MaxLength =
-      static_cast<mfxU32>(QSVEncodeParams.mfx.BufferSizeInKB * 1000 * brcM);
+  // Size from the bitrate ceiling so VBR peak frames don't immediately
+  // trigger a runtime ChangeBitstreamSize (which stalls the whole pipeline).
+  mfxU32 sizingKbps = QSVEncodeParams.mfx.BufferSizeInKB;
+  if (QSVEncodeParams.mfx.MaxKbps > sizingKbps)
+    sizingKbps = QSVEncodeParams.mfx.MaxKbps;
+  if (sizingKbps == 0)
+    sizingKbps = QSVEncodeParams.mfx.TargetKbps;
+  QSVBitstream.MaxLength = sizingKbps * 1000 * brcM;
 
   QSVBitstream.DataOffset = 0;
   QSVBitstream.DataLength = 0;
@@ -2954,9 +2960,16 @@ mfxStatus QSVEncoder::InitTaskPool([[maybe_unused]] enum codec_enum Codec) {
     mfxU16 brcM = QSVEncodeParams.mfx.BRCParamMultiplier;
     if (brcM == 0)
       brcM = 1;
+    // Same bitrate-ceiling sizing as InitBitstreamBuffer so the swapped
+    // buffers stay capacity-consistent and VBR peak frames fit without a
+    // runtime ChangeBitstreamSize.
+    mfxU32 sizingKbps = QSVEncodeParams.mfx.BufferSizeInKB;
+    if (QSVEncodeParams.mfx.MaxKbps > sizingKbps)
+      sizingKbps = QSVEncodeParams.mfx.MaxKbps;
+    if (sizingKbps == 0)
+      sizingKbps = QSVEncodeParams.mfx.TargetKbps;
     NewTask.Bitstream.MaxLength =
-        static_cast<mfxU32>(QSVEncodeParams.mfx.BufferSizeInKB * 1000 * brcM) +
-        QSV_SEI_EXTRA;
+        static_cast<mfxU32>(sizingKbps * 1000 * brcM) + QSV_SEI_EXTRA;
 
     NewTask.Bitstream.DataOffset = 0;
     NewTask.Bitstream.DataLength = 0;
@@ -3055,9 +3068,12 @@ mfxStatus QSVEncoder::ChangeBitstreamSize(mfxU32 NewSize) {
   for (int i = 0; i < QSVTaskPool.size(); i++) {
     if (QSVTaskPool[i].SyncPoint != nullptr) {
       mfxStatus SyncSts;
+      unsigned busyCount = 0;
       do {
         SyncSts = MFXVideoCORE_SyncOperation(
             QSVSession, QSVTaskPool[i].SyncPoint, 100);
+        if (SyncSts == MFX_WRN_IN_EXECUTION)
+          SyncBackoff(busyCount); // still running — back off instead of spinning
       } while (SyncSts == MFX_WRN_IN_EXECUTION);
       if (SyncSts < MFX_ERR_NONE) {
         throw std::runtime_error(
@@ -3902,6 +3918,21 @@ void QSVEncoder::LoadFrameData(mfxFrameSurface1 *&Surface, uint8_t **FrameData,
   }
 }
 
+// Backoff for GPU sync loops: yield for the first attempts, then exponential
+// sleep.  When the driver returns MFX_WRN_IN_EXECUTION/MORE_DATA the frame is
+// still on the GPU; spinning at full speed burns a whole core until it lands.
+static void SyncBackoff(unsigned &BusyCount) {
+  constexpr unsigned YIELD_THRESHOLD = 10;
+  constexpr unsigned MAX_BACKOFF_MS = 64;
+  if (++BusyCount <= YIELD_THRESHOLD) {
+    Sleep(0);
+  } else {
+    const unsigned shift =
+        std::min<unsigned>((BusyCount - YIELD_THRESHOLD - 1) / 2, 6);
+    Sleep(std::min<unsigned>(1u << shift, MAX_BACKOFF_MS));
+  }
+}
+
 mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
                                                uint32_t *FrameLinesize,
                                                mfxBitstream **Bitstream) {
@@ -3925,6 +3956,7 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
   while (MFX_ERR_NOT_FOUND == TaskID || MFX_ERR_NOT_FOUND == SurfID) {
     // Sync the oldest pending task (QSVSyncTaskID points to it)
     mfxU32 syncRetries = 0;
+    unsigned busyCount = 0;
     constexpr mfxU32 MAX_SYNC_RETRIES = 50; // 50 * 100ms = 5s max wait
     for (;;) {
       // Skip tasks with null sync point — they were never submitted
@@ -3943,10 +3975,12 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
           throw std::runtime_error(
               "Encode(): Sync operation failed - unrecoverable error");
         }
+        SyncBackoff(busyCount);
         continue;
       }
       if (SyncStatus == MFX_WRN_IN_EXECUTION) {
-        continue; // still running, retry
+        SyncBackoff(busyCount); // still running — back off instead of spinning
+        continue;
       }
       if (SyncStatus < MFX_ERR_NONE) {
         error("Encode.EncodeSync error: %d", SyncStatus);
@@ -4300,6 +4334,7 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
 
   while (GetFreeTaskIndex(&TaskID) == MFX_ERR_NOT_FOUND) {
     mfxU32 syncRetries = 0;
+    unsigned busyCount = 0;
     constexpr mfxU32 MAX_SYNC_RETRIES = 50;
     for (;;) {
       if (QSVTaskPool[QSVSyncTaskID].SyncPoint == nullptr) {
@@ -4314,9 +4349,11 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
           throw std::runtime_error(
               "Encode(): Sync operation failed - unrecoverable error");
         }
+        SyncBackoff(busyCount);
         continue;
       }
       if (SyncStatus == MFX_WRN_IN_EXECUTION) {
+        SyncBackoff(busyCount); // still running — back off instead of spinning
         continue;
       }
       if (SyncStatus < MFX_ERR_NONE) {
@@ -4423,9 +4460,12 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
     // overlap in the GPU pipeline.
     if (QSVProcessingEnable) {
       mfxStatus SyncSts;
+      unsigned busyCount = 0;
       do {
         SyncSts = MFXVideoCORE_SyncOperation(
             QSVSession, QSVProcessingSyncPoint, 100);
+        if (SyncSts == MFX_WRN_IN_EXECUTION)
+          SyncBackoff(busyCount); // still running — back off instead of spinning
       } while (SyncSts == MFX_WRN_IN_EXECUTION);
       if (SyncSts < MFX_ERR_NONE) {
         error("VPP sync error: %d", SyncSts);
@@ -4491,6 +4531,7 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
 
   while (GetFreeTaskIndex(&TaskID) == MFX_ERR_NOT_FOUND) {
     mfxU32 syncRetries = 0;
+    unsigned busyCount = 0;
     constexpr mfxU32 MAX_SYNC_RETRIES = 50;
     for (;;) {
       if (QSVTaskPool[QSVSyncTaskID].SyncPoint == nullptr) {
@@ -4509,9 +4550,11 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
           throw std::runtime_error(
               "Encode(): Sync operation failed - unrecoverable error");
         }
+        SyncBackoff(busyCount);
         continue;
       }
       if (SyncStatus == MFX_WRN_IN_EXECUTION) {
+        SyncBackoff(busyCount); // still running — back off instead of spinning
         continue;
       }
       if (SyncStatus < MFX_ERR_NONE) {
@@ -4606,29 +4649,45 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
   bool roiActive = !CachedROIRegions.empty();
   if (roiActive)
     SetupROIEncodeCtrl();
-  EncodeFrameRetryLoop(
-      (QSVProcessingEnable ? QSVProcessingSurface : QSVEncodeSurface),
-      roiActive ? &QSVEncodeCtrlParams : nullptr,
-      TaskID, 200);
+  try {
+    EncodeFrameRetryLoop(
+        (QSVProcessingEnable ? QSVProcessingSurface : QSVEncodeSurface),
+        roiActive ? &QSVEncodeCtrlParams : nullptr,
+        TaskID, 200);
 
-  // Defer VPP sync until after encode submission so VPP and Encode
-  // overlap in the GPU pipeline.
-  if (QSVProcessingEnable) {
-    do {
-      SyncStatus = MFXVideoCORE_SyncOperation(
-          QSVSession, QSVProcessingSyncPoint, 100);
-    } while (SyncStatus == MFX_WRN_IN_EXECUTION);
-    if (SyncStatus < MFX_ERR_NONE) {
-      error("VPP sync error: %d", SyncStatus);
+    // Defer VPP sync until after encode submission so VPP and Encode
+    // overlap in the GPU pipeline.
+    if (QSVProcessingEnable) {
+      unsigned busyCount = 0;
+      do {
+        SyncStatus = MFXVideoCORE_SyncOperation(
+            QSVSession, QSVProcessingSyncPoint, 100);
+        if (SyncStatus == MFX_WRN_IN_EXECUTION)
+          SyncBackoff(busyCount); // still running — back off instead of spinning
+      } while (SyncStatus == MFX_WRN_IN_EXECUTION);
+      if (SyncStatus < MFX_ERR_NONE) {
+        error("VPP sync error: %d", SyncStatus);
+        QSVProcessingSurface->FrameInterface->Release(QSVProcessingSurface);
+        QSVProcessingSurface = nullptr;
+        throw std::runtime_error("Encode(): VPP sync failed");
+      }
+
+      QSVProcessingSurface->FrameInterface->Release(QSVProcessingSurface);
+    } else {
+      QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
+      QSVEncodeSurface = nullptr;
+    }
+  } catch (...) {
+    // EncodeFrameRetryLoop/VPP sync can throw on fatal driver errors — release
+    // the in-flight surface so a failed submit doesn't leak it.
+    if (QSVProcessingEnable && QSVProcessingSurface) {
       QSVProcessingSurface->FrameInterface->Release(QSVProcessingSurface);
       QSVProcessingSurface = nullptr;
-      throw std::runtime_error("Encode(): VPP sync failed");
+    } else if (QSVEncodeSurface) {
+      QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
+      QSVEncodeSurface = nullptr;
     }
-
-    QSVProcessingSurface->FrameInterface->Release(QSVProcessingSurface);
-  } else {
-    QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
-    QSVEncodeSurface = nullptr;
+    throw;
   }
 
   return MFX_ERR_NONE;
@@ -5056,22 +5115,6 @@ void QSVEncoder::AppendQpSeiToBitstream(mfxBitstream &bs) {
 
   // Keep a copy for external retrieval
   QpStatsSeiBuffer.assign(buf, buf + pos);
-}
-
-void QSVEncoder::GetQpStatsSei(uint8_t **data, size_t *size) {
-  if (QpStatsSeiBuffer.empty()) {
-    *data = nullptr;
-    *size = 0;
-    return;
-  }
-  // Allocate a copy that the caller must free
-  *data = static_cast<uint8_t *>(malloc(QpStatsSeiBuffer.size()));
-  if (*data) {
-    memcpy(*data, QpStatsSeiBuffer.data(), QpStatsSeiBuffer.size());
-    *size = QpStatsSeiBuffer.size();
-  } else {
-    *size = 0;
-  }
 }
 
 mfxStatus QSVEncoder::Drain() {
