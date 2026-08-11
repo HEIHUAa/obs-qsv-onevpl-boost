@@ -3038,6 +3038,9 @@ void QSVEncoder::ReleaseTaskPool() {
   }
 }
 
+// Forward declaration — defined later in this file
+static void SyncBackoff(unsigned &BusyCount);
+
 mfxStatus QSVEncoder::ChangeBitstreamSize(mfxU32 NewSize) {
   // Reallocate the main bitstream buffer (allocate new first, then swap)
   mfxU8 *Data = static_cast<mfxU8 *>(AlignedMalloc(NewSize, 32));
