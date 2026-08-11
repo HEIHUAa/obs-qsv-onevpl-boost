@@ -265,9 +265,9 @@ static void *reencode_stop_thread(void *data)
   // Hold a reference while calling end_data_capture: StopEncoding() may
   // obs_output_release() the last reference and destroy the output before
   // this thread runs, which would be a use-after-free.
-  obs_output_addref(ctx->output);
+  obs_output_t *ref = obs_output_get_ref(ctx->output);
   obs_output_end_data_capture(ctx->output);
-  obs_output_release(ctx->output);
+  obs_output_release(ref);
   ctx->stop_thread_active = false;
   return nullptr;
 }
@@ -840,44 +840,48 @@ bool ReEncodeDialog::StartEncoding()
   //    the AV_PIX_FMT_NONE issue when avcodec_open2 doesn't set pix_fmt.
 
   // 8. Create OBS video output
-  dbglog("[QSV VPL ReEncoder] DEBUG: creating video output...");
-  video_output_info vi = {};
-  vi.name = "qsv-reencode-video";
-  vi.format = VIDEO_FORMAT_NV12;
-  vi.width = static_cast<uint32_t>(srcWidth);
-  vi.height = static_cast<uint32_t>(srcHeight);
-  vi.fps_num = static_cast<uint32_t>(m_FpsNum);
-  vi.fps_den = static_cast<uint32_t>(m_FpsDen);
-  vi.cache_size = 16;
-  vi.colorspace = VIDEO_CS_709;
-  vi.range = VIDEO_RANGE_PARTIAL;
+  {
+    dbglog("[QSV VPL ReEncoder] DEBUG: creating video output...");
+    video_output_info vi = {};
+    vi.name = "qsv-reencode-video";
+    vi.format = VIDEO_FORMAT_NV12;
+    vi.width = static_cast<uint32_t>(srcWidth);
+    vi.height = static_cast<uint32_t>(srcHeight);
+    vi.fps_num = static_cast<uint32_t>(m_FpsNum);
+    vi.fps_den = static_cast<uint32_t>(m_FpsDen);
+    vi.cache_size = 16;
+    vi.colorspace = VIDEO_CS_709;
+    vi.range = VIDEO_RANGE_PARTIAL;
 
-  ret = video_output_open(&m_Video, &vi);
-  if (ret != VIDEO_OUTPUT_SUCCESS) {
-    AppendLog("ERROR: Cannot create video output");
-    goto cleanup_failed;
+    ret = video_output_open(&m_Video, &vi);
+    if (ret != VIDEO_OUTPUT_SUCCESS) {
+      AppendLog("ERROR: Cannot create video output");
+      goto cleanup_failed;
+    }
+    dbglog("[QSV VPL ReEncoder] DEBUG: video output created OK");
   }
-  dbglog("[QSV VPL ReEncoder] DEBUG: video output created OK");
 
   // 9. Create OBS encoder
-  obs_data_t *encSettings = obs_data_create();
-  if (m_EncoderSettings) {
-    obs_data_apply(encSettings, m_EncoderSettings);
-  }
-  // override resolution to match input
-  obs_data_set_int(encSettings, "width", srcWidth);
-  obs_data_set_int(encSettings, "height", srcHeight);
+  {
+    obs_data_t *encSettings = obs_data_create();
+    if (m_EncoderSettings) {
+      obs_data_apply(encSettings, m_EncoderSettings);
+    }
+    // override resolution to match input
+    obs_data_set_int(encSettings, "width", srcWidth);
+    obs_data_set_int(encSettings, "height", srcHeight);
 
-  blog(LOG_INFO, "[QSV VPL ReEncoder] Creating encoder '%s'...", m_EncoderID.c_str());
-  m_Encoder = obs_video_encoder_create(m_EncoderID.c_str(), "qsv-reencode-encoder",
-                                       encSettings, nullptr);
-  obs_data_release(encSettings);
+    blog(LOG_INFO, "[QSV VPL ReEncoder] Creating encoder '%s'...", m_EncoderID.c_str());
+    m_Encoder = obs_video_encoder_create(m_EncoderID.c_str(), "qsv-reencode-encoder",
+                                         encSettings, nullptr);
+    obs_data_release(encSettings);
 
-  if (!m_Encoder) {
-    AppendLog(QString("ERROR: Cannot create encoder '%1'").arg(QString::fromStdString(m_EncoderID)));
-    goto cleanup_failed;
+    if (!m_Encoder) {
+      AppendLog(QString("ERROR: Cannot create encoder '%1'").arg(QString::fromStdString(m_EncoderID)));
+      goto cleanup_failed;
+    }
+    blog(LOG_INFO, "[QSV VPL ReEncoder] Encoder created, setting video...");
   }
-  blog(LOG_INFO, "[QSV VPL ReEncoder] Encoder created, setting video...");
 
   obs_encoder_set_video(m_Encoder, m_Video);
 
@@ -895,62 +899,64 @@ bool ReEncodeDialog::StartEncoding()
   blog(LOG_INFO, "[QSV VPL ReEncoder] Output created, encoder attached");
 
   // 11. Create output file (FFmpeg muxer)
-  dbglog("[QSV VPL ReEncoder] DEBUG: creating FFmpeg output context...");
-  m_OutputPathBytes = outputPath.toUtf8();
-  const char *outPath = m_OutputPathBytes.constData();
-  ret = m_FF.avformat_alloc_output_context2(&m_Ctx.out_fmt_ctx, nullptr, nullptr,
-                                             outPath);
-  if (ret < 0 || !m_Ctx.out_fmt_ctx) {
-    AppendLog("ERROR: Cannot create output context");
-    goto cleanup_failed;
-  }
-  dbglog("[QSV VPL ReEncoder] DEBUG: output context created OK");
-
-  // Video stream
-  enum AVCodecID outCodecId = EncoderIDToAVCodecID(m_EncoderID);
-  m_Ctx.out_video_stream = m_FF.avformat_new_stream(m_Ctx.out_fmt_ctx, nullptr);
-  if (!m_Ctx.out_video_stream) {
-    AppendLog("ERROR: Cannot create output video stream");
-    goto cleanup_failed;
-  }
-  m_Ctx.out_video_stream->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
-  m_Ctx.out_video_stream->codecpar->codec_id = outCodecId;
-  m_Ctx.out_video_stream->codecpar->width = srcWidth;
-  m_Ctx.out_video_stream->codecpar->height = srcHeight;
-  // timebase = 1/fps for simplicity; PTS will be rescaled from nanosec
-  m_Ctx.out_video_stream->time_base = {m_FpsDen, m_FpsNum};
-  // set avg_frame_rate for the stream
-  m_Ctx.out_video_stream->avg_frame_rate = {m_FpsNum, m_FpsDen};
-
-  // Audio stream (copy from input)
-  if (m_Ctx.audio_stream_idx >= 0) {
-    AVStream *inAudioStream = m_Ctx.in_fmt_ctx->streams[m_Ctx.audio_stream_idx];
-    m_Ctx.out_audio_stream = m_FF.avformat_new_stream(m_Ctx.out_fmt_ctx, nullptr);
-    if (m_Ctx.out_audio_stream) {
-      m_FF.avcodec_parameters_copy(m_Ctx.out_audio_stream->codecpar,
-                                    inAudioStream->codecpar);
-      m_Ctx.out_audio_stream->time_base = inAudioStream->time_base;
-    }
-  }
-
-  // Open output file
-  dbglog("[QSV VPL ReEncoder] DEBUG: opening output file...");
-  if (!(m_Ctx.out_fmt_ctx->oformat->flags & AVFMT_NOFILE)) {
-    ret = m_FF.avio_open(&m_Ctx.out_fmt_ctx->pb, outPath, AVIO_FLAG_WRITE);
-    if (ret < 0) {
-      AppendLog("ERROR: Cannot open output file");
+  {
+    dbglog("[QSV VPL ReEncoder] DEBUG: creating FFmpeg output context...");
+    m_OutputPathBytes = outputPath.toUtf8();
+    const char *outPath = m_OutputPathBytes.constData();
+    ret = m_FF.avformat_alloc_output_context2(&m_Ctx.out_fmt_ctx, nullptr, nullptr,
+                                               outPath);
+    if (ret < 0 || !m_Ctx.out_fmt_ctx) {
+      AppendLog("ERROR: Cannot create output context");
       goto cleanup_failed;
     }
-  }
+    dbglog("[QSV VPL ReEncoder] DEBUG: output context created OK");
 
-  // Write header
-  dbglog("[QSV VPL ReEncoder] DEBUG: writing header...");
-  ret = m_FF.avformat_write_header(m_Ctx.out_fmt_ctx, nullptr);
-  if (ret < 0) {
-    AppendLog("ERROR: Cannot write header");
-    goto cleanup_failed;
+    // Video stream
+    enum AVCodecID outCodecId = EncoderIDToAVCodecID(m_EncoderID);
+    m_Ctx.out_video_stream = m_FF.avformat_new_stream(m_Ctx.out_fmt_ctx, nullptr);
+    if (!m_Ctx.out_video_stream) {
+      AppendLog("ERROR: Cannot create output video stream");
+      goto cleanup_failed;
+    }
+    m_Ctx.out_video_stream->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
+    m_Ctx.out_video_stream->codecpar->codec_id = outCodecId;
+    m_Ctx.out_video_stream->codecpar->width = srcWidth;
+    m_Ctx.out_video_stream->codecpar->height = srcHeight;
+    // timebase = 1/fps for simplicity; PTS will be rescaled from nanosec
+    m_Ctx.out_video_stream->time_base = {m_FpsDen, m_FpsNum};
+    // set avg_frame_rate for the stream
+    m_Ctx.out_video_stream->avg_frame_rate = {m_FpsNum, m_FpsDen};
+
+    // Audio stream (copy from input)
+    if (m_Ctx.audio_stream_idx >= 0) {
+      AVStream *inAudioStream = m_Ctx.in_fmt_ctx->streams[m_Ctx.audio_stream_idx];
+      m_Ctx.out_audio_stream = m_FF.avformat_new_stream(m_Ctx.out_fmt_ctx, nullptr);
+      if (m_Ctx.out_audio_stream) {
+        m_FF.avcodec_parameters_copy(m_Ctx.out_audio_stream->codecpar,
+                                      inAudioStream->codecpar);
+        m_Ctx.out_audio_stream->time_base = inAudioStream->time_base;
+      }
+    }
+
+    // Open output file
+    dbglog("[QSV VPL ReEncoder] DEBUG: opening output file...");
+    if (!(m_Ctx.out_fmt_ctx->oformat->flags & AVFMT_NOFILE)) {
+      ret = m_FF.avio_open(&m_Ctx.out_fmt_ctx->pb, outPath, AVIO_FLAG_WRITE);
+      if (ret < 0) {
+        AppendLog("ERROR: Cannot open output file");
+        goto cleanup_failed;
+      }
+    }
+
+    // Write header
+    dbglog("[QSV VPL ReEncoder] DEBUG: writing header...");
+    ret = m_FF.avformat_write_header(m_Ctx.out_fmt_ctx, nullptr);
+    if (ret < 0) {
+      AppendLog("ERROR: Cannot write header");
+      goto cleanup_failed;
+    }
+    dbglog("[QSV VPL ReEncoder] DEBUG: header written OK");
   }
-  dbglog("[QSV VPL ReEncoder] DEBUG: header written OK");
 
   // 12. Start OBS output (this internally initializes encoder, starts encoding,
   //     and begins data capture)

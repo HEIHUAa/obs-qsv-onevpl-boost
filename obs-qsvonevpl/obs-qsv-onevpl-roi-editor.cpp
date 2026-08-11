@@ -326,8 +326,7 @@ static void DrawROIRects(
     *CachedVBCapacity = needed;
   }
 
-  struct gs_vb_data *vbd = nullptr;
-  gs_vertexbuffer_map(*CachedVB, &vbd);
+  struct gs_vb_data *vbd = gs_vertexbuffer_get_data(*CachedVB);
   if (!vbd)
     return;
   vbd->num = static_cast<uint32_t>(needed);
@@ -355,7 +354,7 @@ static void DrawROIRects(
     pts[3].x = x2; pts[3].y = y2; pts[3].z = 0.0f;
     vertIdx++;
   }
-  gs_vertexbuffer_unmap(*CachedVB);
+  gs_vertexbuffer_flush(*CachedVB);
 
   gs_load_vertexbuffer(*CachedVB);
   size_t rectIdx = 0;
