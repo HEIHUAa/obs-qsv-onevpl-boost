@@ -58,6 +58,7 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/avutil.h>
+#include <libavutil/hwcontext.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
 #include <libswscale/swscale.h>
@@ -99,9 +100,16 @@ struct ffmpeg_api {
   decltype(&av_mallocz) av_mallocz = nullptr;
   decltype(&av_frame_alloc) av_frame_alloc = nullptr;
   decltype(&av_frame_free) av_frame_free = nullptr;
+  decltype(&av_frame_unref) av_frame_unref = nullptr;
   decltype(&av_image_get_buffer_size) av_image_get_buffer_size = nullptr;
   decltype(&av_image_fill_arrays) av_image_fill_arrays = nullptr;
   decltype(&av_rescale_q) av_rescale_q = nullptr;
+
+  // avutil — hardware acceleration (D3D11VA decode)
+  decltype(&av_hwdevice_ctx_create) av_hwdevice_ctx_create = nullptr;
+  decltype(&av_hwframe_transfer_data) av_hwframe_transfer_data = nullptr;
+  decltype(&av_buffer_unref) av_buffer_unref = nullptr;
+  decltype(&av_buffer_ref) av_buffer_ref = nullptr;
 
   // swscale
   decltype(&sws_getContext) sws_getContext = nullptr;
@@ -143,6 +151,8 @@ public:
     SwsContext *sws_ctx = nullptr;
     AVFrame *decoded_frame = nullptr;
     AVFrame *nv12_frame = nullptr;
+    AVFrame *hw_dled_frame = nullptr;
+    bool hw_decode_active = false;
 
     // FFmpeg output
     AVFormatContext *out_fmt_ctx = nullptr;
@@ -203,6 +213,9 @@ private:
   int m_Height = 0;
   int m_FpsNum = 30;
   int m_FpsDen = 1;
+
+  AVPixelFormat m_TargetPixFmt = AV_PIX_FMT_NV12;
+  video_format m_TargetObsFormat = VIDEO_FORMAT_NV12;
 
   // keep the QByteArray alive so the const char* from toUtf8() stays valid
   QByteArray m_OutputPathBytes;
