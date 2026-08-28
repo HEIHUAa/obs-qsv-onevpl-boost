@@ -218,18 +218,43 @@ static const char *reencode_output_getname(void *)
 // access context.data from outside.
 static ReEncodeDialog *g_PendingOutputDialog = nullptr;
 
+// "stop" signal: the output has fully ended data capture and the video
+// encoder has been shut down, so every remaining packet is already in the
+// queue.  This is the point where the feed thread may collect the tail
+// packets and finalize.
+static void reencode_output_stopped(void *data, calldata_t *)
+{
+  auto *ctx = static_cast<reencode_output_ctx *>(data);
+  if (ctx->dialog) {
+    auto &rc = ctx->dialog->m_Ctx;
+    rc.encoder_flushed = true;
+    rc.pkt_cv.notify_all();
+  }
+}
+
 static void *reencode_output_create(obs_data_t *, obs_output_t *output)
 {
   auto *ctx = new reencode_output_ctx;
   ctx->output = output;
   ctx->dialog = g_PendingOutputDialog;
   g_PendingOutputDialog = nullptr;
+
+  // The "stop" signal fires after the encoders have been fully stopped, so
+  // it is the safe point to tell the feed thread that the final packets
+  // are in its queue.  obs_output_stop() itself is asynchronous — treating
+  // it as "flush done" loses the tail packets of the B-frame pipeline.
+  signal_handler_t *sh = obs_output_get_signal_handler(output);
+  if (sh)
+    signal_handler_connect(sh, "stop", reencode_output_stopped, ctx);
   return ctx;
 }
 
 static void reencode_output_destroy(void *data)
 {
   auto *ctx = static_cast<reencode_output_ctx *>(data);
+  signal_handler_t *sh = obs_output_get_signal_handler(ctx->output);
+  if (sh)
+    signal_handler_disconnect(sh, "stop", reencode_output_stopped, ctx);
   if (ctx->stop_thread_active)
     pthread_join(ctx->stop_thread, nullptr);
   delete ctx;
@@ -568,18 +593,40 @@ void ReEncodeDialog::AppendLog(const QString &Msg)
 
 void ReEncodeDialog::UpdateProgress(int64_t Current, int64_t Total)
 {
-  // Throttle GUI updates (~12/s).  Each call queues a lambda onto the UI
-  // thread; doing that per frame at 60fps is pure allocation overhead.
+  // Throttle GUI updates.  Each call queues a lambda onto the UI thread;
+  // doing that per frame at high encode speeds is pure allocation overhead.
   static thread_local int64_t lastReported = -1;
-  constexpr int64_t REPORT_STEP = 5; // frames between UI updates
+  static thread_local int64_t lastCount = 0;
+  static thread_local bool hasLast = false;
+  static thread_local std::chrono::steady_clock::time_point lastTime{};
+  constexpr int64_t REPORT_STEP = 15; // frames between UI updates
+  // New encoding run: reset the throttle state (Current restarts from 0)
+  if (Current < lastReported) {
+    lastReported = -1;
+    hasLast = false;
+  }
   if (Total > 0 && Current < Total && (Current - lastReported) < REPORT_STEP)
     return;
   lastReported = Current;
 
-  QMetaObject::invokeMethod(this, [this, Current, Total]() {
+  // Instantaneous encode speed (frames/s) over the reporting window
+  double fps = 0.0;
+  auto now = std::chrono::steady_clock::now();
+  if (hasLast) {
+    double dt = std::chrono::duration<double>(now - lastTime).count();
+    if (dt > 0.0)
+      fps = static_cast<double>(Current - lastCount) / dt;
+  }
+  lastTime = now;
+  lastCount = Current;
+  hasLast = true;
+
+  QMetaObject::invokeMethod(this, [this, Current, Total, fps]() {
     if (Total > 0) {
       int pct = static_cast<int>((Current * 100) / Total);
       ProgressBar->setValue(std::min(pct, 100));
+      // %p% = percentage placeholder built into QProgressBar
+      ProgressBar->setFormat(QString("%p%  %1 fps").arg(fps, 0, 'f', 1));
     }
   }, Qt::QueuedConnection);
 }
@@ -851,7 +898,9 @@ bool ReEncodeDialog::StartEncoding()
     vi.height = static_cast<uint32_t>(srcHeight);
     vi.fps_num = static_cast<uint32_t>(m_FpsNum);
     vi.fps_den = static_cast<uint32_t>(m_FpsDen);
-    vi.cache_size = 16;
+    // Deeper cache so the decoder can run ahead of the encoder without
+    // the feed thread stalling in video_output_lock_frame.
+    vi.cache_size = 32;
     vi.colorspace = VIDEO_CS_709;
     vi.range = VIDEO_RANGE_PARTIAL;
 
@@ -1037,16 +1086,15 @@ void ReEncodeDialog::StopEncoding()
     m_Ctx.pkt_cv.wait(lock, [this] { return m_Ctx.encoder_done; });
   }
 
-  // Flush encoder by stopping the output (triggers remaining encoded callbacks)
+  // Flush encoder by stopping the output.  obs_output_stop() is async; the
+  // output's "stop" signal (see reencode_output_stopped) fires once the
+  // encoder has been shut down, and that is what releases the feed thread
+  // to write the tail packets and the trailer.
   if (m_Output) {
     obs_output_stop(m_Output);
     obs_output_release(m_Output);
     m_Output = nullptr;
   }
-
-  // Signal feed thread that the encoder has been flushed
-  m_Ctx.encoder_flushed = true;
-  m_Ctx.pkt_cv.notify_all();
 
   // Join feed thread (it will now collect remaining packets, write trailer, cleanup)
   if (m_FeedThread.joinable()) {
@@ -1141,6 +1189,63 @@ void ReEncodeDialog::FeedThreadMain()
       return true;
     };
 
+    // Mux one encoded video packet.  Encoder PTS/DTS arrive in {1/fps} ticks,
+    // but avformat_write_header() lets the MP4 muxer pick a finer stream
+    // time_base (typically 1/15360 for 30fps) — so every packet must be
+    // rescaled, otherwise all frames land 1 tick apart and the video flashes
+    // by in a fraction of a second.  Also flushes buffered audio packets
+    // whose PTS is due before this video frame's.
+    auto muxVideoPacket = [&](ReEncodeCtx::Packet &encPkt) -> bool {
+      if (!writeHeaderOnce())
+        return false;
+
+      AVPacket *outPkt = ff.av_packet_alloc();
+      if (!outPkt)
+        return false;
+      outPkt->data = encPkt.data.data();
+      outPkt->size = static_cast<int>(encPkt.data.size());
+      outPkt->stream_index = ctx.out_video_stream->index;
+
+      AVRational encTb = {m_FpsDen, m_FpsNum};
+      AVRational outTb = ctx.out_video_stream->time_base;
+      outPkt->pts = ff.av_rescale_q(encPkt.pts, encTb, outTb);
+      outPkt->dts = ff.av_rescale_q(encPkt.dts, encTb, outTb);
+      outPkt->duration = (int)ff.av_rescale_q(1, encTb, outTb);
+      if (encPkt.keyframe)
+        outPkt->flags |= AV_PKT_FLAG_KEY;
+
+      int wr = ff.av_interleaved_write_frame(ctx.out_fmt_ctx, outPkt);
+      ff.av_packet_free(&outPkt);
+      if (wr < 0) {
+        AppendLog(QString("ERROR: av_interleaved_write_frame (video) failed: %1").arg(wr));
+        return false;
+      }
+
+      // Write buffered audio packets with PTS <= this video frame's PTS
+      if (ctx.out_audio_stream && !ctx.audio_packets.empty()) {
+        int64_t videoPtsNs = ff.av_rescale_q(encPkt.pts, encTb, {1, 1000000000});
+        auto it = ctx.audio_packets.begin();
+        while (it != ctx.audio_packets.end()) {
+          AVPacket *audioPkt = *it;
+          int64_t audioPtsNs = ff.av_rescale_q(
+              audioPkt->pts, ctx.out_audio_stream->time_base, {1, 1000000000});
+          if (audioPtsNs <= videoPtsNs) {
+            audioPkt->stream_index = ctx.out_audio_stream->index;
+            int awr = ff.av_interleaved_write_frame(ctx.out_fmt_ctx, audioPkt);
+            ff.av_packet_free(&audioPkt);
+            it = ctx.audio_packets.erase(it);
+            if (awr < 0) {
+              AppendLog(QString("ERROR: av_interleaved_write_frame (audio) failed: %1").arg(awr));
+              return false;
+            }
+          } else {
+            break;
+          }
+        }
+      }
+      return true;
+    };
+
     while (!ctx.stop_requested) {
       // Read next packet from input
       ret = ff.av_read_frame(ctx.in_fmt_ctx, inPkt);
@@ -1196,15 +1301,23 @@ void ReEncodeDialog::FeedThreadMain()
 
           // Feed NV12 frame to OBS video pipeline
           int64_t ptsNs = ctx.decoded_frame->pts;
-          if (ptsNs == AV_NOPTS_VALUE)
-            ptsNs = ctx.frames_encoded.load();
-
           AVRational decTb = ctx.in_fmt_ctx->streams[ctx.video_stream_idx]->time_base;
-          ptsNs = ff.av_rescale_q(ptsNs, decTb, {1, 1000000000});
+          if (ptsNs == AV_NOPTS_VALUE)
+            // No PTS in source: assume constant frame order, index * frame duration
+            ptsNs = ff.av_rescale_q(ctx.frames_encoded.load(),
+                                    {m_FpsDen, m_FpsNum}, {1, 1000000000});
+          else
+            ptsNs = ff.av_rescale_q(ptsNs, decTb, {1, 1000000000});
 
           video_frame vf = {};
-          if (!video_output_lock_frame(m_Video, &vf, 1, ptsNs)) {
-            return true; // no free frame in cache, skip
+          // Wait for a free cache slot instead of skipping the frame:
+          // video-io marks skipped slots and replays the previous frame's
+          // data for them, which both drops and duplicates frames when the
+          // decoder temporarily outruns the encoder.
+          while (!video_output_lock_frame(m_Video, &vf, 1, ptsNs)) {
+            if (ctx.stop_requested)
+              return true;
+            std::this_thread::sleep_for(1ms);
           }
 
           for (int i = 0; i < MAX_AV_PLANES; i++) {
@@ -1235,55 +1348,8 @@ void ReEncodeDialog::FeedThreadMain()
               ctx.pkt_queue.pop_front();
               lock.unlock();
 
-              // First muxed packet: header + SPS/PPS must hit the file first
-              if (!writeHeaderOnce())
+              if (!muxVideoPacket(encPkt))
                 return false;
-
-              AVPacket *outPkt = ff.av_packet_alloc();
-              outPkt->data = encPkt.data.data();
-              outPkt->size = static_cast<int>(encPkt.data.size());
-              outPkt->stream_index = ctx.out_video_stream->index;
-              // encoder PTS/DTS are in {fps_den, fps_num} time_base
-              // (same as output stream), so no rescaling needed
-              outPkt->pts = encPkt.pts;
-              outPkt->dts = encPkt.dts;
-              outPkt->duration = 1;
-              if (encPkt.keyframe)
-                outPkt->flags |= AV_PKT_FLAG_KEY;
-
-              int wr = ff.av_interleaved_write_frame(ctx.out_fmt_ctx, outPkt);
-              ff.av_packet_free(&outPkt);
-
-              if (wr < 0) {
-                AppendLog(QString("ERROR: av_interleaved_write_frame (video) failed: %1").arg(wr));
-                return false;
-              }
-
-              // Write buffered audio packets with PTS <= this video frame's PTS
-              if (ctx.out_audio_stream && !ctx.audio_packets.empty()) {
-                int64_t videoPts = encPkt.pts;
-                // rescale video PTS to nanoseconds for audio sync comparison
-                int64_t videoPtsNs = ff.av_rescale_q(videoPts, {m_FpsDen, m_FpsNum},
-                                                     {1, 1000000000});
-                auto it = ctx.audio_packets.begin();
-                while (it != ctx.audio_packets.end()) {
-                  AVPacket *audioPkt = *it;
-                  int64_t audioPtsNs = ff.av_rescale_q(
-                      audioPkt->pts, ctx.out_audio_stream->time_base, {1, 1000000000});
-                  if (audioPtsNs <= videoPtsNs) {
-                    audioPkt->stream_index = ctx.out_audio_stream->index;
-                    int awr = ff.av_interleaved_write_frame(ctx.out_fmt_ctx, audioPkt);
-                    if (awr < 0) {
-                      AppendLog(QString("ERROR: av_interleaved_write_frame (audio) failed: %1").arg(awr));
-                      return false;
-                    }
-                    ff.av_packet_free(&audioPkt);
-                    it = ctx.audio_packets.erase(it);
-                  } else {
-                    break;
-                  }
-                }
-              }
 
               lock.lock();
             }
@@ -1394,13 +1460,25 @@ void ReEncodeDialog::FeedThreadMain()
 
       // Feed to OBS video pipeline
       int64_t ptsNs = ctx.decoded_frame->pts;
-      if (ptsNs == AV_NOPTS_VALUE)
-        ptsNs = ctx.frames_encoded.load();
       AVRational decTb = ctx.in_fmt_ctx->streams[ctx.video_stream_idx]->time_base;
-      ptsNs = ff.av_rescale_q(ptsNs, decTb, {1, 1000000000});
+      if (ptsNs == AV_NOPTS_VALUE)
+        ptsNs = ff.av_rescale_q(ctx.frames_encoded.load(),
+                                {m_FpsDen, m_FpsNum}, {1, 1000000000});
+      else
+        ptsNs = ff.av_rescale_q(ptsNs, decTb, {1, 1000000000});
 
       video_frame vf = {};
-      if (video_output_lock_frame(m_Video, &vf, 1, ptsNs)) {
+      // Wait for a free cache slot instead of dropping the frame (see
+      // processFrame() for why skipping is harmful).
+      bool locked = false;
+      while (!ctx.stop_requested) {
+        if (video_output_lock_frame(m_Video, &vf, 1, ptsNs)) {
+          locked = true;
+          break;
+        }
+        std::this_thread::sleep_for(1ms);
+      }
+      if (locked) {
         for (int i = 0; i < MAX_AV_PLANES; i++) {
           if (vf.data[i] && ctx.nv12_frame->data[i]) {
             // Copy row-wise but never read past the tightly-packed source —
@@ -1427,50 +1505,9 @@ void ReEncodeDialog::FeedThreadMain()
           ctx.pkt_queue.pop_front();
           lock2.unlock();
 
-          // First muxed packet: header + SPS/PPS must hit the file first
-          if (!writeHeaderOnce()) {
+          if (!muxVideoPacket(encPkt)) {
             success = false;
             break;
-          }
-
-          AVPacket *outPkt = ff.av_packet_alloc();
-          outPkt->data = encPkt.data.data();
-          outPkt->size = static_cast<int>(encPkt.data.size());
-          outPkt->stream_index = ctx.out_video_stream->index;
-          // encoder PTS/DTS are in {fps_den, fps_num}, same as output
-          outPkt->pts = encPkt.pts;
-          outPkt->dts = encPkt.dts;
-          outPkt->duration = 1;
-          if (encPkt.keyframe)
-            outPkt->flags |= AV_PKT_FLAG_KEY;
-
-          int wr = ff.av_interleaved_write_frame(ctx.out_fmt_ctx, outPkt);
-          ff.av_packet_free(&outPkt);
-          if (wr < 0) {
-            AppendLog(QString("ERROR: av_interleaved_write_frame (video) failed: %1").arg(wr));
-            success = false;
-            break;
-          }
-
-          // Write buffered audio with PTS <= this video frame
-          if (ctx.out_audio_stream && !ctx.audio_packets.empty()) {
-            int64_t videoPts = encPkt.pts;
-            int64_t videoPtsNs = ff.av_rescale_q(videoPts, {m_FpsDen, m_FpsNum},
-                                                 {1, 1000000000});
-            auto it = ctx.audio_packets.begin();
-            while (it != ctx.audio_packets.end()) {
-              AVPacket *audioPkt = *it;
-              int64_t audioPtsNs = ff.av_rescale_q(
-                  audioPkt->pts, ctx.out_audio_stream->time_base, {1, 1000000000});
-              if (audioPtsNs <= videoPtsNs) {
-                audioPkt->stream_index = ctx.out_audio_stream->index;
-                ff.av_interleaved_write_frame(ctx.out_fmt_ctx, audioPkt);
-                ff.av_packet_free(&audioPkt);
-                it = ctx.audio_packets.erase(it);
-              } else {
-                break;
-              }
-            }
           }
 
           lock2.lock();
@@ -1479,6 +1516,25 @@ void ReEncodeDialog::FeedThreadMain()
 
       ctx.frames_encoded++;
       UpdateProgress(ctx.frames_encoded, ctx.total_frames);
+    }
+
+    // Wait for the encoder to actually encode every fed frame before
+    // letting StopEncoding() tear the output down: obs_output_stop()
+    // disconnects receive_video immediately, and any frames still sitting
+    // in the video cache would be silently dropped.
+    if (!ctx.stop_requested && m_Encoder) {
+      auto deadline = std::chrono::steady_clock::now() + 30s;
+      while (obs_encoder_get_encoded_frames(m_Encoder) <
+                 (uint32_t)ctx.frames_encoded.load() &&
+             std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(2ms);
+      }
+      if (obs_encoder_get_encoded_frames(m_Encoder) <
+          (uint32_t)ctx.frames_encoded.load()) {
+        AppendLog(QString("WARNING: encoder did not finish all frames (%1/%2)")
+                      .arg((int)obs_encoder_get_encoded_frames(m_Encoder))
+                      .arg((int)ctx.frames_encoded.load()));
+      }
     }
 
     // Signal that we've finished feeding all frames
@@ -1496,10 +1552,16 @@ void ReEncodeDialog::FeedThreadMain()
       }, Qt::QueuedConnection);
     }
 
-    // Wait for StopEncoding to flush the encoder via obs_output_stop
+    // Wait for the output's "stopped" signal (encoder fully drained).
+    // The timeout is a safety net against a lost signal deadlocking the
+    // feed thread (and thus the UI, which joins it).
     {
       std::unique_lock lock(ctx.pkt_mutex);
-      ctx.pkt_cv.wait(lock, [&ctx] { return ctx.encoder_flushed.load(); });
+      if (!ctx.pkt_cv.wait_for(lock, 10s,
+                               [&ctx] { return ctx.encoder_flushed.load(); })) {
+        AppendLog("WARNING: timed out waiting for encoder flush");
+        ctx.encoder_flushed = true;
+      }
     }
 
     // Collect remaining encoded packets flushed by obs_output_stop
@@ -1510,29 +1572,8 @@ void ReEncodeDialog::FeedThreadMain()
         ctx.pkt_queue.erase(ctx.pkt_queue.begin());
         lock.unlock();
 
-        // First muxed packet: header + SPS/PPS must hit the file first
-        if (!writeHeaderOnce())
+        if (!muxVideoPacket(encPkt))
           success = false;
-
-        AVPacket *outPkt = ff.av_packet_alloc();
-        outPkt->data = encPkt.data.data();
-        outPkt->size = static_cast<int>(encPkt.data.size());
-        outPkt->stream_index = ctx.out_video_stream->index;
-        outPkt->pts = encPkt.pts;
-        outPkt->dts = encPkt.dts;
-        outPkt->duration = 1;
-        if (encPkt.keyframe)
-          outPkt->flags |= AV_PKT_FLAG_KEY;
-
-        int wr = -1;
-        if (success) {
-          wr = ff.av_interleaved_write_frame(ctx.out_fmt_ctx, outPkt);
-          if (wr < 0) {
-            AppendLog(QString("ERROR: av_interleaved_write_frame (final) failed: %1").arg(wr));
-            success = false;
-          }
-        }
-        ff.av_packet_free(&outPkt);
 
         lock.lock();
       }
