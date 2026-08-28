@@ -104,6 +104,7 @@ bool LoadFFmpegAPI(ffmpeg_api &ff)
   bool ok = true;
 
   // avutil
+  ok = ok && ResolveFunc(avutil, "av_mallocz", ff.av_mallocz);
   ok = ok && ResolveFunc(avutil, "av_frame_alloc", ff.av_frame_alloc);
   ok = ok && ResolveFunc(avutil, "av_frame_free", ff.av_frame_free);
   ok = ok && ResolveFunc(avutil, "av_image_get_buffer_size", ff.av_image_get_buffer_size);
@@ -709,6 +710,7 @@ bool ReEncodeDialog::StartEncoding()
   m_Ctx.out_audio_stream = nullptr;
   m_Ctx.pkt_queue.clear();
   m_Ctx.encoder_done = false;
+  m_Ctx.header_written = false;
   m_Ctx.audio_packets.clear();
   m_Ctx.duration = 0;
   m_Ctx.total_frames = 0;
@@ -948,14 +950,11 @@ bool ReEncodeDialog::StartEncoding()
       }
     }
 
-    // Write header
-    dbglog("[QSV VPL ReEncoder] DEBUG: writing header...");
-    ret = m_FF.avformat_write_header(m_Ctx.out_fmt_ctx, nullptr);
-    if (ret < 0) {
-      AppendLog("ERROR: Cannot write header");
-      goto cleanup_failed;
-    }
-    dbglog("[QSV VPL ReEncoder] DEBUG: header written OK");
+    // NOTE: the header is NOT written here.  The MP4 avcC/hvcC box must
+    // contain the SPS/PPS, which the QSV encoder only produces together
+    // with its first keyframe (well after obs_output_start()).  The feed
+    // thread writes the header lazily, right before muxing the first
+    // encoded packet, once obs_encoder_get_extra_data() becomes available.
   }
 
   // 12. Start OBS output (this internally initializes encoder, starts encoding,
@@ -1100,6 +1099,48 @@ void ReEncodeDialog::FeedThreadMain()
 
     int ret;
 
+    // Write the output header once, lazily.  The video parameter sets
+    // (SPS/PPS for H.264, VPS/SPS/PPS for HEVC) are stored in the MP4
+    // avcC/hvcC box, but the QSV encoder strips them from the bitstream
+    // and only exposes them via obs_encoder_get_extra_data() after the
+    // first keyframe has been encoded.  So the header must be written
+    // after the first encoded packet arrives, not in StartEncoding().
+    // Thread-safety: the encoder writes ExtraData before pushing packets
+    // into pkt_queue (both happen on the encoder thread, in order), so by
+    // the time we pop a packet under pkt_mutex the data is stable.
+    auto writeHeaderOnce = [&]() -> bool {
+      if (ctx.header_written)
+        return true;
+
+      uint8_t *extraData = nullptr;
+      size_t extraSize = 0;
+      if (obs_encoder_get_extra_data(m_Encoder, &extraData, &extraSize) &&
+          extraData && extraSize > 0) {
+        // av_mallocz: avformat_free_context() releases codecpar->extradata
+        // with av_free(), so it must come from the FFmpeg allocator.
+        uint8_t *buf = (uint8_t *)ff.av_mallocz(extraSize + AV_INPUT_BUFFER_PADDING_SIZE);
+        if (buf) {
+          memcpy(buf, extraData, extraSize);
+          ctx.out_video_stream->codecpar->extradata = buf;
+          ctx.out_video_stream->codecpar->extradata_size = (int)extraSize;
+        }
+        AppendLog(QString("Got encoder extra data: %1 bytes").arg((int)extraSize));
+      } else {
+        // VP9 has no parameter sets; anything else cannot be decoded.
+        AppendLog("WARNING: encoder provided no extra data (SPS/PPS)");
+      }
+
+      int hr = ff.avformat_write_header(ctx.out_fmt_ctx, nullptr);
+      if (hr < 0) {
+        AppendLog(QString("ERROR: avformat_write_header failed: %1").arg(hr));
+        return false;
+      }
+      ctx.header_written = true;
+      dbglog("[QSV VPL ReEncoder] header written lazily, extradata=%d bytes",
+             (int)extraSize);
+      return true;
+    };
+
     while (!ctx.stop_requested) {
       // Read next packet from input
       ret = ff.av_read_frame(ctx.in_fmt_ctx, inPkt);
@@ -1193,6 +1234,10 @@ void ReEncodeDialog::FeedThreadMain()
               ReEncodeCtx::Packet encPkt = std::move(ctx.pkt_queue.front());
               ctx.pkt_queue.pop_front();
               lock.unlock();
+
+              // First muxed packet: header + SPS/PPS must hit the file first
+              if (!writeHeaderOnce())
+                return false;
 
               AVPacket *outPkt = ff.av_packet_alloc();
               outPkt->data = encPkt.data.data();
@@ -1382,6 +1427,12 @@ void ReEncodeDialog::FeedThreadMain()
           ctx.pkt_queue.pop_front();
           lock2.unlock();
 
+          // First muxed packet: header + SPS/PPS must hit the file first
+          if (!writeHeaderOnce()) {
+            success = false;
+            break;
+          }
+
           AVPacket *outPkt = ff.av_packet_alloc();
           outPkt->data = encPkt.data.data();
           outPkt->size = static_cast<int>(encPkt.data.size());
@@ -1459,6 +1510,10 @@ void ReEncodeDialog::FeedThreadMain()
         ctx.pkt_queue.erase(ctx.pkt_queue.begin());
         lock.unlock();
 
+        // First muxed packet: header + SPS/PPS must hit the file first
+        if (!writeHeaderOnce())
+          success = false;
+
         AVPacket *outPkt = ff.av_packet_alloc();
         outPkt->data = encPkt.data.data();
         outPkt->size = static_cast<int>(encPkt.data.size());
@@ -1469,19 +1524,22 @@ void ReEncodeDialog::FeedThreadMain()
         if (encPkt.keyframe)
           outPkt->flags |= AV_PKT_FLAG_KEY;
 
-        int wr = ff.av_interleaved_write_frame(ctx.out_fmt_ctx, outPkt);
-        ff.av_packet_free(&outPkt);
-        if (wr < 0) {
-          AppendLog(QString("ERROR: av_interleaved_write_frame (final) failed: %1").arg(wr));
-          success = false;
+        int wr = -1;
+        if (success) {
+          wr = ff.av_interleaved_write_frame(ctx.out_fmt_ctx, outPkt);
+          if (wr < 0) {
+            AppendLog(QString("ERROR: av_interleaved_write_frame (final) failed: %1").arg(wr));
+            success = false;
+          }
         }
+        ff.av_packet_free(&outPkt);
 
         lock.lock();
       }
     }
 
     // Write remaining audio packets
-    if (ctx.out_audio_stream && !ctx.audio_packets.empty()) {
+    if (ctx.header_written && ctx.out_audio_stream && !ctx.audio_packets.empty()) {
       AppendLog(QString("Writing %1 remaining audio packets...").arg(ctx.audio_packets.size()));
       for (auto *audioPkt : ctx.audio_packets) {
         audioPkt->stream_index = ctx.out_audio_stream->index;
@@ -1491,8 +1549,8 @@ void ReEncodeDialog::FeedThreadMain()
       ctx.audio_packets.clear();
     }
 
-    // Write trailer
-    if (ctx.out_fmt_ctx && success) {
+    // Write trailer — only valid if the header was actually written
+    if (ctx.out_fmt_ctx && success && ctx.header_written) {
       ff.av_write_trailer(ctx.out_fmt_ctx);
       AppendLog("Trailer written");
     }

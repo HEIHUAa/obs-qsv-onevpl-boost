@@ -96,6 +96,7 @@ struct ffmpeg_api {
   decltype(&avcodec_free_context) avcodec_free_context = nullptr;
 
   // avutil
+  decltype(&av_mallocz) av_mallocz = nullptr;
   decltype(&av_frame_alloc) av_frame_alloc = nullptr;
   decltype(&av_frame_free) av_frame_free = nullptr;
   decltype(&av_image_get_buffer_size) av_image_get_buffer_size = nullptr;
@@ -162,6 +163,10 @@ public:
     // whole queue on every encoded frame.
     std::deque<Packet> pkt_queue;
     bool encoder_done = false;
+    // MP4 header is written lazily from the feed thread, after the encoder
+    // has produced its first keyframe (parameter sets only become available
+    // then).  Guarded by happening entirely on the feed thread.
+    bool header_written = false;
 
     // Audio packets from input (stream copy, re-timestamped for output)
     std::vector<AVPacket *> audio_packets;
