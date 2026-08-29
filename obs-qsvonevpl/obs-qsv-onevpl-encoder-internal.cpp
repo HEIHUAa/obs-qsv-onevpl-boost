@@ -4188,31 +4188,45 @@ mfxStatus QSVEncoder::DrainAndRetrieveBitstream(mfxBitstream **Bitstream) {
     return MFX_ERR_DEVICE_FAILED;
   }
 
-  if (!m_DrainSubmitted) {
-    m_DrainSubmitted = true;
-    // Submit drain markers until the encoder reports no more buffered frames.
-    constexpr int MAX_DRAIN_SUBMITS = 128;
-    for (int i = 0; i < MAX_DRAIN_SUBMITS; i++) {
-      mfxSyncPoint sp = nullptr;
-      mfxStatus sts = QSVEncode->EncodeFrameAsync(nullptr, nullptr, nullptr, &sp);
-      if (sts == MFX_ERR_MORE_DATA) {
-        break;
-      }
-      if (sts < MFX_ERR_NONE && sts != MFX_ERR_NULL_PTR) {
-        warn("DrainAndRetrieve: EncodeFrameAsync error: %d", sts);
-        return sts;
-      }
-      if (sp) {
-        mfxStatus syncSts = MFXVideoCORE_SyncOperation(QSVSession, sp, 5000);
-        if (syncSts < MFX_ERR_NONE && syncSts != MFX_ERR_NULL_PTR) {
-          warn("DrainAndRetrieve: sync warning: %d", syncSts);
-        }
-      }
-    }
+  // Step 1: pull frames already sitting in the async task pool — these are
+  // the last AsyncDepth frames submitted during normal feed whose sync
+  // points have completed.
+  mfxStatus sts = SyncAndSwapPendingTask(Bitstream);
+  if (sts == MFX_ERR_NONE && *Bitstream && (*Bitstream)->DataLength > 0) {
+    return MFX_ERR_NONE;
+  }
+  if (sts < MFX_ERR_NONE) {
+    return sts;
   }
 
-  // Return completed frames from the task pool one at a time.
-  return SyncAndSwapPendingTask(Bitstream);
+  // Step 2: the pool is empty — submit a flush request.  With LA-lookahead
+  // the driver holds the last ~LookAheadDepth frames in its own buffer
+  // (they never enter the task pool); each null EncodeFrameAsync call makes
+  // the driver emit one of those frames into the supplied bitstream, until
+  // it returns MFX_ERR_MORE_DATA.
+  mfxSyncPoint sp = nullptr;
+  QSVBitstream.DataLength = 0;
+  QSVBitstream.DataOffset = 0;
+  sts = QSVEncode->EncodeFrameAsync(nullptr, nullptr, &QSVBitstream, &sp);
+  if (sts == MFX_ERR_MORE_DATA) {
+    return MFX_ERR_MORE_DATA;
+  }
+  if (sts < MFX_ERR_NONE && sts != MFX_ERR_NULL_PTR) {
+    warn("DrainAndRetrieve: EncodeFrameAsync flush error: %d", sts);
+    return sts;
+  }
+  if (sp) {
+    mfxStatus syncSts = MFXVideoCORE_SyncOperation(QSVSession, sp, 5000);
+    if (syncSts < MFX_ERR_NONE && syncSts != MFX_ERR_NULL_PTR) {
+      warn("DrainAndRetrieve: flush sync warning: %d", syncSts);
+    }
+  }
+  if (QSVBitstream.DataLength > 0) {
+    *Bitstream = &QSVBitstream;
+    return MFX_ERR_NONE;
+  }
+
+  return MFX_ERR_MORE_DATA;
 }
 
 mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
