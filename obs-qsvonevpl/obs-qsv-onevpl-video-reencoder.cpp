@@ -829,13 +829,10 @@ bool ReEncodeDialog::StartEncoding()
     m_Ctx.total_frames = static_cast<int64_t>(m_Ctx.duration / AV_TIME_BASE * fps);
   }
 
-  // 4. Open video decoder — multithreaded software decoding.  OBS's bundled
-  //    FFmpeg does NOT ship the qsv decoders (h264_qsv etc. are absent), so
-  //    the old find_decoder_by_name("hevc_qsv") path never actually engaged
-  //    and the job silently ran single-threaded — decode was the bottleneck.
-  //    FFmpeg API users default to thread_count=1; auto-detect core count
-  //    and enable frame+slice threading (latency is irrelevant for a file
-  //    re-encode).
+  // 4. Open video decoder — multithreaded software decoding.  FFmpeg API
+  //    users default to thread_count=1 (single thread), which starves the
+  //    encoder; auto-detect core count and enable frame+slice threading —
+  //    decode latency is irrelevant for a file re-encode.
   dbglog("[QSV VPL ReEncoder] DEBUG: opening video decoder...");
   m_Ctx.video_decoder = m_FF.avcodec_alloc_context3(videoDecoder);
   if (!m_Ctx.video_decoder) {
@@ -1299,41 +1296,20 @@ void ReEncodeDialog::FeedThreadMain()
             ptsNs = ff.av_rescale_q(ptsNs, decTb, {1, 1000000000});
 
           video_frame vf = {};
-          // Backpressure with a hard escape hatch.  Design constraints,
-          // learned the hard way:
-          //
-          // 1. video_output_lock_frame() must NOT be retried in a loop — on
-          //    failure it increments count/skipped on the last cached frame
-          //    (video-io.c ~522) and cur_frame() re-delivers that frame to
-          //    the encoder once per count decrement (same frame encoded 30+
-          //    times → GPU 100%, progress frozen).
-          //
-          // 2. Cache slots are freed when the video thread hands a frame to
-          //    the encoder (do_encode()), NOT when the encoder emits a
-          //    packet.  So the correct pacing signal is the *consumption*
-          //    counter video_output_get_total_frames() — it advances on
-          //    every cache-slot release.  Gating on
-          //    obs_encoder_get_encoded_frames() (packets produced) is
-          //    wrong: with LA-lookahead the driver swallows the whole
-          //    lookahead window (~100 frames) before producing output, so
-          //    that counter lags far behind and the cache (32 slots) fills
-          //    up meanwhile → lock_frame() fails → the frame is DROPPED.
-          //    Each dropped frame also skips frames_fed++, so the drop rate
-          //    compounds later in the file — exactly the "more frame drops
-          //    the longer it runs" symptom.
-          //
-          // So: keep in-flight frames (= fed - consumed) comfortably below
-          // the 32-slot cache, so lock_frame() virtually never fails and no
-          // frame is lost.  The 10s timeout only exists as an escape hatch
-          // if the encoder wedges completely — worst case we skip a frame
-          // instead of freezing forever.
+          // Backpressure: keep in-flight frames (= fed - consumed) very low
+          // so the video cache always has a free slot.  lock_frame() failure
+          // is destructive (the encoder re-encodes the previous frame and
+          // the pacing counter is corrupted), so the decoder must be
+          // throttled to the encoder's pace — exactly what FFmpeg's bounded
+          // encoder queue does.  Speed is then bounded by the encoder, never
+          // by frame drops.
           {
             auto stallStart = std::chrono::steady_clock::now();
             bool timedOut = false;
             while (m_Video &&
                    ctx.frames_fed.load() -
                            (int64_t)video_output_get_total_frames(m_Video) >=
-                       28) {
+                       2) {
               if (ctx.stop_requested)
                 return true;
               std::this_thread::sleep_for(1ms);
@@ -1346,15 +1322,13 @@ void ReEncodeDialog::FeedThreadMain()
               dbglog("[QSV VPL ReEncoder] backpressure stall timeout at frame %lld, resuming feed",
                      (long long)ctx.frames_fed.load());
           }
-          if (!video_output_lock_frame(m_Video, &vf, 1, ptsNs)) {
-            // Cache full — with the pacing above this is only reachable on
-            // the encoder-wedge escape path.  Skip rather than retry (see
-            // #1).  This is the same behavior the single-threaded version
-            // effectively never hit because decode was always slower than
-            // encode.
-            dbglog("[QSV VPL ReEncoder] lock_frame failed, skipping frame %lld",
-                   (long long)ctx.frames_fed.load());
-            return true;
+          // Normally succeeds on the first try (see pacing above).  If it
+          // still fails, wait for a slot rather than dropping the frame —
+          // a dropped frame in an offline re-encode is corruption.
+          while (!video_output_lock_frame(m_Video, &vf, 1, ptsNs)) {
+            if (ctx.stop_requested)
+              return true;
+            std::this_thread::sleep_for(2ms);
           }
 
           for (int i = 0; i < MAX_AV_PLANES; i++) {
