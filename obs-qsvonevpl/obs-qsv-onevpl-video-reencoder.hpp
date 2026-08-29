@@ -58,7 +58,6 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/avutil.h>
-#include <libavutil/pixdesc.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
 #include <libswscale/swscale.h>
@@ -103,8 +102,6 @@ struct ffmpeg_api {
   decltype(&av_image_get_buffer_size) av_image_get_buffer_size = nullptr;
   decltype(&av_image_fill_arrays) av_image_fill_arrays = nullptr;
   decltype(&av_rescale_q) av_rescale_q = nullptr;
-  // used for logging the decoded pixel format
-  decltype(&av_get_pix_fmt_name) av_get_pix_fmt_name = nullptr;
 
   // swscale
   decltype(&sws_getContext) sws_getContext = nullptr;
@@ -145,8 +142,7 @@ public:
     AVCodecContext *video_decoder = nullptr;
     SwsContext *sws_ctx = nullptr;
     AVFrame *decoded_frame = nullptr;
-    // decoded frame converted to the OBS-facing pixel format (NV12 or P010)
-    AVFrame *conv_frame = nullptr;
+    AVFrame *nv12_frame = nullptr;
 
     // FFmpeg output
     AVFormatContext *out_fmt_ctx = nullptr;
@@ -179,6 +175,7 @@ public:
     int64_t duration = 0;
     int64_t total_frames = 0;
     std::atomic<int64_t> frames_encoded{0};
+    std::atomic<int64_t> frames_fed{0};
     std::atomic<bool> stop_requested{false};
     std::atomic<bool> encoder_flushed{false};
     std::atomic<bool> feed_error{false};
@@ -207,8 +204,9 @@ private:
   int m_Height = 0;
   int m_FpsNum = 30;
   int m_FpsDen = 1;
-  // input is 10-bit → run the OBS video pipeline as P010
-  bool m_Input10bit = false;
+
+  AVPixelFormat m_TargetPixFmt = AV_PIX_FMT_NV12;
+  video_format m_TargetObsFormat = VIDEO_FORMAT_NV12;
 
   // keep the QByteArray alive so the const char* from toUtf8() stays valid
   QByteArray m_OutputPathBytes;

@@ -14,7 +14,6 @@
 #include <util/platform.h>
 #include <util/threading.h>
 #include <cstdio>
-#include <string_view>
 #include <windows.h>
 
 using namespace std::chrono_literals;
@@ -111,7 +110,6 @@ bool LoadFFmpegAPI(ffmpeg_api &ff)
   ok = ok && ResolveFunc(avutil, "av_image_get_buffer_size", ff.av_image_get_buffer_size);
   ok = ok && ResolveFunc(avutil, "av_image_fill_arrays", ff.av_image_fill_arrays);
   ok = ok && ResolveFunc(avutil, "av_rescale_q", ff.av_rescale_q);
-  ResolveFunc(avutil, "av_get_pix_fmt_name", ff.av_get_pix_fmt_name);
 
   // av_packet_alloc/free may be in avutil or avcodec (OBS layout varies)
   ff.av_packet_alloc = reinterpret_cast<decltype(ff.av_packet_alloc)>(
@@ -364,29 +362,6 @@ static enum AVCodecID EncoderIDToAVCodecID(const std::string &id)
   if (id.find("vp9") != std::string::npos)
     return AV_CODEC_ID_VP9;
   return AV_CODEC_ID_NONE;
-}
-
-// Whether the QSV encoder will request P010 for the given profile.  This
-// must mirror GetVideoInfo() in obs-qsv-onevpl-encoder.cpp: the OBS video
-// cache format has to match what the encoder requests, otherwise libobs
-// inserts a swscale conversion whose P010 bit-alignment semantics (LSB)
-// differ from oneVPL's P010 (MSB, Shift=1) and the levels come out wrong.
-static bool EncoderWantsP010(const std::string &encoderId, const char *profile)
-{
-  std::string_view svProf = profile ? profile : "";
-  if (encoderId.find("hevc") != std::string::npos)
-    return svProf == "main10" || svProf == "rext" || svProf == "scc";
-  if (encoderId.find("h264") != std::string::npos)
-    return svProf == "high10";
-  if (encoderId.find("av1") != std::string::npos)
-    return svProf == "main" || svProf.empty();
-  if (encoderId.find("vp9") != std::string::npos)
-    // "2 (10-bit 4:2:0)" and "3 (10-bit 4:4:4)" both request P010 for a
-    // P010 pipeline (the encoder auto-corrects profile 3 down to 2 for
-    // 4:2:0 input, see the VP9 profile check in plugin-init).
-    return strncmp(svProf.data(), "2 (", 3) == 0 ||
-           strncmp(svProf.data(), "3 (", 3) == 0;
-  return false;
 }
 
 // strip "_tex" suffix to get the frame (non-texture) encoder ID
@@ -776,7 +751,7 @@ bool ReEncodeDialog::StartEncoding()
   m_Ctx.video_decoder = nullptr;
   m_Ctx.sws_ctx = nullptr;
   m_Ctx.decoded_frame = nullptr;
-  m_Ctx.conv_frame = nullptr;
+  m_Ctx.nv12_frame = nullptr;
   m_Ctx.out_fmt_ctx = nullptr;
   m_Ctx.out_video_stream = nullptr;
   m_Ctx.out_audio_stream = nullptr;
@@ -787,6 +762,7 @@ bool ReEncodeDialog::StartEncoding()
   m_Ctx.duration = 0;
   m_Ctx.total_frames = 0;
   m_Ctx.frames_encoded = 0;
+  m_Ctx.frames_fed = 0;
   m_Ctx.stop_requested = false;
   m_Ctx.encoder_flushed = false;
   m_Ctx.feed_error = false;
@@ -826,27 +802,18 @@ bool ReEncodeDialog::StartEncoding()
 
   AVStream *inVideoStream = m_Ctx.in_fmt_ctx->streams[m_Ctx.video_stream_idx];
 
-  // Detect 10-bit input from stream metadata so the OBS video pipeline can
-  // run as P010 end-to-end (NV12 would dither the source down to 8-bit).
-  // P010 is only used when the encoder profile will actually request P010
-  // (see EncoderWantsP010) — otherwise the cache and the encoder request
-  // must both stay NV12 so libobs never inserts a conversion in between.
-  {
-    const AVCodecParameters *par = inVideoStream->codecpar;
-    const bool input10 = par->bits_per_raw_sample > 8 ||
-                         par->format == AV_PIX_FMT_YUV420P10LE ||
-                         par->format == AV_PIX_FMT_P010LE;
-    const char *prof = m_EncoderSettings
-                           ? obs_data_get_string(m_EncoderSettings, "profile")
-                           : nullptr;
-    m_Input10bit = input10 && EncoderWantsP010(m_EncoderID, prof);
-    if (input10 && !m_Input10bit)
-      AppendLog("Input is 10-bit but encoder profile is 8-bit — encoding as NV12");
-  }
-
   int srcWidth = inVideoStream->codecpar->width;
   int srcHeight = inVideoStream->codecpar->height;
   AppendLog(QString("Input: %1x%2").arg(srcWidth).arg(srcHeight));
+
+  {
+    const int srcBits = inVideoStream->codecpar->bits_per_raw_sample;
+    const bool is10bit = (srcBits >= 10 && srcBits <= 14);
+    m_TargetPixFmt = is10bit ? AV_PIX_FMT_P010 : AV_PIX_FMT_NV12;
+    m_TargetObsFormat = is10bit ? VIDEO_FORMAT_P010 : VIDEO_FORMAT_NV12;
+    if (is10bit)
+      AppendLog(QString("10-bit source (%1): using P010 pipeline").arg(srcBits));
+  }
 
   // Get frame rate from input
   if (inVideoStream->avg_frame_rate.num > 0 && inVideoStream->avg_frame_rate.den > 0) {
@@ -862,7 +829,13 @@ bool ReEncodeDialog::StartEncoding()
     m_Ctx.total_frames = static_cast<int64_t>(m_Ctx.duration / AV_TIME_BASE * fps);
   }
 
-  // 4. Open video decoder
+  // 4. Open video decoder — multithreaded software decoding.  OBS's bundled
+  //    FFmpeg does NOT ship the qsv decoders (h264_qsv etc. are absent), so
+  //    the old find_decoder_by_name("hevc_qsv") path never actually engaged
+  //    and the job silently ran single-threaded — decode was the bottleneck.
+  //    FFmpeg API users default to thread_count=1; auto-detect core count
+  //    and enable frame+slice threading (latency is irrelevant for a file
+  //    re-encode).
   dbglog("[QSV VPL ReEncoder] DEBUG: opening video decoder...");
   m_Ctx.video_decoder = m_FF.avcodec_alloc_context3(videoDecoder);
   if (!m_Ctx.video_decoder) {
@@ -870,26 +843,16 @@ bool ReEncodeDialog::StartEncoding()
     AppendLog("ERROR: Cannot allocate decoder");
     return false;
   }
-
   ret = m_FF.avcodec_parameters_to_context(m_Ctx.video_decoder,
-                                            inVideoStream->codecpar);
+                                           inVideoStream->codecpar);
   if (ret < 0) {
     m_FF.avcodec_free_context(&m_Ctx.video_decoder);
     m_FF.avformat_close_input(&m_Ctx.in_fmt_ctx);
     AppendLog("ERROR: Cannot copy codec params");
     return false;
   }
-
-  // FFmpeg API users default to thread_count=1 (single-threaded decoding),
-  // which starves the encoder on modern CPUs. Auto-detect thread count and
-  // allow frame-level threading (decode latency is irrelevant for a file
-  // re-encode).
-  m_Ctx.video_decoder->thread_count = 0;
+  m_Ctx.video_decoder->thread_count = 0; // auto = CPU cores
   m_Ctx.video_decoder->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
-  AppendLog("Decoder: software (multi-threaded)");
-
-  if (m_Input10bit)
-    AppendLog("Input is 10-bit — using P010 pipeline");
 
   dbglog("[QSV VPL ReEncoder] DEBUG: opening codec...");
   ret = m_FF.avcodec_open2(m_Ctx.video_decoder, videoDecoder, nullptr);
@@ -899,6 +862,7 @@ bool ReEncodeDialog::StartEncoding()
     AppendLog("ERROR: Cannot open decoder");
     return false;
   }
+  AppendLog("Decoder: software, multithreaded");
   dbglog("[QSV VPL ReEncoder] DEBUG: decoder opened OK");
 
   // 5. Find audio stream (optional)
@@ -913,8 +877,8 @@ bool ReEncodeDialog::StartEncoding()
   // 6. Allocate frames
   dbglog("[QSV VPL ReEncoder] DEBUG: allocating frames...");
   m_Ctx.decoded_frame = m_FF.av_frame_alloc();
-  m_Ctx.conv_frame = m_FF.av_frame_alloc();
-  if (!m_Ctx.decoded_frame || !m_Ctx.conv_frame) {
+  m_Ctx.nv12_frame = m_FF.av_frame_alloc();
+  if (!m_Ctx.decoded_frame || !m_Ctx.nv12_frame) {
     AppendLog("ERROR: Cannot allocate frames");
     goto cleanup_failed;
   }
@@ -929,12 +893,7 @@ bool ReEncodeDialog::StartEncoding()
     dbglog("[QSV VPL ReEncoder] DEBUG: creating video output...");
     video_output_info vi = {};
     vi.name = "qsv-reencode-video";
-    // 10-bit input + 10-bit-capable encoder profile runs the pipeline as
-    // P010 (MSB-aligned, matching MFX Shift=1 in the encoder); the encoder
-    // then requests P010 too, so libobs never converts in between. For
-    // everything else the pipeline stays NV12 and sws handles the depth
-    // conversion here in the feed thread.
-    vi.format = m_Input10bit ? VIDEO_FORMAT_P010 : VIDEO_FORMAT_NV12;
+    vi.format = m_TargetObsFormat;
     vi.width = static_cast<uint32_t>(srcWidth);
     vi.height = static_cast<uint32_t>(srcHeight);
     vi.fps_num = static_cast<uint32_t>(m_FpsNum);
@@ -1094,8 +1053,8 @@ cleanup_failed:
   if (m_Ctx.decoded_frame) {
     m_FF.av_frame_free(&m_Ctx.decoded_frame);
   }
-  if (m_Ctx.conv_frame) {
-    m_FF.av_frame_free(&m_Ctx.conv_frame);
+  if (m_Ctx.nv12_frame) {
+    m_FF.av_frame_free(&m_Ctx.nv12_frame);
   }
   if (m_Ctx.out_fmt_ctx) {
     if (!(m_Ctx.out_fmt_ctx->oformat->flags & AVFMT_NOFILE) &&
@@ -1287,130 +1246,148 @@ void ReEncodeDialog::FeedThreadMain()
       return true;
     };
 
-    // Process one decoded frame: convert to the OBS-facing format (NV12 or
-    // P010LE), feed the OBS video pipeline, then mux whatever the encoder
-    // produced meanwhile.
+    // Helper: process one decoded frame (convert/pass-through
+    // → feed OBS → mux).  Defined at loop scope because both the main loop
+    // and the EOF decoder-drain loop use it.
     auto processFrame = [&]() -> bool {
-      AVFrame *src = ctx.decoded_frame;
-
-      const AVPixelFormat targetFmt =
-          m_Input10bit ? AV_PIX_FMT_P010LE : AV_PIX_FMT_NV12;
-
-      // Convert when the decoded frame differs from the target (e.g.
-      // yuv420p → NV12, yuv420p10le → P010LE).  When the format already
-      // matches, skip swscale entirely and save a full-frame pass.
-      AVFrame *out = src;
-      if ((AVPixelFormat)src->format != targetFmt) {
-        // Lazily create the swscale context after the first frame is
-        // decoded, using the real source format (avcodec_open2 often
-        // leaves pix_fmt unset).
-        if (!ctx.sws_ctx) {
-          dbglog("[QSV VPL ReEncoder] Creating sws_context from frame: %dx%d fmt=%s",
-                 src->width, src->height,
-                 ff.av_get_pix_fmt_name
-                     ? ff.av_get_pix_fmt_name((AVPixelFormat)src->format)
-                     : "?");
-          ctx.sws_ctx = ff.sws_getContext(
-              src->width, src->height, (AVPixelFormat)src->format,
-              src->width, src->height, targetFmt, SWS_BILINEAR,
-              nullptr, nullptr, nullptr);
-          if (!ctx.sws_ctx) {
-            AppendLog("ERROR: Cannot create swscale context");
-            return false;
-          }
-          dbglog("[QSV VPL ReEncoder] sws_context created OK");
-        }
-
-        ctx.conv_frame->format = targetFmt;
-        ctx.conv_frame->width = src->width;
-        ctx.conv_frame->height = src->height;
-        int bufSize = ff.av_image_get_buffer_size(targetFmt, src->width,
-                                                   src->height, 1);
-        static thread_local std::vector<uint8_t> conv_buf;
-        conv_buf.resize(bufSize);
-        ff.av_image_fill_arrays(ctx.conv_frame->data, ctx.conv_frame->linesize,
-                                 conv_buf.data(), targetFmt, src->width,
-                                 src->height, 1);
-
-        ff.sws_scale(ctx.sws_ctx, src->data, src->linesize, 0, src->height,
-                     ctx.conv_frame->data, ctx.conv_frame->linesize);
-        out = ctx.conv_frame;
-      }
-
-      // Feed the frame to the OBS video pipeline
-      int64_t ptsNs = ctx.decoded_frame->pts;
-      AVRational decTb = ctx.in_fmt_ctx->streams[ctx.video_stream_idx]->time_base;
-      if (ptsNs == AV_NOPTS_VALUE)
-        // No PTS in source: assume constant frame order, index * frame duration
-        ptsNs = ff.av_rescale_q(ctx.frames_encoded.load(),
-                                {m_FpsDen, m_FpsNum}, {1, 1000000000});
-      else
-        ptsNs = ff.av_rescale_q(ptsNs, decTb, {1, 1000000000});
-
-      video_frame vf = {};
-      // Wait for a free cache slot instead of skipping the frame:
-      // video-io marks skipped slots and replays the previous frame's
-      // data for them, which both drops and duplicates frames when the
-      // decoder temporarily outruns the encoder.
-      while (!video_output_lock_frame(m_Video, &vf, 1, ptsNs)) {
-        if (ctx.stop_requested)
-          return true;
-        std::this_thread::sleep_for(1ms);
-      }
-
-      const bool tenBit = (targetFmt == AV_PIX_FMT_P010LE);
-      for (int i = 0; i < 2; i++) { // NV12 and P010 are both two-plane
-        if (!vf.data[i] || !out->data[i])
-          continue;
-        // Copy row-wise but never read past the tightly-packed source:
-        // conv_buf is allocated with align=1 (linesize == width) while
-        // OBS's vf.linesize may be larger (aligned) — the old memcpy by
-        // vf.linesize could over-read the source buffer.
-        const size_t srcLine = (size_t)out->linesize[i];
-        const size_t dstLine = (size_t)vf.linesize[i];
-        const size_t rows =
-            (i > 0) ? (size_t)out->height / 2 : (size_t)out->height;
-        const size_t copyLine = dstLine < srcLine ? dstLine : srcLine;
-        for (size_t row = 0; row < rows; row++) {
-          uint8_t *dstRow = vf.data[i] + row * dstLine;
-          const uint8_t *srcRow = out->data[i] + row * srcLine;
-          if (!tenBit) {
-            memcpy(dstRow, srcRow, copyLine);
+          AVFrame *srcF = ctx.decoded_frame;
+          AVFrame *workF;
+          if ((AVPixelFormat)srcF->format == m_TargetPixFmt) {
+            workF = srcF;
           } else {
-            // P010: oneVPL expects MSB-aligned 10-bit samples (Shift=1,
-            // matching DXGI_FORMAT_P010), while FFmpeg's P010LE is
-            // LSB-aligned — shift each 16-bit sample left by 6 while
-            // copying.
-            uint16_t *dst16 = reinterpret_cast<uint16_t *>(dstRow);
-            const uint16_t *src16 =
-                reinterpret_cast<const uint16_t *>(srcRow);
-            const size_t samples = copyLine / 2;
-            for (size_t x = 0; x < samples; x++)
-              dst16[x] = src16[x] << 6;
+            if (!ctx.sws_ctx) {
+              dbglog("[QSV VPL ReEncoder] Creating sws_context from frame: %dx%d fmt=%d",
+                     srcF->width, srcF->height, srcF->format);
+              ctx.sws_ctx = ff.sws_getContext(
+                  srcF->width, srcF->height, (AVPixelFormat)srcF->format,
+                  srcF->width, srcF->height, m_TargetPixFmt,
+                  SWS_BILINEAR, nullptr, nullptr, nullptr);
+              if (!ctx.sws_ctx) {
+                AppendLog("ERROR: Cannot create swscale context");
+                return false;
+              }
+              dbglog("[QSV VPL ReEncoder] sws_context created OK");
+            }
+
+            ctx.nv12_frame->format = m_TargetPixFmt;
+            ctx.nv12_frame->width = srcF->width;
+            ctx.nv12_frame->height = srcF->height;
+            int bufSize = ff.av_image_get_buffer_size(m_TargetPixFmt,
+                                                       srcF->width,
+                                                       srcF->height, 1);
+            static thread_local std::vector<uint8_t> cvt_buf;
+            cvt_buf.resize(bufSize);
+            ff.av_image_fill_arrays(ctx.nv12_frame->data, ctx.nv12_frame->linesize,
+                                     cvt_buf.data(), m_TargetPixFmt,
+                                     srcF->width, srcF->height, 1);
+
+            ff.sws_scale(ctx.sws_ctx,
+                          srcF->data, srcF->linesize,
+                          0, srcF->height,
+                          ctx.nv12_frame->data, ctx.nv12_frame->linesize);
+            workF = ctx.nv12_frame;
           }
-        }
-      }
 
-      video_output_unlock_frame(m_Video);
+          // 3. Feed frame to OBS video pipeline
+          int64_t ptsNs = srcF->pts;
+          AVRational decTb = ctx.in_fmt_ctx->streams[ctx.video_stream_idx]->time_base;
+          if (ptsNs == AV_NOPTS_VALUE)
+            // No PTS in source: assume constant frame order, index * frame duration
+            ptsNs = ff.av_rescale_q(ctx.frames_encoded.load(),
+                                    {m_FpsDen, m_FpsNum}, {1, 1000000000});
+          else
+            ptsNs = ff.av_rescale_q(ptsNs, decTb, {1, 1000000000});
 
-      // Process available encoded packets (non-blocking)
-      {
-        std::unique_lock lock(ctx.pkt_mutex);
-        while (!ctx.pkt_queue.empty()) {
-          ReEncodeCtx::Packet encPkt = std::move(ctx.pkt_queue.front());
-          ctx.pkt_queue.pop_front();
-          lock.unlock();
+          video_frame vf = {};
+          // Backpressure with a hard escape hatch.  Design constraints,
+          // learned the hard way:
+          //
+          // 1. video_output_lock_frame() must NOT be retried in a loop — on
+          //    failure it increments count/skipped on the last cached frame
+          //    (video-io.c ~522) and cur_frame() re-delivers that frame to
+          //    the encoder once per count decrement (same frame encoded 30+
+          //    times → GPU 100%, progress frozen).
+          //
+          // 2. Cache slots are freed when do_encode() runs, NOT when the
+          //    encoder emits a packet.  With LA-lookahead the driver quietly
+          //    swallows ~LookaheadDepth (100) frames before producing any
+          //    output, so gating the feed on "encoded_frames must grow"
+          //    starves the driver below its lookahead window → deadlock
+          //    (progress stuck at 0%).  The old code that "just worked"
+          //    never waited: it skipped the frame and kept the pipeline
+          //    flowing.
+          //
+          // So: pause while in-flight frames exceed the pipeline budget
+          // (lookahead 100 + cache 32 + task pool + margin), BUT if the
+          // encoder makes no progress for 2s, resume feeding anyway — worst
+          // case we fall back to the old skip-frame behavior instead of
+          // freezing forever.
+          {
+            auto stallStart = std::chrono::steady_clock::now();
+            bool timedOut = false;
+            while (m_Encoder &&
+                   ctx.frames_fed.load() -
+                           (int64_t)obs_encoder_get_encoded_frames(m_Encoder) >=
+                       160) {
+              if (ctx.stop_requested)
+                return true;
+              std::this_thread::sleep_for(1ms);
+              if (std::chrono::steady_clock::now() - stallStart > 2s) {
+                timedOut = true;
+                break;
+              }
+            }
+            if (timedOut)
+              dbglog("[QSV VPL ReEncoder] backpressure stall timeout at frame %lld, resuming feed",
+                     (long long)ctx.frames_fed.load());
+          }
+          if (!video_output_lock_frame(m_Video, &vf, 1, ptsNs)) {
+            // Cache full (stall-timeout path or race).  Skip this frame —
+            // same as the original working code.  Never retry (see #1).
+            dbglog("[QSV VPL ReEncoder] lock_frame failed, skipping frame %lld",
+                   (long long)ctx.frames_fed.load());
+            return true;
+          }
 
-          if (!muxVideoPacket(encPkt))
-            return false;
+          for (int i = 0; i < MAX_AV_PLANES; i++) {
+            if (vf.data[i] && workF->data[i]) {
+              // Copy row-wise but never read past the tightly-packed source:
+              // cvt_buf is allocated with align=1 (linesize == width) while
+              // OBS's vf.linesize may be larger (aligned) — the old memcpy by
+              // vf.linesize could over-read the source buffer.
+              const size_t srcLine = (size_t)workF->linesize[i];
+              const size_t dstLine = (size_t)vf.linesize[i];
+              const size_t rows =
+                  (i > 0) ? (size_t)srcF->height / 2
+                          : (size_t)srcF->height;
+              const size_t copyLine = dstLine < srcLine ? dstLine : srcLine;
+              for (size_t row = 0; row < rows; row++)
+                memcpy(vf.data[i] + row * dstLine,
+                       workF->data[i] + row * srcLine, copyLine);
+            }
+          }
 
-          lock.lock();
-        }
-      }
+          video_output_unlock_frame(m_Video);
+          ctx.frames_fed++;
 
-      ctx.frames_encoded++;
-      UpdateProgress(ctx.frames_encoded, ctx.total_frames);
-      return true;
+          // Process available encoded packets (non-blocking)
+          {
+            std::unique_lock lock(ctx.pkt_mutex);
+            while (!ctx.pkt_queue.empty()) {
+              ReEncodeCtx::Packet encPkt = std::move(ctx.pkt_queue.front());
+              ctx.pkt_queue.pop_front();
+              lock.unlock();
+
+              if (!muxVideoPacket(encPkt))
+                return false;
+
+              lock.lock();
+            }
+          }
+
+          ctx.frames_encoded++;
+          UpdateProgress(ctx.frames_encoded, ctx.total_frames);
+          return true;
     };
 
     while (!ctx.stop_requested) {
@@ -1427,7 +1404,6 @@ void ReEncodeDialog::FeedThreadMain()
 
       if (inPkt->stream_index == ctx.video_stream_idx) {
         // --- Video packet ---
-        // (frame handling lives in processFrame above)
 
         // Send packet to decoder.
         // EAGAIN means decoder output buffer is full — drain it first, then retry.
@@ -1497,9 +1473,7 @@ void ReEncodeDialog::FeedThreadMain()
 
     // --- Loop ended (EOF or stop_requested) ---
 
-    // Flush the decoder: send null packet, drain remaining frames.
-    // The drain path shares processFrame with the main loop, which also
-    // covers the hw transfer and the P010 shift.
+    // Flush the decoder: send null packet, drain remaining frames
     ff.avcodec_send_packet(ctx.video_decoder, nullptr);
     while (true) {
       ret = ff.avcodec_receive_frame(ctx.video_decoder, ctx.decoded_frame);
@@ -1510,7 +1484,6 @@ void ReEncodeDialog::FeedThreadMain()
         success = false;
         break;
       }
-
       if (!processFrame()) {
         success = false;
         break;
@@ -1521,18 +1494,32 @@ void ReEncodeDialog::FeedThreadMain()
     // letting StopEncoding() tear the output down: obs_output_stop()
     // disconnects receive_video immediately, and any frames still sitting
     // in the video cache would be silently dropped.
+    //
+    // Stall detection: frames still buffered inside the driver's lookahead
+    // window may never surface as encoded output until shutdown, so waiting
+    // for full equality could block for the whole 30s timeout on every run.
+    // If encoded_frames stops advancing for 2s, accept the remainder.
     if (!ctx.stop_requested && m_Encoder) {
       auto deadline = std::chrono::steady_clock::now() + 30s;
+      auto lastProgress = std::chrono::steady_clock::now();
+      uint32_t lastEncoded = obs_encoder_get_encoded_frames(m_Encoder);
       while (obs_encoder_get_encoded_frames(m_Encoder) <
-                 (uint32_t)ctx.frames_encoded.load() &&
+                 (uint32_t)ctx.frames_fed.load() &&
              std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(2ms);
+        uint32_t cur = obs_encoder_get_encoded_frames(m_Encoder);
+        if (cur != lastEncoded) {
+          lastEncoded = cur;
+          lastProgress = std::chrono::steady_clock::now();
+        } else if (std::chrono::steady_clock::now() - lastProgress > 2s) {
+          break; // stalled — remaining frames live in the lookahead window
+        }
       }
       if (obs_encoder_get_encoded_frames(m_Encoder) <
-          (uint32_t)ctx.frames_encoded.load()) {
+          (uint32_t)ctx.frames_fed.load()) {
         AppendLog(QString("WARNING: encoder did not finish all frames (%1/%2)")
                       .arg((int)obs_encoder_get_encoded_frames(m_Encoder))
-                      .arg((int)ctx.frames_encoded.load()));
+                      .arg((int)ctx.frames_fed.load()));
       }
     }
 
@@ -1644,8 +1631,8 @@ void ReEncodeDialog::FeedThreadMain()
     ff.av_frame_free(&ctx.decoded_frame);
   }
 
-  if (ctx.conv_frame) {
-    ff.av_frame_free(&ctx.conv_frame);
+  if (ctx.nv12_frame) {
+    ff.av_frame_free(&ctx.nv12_frame);
   }
 
   // cleanup buffered audio packets
