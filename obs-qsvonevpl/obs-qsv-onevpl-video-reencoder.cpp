@@ -107,14 +107,9 @@ bool LoadFFmpegAPI(ffmpeg_api &ff)
   ok = ok && ResolveFunc(avutil, "av_mallocz", ff.av_mallocz);
   ok = ok && ResolveFunc(avutil, "av_frame_alloc", ff.av_frame_alloc);
   ok = ok && ResolveFunc(avutil, "av_frame_free", ff.av_frame_free);
-  ok = ok && ResolveFunc(avutil, "av_frame_unref", ff.av_frame_unref);
   ok = ok && ResolveFunc(avutil, "av_image_get_buffer_size", ff.av_image_get_buffer_size);
   ok = ok && ResolveFunc(avutil, "av_image_fill_arrays", ff.av_image_fill_arrays);
   ok = ok && ResolveFunc(avutil, "av_rescale_q", ff.av_rescale_q);
-  ResolveFunc(avutil, "av_hwdevice_ctx_create", ff.av_hwdevice_ctx_create);
-  ResolveFunc(avutil, "av_hwframe_transfer_data", ff.av_hwframe_transfer_data);
-  ResolveFunc(avutil, "av_buffer_unref", ff.av_buffer_unref);
-  ResolveFunc(avutil, "av_buffer_ref", ff.av_buffer_ref);
 
   // av_packet_alloc/free may be in avutil or avcodec (OBS layout varies)
   ff.av_packet_alloc = reinterpret_cast<decltype(ff.av_packet_alloc)>(
@@ -757,8 +752,6 @@ bool ReEncodeDialog::StartEncoding()
   m_Ctx.sws_ctx = nullptr;
   m_Ctx.decoded_frame = nullptr;
   m_Ctx.nv12_frame = nullptr;
-  m_Ctx.hw_dled_frame = nullptr;
-  m_Ctx.hw_decode_active = false;
   m_Ctx.out_fmt_ctx = nullptr;
   m_Ctx.out_video_stream = nullptr;
   m_Ctx.out_audio_stream = nullptr;
@@ -808,18 +801,27 @@ bool ReEncodeDialog::StartEncoding()
 
   AVStream *inVideoStream = m_Ctx.in_fmt_ctx->streams[m_Ctx.video_stream_idx];
 
+  // Try QSV hardware decoder for better performance
+  const char *qsvDecName = nullptr;
+  switch (inVideoStream->codecpar->codec_id) {
+    case AV_CODEC_ID_H264: qsvDecName = "h264_qsv"; break;
+    case AV_CODEC_ID_HEVC: qsvDecName = "hevc_qsv"; break;
+    case AV_CODEC_ID_AV1:  qsvDecName = "av1_qsv";  break;
+    case AV_CODEC_ID_VP9: qsvDecName = "vp9_qsv";  break;
+    default: break;
+  }
+  if (qsvDecName) {
+    const AVCodec *qsvDecoder = m_FF.avcodec_find_decoder_by_name(qsvDecName);
+    if (qsvDecoder) {
+      videoDecoder = qsvDecoder;
+      dbglog("[QSV VPL ReEncoder] HW decoder: %s", qsvDecName);
+      AppendLog(QString("HW decoder: %1").arg(qsvDecName));
+    }
+  }
+
   int srcWidth = inVideoStream->codecpar->width;
   int srcHeight = inVideoStream->codecpar->height;
   AppendLog(QString("Input: %1x%2").arg(srcWidth).arg(srcHeight));
-
-  {
-    const int srcBits = inVideoStream->codecpar->bits_per_raw_sample;
-    const bool is10bit = (srcBits >= 10 && srcBits <= 14);
-    m_TargetPixFmt = is10bit ? AV_PIX_FMT_P010 : AV_PIX_FMT_NV12;
-    m_TargetObsFormat = is10bit ? VIDEO_FORMAT_P010 : VIDEO_FORMAT_NV12;
-    if (is10bit)
-      AppendLog(QString("10-bit source (%1): using P010 pipeline").arg(srcBits));
-  }
 
   // Get frame rate from input
   if (inVideoStream->avg_frame_rate.num > 0 && inVideoStream->avg_frame_rate.den > 0) {
@@ -835,73 +837,31 @@ bool ReEncodeDialog::StartEncoding()
     m_Ctx.total_frames = static_cast<int64_t>(m_Ctx.duration / AV_TIME_BASE * fps);
   }
 
-  // 4. Open video decoder — D3D11VA hardware decoding + multithreaded software
-  //    fallback.  NOTE: OBS's bundled FFmpeg does NOT ship the qsv decoders
-  //    (h264_qsv etc. are absent from avcodec DLL), so the old
-  //    find_decoder_by_name("hevc_qsv") path never actually engaged and the
-  //    job silently ran on a single-threaded software decoder — the decode
-  //    stage was the bottleneck, not the encoder.  D3D11VA (fully present in
-  //    the DLL) drives the same GPU decode unit and is set up via the plain
-  //    software decoder + hw_device_ctx, with av_hwframe_transfer_data used
-  //    to pull frames back into system memory.
+  // 4. Open video decoder
   dbglog("[QSV VPL ReEncoder] DEBUG: opening video decoder...");
-  bool hwDecodeOk = false;
-  if (m_FF.av_hwdevice_ctx_create && m_FF.av_hwframe_transfer_data &&
-      m_FF.av_buffer_unref && m_FF.av_buffer_ref) {
-    AVBufferRef *hwDev = nullptr;
-    ret = m_FF.av_hwdevice_ctx_create(&hwDev, AV_HWDEVICE_TYPE_D3D11VA,
-                                      nullptr, nullptr, 0);
-    if (ret == 0 && hwDev) {
-      m_Ctx.video_decoder = m_FF.avcodec_alloc_context3(videoDecoder);
-      if (m_Ctx.video_decoder &&
-          m_FF.avcodec_parameters_to_context(m_Ctx.video_decoder,
-                                             inVideoStream->codecpar) >= 0) {
-        m_Ctx.video_decoder->hw_device_ctx = m_FF.av_buffer_ref(hwDev);
-        m_Ctx.video_decoder->thread_count = 0; // auto = CPU cores
-        m_Ctx.video_decoder->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
-        ret = m_FF.avcodec_open2(m_Ctx.video_decoder, videoDecoder, nullptr);
-        if (ret == 0) {
-          hwDecodeOk = true;
-          AppendLog("Decoder: D3D11VA hardware + multithread");
-        } else {
-          // hwctx open 失败：释放重建，走纯软解
-          m_FF.avcodec_free_context(&m_Ctx.video_decoder);
-        }
-      }
-      m_FF.av_buffer_unref(&hwDev);
-    } else if (hwDev) {
-      m_FF.av_buffer_unref(&hwDev);
-    }
+  m_Ctx.video_decoder = m_FF.avcodec_alloc_context3(videoDecoder);
+  if (!m_Ctx.video_decoder) {
+    m_FF.avformat_close_input(&m_Ctx.in_fmt_ctx);
+    AppendLog("ERROR: Cannot allocate decoder");
+    return false;
   }
-  m_Ctx.hw_decode_active = hwDecodeOk;
 
-  if (!hwDecodeOk) {
-    m_Ctx.video_decoder = m_FF.avcodec_alloc_context3(videoDecoder);
-    if (!m_Ctx.video_decoder) {
-      m_FF.avformat_close_input(&m_Ctx.in_fmt_ctx);
-      AppendLog("ERROR: Cannot allocate decoder");
-      return false;
-    }
-    ret = m_FF.avcodec_parameters_to_context(m_Ctx.video_decoder,
-                                             inVideoStream->codecpar);
-    if (ret < 0) {
-      m_FF.avcodec_free_context(&m_Ctx.video_decoder);
-      m_FF.avformat_close_input(&m_Ctx.in_fmt_ctx);
-      AppendLog("ERROR: Cannot copy codec params");
-      return false;
-    }
-    m_Ctx.video_decoder->thread_count = 0;
-    m_Ctx.video_decoder->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+  ret = m_FF.avcodec_parameters_to_context(m_Ctx.video_decoder,
+                                            inVideoStream->codecpar);
+  if (ret < 0) {
+    m_FF.avcodec_free_context(&m_Ctx.video_decoder);
+    m_FF.avformat_close_input(&m_Ctx.in_fmt_ctx);
+    AppendLog("ERROR: Cannot copy codec params");
+    return false;
+  }
 
-    dbglog("[QSV VPL ReEncoder] DEBUG: opening codec (sw)...");
-    ret = m_FF.avcodec_open2(m_Ctx.video_decoder, videoDecoder, nullptr);
-    if (ret < 0) {
-      m_FF.avcodec_free_context(&m_Ctx.video_decoder);
-      m_FF.avformat_close_input(&m_Ctx.in_fmt_ctx);
-      AppendLog("ERROR: Cannot open decoder");
-      return false;
-    }
-    AppendLog("Decoder: software, multithreaded");
+  dbglog("[QSV VPL ReEncoder] DEBUG: opening codec...");
+  ret = m_FF.avcodec_open2(m_Ctx.video_decoder, videoDecoder, nullptr);
+  if (ret < 0) {
+    m_FF.avcodec_free_context(&m_Ctx.video_decoder);
+    m_FF.avformat_close_input(&m_Ctx.in_fmt_ctx);
+    AppendLog("ERROR: Cannot open decoder");
+    return false;
   }
   dbglog("[QSV VPL ReEncoder] DEBUG: decoder opened OK");
 
@@ -918,10 +878,7 @@ bool ReEncodeDialog::StartEncoding()
   dbglog("[QSV VPL ReEncoder] DEBUG: allocating frames...");
   m_Ctx.decoded_frame = m_FF.av_frame_alloc();
   m_Ctx.nv12_frame = m_FF.av_frame_alloc();
-  if (m_Ctx.hw_decode_active)
-    m_Ctx.hw_dled_frame = m_FF.av_frame_alloc();
-  if (!m_Ctx.decoded_frame || !m_Ctx.nv12_frame ||
-      (m_Ctx.hw_decode_active && !m_Ctx.hw_dled_frame)) {
+  if (!m_Ctx.decoded_frame || !m_Ctx.nv12_frame) {
     AppendLog("ERROR: Cannot allocate frames");
     goto cleanup_failed;
   }
@@ -936,7 +893,7 @@ bool ReEncodeDialog::StartEncoding()
     dbglog("[QSV VPL ReEncoder] DEBUG: creating video output...");
     video_output_info vi = {};
     vi.name = "qsv-reencode-video";
-    vi.format = m_TargetObsFormat;
+    vi.format = VIDEO_FORMAT_NV12;
     vi.width = static_cast<uint32_t>(srcWidth);
     vi.height = static_cast<uint32_t>(srcHeight);
     vi.fps_num = static_cast<uint32_t>(m_FpsNum);
@@ -1098,9 +1055,6 @@ cleanup_failed:
   }
   if (m_Ctx.nv12_frame) {
     m_FF.av_frame_free(&m_Ctx.nv12_frame);
-  }
-  if (m_Ctx.hw_dled_frame) {
-    m_FF.av_frame_free(&m_Ctx.hw_dled_frame);
   }
   if (m_Ctx.out_fmt_ctx) {
     if (!(m_Ctx.out_fmt_ctx->oformat->flags & AVFMT_NOFILE) &&
@@ -1292,60 +1246,61 @@ void ReEncodeDialog::FeedThreadMain()
       return true;
     };
 
-    // Helper: process one decoded frame (hw download → convert/pass-through
-    // → feed OBS → mux).  Defined at loop scope because both the main loop
-    // and the EOF decoder-drain loop use it.
-    auto processFrame = [&]() -> bool {
-          AVFrame *srcF = ctx.decoded_frame;
-          if (srcF->format == AV_PIX_FMT_D3D11) {
-            ff.av_frame_unref(ctx.hw_dled_frame);
-            int hr = ff.av_hwframe_transfer_data(ctx.hw_dled_frame, srcF, 0);
-            if (hr < 0) {
-              AppendLog(QString("ERROR: av_hwframe_transfer_data failed: %1").arg(hr));
+    while (!ctx.stop_requested) {
+      // Read next packet from input
+      ret = ff.av_read_frame(ctx.in_fmt_ctx, inPkt);
+      if (ret < 0) {
+        if (ret == AVERROR_EOF) {
+          break; // done
+        }
+        AppendLog(QString("ERROR: av_read_frame failed: %1").arg(ret));
+        success = false;
+        break;
+      }
+
+      if (inPkt->stream_index == ctx.video_stream_idx) {
+        // --- Video packet ---
+
+        // Helper: process one decoded frame (NV12 convert → feed OBS → mux)
+        auto processFrame = [&]() -> bool {
+          // Lazily create swscale context after first frame is decoded
+          if (!ctx.sws_ctx) {
+            dbglog("[QSV VPL ReEncoder] Creating sws_context from frame: %dx%d fmt=%d",
+                   ctx.decoded_frame->width, ctx.decoded_frame->height,
+                   ctx.decoded_frame->format);
+            ctx.sws_ctx = ff.sws_getContext(
+                ctx.decoded_frame->width, ctx.decoded_frame->height,
+                (AVPixelFormat)ctx.decoded_frame->format,
+                ctx.decoded_frame->width, ctx.decoded_frame->height,
+                AV_PIX_FMT_NV12, SWS_BILINEAR, nullptr, nullptr, nullptr);
+            if (!ctx.sws_ctx) {
+              AppendLog("ERROR: Cannot create swscale context");
               return false;
             }
-            srcF = ctx.hw_dled_frame;
+            dbglog("[QSV VPL ReEncoder] sws_context created OK");
           }
 
-          AVFrame *workF;
-          if ((AVPixelFormat)srcF->format == m_TargetPixFmt) {
-            workF = srcF;
-          } else {
-            if (!ctx.sws_ctx) {
-              dbglog("[QSV VPL ReEncoder] Creating sws_context from frame: %dx%d fmt=%d",
-                     srcF->width, srcF->height, srcF->format);
-              ctx.sws_ctx = ff.sws_getContext(
-                  srcF->width, srcF->height, (AVPixelFormat)srcF->format,
-                  srcF->width, srcF->height, m_TargetPixFmt,
-                  SWS_BILINEAR, nullptr, nullptr, nullptr);
-              if (!ctx.sws_ctx) {
-                AppendLog("ERROR: Cannot create swscale context");
-                return false;
-              }
-              dbglog("[QSV VPL ReEncoder] sws_context created OK");
-            }
+          // Convert to NV12
+          ctx.nv12_frame->format = AV_PIX_FMT_NV12;
+          ctx.nv12_frame->width = ctx.decoded_frame->width;
+          ctx.nv12_frame->height = ctx.decoded_frame->height;
+          int bufSize = ff.av_image_get_buffer_size(AV_PIX_FMT_NV12,
+                                                     ctx.decoded_frame->width,
+                                                     ctx.decoded_frame->height, 1);
+          static thread_local std::vector<uint8_t> nv12_buf;
+          nv12_buf.resize(bufSize);
+          ff.av_image_fill_arrays(ctx.nv12_frame->data, ctx.nv12_frame->linesize,
+                                   nv12_buf.data(), AV_PIX_FMT_NV12,
+                                   ctx.decoded_frame->width,
+                                   ctx.decoded_frame->height, 1);
 
-            ctx.nv12_frame->format = m_TargetPixFmt;
-            ctx.nv12_frame->width = srcF->width;
-            ctx.nv12_frame->height = srcF->height;
-            int bufSize = ff.av_image_get_buffer_size(m_TargetPixFmt,
-                                                       srcF->width,
-                                                       srcF->height, 1);
-            static thread_local std::vector<uint8_t> cvt_buf;
-            cvt_buf.resize(bufSize);
-            ff.av_image_fill_arrays(ctx.nv12_frame->data, ctx.nv12_frame->linesize,
-                                     cvt_buf.data(), m_TargetPixFmt,
-                                     srcF->width, srcF->height, 1);
+          ff.sws_scale(ctx.sws_ctx,
+                        ctx.decoded_frame->data, ctx.decoded_frame->linesize,
+                        0, ctx.decoded_frame->height,
+                        ctx.nv12_frame->data, ctx.nv12_frame->linesize);
 
-            ff.sws_scale(ctx.sws_ctx,
-                          srcF->data, srcF->linesize,
-                          0, srcF->height,
-                          ctx.nv12_frame->data, ctx.nv12_frame->linesize);
-            workF = ctx.nv12_frame;
-          }
-
-          // 3. Feed frame to OBS video pipeline
-          int64_t ptsNs = srcF->pts;
+          // Feed NV12 frame to OBS video pipeline
+          int64_t ptsNs = ctx.decoded_frame->pts;
           AVRational decTb = ctx.in_fmt_ctx->streams[ctx.video_stream_idx]->time_base;
           if (ptsNs == AV_NOPTS_VALUE)
             // No PTS in source: assume constant frame order, index * frame duration
@@ -1366,20 +1321,20 @@ void ReEncodeDialog::FeedThreadMain()
           }
 
           for (int i = 0; i < MAX_AV_PLANES; i++) {
-            if (vf.data[i] && workF->data[i]) {
+            if (vf.data[i] && ctx.nv12_frame->data[i]) {
               // Copy row-wise but never read past the tightly-packed source:
-              // cvt_buf is allocated with align=1 (linesize == width) while
+              // nv12_buf is allocated with align=1 (linesize == width) while
               // OBS's vf.linesize may be larger (aligned) — the old memcpy by
               // vf.linesize could over-read the source buffer.
-              const size_t srcLine = (size_t)workF->linesize[i];
+              const size_t srcLine = (size_t)ctx.nv12_frame->linesize[i];
               const size_t dstLine = (size_t)vf.linesize[i];
               const size_t rows =
-                  (i > 0) ? (size_t)srcF->height / 2
-                          : (size_t)srcF->height;
+                  (i > 0) ? (size_t)ctx.decoded_frame->height / 2
+                          : (size_t)ctx.decoded_frame->height;
               const size_t copyLine = dstLine < srcLine ? dstLine : srcLine;
               for (size_t row = 0; row < rows; row++)
                 memcpy(vf.data[i] + row * dstLine,
-                       workF->data[i] + row * srcLine, copyLine);
+                       ctx.nv12_frame->data[i] + row * srcLine, copyLine);
             }
           }
 
@@ -1403,22 +1358,7 @@ void ReEncodeDialog::FeedThreadMain()
           ctx.frames_encoded++;
           UpdateProgress(ctx.frames_encoded, ctx.total_frames);
           return true;
-    };
-
-    while (!ctx.stop_requested) {
-      // Read next packet from input
-      ret = ff.av_read_frame(ctx.in_fmt_ctx, inPkt);
-      if (ret < 0) {
-        if (ret == AVERROR_EOF) {
-          break; // done
-        }
-        AppendLog(QString("ERROR: av_read_frame failed: %1").arg(ret));
-        success = false;
-        break;
-      }
-
-      if (inPkt->stream_index == ctx.video_stream_idx) {
-        // --- Video packet ---
+        };
 
         // Send packet to decoder.
         // EAGAIN means decoder output buffer is full — drain it first, then retry.
@@ -1499,10 +1439,83 @@ void ReEncodeDialog::FeedThreadMain()
         success = false;
         break;
       }
-      if (!processFrame()) {
-        success = false;
-        break;
+
+      // Convert to NV12
+      ctx.nv12_frame->format = AV_PIX_FMT_NV12;
+      ctx.nv12_frame->width = ctx.decoded_frame->width;
+      ctx.nv12_frame->height = ctx.decoded_frame->height;
+      int bufSize = ff.av_image_get_buffer_size(AV_PIX_FMT_NV12,
+                                                 ctx.decoded_frame->width,
+                                                 ctx.decoded_frame->height, 1);
+      static thread_local std::vector<uint8_t> nv12_buf;
+      nv12_buf.resize(bufSize);
+      ff.av_image_fill_arrays(ctx.nv12_frame->data, ctx.nv12_frame->linesize,
+                               nv12_buf.data(), AV_PIX_FMT_NV12,
+                               ctx.decoded_frame->width,
+                               ctx.decoded_frame->height, 1);
+      ff.sws_scale(ctx.sws_ctx,
+                    ctx.decoded_frame->data, ctx.decoded_frame->linesize,
+                    0, ctx.decoded_frame->height,
+                    ctx.nv12_frame->data, ctx.nv12_frame->linesize);
+
+      // Feed to OBS video pipeline
+      int64_t ptsNs = ctx.decoded_frame->pts;
+      AVRational decTb = ctx.in_fmt_ctx->streams[ctx.video_stream_idx]->time_base;
+      if (ptsNs == AV_NOPTS_VALUE)
+        ptsNs = ff.av_rescale_q(ctx.frames_encoded.load(),
+                                {m_FpsDen, m_FpsNum}, {1, 1000000000});
+      else
+        ptsNs = ff.av_rescale_q(ptsNs, decTb, {1, 1000000000});
+
+      video_frame vf = {};
+      // Wait for a free cache slot instead of dropping the frame (see
+      // processFrame() for why skipping is harmful).
+      bool locked = false;
+      while (!ctx.stop_requested) {
+        if (video_output_lock_frame(m_Video, &vf, 1, ptsNs)) {
+          locked = true;
+          break;
+        }
+        std::this_thread::sleep_for(1ms);
       }
+      if (locked) {
+        for (int i = 0; i < MAX_AV_PLANES; i++) {
+          if (vf.data[i] && ctx.nv12_frame->data[i]) {
+            // Copy row-wise but never read past the tightly-packed source —
+            // see processFrame() for details.
+            const size_t srcLine = (size_t)ctx.nv12_frame->linesize[i];
+            const size_t dstLine = (size_t)vf.linesize[i];
+            const size_t rows =
+                (i > 0) ? (size_t)ctx.decoded_frame->height / 2
+                        : (size_t)ctx.decoded_frame->height;
+            const size_t copyLine = dstLine < srcLine ? dstLine : srcLine;
+            for (size_t row = 0; row < rows; row++)
+              memcpy(vf.data[i] + row * dstLine,
+                     ctx.nv12_frame->data[i] + row * srcLine, copyLine);
+          }
+        }
+        video_output_unlock_frame(m_Video);
+      }
+
+      // Collect available encoded packets (non-blocking)
+      {
+        std::unique_lock lock2(ctx.pkt_mutex);
+        while (!ctx.pkt_queue.empty()) {
+          ReEncodeCtx::Packet encPkt = std::move(ctx.pkt_queue.front());
+          ctx.pkt_queue.pop_front();
+          lock2.unlock();
+
+          if (!muxVideoPacket(encPkt)) {
+            success = false;
+            break;
+          }
+
+          lock2.lock();
+        }
+      }
+
+      ctx.frames_encoded++;
+      UpdateProgress(ctx.frames_encoded, ctx.total_frames);
     }
 
     // Wait for the encoder to actually encode every fed frame before
@@ -1634,10 +1647,6 @@ void ReEncodeDialog::FeedThreadMain()
 
   if (ctx.nv12_frame) {
     ff.av_frame_free(&ctx.nv12_frame);
-  }
-
-  if (ctx.hw_dled_frame) {
-    ff.av_frame_free(&ctx.hw_dled_frame);
   }
 
   // cleanup buffered audio packets
