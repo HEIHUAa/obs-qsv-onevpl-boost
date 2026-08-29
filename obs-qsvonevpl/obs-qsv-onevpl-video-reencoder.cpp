@@ -1356,52 +1356,31 @@ void ReEncodeDialog::FeedThreadMain()
             ptsNs = ff.av_rescale_q(ptsNs, decTb, {1, 1000000000});
 
           video_frame vf = {};
-          // Backpressure with a hard escape hatch.  Design constraints,
-          // learned the hard way:
+          // Backpressure: wait until the pipeline has drained enough frames
+          // that the cache certainly has a free slot, THEN lock once.
           //
-          // 1. video_output_lock_frame() must NOT be retried in a loop — on
-          //    failure it increments count/skipped on the last cached frame
-          //    (video-io.c ~522) and cur_frame() re-delivers that frame to
-          //    the encoder once per count decrement (same frame encoded 30+
-          //    times → GPU 100%, progress frozen).
-          //
-          // 2. Cache slots are freed when do_encode() runs, NOT when the
-          //    encoder emits a packet.  With LA-lookahead the driver quietly
-          //    swallows ~LookaheadDepth (100) frames before producing any
-          //    output, so gating the feed on "encoded_frames must grow"
-          //    starves the driver below its lookahead window → deadlock
-          //    (progress stuck at 0%).  The old code that "just worked"
-          //    never waited: it skipped the frame and kept the pipeline
-          //    flowing.
-          //
-          // So: pause while in-flight frames exceed the pipeline budget
-          // (lookahead 100 + cache 32 + task pool + margin), BUT if the
-          // encoder makes no progress for 2s, resume feeding anyway — worst
-          // case we fall back to the old skip-frame behavior instead of
-          // freezing forever.
-          {
-            auto stallStart = std::chrono::steady_clock::now();
-            bool timedOut = false;
-            while (m_Encoder &&
-                   ctx.frames_fed.load() -
-                           (int64_t)obs_encoder_get_encoded_frames(m_Encoder) >=
-                       160) {
-              if (ctx.stop_requested)
-                return true;
-              std::this_thread::sleep_for(1ms);
-              if (std::chrono::steady_clock::now() - stallStart > 2s) {
-                timedOut = true;
-                break;
-              }
-            }
-            if (timedOut)
-              dbglog("[QSV VPL ReEncoder] backpressure stall timeout at frame %lld, resuming feed",
-                     (long long)ctx.frames_fed.load());
+          // CRITICAL: video_output_lock_frame() must NOT be retried in a
+          // loop.  On failure it increments count/skipped on the last cached
+          // frame (video-io.c line ~522), and video_output_cur_frame() only
+          // frees the slot after count reaches 0 — delivering the frame to
+          // the encoder once per decrement.  Retrying every 1ms while the
+          // encoder takes ~30ms/frame pumped count to 30+, so the video
+          // thread re-encoded the SAME frame 30+ times (GPU 100%, progress
+          // frozen).  Instead we derive occupancy from public API:
+          // frames_fed - encoder_encoded_frames ≈ in-flight frames.
+          while (m_Encoder &&
+                 ctx.frames_fed.load() -
+                         (int64_t)obs_encoder_get_encoded_frames(m_Encoder) >=
+                     20) { // cache 32 − margin(B-frame delay + slack)
+            if (ctx.stop_requested)
+              return true;
+            std::this_thread::sleep_for(1ms);
           }
           if (!video_output_lock_frame(m_Video, &vf, 1, ptsNs)) {
-            // Cache full (stall-timeout path or race).  Skip this frame —
-            // same as the original working code.  Never retry (see #1).
-            dbglog("[QSV VPL ReEncoder] lock_frame failed, skipping frame %lld",
+            // Extremely rare race (slot freed between the wait and the
+            // lock): drop this frame rather than retry — retrying would
+            // poison the cache frame's count (see comment above).
+            dbglog("[QSV VPL ReEncoder] lock_frame race, dropping frame %lld",
                    (long long)ctx.frames_fed.load());
             return true;
           }
@@ -1551,26 +1530,12 @@ void ReEncodeDialog::FeedThreadMain()
     // letting StopEncoding() tear the output down: obs_output_stop()
     // disconnects receive_video immediately, and any frames still sitting
     // in the video cache would be silently dropped.
-    //
-    // Stall detection: frames still buffered inside the driver's lookahead
-    // window may never surface as encoded output until shutdown, so waiting
-    // for full equality could block for the whole 30s timeout on every run.
-    // If encoded_frames stops advancing for 2s, accept the remainder.
     if (!ctx.stop_requested && m_Encoder) {
       auto deadline = std::chrono::steady_clock::now() + 30s;
-      auto lastProgress = std::chrono::steady_clock::now();
-      uint32_t lastEncoded = obs_encoder_get_encoded_frames(m_Encoder);
       while (obs_encoder_get_encoded_frames(m_Encoder) <
                  (uint32_t)ctx.frames_fed.load() &&
              std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(2ms);
-        uint32_t cur = obs_encoder_get_encoded_frames(m_Encoder);
-        if (cur != lastEncoded) {
-          lastEncoded = cur;
-          lastProgress = std::chrono::steady_clock::now();
-        } else if (std::chrono::steady_clock::now() - lastProgress > 2s) {
-          break; // stalled — remaining frames live in the lookahead window
-        }
       }
       if (obs_encoder_get_encoded_frames(m_Encoder) <
           (uint32_t)ctx.frames_fed.load()) {
