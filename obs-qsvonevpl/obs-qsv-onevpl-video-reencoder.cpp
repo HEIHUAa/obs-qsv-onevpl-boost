@@ -45,19 +45,6 @@ static void dbglog(const char *fmt, ...) {
 // ============================================================================
 static const char *const REENCODE_OUTPUT_ID = "qsv_reencode_output";
 
-// get_format callback for D3D11VA hardware decoding: pick the D3D11 hw
-// format when the codec offers it; otherwise take the first (software)
-// format so decoding still works without the hwaccel.
-static enum AVPixelFormat reencode_get_hw_format(AVCodecContext *,
-                                                 const enum AVPixelFormat *pix_fmts)
-{
-  for (const enum AVPixelFormat *p = pix_fmts; *p != AV_PIX_FMT_NONE; ++p) {
-    if (*p == AV_PIX_FMT_D3D11)
-      return *p;
-  }
-  return pix_fmts[0];
-}
-
 // Per-output context — passed to output callbacks via void *data
 struct reencode_output_ctx {
   obs_output_t *output;
@@ -121,16 +108,9 @@ bool LoadFFmpegAPI(ffmpeg_api &ff)
   ok = ok && ResolveFunc(avutil, "av_mallocz", ff.av_mallocz);
   ok = ok && ResolveFunc(avutil, "av_frame_alloc", ff.av_frame_alloc);
   ok = ok && ResolveFunc(avutil, "av_frame_free", ff.av_frame_free);
-  ok = ok && ResolveFunc(avutil, "av_frame_unref", ff.av_frame_unref);
   ok = ok && ResolveFunc(avutil, "av_image_get_buffer_size", ff.av_image_get_buffer_size);
   ok = ok && ResolveFunc(avutil, "av_image_fill_arrays", ff.av_image_fill_arrays);
   ok = ok && ResolveFunc(avutil, "av_rescale_q", ff.av_rescale_q);
-
-  // hw decode (D3D11VA) — optional, missing symbols only disable hw path
-  ResolveFunc(avutil, "av_hwdevice_ctx_create", ff.av_hwdevice_ctx_create);
-  ResolveFunc(avutil, "av_hwframe_transfer_data", ff.av_hwframe_transfer_data);
-  ResolveFunc(avutil, "av_buffer_ref", ff.av_buffer_ref);
-  ResolveFunc(avutil, "av_buffer_unref", ff.av_buffer_unref);
   ResolveFunc(avutil, "av_get_pix_fmt_name", ff.av_get_pix_fmt_name);
 
   // av_packet_alloc/free may be in avutil or avcodec (OBS layout varies)
@@ -797,9 +777,6 @@ bool ReEncodeDialog::StartEncoding()
   m_Ctx.sws_ctx = nullptr;
   m_Ctx.decoded_frame = nullptr;
   m_Ctx.conv_frame = nullptr;
-  m_Ctx.sw_frame = nullptr;
-  m_Ctx.hw_device_ctx = nullptr;
-  m_Ctx.use_hw_decode = false;
   m_Ctx.out_fmt_ctx = nullptr;
   m_Ctx.out_video_stream = nullptr;
   m_Ctx.out_audio_stream = nullptr;
@@ -909,32 +886,7 @@ bool ReEncodeDialog::StartEncoding()
   // re-encode).
   m_Ctx.video_decoder->thread_count = 0;
   m_Ctx.video_decoder->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
-
-  // Hardware decode via D3D11VA (same mechanism as OBS's media source).
-  // The decoder outputs AV_PIX_FMT_D3D11 frames that we transfer back to
-  // system memory (NV12 / P010LE) per frame. If device creation fails we
-  // silently fall back to the (now multi-threaded) software decoder.
-  if (m_FF.av_hwdevice_ctx_create && m_FF.av_hwframe_transfer_data &&
-      m_FF.av_buffer_ref && m_FF.av_buffer_unref && m_FF.av_frame_unref) {
-    AVBufferRef *hwDev = nullptr;
-    ret = m_FF.av_hwdevice_ctx_create(&hwDev, AV_HWDEVICE_TYPE_D3D11VA,
-                                      nullptr, nullptr, 0);
-    if (ret >= 0 && hwDev) {
-      m_Ctx.video_decoder->hw_device_ctx = m_FF.av_buffer_ref(hwDev);
-      m_Ctx.video_decoder->get_format = reencode_get_hw_format;
-      m_Ctx.hw_device_ctx = hwDev; // ownership of the original ref
-      m_Ctx.use_hw_decode = true;
-      dbglog("[QSV VPL ReEncoder] D3D11VA hw decode enabled");
-      AppendLog("Decoder: D3D11VA hardware (multi-threaded fallback ready)");
-    } else {
-      if (hwDev)
-        m_FF.av_buffer_unref(&hwDev);
-      dbglog("[QSV VPL ReEncoder] av_hwdevice_ctx_create failed: %d — using software decode", ret);
-      AppendLog(QString("Decoder: software (multi-threaded, hw device create failed: %1)").arg(ret));
-    }
-  } else {
-    AppendLog("Decoder: software (multi-threaded, hw API unavailable)");
-  }
+  AppendLog("Decoder: software (multi-threaded)");
 
   if (m_Input10bit)
     AppendLog("Input is 10-bit — using P010 pipeline");
@@ -943,8 +895,6 @@ bool ReEncodeDialog::StartEncoding()
   ret = m_FF.avcodec_open2(m_Ctx.video_decoder, videoDecoder, nullptr);
   if (ret < 0) {
     m_FF.avcodec_free_context(&m_Ctx.video_decoder);
-    if (m_Ctx.hw_device_ctx && m_FF.av_buffer_unref)
-      m_FF.av_buffer_unref(&m_Ctx.hw_device_ctx);
     m_FF.avformat_close_input(&m_Ctx.in_fmt_ctx);
     AppendLog("ERROR: Cannot open decoder");
     return false;
@@ -964,10 +914,7 @@ bool ReEncodeDialog::StartEncoding()
   dbglog("[QSV VPL ReEncoder] DEBUG: allocating frames...");
   m_Ctx.decoded_frame = m_FF.av_frame_alloc();
   m_Ctx.conv_frame = m_FF.av_frame_alloc();
-  if (m_Ctx.use_hw_decode)
-    m_Ctx.sw_frame = m_FF.av_frame_alloc();
-  if (!m_Ctx.decoded_frame || !m_Ctx.conv_frame ||
-      (m_Ctx.use_hw_decode && !m_Ctx.sw_frame)) {
+  if (!m_Ctx.decoded_frame || !m_Ctx.conv_frame) {
     AppendLog("ERROR: Cannot allocate frames");
     goto cleanup_failed;
   }
@@ -1144,17 +1091,11 @@ cleanup_failed:
   if (m_Ctx.video_decoder) {
     m_FF.avcodec_free_context(&m_Ctx.video_decoder);
   }
-  if (m_Ctx.hw_device_ctx && m_FF.av_buffer_unref) {
-    m_FF.av_buffer_unref(&m_Ctx.hw_device_ctx);
-  }
   if (m_Ctx.decoded_frame) {
     m_FF.av_frame_free(&m_Ctx.decoded_frame);
   }
   if (m_Ctx.conv_frame) {
     m_FF.av_frame_free(&m_Ctx.conv_frame);
-  }
-  if (m_Ctx.sw_frame) {
-    m_FF.av_frame_free(&m_Ctx.sw_frame);
   }
   if (m_Ctx.out_fmt_ctx) {
     if (!(m_Ctx.out_fmt_ctx->oformat->flags & AVFMT_NOFILE) &&
@@ -1346,30 +1287,18 @@ void ReEncodeDialog::FeedThreadMain()
       return true;
     };
 
-    // Process one decoded frame: optional D3D11→system-memory transfer,
-    // convert to the OBS-facing format (NV12 or P010LE), feed the OBS
-    // video pipeline, then mux whatever the encoder produced meanwhile.
+    // Process one decoded frame: convert to the OBS-facing format (NV12 or
+    // P010LE), feed the OBS video pipeline, then mux whatever the encoder
+    // produced meanwhile.
     auto processFrame = [&]() -> bool {
-      // Pick the source frame: D3D11VA frames must be transferred back to
-      // system memory first (the hw frames ctx yields NV12 or P010LE).
       AVFrame *src = ctx.decoded_frame;
-      if (ctx.decoded_frame->format == AV_PIX_FMT_D3D11) {
-        ff.av_frame_unref(ctx.sw_frame);
-        int tr = ff.av_hwframe_transfer_data(ctx.sw_frame, ctx.decoded_frame, 0);
-        if (tr < 0) {
-          AppendLog(QString("ERROR: av_hwframe_transfer_data failed: %1").arg(tr));
-          return false;
-        }
-        src = ctx.sw_frame;
-      }
 
       const AVPixelFormat targetFmt =
           m_Input10bit ? AV_PIX_FMT_P010LE : AV_PIX_FMT_NV12;
 
       // Convert when the decoded frame differs from the target (e.g.
       // yuv420p → NV12, yuv420p10le → P010LE).  When the format already
-      // matches — the typical D3D11VA case — skip swscale entirely and
-      // save a full-frame pass.
+      // matches, skip swscale entirely and save a full-frame pass.
       AVFrame *out = src;
       if ((AVPixelFormat)src->format != targetFmt) {
         // Lazily create the swscale context after the first frame is
@@ -1707,11 +1636,6 @@ void ReEncodeDialog::FeedThreadMain()
     ff.avcodec_free_context(&ctx.video_decoder);
   }
 
-  // must be released AFTER the decoder (it holds its own reference)
-  if (ctx.hw_device_ctx && ff.av_buffer_unref) {
-    ff.av_buffer_unref(&ctx.hw_device_ctx);
-  }
-
   if (ctx.in_fmt_ctx) {
     ff.avformat_close_input(&ctx.in_fmt_ctx);
   }
@@ -1722,10 +1646,6 @@ void ReEncodeDialog::FeedThreadMain()
 
   if (ctx.conv_frame) {
     ff.av_frame_free(&ctx.conv_frame);
-  }
-
-  if (ctx.sw_frame) {
-    ff.av_frame_free(&ctx.sw_frame);
   }
 
   // cleanup buffered audio packets

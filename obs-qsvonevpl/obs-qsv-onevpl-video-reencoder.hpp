@@ -58,9 +58,9 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/avutil.h>
+#include <libavutil/pixdesc.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
-#include <libavutil/hwcontext.h>
 #include <libswscale/swscale.h>
 }
 
@@ -100,15 +100,10 @@ struct ffmpeg_api {
   decltype(&av_mallocz) av_mallocz = nullptr;
   decltype(&av_frame_alloc) av_frame_alloc = nullptr;
   decltype(&av_frame_free) av_frame_free = nullptr;
-  decltype(&av_frame_unref) av_frame_unref = nullptr;
   decltype(&av_image_get_buffer_size) av_image_get_buffer_size = nullptr;
   decltype(&av_image_fill_arrays) av_image_fill_arrays = nullptr;
   decltype(&av_rescale_q) av_rescale_q = nullptr;
-  // hardware decode (D3D11VA) — optional, resolved best-effort
-  decltype(&av_hwdevice_ctx_create) av_hwdevice_ctx_create = nullptr;
-  decltype(&av_hwframe_transfer_data) av_hwframe_transfer_data = nullptr;
-  decltype(&av_buffer_ref) av_buffer_ref = nullptr;
-  decltype(&av_buffer_unref) av_buffer_unref = nullptr;
+  // used for logging the decoded pixel format
   decltype(&av_get_pix_fmt_name) av_get_pix_fmt_name = nullptr;
 
   // swscale
@@ -152,11 +147,6 @@ public:
     AVFrame *decoded_frame = nullptr;
     // decoded frame converted to the OBS-facing pixel format (NV12 or P010)
     AVFrame *conv_frame = nullptr;
-    // system-memory frame receiving the D3D11VA transfer when hw decoding
-    AVFrame *sw_frame = nullptr;
-    // D3D11VA hardware device (kept alive for the decoder's lifetime)
-    AVBufferRef *hw_device_ctx = nullptr;
-    bool use_hw_decode = false;
 
     // FFmpeg output
     AVFormatContext *out_fmt_ctx = nullptr;
