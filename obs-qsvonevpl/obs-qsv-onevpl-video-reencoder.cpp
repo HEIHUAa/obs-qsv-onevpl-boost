@@ -129,6 +129,7 @@ bool LoadFFmpegAPI(ffmpeg_api &ff)
   // hw decode (D3D11VA) — optional, missing symbols only disable hw path
   ResolveFunc(avutil, "av_hwdevice_ctx_create", ff.av_hwdevice_ctx_create);
   ResolveFunc(avutil, "av_hwframe_transfer_data", ff.av_hwframe_transfer_data);
+  ResolveFunc(avutil, "av_buffer_ref", ff.av_buffer_ref);
   ResolveFunc(avutil, "av_buffer_unref", ff.av_buffer_unref);
   ResolveFunc(avutil, "av_get_pix_fmt_name", ff.av_get_pix_fmt_name);
 
@@ -857,7 +858,7 @@ bool ReEncodeDialog::StartEncoding()
     const AVCodecParameters *par = inVideoStream->codecpar;
     const bool input10 = par->bits_per_raw_sample > 8 ||
                          par->format == AV_PIX_FMT_YUV420P10LE ||
-                         par->format == AV_PIX_FMT_P01016LE;
+                         par->format == AV_PIX_FMT_P010LE;
     const char *prof = m_EncoderSettings
                            ? obs_data_get_string(m_EncoderSettings, "profile")
                            : nullptr;
@@ -911,10 +912,10 @@ bool ReEncodeDialog::StartEncoding()
 
   // Hardware decode via D3D11VA (same mechanism as OBS's media source).
   // The decoder outputs AV_PIX_FMT_D3D11 frames that we transfer back to
-  // system memory (NV12 / P01016LE) per frame. If device creation fails we
+  // system memory (NV12 / P010LE) per frame. If device creation fails we
   // silently fall back to the (now multi-threaded) software decoder.
   if (m_FF.av_hwdevice_ctx_create && m_FF.av_hwframe_transfer_data &&
-      m_FF.av_buffer_unref && m_FF.av_frame_unref) {
+      m_FF.av_buffer_ref && m_FF.av_buffer_unref && m_FF.av_frame_unref) {
     AVBufferRef *hwDev = nullptr;
     ret = m_FF.av_hwdevice_ctx_create(&hwDev, AV_HWDEVICE_TYPE_D3D11VA,
                                       nullptr, nullptr, 0);
@@ -1346,11 +1347,11 @@ void ReEncodeDialog::FeedThreadMain()
     };
 
     // Process one decoded frame: optional D3D11→system-memory transfer,
-    // convert to the OBS-facing format (NV12 or P01016LE), feed the OBS
+    // convert to the OBS-facing format (NV12 or P010LE), feed the OBS
     // video pipeline, then mux whatever the encoder produced meanwhile.
     auto processFrame = [&]() -> bool {
       // Pick the source frame: D3D11VA frames must be transferred back to
-      // system memory first (the hw frames ctx yields NV12 or P01016LE).
+      // system memory first (the hw frames ctx yields NV12 or P010LE).
       AVFrame *src = ctx.decoded_frame;
       if (ctx.decoded_frame->format == AV_PIX_FMT_D3D11) {
         ff.av_frame_unref(ctx.sw_frame);
@@ -1363,10 +1364,10 @@ void ReEncodeDialog::FeedThreadMain()
       }
 
       const AVPixelFormat targetFmt =
-          m_Input10bit ? AV_PIX_FMT_P01016LE : AV_PIX_FMT_NV12;
+          m_Input10bit ? AV_PIX_FMT_P010LE : AV_PIX_FMT_NV12;
 
       // Convert when the decoded frame differs from the target (e.g.
-      // yuv420p → NV12, yuv420p10le → P01016LE).  When the format already
+      // yuv420p → NV12, yuv420p10le → P010LE).  When the format already
       // matches — the typical D3D11VA case — skip swscale entirely and
       // save a full-frame pass.
       AVFrame *out = src;
@@ -1428,7 +1429,7 @@ void ReEncodeDialog::FeedThreadMain()
         std::this_thread::sleep_for(1ms);
       }
 
-      const bool tenBit = (targetFmt == AV_PIX_FMT_P01016LE);
+      const bool tenBit = (targetFmt == AV_PIX_FMT_P010LE);
       for (int i = 0; i < 2; i++) { // NV12 and P010 are both two-plane
         if (!vf.data[i] || !out->data[i])
           continue;
@@ -1448,7 +1449,7 @@ void ReEncodeDialog::FeedThreadMain()
             memcpy(dstRow, srcRow, copyLine);
           } else {
             // P010: oneVPL expects MSB-aligned 10-bit samples (Shift=1,
-            // matching DXGI_FORMAT_P010), while FFmpeg's P01016LE is
+            // matching DXGI_FORMAT_P010), while FFmpeg's P010LE is
             // LSB-aligned — shift each 16-bit sample left by 6 while
             // copying.
             uint16_t *dst16 = reinterpret_cast<uint16_t *>(dstRow);

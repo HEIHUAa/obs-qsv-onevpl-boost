@@ -107,6 +107,7 @@ struct ffmpeg_api {
   // hardware decode (D3D11VA) — optional, resolved best-effort
   decltype(&av_hwdevice_ctx_create) av_hwdevice_ctx_create = nullptr;
   decltype(&av_hwframe_transfer_data) av_hwframe_transfer_data = nullptr;
+  decltype(&av_buffer_ref) av_buffer_ref = nullptr;
   decltype(&av_buffer_unref) av_buffer_unref = nullptr;
   decltype(&av_get_pix_fmt_name) av_get_pix_fmt_name = nullptr;
 
