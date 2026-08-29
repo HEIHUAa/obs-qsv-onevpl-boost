@@ -1472,6 +1472,52 @@ void ReEncodeDialog::FeedThreadMain()
       }
     }
 
+    if (m_Encoder) {
+      {
+        auto deadline = std::chrono::steady_clock::now() + 5s;
+        while (m_Video &&
+               video_output_get_total_frames(m_Video) <
+                   (uint64_t)ctx.frames_fed.load() &&
+               std::chrono::steady_clock::now() < deadline) {
+          if (ctx.stop_requested)
+            break;
+          std::this_thread::sleep_for(1ms);
+        }
+      }
+
+      extern std::mutex EncoderDataMapMutex;
+      extern std::unordered_map<obs_encoder_t *, plugin_context *> EncoderDataMap;
+      plugin_context *pctx = nullptr;
+      {
+        std::lock_guard lock(EncoderDataMapMutex);
+        auto it = EncoderDataMap.find(m_Encoder);
+        if (it != EncoderDataMap.end())
+          pctx = it->second;
+      }
+      if (pctx && pctx->EncoderPTR) {
+        std::lock_guard lock(pctx->EncoderMutex);
+        mfxBitstream *bs = nullptr;
+        while (pctx->EncoderPTR->DrainAndRetrieveBitstream(&bs) == MFX_ERR_NONE &&
+               bs && bs->DataLength > 0) {
+          encoder_packet packet = {};
+          bool received = false;
+          ParseEncodedPacket(pctx, &packet, bs, &received);
+          if (received && packet.size > 0) {
+            ReEncodeCtx::Packet p;
+            p.data.assign(packet.data, packet.data + packet.size);
+            p.pts = packet.pts;
+            p.dts = packet.dts;
+            p.keyframe = packet.keyframe;
+            {
+              std::lock_guard lock2(ctx.pkt_mutex);
+              ctx.pkt_queue.push_back(std::move(p));
+            }
+          }
+        }
+        AppendLog("Encoder drained: collected trailing frames");
+      }
+    }
+
     // Wait for the encoder to actually encode every fed frame before
     // letting StopEncoding() tear the output down: obs_output_stop()
     // disconnects receive_video immediately, and any frames still sitting
