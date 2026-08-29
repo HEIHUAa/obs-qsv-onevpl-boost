@@ -1308,31 +1308,36 @@ void ReEncodeDialog::FeedThreadMain()
           //    the encoder once per count decrement (same frame encoded 30+
           //    times → GPU 100%, progress frozen).
           //
-          // 2. Cache slots are freed when do_encode() runs, NOT when the
-          //    encoder emits a packet.  With LA-lookahead the driver quietly
-          //    swallows ~LookaheadDepth (100) frames before producing any
-          //    output, so gating the feed on "encoded_frames must grow"
-          //    starves the driver below its lookahead window → deadlock
-          //    (progress stuck at 0%).  The old code that "just worked"
-          //    never waited: it skipped the frame and kept the pipeline
-          //    flowing.
+          // 2. Cache slots are freed when the video thread hands a frame to
+          //    the encoder (do_encode()), NOT when the encoder emits a
+          //    packet.  So the correct pacing signal is the *consumption*
+          //    counter video_output_get_total_frames() — it advances on
+          //    every cache-slot release.  Gating on
+          //    obs_encoder_get_encoded_frames() (packets produced) is
+          //    wrong: with LA-lookahead the driver swallows the whole
+          //    lookahead window (~100 frames) before producing output, so
+          //    that counter lags far behind and the cache (32 slots) fills
+          //    up meanwhile → lock_frame() fails → the frame is DROPPED.
+          //    Each dropped frame also skips frames_fed++, so the drop rate
+          //    compounds later in the file — exactly the "more frame drops
+          //    the longer it runs" symptom.
           //
-          // So: pause while in-flight frames exceed the pipeline budget
-          // (lookahead 100 + cache 32 + task pool + margin), BUT if the
-          // encoder makes no progress for 2s, resume feeding anyway — worst
-          // case we fall back to the old skip-frame behavior instead of
-          // freezing forever.
+          // So: keep in-flight frames (= fed - consumed) comfortably below
+          // the 32-slot cache, so lock_frame() virtually never fails and no
+          // frame is lost.  The 10s timeout only exists as an escape hatch
+          // if the encoder wedges completely — worst case we skip a frame
+          // instead of freezing forever.
           {
             auto stallStart = std::chrono::steady_clock::now();
             bool timedOut = false;
-            while (m_Encoder &&
+            while (m_Video &&
                    ctx.frames_fed.load() -
-                           (int64_t)obs_encoder_get_encoded_frames(m_Encoder) >=
-                       160) {
+                           (int64_t)video_output_get_total_frames(m_Video) >=
+                       28) {
               if (ctx.stop_requested)
                 return true;
               std::this_thread::sleep_for(1ms);
-              if (std::chrono::steady_clock::now() - stallStart > 2s) {
+              if (std::chrono::steady_clock::now() - stallStart > 10s) {
                 timedOut = true;
                 break;
               }
@@ -1342,8 +1347,11 @@ void ReEncodeDialog::FeedThreadMain()
                      (long long)ctx.frames_fed.load());
           }
           if (!video_output_lock_frame(m_Video, &vf, 1, ptsNs)) {
-            // Cache full (stall-timeout path or race).  Skip this frame —
-            // same as the original working code.  Never retry (see #1).
+            // Cache full — with the pacing above this is only reachable on
+            // the encoder-wedge escape path.  Skip rather than retry (see
+            // #1).  This is the same behavior the single-threaded version
+            // effectively never hit because decode was always slower than
+            // encode.
             dbglog("[QSV VPL ReEncoder] lock_frame failed, skipping frame %lld",
                    (long long)ctx.frames_fed.load());
             return true;
