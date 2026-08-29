@@ -769,7 +769,6 @@ bool ReEncodeDialog::StartEncoding()
   m_Ctx.duration = 0;
   m_Ctx.total_frames = 0;
   m_Ctx.frames_encoded = 0;
-  m_Ctx.frames_fed = 0;
   m_Ctx.stop_requested = false;
   m_Ctx.encoder_flushed = false;
   m_Ctx.feed_error = false;
@@ -1356,33 +1355,14 @@ void ReEncodeDialog::FeedThreadMain()
             ptsNs = ff.av_rescale_q(ptsNs, decTb, {1, 1000000000});
 
           video_frame vf = {};
-          // Backpressure: wait until the pipeline has drained enough frames
-          // that the cache certainly has a free slot, THEN lock once.
-          //
-          // CRITICAL: video_output_lock_frame() must NOT be retried in a
-          // loop.  On failure it increments count/skipped on the last cached
-          // frame (video-io.c line ~522), and video_output_cur_frame() only
-          // frees the slot after count reaches 0 — delivering the frame to
-          // the encoder once per decrement.  Retrying every 1ms while the
-          // encoder takes ~30ms/frame pumped count to 30+, so the video
-          // thread re-encoded the SAME frame 30+ times (GPU 100%, progress
-          // frozen).  Instead we derive occupancy from public API:
-          // frames_fed - encoder_encoded_frames ≈ in-flight frames.
-          while (m_Encoder &&
-                 ctx.frames_fed.load() -
-                         (int64_t)obs_encoder_get_encoded_frames(m_Encoder) >=
-                     20) { // cache 32 − margin(B-frame delay + slack)
+          // Wait for a free cache slot instead of skipping the frame:
+          // video-io marks skipped slots and replays the previous frame's
+          // data for them, which both drops and duplicates frames when the
+          // decoder temporarily outruns the encoder.
+          while (!video_output_lock_frame(m_Video, &vf, 1, ptsNs)) {
             if (ctx.stop_requested)
               return true;
             std::this_thread::sleep_for(1ms);
-          }
-          if (!video_output_lock_frame(m_Video, &vf, 1, ptsNs)) {
-            // Extremely rare race (slot freed between the wait and the
-            // lock): drop this frame rather than retry — retrying would
-            // poison the cache frame's count (see comment above).
-            dbglog("[QSV VPL ReEncoder] lock_frame race, dropping frame %lld",
-                   (long long)ctx.frames_fed.load());
-            return true;
           }
 
           for (int i = 0; i < MAX_AV_PLANES; i++) {
@@ -1404,7 +1384,6 @@ void ReEncodeDialog::FeedThreadMain()
           }
 
           video_output_unlock_frame(m_Video);
-          ctx.frames_fed++;
 
           // Process available encoded packets (non-blocking)
           {
@@ -1533,15 +1512,15 @@ void ReEncodeDialog::FeedThreadMain()
     if (!ctx.stop_requested && m_Encoder) {
       auto deadline = std::chrono::steady_clock::now() + 30s;
       while (obs_encoder_get_encoded_frames(m_Encoder) <
-                 (uint32_t)ctx.frames_fed.load() &&
+                 (uint32_t)ctx.frames_encoded.load() &&
              std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(2ms);
       }
       if (obs_encoder_get_encoded_frames(m_Encoder) <
-          (uint32_t)ctx.frames_fed.load()) {
+          (uint32_t)ctx.frames_encoded.load()) {
         AppendLog(QString("WARNING: encoder did not finish all frames (%1/%2)")
                       .arg((int)obs_encoder_get_encoded_frames(m_Encoder))
-                      .arg((int)ctx.frames_fed.load()));
+                      .arg((int)ctx.frames_encoded.load()));
       }
     }
 
