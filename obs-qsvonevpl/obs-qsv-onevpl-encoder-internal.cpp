@@ -4195,35 +4195,45 @@ mfxStatus QSVEncoder::DrainAndRetrieveBitstream(mfxBitstream **Bitstream) {
   if (sts == MFX_ERR_NONE && *Bitstream && (*Bitstream)->DataLength > 0) {
     return MFX_ERR_NONE;
   }
-  if (sts < MFX_ERR_NONE) {
+  if (sts < MFX_ERR_NONE && sts != MFX_ERR_MORE_DATA) {
     return sts;
   }
 
-  // Step 2: the pool is empty — submit a flush request.  With LA-lookahead
+  // Step 2: the pool is empty — submit flush requests.  With LA-lookahead
   // the driver holds the last ~LookAheadDepth frames in its own buffer
-  // (they never enter the task pool); each null EncodeFrameAsync call makes
-  // the driver emit one of those frames into the supplied bitstream, until
-  // it returns MFX_ERR_MORE_DATA.
-  mfxSyncPoint sp = nullptr;
-  QSVBitstream.DataLength = 0;
-  QSVBitstream.DataOffset = 0;
-  sts = QSVEncode->EncodeFrameAsync(nullptr, nullptr, &QSVBitstream, &sp);
-  if (sts == MFX_ERR_MORE_DATA) {
-    return MFX_ERR_MORE_DATA;
-  }
-  if (sts < MFX_ERR_NONE && sts != MFX_ERR_NULL_PTR) {
-    warn("DrainAndRetrieve: EncodeFrameAsync flush error: %d", sts);
-    return sts;
-  }
-  if (sp) {
-    mfxStatus syncSts = MFXVideoCORE_SyncOperation(QSVSession, sp, 5000);
-    if (syncSts < MFX_ERR_NONE && syncSts != MFX_ERR_NULL_PTR) {
-      warn("DrainAndRetrieve: flush sync warning: %d", syncSts);
+  // (they never enter the task pool).  Each null EncodeFrameAsync call makes
+  // the driver emit one of those frames asynchronously: the call returns a
+  // sync point (or WRN_IN_EXECUTION while the GPU is still working), and the
+  // bitstream data only materializes after SyncOperation.  Keep requesting
+  // until the driver actually hands over one frame or reports MORE_DATA
+  // (buffer drained).  This mirrors FFmpeg's qsvenc submit loop.
+  for (int attempt = 0; attempt < 200; attempt++) {
+    mfxSyncPoint sp = nullptr;
+    QSVBitstream.DataLength = 0;
+    QSVBitstream.DataOffset = 0;
+    sts = QSVEncode->EncodeFrameAsync(nullptr, nullptr, &QSVBitstream, &sp);
+    if (sts == MFX_ERR_MORE_DATA) {
+      return MFX_ERR_MORE_DATA;
     }
-  }
-  if (QSVBitstream.DataLength > 0) {
-    *Bitstream = &QSVBitstream;
-    return MFX_ERR_NONE;
+    if (sts == MFX_WRN_DEVICE_BUSY) {
+      Sleep(1);
+      continue;
+    }
+    if (sts < MFX_ERR_NONE && sts != MFX_ERR_NULL_PTR) {
+      warn("DrainAndRetrieve: EncodeFrameAsync flush error: %d", sts);
+      return sts;
+    }
+    if (sp) {
+      mfxStatus syncSts = MFXVideoCORE_SyncOperation(QSVSession, sp, 5000);
+      if (syncSts < MFX_ERR_NONE && syncSts != MFX_ERR_NULL_PTR) {
+        warn("DrainAndRetrieve: flush sync warning: %d", syncSts);
+      }
+    }
+    if (QSVBitstream.DataLength > 0) {
+      *Bitstream = &QSVBitstream;
+      return MFX_ERR_NONE;
+    }
+    // WRN_IN_EXECUTION or the frame is not ready yet — loop and request again.
   }
 
   return MFX_ERR_MORE_DATA;

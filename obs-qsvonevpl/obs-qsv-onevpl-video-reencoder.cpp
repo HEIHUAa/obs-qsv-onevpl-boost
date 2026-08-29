@@ -1497,6 +1497,7 @@ void ReEncodeDialog::FeedThreadMain()
       if (pctx && pctx->EncoderPTR) {
         std::lock_guard lock(pctx->EncoderMutex);
         mfxBitstream *bs = nullptr;
+        int drained = 0;
         while (pctx->EncoderPTR->DrainAndRetrieveBitstream(&bs) == MFX_ERR_NONE &&
                bs && bs->DataLength > 0) {
           encoder_packet packet = {};
@@ -1512,9 +1513,10 @@ void ReEncodeDialog::FeedThreadMain()
               std::lock_guard lock2(ctx.pkt_mutex);
               ctx.pkt_queue.push_back(std::move(p));
             }
+            drained++;
           }
         }
-        AppendLog("Encoder drained: collected trailing frames");
+        AppendLog(QString("Encoder drained: recovered %1 trailing frames").arg(drained));
       }
     }
 
