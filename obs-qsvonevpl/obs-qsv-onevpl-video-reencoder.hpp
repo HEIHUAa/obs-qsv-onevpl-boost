@@ -120,7 +120,8 @@ public:
   explicit ReEncodeDialog(QWidget *Parent = nullptr);
   ~ReEncodeDialog() override;
 
-  // Called externally (frontend event callback) to refresh config
+  // (Re)loads the encoder config — called when the dialog opens, on profile
+  // /scene-collection changes, and every time encoding starts
   void PopulateEncoderConfig();
 
 protected:
@@ -130,7 +131,6 @@ private slots:
   void OnBrowseInput();
   void OnBrowseOutput();
   void OnStartStop();
-  void OnRefreshConfig();
 
 public:
   // Encoding context — exposed to output callbacks (static functions in .cpp)

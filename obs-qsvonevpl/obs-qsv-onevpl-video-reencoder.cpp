@@ -423,14 +423,23 @@ bool ReEncodeDialog::LoadEncoderConfigFromFile()
   // determine output mode and read recording encoder ID
   const char *mode = config_get_string(config, "Output", "Mode");
   const char *encId = nullptr;
+  // when recording is set to use the stream encoder, its settings live in
+  // streamEncoder.json instead of recordEncoder.json
+  bool usesStreamEncoder = false;
 
   if (mode && strcmp(mode, "Advanced") == 0) {
     encId = config_get_string(config, "AdvOut", "RecEncoder");
+    if (!encId || !*encId || strcmp(encId, "none") == 0) {
+      // "Use stream encoder" recording — settings come from the stream encoder
+      encId = config_get_string(config, "AdvOut", "Encoder");
+      usesStreamEncoder = true;
+    }
   } else {
     // Simple mode — check if using streaming encoder or separate recording
     encId = config_get_string(config, "SimpleOutput", "RecEncoder");
     if (!encId || !*encId || strcmp(encId, "none") == 0) {
       encId = config_get_string(config, "SimpleOutput", "StreamEncoder");
+      usesStreamEncoder = true;
     }
   }
 
@@ -462,12 +471,16 @@ bool ReEncodeDialog::LoadEncoderConfigFromFile()
   blog(LOG_INFO, "[QSV VPL ReEncoder] Loaded config from: %s %dx%d %d/%d fps",
        m_EncoderID.c_str(), m_Width, m_Height, m_FpsNum, m_FpsDen);
 
-  // Load encoder settings from recordEncoder.json in the profile directory.
-  // OBS stores encoder settings as separate JSON files, not in the INI config.
+  // Load encoder settings from the encoder's JSON file in the profile
+  // directory.  OBS stores encoder settings as separate JSON files, not in
+  // the INI config, and rewrites them whenever the settings are saved — so
+  // this always reflects the latest configuration without needing to start
+  // a recording first.
   char *profilePath = obs_frontend_get_current_profile_path();
   if (profilePath) {
     char jsonPath[512];
-    snprintf(jsonPath, sizeof(jsonPath), "%s/recordEncoder.json", profilePath);
+    snprintf(jsonPath, sizeof(jsonPath), "%s/%s", profilePath,
+             usesStreamEncoder ? "streamEncoder.json" : "recordEncoder.json");
     bfree(profilePath);
 
     char *jsonData = os_quick_read_utf8_file(jsonPath);
@@ -521,18 +534,14 @@ ReEncodeDialog::ReEncodeDialog(QWidget *Parent)
   outputLayout->addWidget(browseOutputBtn);
   mainLayout->addLayout(outputLayout);
 
-  // Encoder config display
+  // Encoder config display — always reloaded when encoding starts, so no
+  // manual refresh button is needed.
   ConfigGroup = new QGroupBox(obs_module_text("ReEncoderConfig"), this);
   auto *configLayout = new QVBoxLayout(ConfigGroup);
   ConfigLabel = new QLabel(this);
   ConfigLabel->setWordWrap(true);
   ConfigLabel->setText(obs_module_text("ReEncoderNoConfig"));
-  auto *refreshBtn = new QPushButton(obs_module_text("ReEncoderRefresh"), this);
-  auto *configBtnLayout = new QHBoxLayout;
-  configBtnLayout->addStretch();
-  configBtnLayout->addWidget(refreshBtn);
   configLayout->addWidget(ConfigLabel);
-  configLayout->addLayout(configBtnLayout);
   mainLayout->addWidget(ConfigGroup);
 
   // Start/Stop
@@ -560,7 +569,6 @@ ReEncodeDialog::ReEncodeDialog(QWidget *Parent)
   // Connections
   connect(browseInputBtn, &QPushButton::clicked, this, &ReEncodeDialog::OnBrowseInput);
   connect(browseOutputBtn, &QPushButton::clicked, this, &ReEncodeDialog::OnBrowseOutput);
-  connect(refreshBtn, &QPushButton::clicked, this, &ReEncodeDialog::OnRefreshConfig);
   connect(StartStopBtn, &QPushButton::clicked, this, &ReEncodeDialog::OnStartStop);
 
   // Load config
@@ -670,12 +678,6 @@ void ReEncodeDialog::PopulateEncoderConfig()
   }
 }
 
-void ReEncodeDialog::OnRefreshConfig()
-{
-  AppendLog("Refreshing encoder config...");
-  PopulateEncoderConfig();
-}
-
 // ============================================================================
 // Browse slots
 // ============================================================================
@@ -728,6 +730,13 @@ bool ReEncodeDialog::StartEncoding()
                          obs_module_text("ReEncoderInputNotFound"));
     return false;
   }
+
+  // Reload the encoder config here instead of requiring a manual refresh:
+  // OBS persists encoder settings when they are saved, and the active-encoder
+  // lookup depends on whether an output has run in this session, so the copy
+  // loaded when the dialog was opened may be missing or stale.
+  AppendLog("Refreshing encoder config...");
+  PopulateEncoderConfig();
 
   if (m_EncoderID.empty()) {
     QMessageBox::warning(this, obs_module_text("ReEncoderError"),
