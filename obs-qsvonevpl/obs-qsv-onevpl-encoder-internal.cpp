@@ -4315,22 +4315,7 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
            "increased by %d times. New value: %d KB",
            BITSTREAM_GROW_FACTOR, (newSize / 8 / 1000));
     } else if (MFX_ERR_MORE_DATA == Status) [[unlikely]] {
-      // Buffers full / lookahead window not ready — the frame was NOT
-      // accepted by the driver.  Treating this as success silently drops
-      // the frame (the task slot stays free, the frame is never encoded,
-      // and the following frames reference a missing frame → corrupted
-      // GOP).  Wait and retry the same surface, like MFX_WRN_DEVICE_BUSY.
-      QSVTaskPool[TaskID].SyncPoint = nullptr;
-      if (EncodeRetryCount <= YIELD_THRESHOLD) {
-        Sleep(0);
-      } else {
-        mfxU32 shift = std::min<mfxU32>(
-            (EncodeRetryCount - YIELD_THRESHOLD - 1) / 2, 6);
-        mfxU32 backoffMs = std::min<mfxU32>(
-            static_cast<mfxU32>(1) << shift, MAX_BACKOFF_MS);
-        Sleep(backoffMs);
-      }
-      continue;
+      break;
     } else [[unlikely]] {
       const auto &bs = QSVTaskPool[TaskID].Bitstream;
       error("EncodeFrameAsync FATAL: sts=%d task=%d retry=%u/%u "
