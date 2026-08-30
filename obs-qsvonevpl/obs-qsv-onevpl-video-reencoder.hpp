@@ -58,6 +58,7 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/avutil.h>
+#include <libavutil/hwcontext.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
 #include <libswscale/swscale.h>
@@ -107,6 +108,13 @@ struct ffmpeg_api {
   decltype(&sws_getContext) sws_getContext = nullptr;
   decltype(&sws_scale) sws_scale = nullptr;
   decltype(&sws_freeContext) sws_freeContext = nullptr;
+
+  // optional — hardware decoding (QSV / CUDA / D3D11VA).  Resolved without
+  // failing the API load; StartEncoding() skips the hw paths when absent.
+  decltype(&av_hwdevice_ctx_create) av_hwdevice_ctx_create = nullptr;
+  decltype(&av_hwframe_transfer_data) av_hwframe_transfer_data = nullptr;
+  decltype(&av_buffer_unref) av_buffer_unref = nullptr;
+  decltype(&av_frame_unref) av_frame_unref = nullptr;
 };
 
 bool LoadFFmpegAPI(ffmpeg_api &ff);
@@ -143,6 +151,8 @@ public:
     SwsContext *sws_ctx = nullptr;
     AVFrame *decoded_frame = nullptr;
     AVFrame *nv12_frame = nullptr;
+    // system-memory target when the decoder runs on the GPU (hw download)
+    AVFrame *hw_frame = nullptr;
 
     // FFmpeg output
     AVFormatContext *out_fmt_ctx = nullptr;

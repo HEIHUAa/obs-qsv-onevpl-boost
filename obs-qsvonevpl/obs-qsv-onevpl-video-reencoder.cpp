@@ -199,6 +199,13 @@ bool LoadFFmpegAPI(ffmpeg_api &ff)
     return false;
   }
 
+  // Optional — hardware decoding helpers (avutil).  Missing exports only
+  // disable the hw decode paths; decoding falls back to software.
+  ResolveFunc(avutil, "av_hwdevice_ctx_create", ff.av_hwdevice_ctx_create);
+  ResolveFunc(avutil, "av_hwframe_transfer_data", ff.av_hwframe_transfer_data);
+  ResolveFunc(avutil, "av_buffer_unref", ff.av_buffer_unref);
+  ResolveFunc(avutil, "av_frame_unref", ff.av_frame_unref);
+
   blog(LOG_INFO, "[QSV VPL ReEncoder] FFmpeg API loaded successfully");
   return true;
 }
@@ -370,6 +377,22 @@ static std::string ToFrameEncoderID(const std::string &id)
   if (id.ends_with("_tex"))
     return id.substr(0, id.size() - 4);
   return id;
+}
+
+// get_format callback for generic hwaccel decoding (CUDA / D3D11VA): accept
+// only the hw pixel format matching the device attached to the decoder (the
+// expected format is stashed in avctx->opaque).  Returning NONE makes
+// avcodec_open2 fail, which is the signal to try the next device type or
+// fall back to software.
+static enum AVPixelFormat ReEncodeGetHWFormat(AVCodecContext *avctx,
+                                              const enum AVPixelFormat *fmt)
+{
+  const enum AVPixelFormat want = (enum AVPixelFormat)(intptr_t)avctx->opaque;
+  for (const enum AVPixelFormat *p = fmt; *p != AV_PIX_FMT_NONE; p++) {
+    if (*p == want)
+      return want;
+  }
+  return AV_PIX_FMT_NONE;
 }
 
 // try to read encoder config from the active recording encoder
@@ -761,6 +784,7 @@ bool ReEncodeDialog::StartEncoding()
   m_Ctx.sws_ctx = nullptr;
   m_Ctx.decoded_frame = nullptr;
   m_Ctx.nv12_frame = nullptr;
+  m_Ctx.hw_frame = nullptr;
   m_Ctx.out_fmt_ctx = nullptr;
   m_Ctx.out_video_stream = nullptr;
   m_Ctx.out_audio_stream = nullptr;
@@ -838,38 +862,106 @@ bool ReEncodeDialog::StartEncoding()
     m_Ctx.total_frames = static_cast<int64_t>(m_Ctx.duration / AV_TIME_BASE * fps);
   }
 
-  // 4. Open video decoder — multithreaded software decoding.  FFmpeg API
-  //    users default to thread_count=1 (single thread), which starves the
-  //    encoder; auto-detect core count and enable frame+slice threading —
-  //    decode latency is irrelevant for a file re-encode.
+  // 4. Open video decoder — prefer hardware: Intel QSV first, then NVIDIA
+  //    (CUDA/NVDEC), then D3D11VA (AMD and any other GPU), falling back to
+  //    multithreaded software decoding on the CPU.  Hardware surfaces are
+  //    downloaded to system memory in processFrame() before entering the
+  //    OBS video pipeline.
   dbglog("[QSV VPL ReEncoder] DEBUG: opening video decoder...");
-  m_Ctx.video_decoder = m_FF.avcodec_alloc_context3(videoDecoder);
-  if (!m_Ctx.video_decoder) {
-    m_FF.avformat_close_input(&m_Ctx.in_fmt_ctx);
-    AppendLog("ERROR: Cannot allocate decoder");
-    return false;
-  }
-  ret = m_FF.avcodec_parameters_to_context(m_Ctx.video_decoder,
-                                           inVideoStream->codecpar);
-  if (ret < 0) {
-    m_FF.avcodec_free_context(&m_Ctx.video_decoder);
-    m_FF.avformat_close_input(&m_Ctx.in_fmt_ctx);
-    AppendLog("ERROR: Cannot copy codec params");
-    return false;
-  }
-  m_Ctx.video_decoder->thread_count = 0; // auto = CPU cores
-  m_Ctx.video_decoder->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+  {
+    const bool hwAvailable = m_FF.av_hwdevice_ctx_create &&
+                             m_FF.av_hwframe_transfer_data &&
+                             m_FF.av_buffer_unref && m_FF.av_frame_unref;
 
-  dbglog("[QSV VPL ReEncoder] DEBUG: opening codec...");
-  ret = m_FF.avcodec_open2(m_Ctx.video_decoder, videoDecoder, nullptr);
-  if (ret < 0) {
-    m_FF.avcodec_free_context(&m_Ctx.video_decoder);
-    m_FF.avformat_close_input(&m_Ctx.in_fmt_ctx);
-    AppendLog("ERROR: Cannot open decoder");
-    return false;
+    // One attempt: alloc context, attach an optional hw device, open.
+    // On failure everything allocated here is released again, so the caller
+    // can simply try the next option in the chain.
+    auto tryOpen = [&](const AVCodec *codec, AVHWDeviceType hwType,
+                       AVPixelFormat wantFmt) -> bool {
+      AVBufferRef *device = nullptr;
+      AVCodecContext *dec = nullptr;
+
+      if (hwType != AV_HWDEVICE_TYPE_NONE) {
+        if (!hwAvailable)
+          return false;
+        if (m_FF.av_hwdevice_ctx_create(&device, hwType, nullptr, nullptr,
+                                        0) < 0) {
+          dbglog("[QSV VPL ReEncoder] hw device create failed (type=%d)",
+                 (int)hwType);
+          return false;
+        }
+      }
+
+      dec = m_FF.avcodec_alloc_context3(codec);
+      if (!dec)
+        goto fail;
+      if (m_FF.avcodec_parameters_to_context(dec, inVideoStream->codecpar) < 0)
+        goto fail;
+
+      if (device) {
+        // ownership of the reference moves to the decoder
+        dec->hw_device_ctx = device;
+        device = nullptr;
+        if (wantFmt != AV_PIX_FMT_NONE) {
+          dec->opaque = (void *)(intptr_t)wantFmt;
+          dec->get_format = ReEncodeGetHWFormat;
+        }
+      } else {
+        // FFmpeg API users default to thread_count=1 (single thread), which
+        // starves the encoder; auto-detect core count and enable frame+slice
+        // threading — decode latency is irrelevant for a file re-encode.
+        dec->thread_count = 0; // auto = CPU cores
+        dec->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+      }
+
+      if (m_FF.avcodec_open2(dec, codec, nullptr) < 0)
+        goto fail;
+
+      m_Ctx.video_decoder = dec;
+      return true;
+
+    fail:
+      if (dec)
+        m_FF.avcodec_free_context(&dec);
+      if (device)
+        m_FF.av_buffer_unref(&device);
+      return false;
+    };
+
+    bool opened = false;
+    const char *decoderName = "software (CPU), multithreaded";
+
+    if (hwAvailable) {
+      std::string qsvName = std::string(videoDecoder->name) + "_qsv";
+      const AVCodec *qsvDecoder =
+          m_FF.avcodec_find_decoder_by_name(qsvName.c_str());
+      if (qsvDecoder &&
+          tryOpen(qsvDecoder, AV_HWDEVICE_TYPE_QSV, AV_PIX_FMT_NONE)) {
+        decoderName = "Intel QSV (hardware)";
+        opened = true;
+      } else if (tryOpen(videoDecoder, AV_HWDEVICE_TYPE_CUDA,
+                         AV_PIX_FMT_CUDA)) {
+        decoderName = "NVIDIA CUDA (hardware)";
+        opened = true;
+      } else if (tryOpen(videoDecoder, AV_HWDEVICE_TYPE_D3D11VA,
+                         AV_PIX_FMT_D3D11)) {
+        decoderName = "D3D11VA (hardware)";
+        opened = true;
+      }
+    }
+    if (!opened)
+      opened = tryOpen(videoDecoder, AV_HWDEVICE_TYPE_NONE, AV_PIX_FMT_NONE);
+
+    if (!opened) {
+      m_FF.avformat_close_input(&m_Ctx.in_fmt_ctx);
+      AppendLog("ERROR: Cannot open decoder");
+      return false;
+    }
+
+    AppendLog(QString("Decoder: %1").arg(decoderName));
+    blog(LOG_INFO, "[QSV VPL ReEncoder] Video decoder: %s", decoderName);
+    dbglog("[QSV VPL ReEncoder] DEBUG: decoder opened OK (%s)", decoderName);
   }
-  AppendLog("Decoder: software, multithreaded");
-  dbglog("[QSV VPL ReEncoder] DEBUG: decoder opened OK");
 
   // 5. Find audio stream (optional)
   m_Ctx.audio_stream_idx = m_FF.av_find_best_stream(m_Ctx.in_fmt_ctx, AVMEDIA_TYPE_AUDIO,
@@ -1257,6 +1349,21 @@ void ReEncodeDialog::FeedThreadMain()
     // and the EOF decoder-drain loop use it.
     auto processFrame = [&]() -> bool {
           AVFrame *srcF = ctx.decoded_frame;
+          // Hardware decoders output GPU surfaces — download to system
+          // memory first.  transfer_data() does not carry the PTS over.
+          if (srcF->hw_frames_ctx) {
+            if (!ctx.hw_frame)
+              ctx.hw_frame = ff.av_frame_alloc();
+            else
+              ff.av_frame_unref(ctx.hw_frame);
+            if (!ctx.hw_frame ||
+                ff.av_hwframe_transfer_data(ctx.hw_frame, srcF, 0) < 0) {
+              AppendLog("ERROR: Cannot download hardware-decoded frame");
+              return false;
+            }
+            ctx.hw_frame->pts = srcF->pts;
+            srcF = ctx.hw_frame;
+          }
           AVFrame *workF;
           if ((AVPixelFormat)srcF->format == m_TargetPixFmt) {
             workF = srcF;
@@ -1672,6 +1779,10 @@ void ReEncodeDialog::FeedThreadMain()
 
   if (ctx.nv12_frame) {
     ff.av_frame_free(&ctx.nv12_frame);
+  }
+
+  if (ctx.hw_frame) {
+    ff.av_frame_free(&ctx.hw_frame);
   }
 
   // cleanup buffered audio packets
