@@ -4162,13 +4162,33 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
   }
 
   // Step 4: swap bitstream buffer back into pool (re-lock for write).
+  // Re-read the slot's descriptor AFTER the sync instead of using the pre-sync
+  // taskCopy: the driver writes the encoded output (DataLength, FrameType)
+  // into the slot's mfxBitstream during SyncOperation, so the pre-sync copy is
+  // stale exactly for frames whose output lands inside the wait — swapping it
+  // in returned a DataLength==0 bitstream, the real output was then reset away
+  // and the frame was silently lost (missing-reference corruption from that
+  // frame until the next IDR).  EncodeFrameSystemMemory's own sync loop reads
+  // the slot after sync for the same reason.
   {
     std::lock_guard<std::mutex> lock(QSVTaskPoolMutex);
     mfxU8 *DataTemp = QSVBitstream.Data;
-    QSVBitstream = taskCopy.Bitstream;
+    QSVBitstream = QSVTaskPool[taskIdx].Bitstream;
     QSVTaskPool[taskIdx].Bitstream.Data = DataTemp;
     QSVTaskPool[taskIdx].Bitstream.DataLength = 0;
     QSVTaskPool[taskIdx].Bitstream.DataOffset = 0;
+  }
+
+  if (QSVBitstream.DataLength == 0) {
+    // The synced task produced no output of its own — the frame is still
+    // inside the driver's lookahead window and will surface through the
+    // flush requests in DrainAndRetrieveBitstream's step 2.
+    warn("SyncAndSwap: task %d synced with no output (lookahead-held frame), "
+         "deferring to flush",
+         taskIdx);
+    profile_end("qsv_sync_task");
+    *Bitstream = nullptr;
+    return MFX_ERR_MORE_DATA;
   }
 
   *Bitstream = &QSVBitstream;
