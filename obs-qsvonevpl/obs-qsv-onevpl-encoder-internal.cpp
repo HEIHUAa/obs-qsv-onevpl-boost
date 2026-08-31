@@ -1099,6 +1099,12 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
             QSVSystemMemPoolSize = IOSurfRequest[0].NumFrameSuggested;
         }
         ReSts = QSVEncode->Init(&QSVEncodeParams);
+        if (ReSts == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
+          info("\tChromaQPOffset (AVC): re-init returned "
+               "MFX_WRN_INCOMPATIBLE_VIDEO_PARAM "
+               "(injected headers applied by driver)");
+          ReSts = MFX_ERR_NONE;
+        }
         if (ReSts == MFX_ERR_NONE) {
           Injected = true;
           info("\tChromaQPOffset (AVC): re-init with injected PPS OK");
