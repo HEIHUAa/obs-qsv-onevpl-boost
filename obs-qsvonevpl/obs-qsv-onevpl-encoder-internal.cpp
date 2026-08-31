@@ -17,6 +17,10 @@
 
 constexpr mfxU32 BRC_MAX_KBPS_LIMIT = 65535;
 
+// Fixed strength used when a Denoise2 AUTO/DEFAULT mode falls back to the
+// legacy 'DNIS' denoise filter, which has no automatic mode.
+static constexpr mfxU16 kLegacyDenoiseAutoFactor = 50;
+
 // Rewrite the H.264 Picture Parameter Set so chroma_qp_index_offset (and
 // second_chroma_qp_index_offset when the PPS carries one) equals target_offset.
 // src: PPS NAL with start code + emulation prevention (as returned by
@@ -1400,6 +1404,7 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
 
   if (InputParams->VPPDenoiseMode.has_value()) {
     const int DenoiseMode = InputParams->VPPDenoiseMode.value();
+    const bool DenoiseManual = (DenoiseMode == 4 || DenoiseMode == 5);
     const mfxU16 DenoiseStrength =
         static_cast<mfxU16>(InputParams->DenoiseStrength);
 
@@ -1450,7 +1455,9 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
     } else if (probeFilterSupported(&DenoiseLegacyProbe.Header)) {
       auto LegacyParams =
           QSVProcessingParams.AddExtBuffer<mfxExtVPPDenoiseLegacy>();
-      LegacyParams->DenoiseFactor = DenoiseStrength;
+      LegacyParams->DenoiseFactor =
+          DenoiseManual ? DenoiseStrength
+                        : static_cast<mfxU16>(kLegacyDenoiseAutoFactor);
       warn("Denoise2 (HVS) not supported by this GPU/driver, falling back "
            "to legacy denoise (factor=%d)",
            LegacyParams->DenoiseFactor);

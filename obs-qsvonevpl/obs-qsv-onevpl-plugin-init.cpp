@@ -74,6 +74,8 @@ const char *const qsv_params_condition_denoise_mode[] = {
     "DEFAULT", "AUTO | BDRATE | PRE ENCODE", "AUTO | ADJUST | POST ENCODE",
     "AUTO | SUBJECTIVE | PRE ENCODE", "MANUAL | PRE ENCODE",
     "MANUAL | POST ENCODE", "OFF", 0};
+const char *const qsv_params_condition_denoise_mode_legacy[] = {
+    "OFF", "MANUAL | PRE ENCODE", 0};
 const char *const qsv_params_condition_procamp[] = {
     "OFF", "ON", 0};
 const char *const qsv_params_condition_rotation[] = {
@@ -207,14 +209,67 @@ mfxU16 QueryPlatformCodeName() {
   return CachedQSVPlatformValid ? CachedQSVPlatform.CodeName : 0;
 }
 
-bool PlatformSupportsDenoise2() {
-  mfxU16 PlatformCode = QueryPlatformCodeName();
-  if (PlatformCode == 0)
-    return true; // unknown platform — assume capable, runtime probes anyway
-  if (PlatformCode >= MFX_PLATFORM_DG2)
-    // Alder Lake N (55) is numerically above DG2 but still lacks Denoise2
-    return PlatformCode != MFX_PLATFORM_ALDERLAKE_N;
-  return false;
+static bool PlatformSupportsDenoise2VPP() {
+  static std::mutex ProbeMutex;
+  static bool Probed = false;
+  static bool Supported = true;
+
+  std::lock_guard<std::mutex> Lock(ProbeMutex);
+  if (Probed)
+    return Supported;
+
+  mfxLoader Loader = nullptr;
+  {
+    std::lock_guard<std::mutex> LoaderLock(GlobalLoaderMutex);
+    Loader = GlobalQSVLoader;
+  }
+  if (Loader == nullptr)
+    return true; // not initialized yet, retry next UI refresh
+
+  bool ok = false;
+  mfxSession Session{};
+  if (MFXCreateSession(Loader, 0, &Session) >= MFX_ERR_NONE) {
+    try {
+      MFXVideoVPP VPP(Session);
+      mfxVideoParam Params = {};
+      Params.vpp.In.FourCC = MFX_FOURCC_NV12;
+      Params.vpp.In.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
+      Params.vpp.In.Width = 1920;
+      Params.vpp.In.Height = 1080;
+      Params.vpp.In.CropW = 1920;
+      Params.vpp.In.CropH = 1080;
+      Params.vpp.In.PicStruct = MFX_PICSTRUCT_PROGRESSIVE;
+      Params.vpp.In.FrameRateExtN = 30;
+      Params.vpp.In.FrameRateExtD = 1;
+      Params.vpp.Out = Params.vpp.In;
+      Params.IOPattern =
+          MFX_IOPATTERN_IN_VIDEO_MEMORY | MFX_IOPATTERN_OUT_VIDEO_MEMORY;
+
+      mfxExtVPPDenoise2 Denoise2 = {};
+      Denoise2.Header.BufferId = MFX_EXTBUFF_VPP_DENOISE2;
+      Denoise2.Header.BufferSz = sizeof(Denoise2);
+      Denoise2.Mode = MFX_DENOISE_MODE_INTEL_HVS_PRE_MANUAL;
+      Denoise2.Strength = 25;
+      mfxExtBuffer *InExt[1] = {&Denoise2.Header};
+      Params.NumExtParam = 1;
+      Params.ExtParam = InExt;
+
+      mfxExtBuffer *OutExt[1] = {&Denoise2.Header};
+      mfxVideoParam Out = {};
+      Out.NumExtParam = 1;
+      Out.ExtParam = OutExt;
+
+      mfxStatus sts = VPP.Query(&Params, &Out);
+      ok = (sts == MFX_ERR_NONE || sts == MFX_WRN_PARTIAL_ACCELERATION);
+    } catch (...) {
+      ok = false;
+    }
+    MFXClose(Session);
+  }
+
+  Supported = ok;
+  Probed = true;
+  return Supported;
 }
 
 enum class TargetUsageUIMode {
@@ -616,13 +671,19 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
 #endif
 
   const char *denoise_mode = obs_data_get_string(Settings, "denoise_mode");
-  if (PlatformSupportsDenoise2()) {
+  if (PlatformSupportsDenoise2VPP()) {
     bVisible = sv(denoise_mode) == "MANUAL | PRE ENCODE" ||
                sv(denoise_mode) == "MANUAL | POST ENCODE";
+    SetVisible("denoise_strength", bVisible && bVisibleVPP);
   } else {
-    bVisible = sv(denoise_mode) != "OFF";
+    if (sv(denoise_mode) != "OFF" &&
+        sv(denoise_mode) != "MANUAL | PRE ENCODE") {
+      obs_data_set_string(Settings, "denoise_mode", "MANUAL | PRE ENCODE");
+      denoise_mode = "MANUAL | PRE ENCODE";
+    }
+    SetVisible("denoise_strength", bVisibleVPP && sv(denoise_mode) != "OFF");
+    SetVisible("denoise_legacy_info", bVisibleVPP);
   }
-  SetVisible("denoise_strength", bVisible && bVisibleVPP);
 
   const char *detail = obs_data_get_string(Settings, "detail");
   bVisible = sv(detail) == "ON";
@@ -1120,17 +1181,22 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 
   Prop = obs_properties_add_list(VFGroup, "denoise_mode", TEXT_DENOISE_MODE,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition_denoise_mode);
-  obs_property_set_long_description(
-      Prop, PlatformSupportsDenoise2() ? TEXT_DENOISE_MODE_DESC
-                                       : TEXT_DENOISE_MODE_DESC_LEGACY);
+  if (PlatformSupportsDenoise2VPP()) {
+    AddStrings(Prop, qsv_params_condition_denoise_mode);
+    obs_property_set_long_description(Prop, TEXT_DENOISE_MODE_DESC);
+  } else {
+    AddStrings(Prop, qsv_params_condition_denoise_mode_legacy);
+    obs_property_set_long_description(Prop, TEXT_DENOISE_MODE_LEGACY_DESC);
+    obs_properties_add_text(VFGroup, "denoise_legacy_info",
+                            TEXT_DENOISE_LEGACY_INFO, OBS_TEXT_INFO);
+  }
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
   Prop = obs_properties_add_int_slider(VFGroup, "denoise_strength",
                                 TEXT_DENOISE_STRENGTH, 1, 100, 1);
   obs_property_set_long_description(
-      Prop, PlatformSupportsDenoise2() ? TEXT_DENOISE_STRENGTH_DESC
-                                       : TEXT_DENOISE_STRENGTH_DESC_LEGACY);
+      Prop, PlatformSupportsDenoise2VPP() ? TEXT_DENOISE_STRENGTH_DESC
+                                          : TEXT_DENOISE_STRENGTH_LEGACY_DESC);
 
   Prop = obs_properties_add_list(VFGroup, "scaling_mode", TEXT_SCALING_MODE,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);

@@ -744,7 +744,11 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
   // DenoiseMode
   if (auto v = MapString(DenoiseModeData, kDenoiseModeMap))
     Params.VPPDenoiseMode = *v;
-  Params.DenoiseStrength = static_cast<mfxU16>(DenoiseStrengthData);
+  auto svDenoise = std::string_view(DenoiseModeData);
+  if (svDenoise == "MANUAL | PRE ENCODE" ||
+      svDenoise == "MANUAL | POST ENCODE") {
+    Params.DenoiseStrength = static_cast<mfxU16>(DenoiseStrengthData);
+  }
 
   if (auto v = MapString(ScalingModeData, kScalingModeMap))
     Params.VPPScalingMode = *v;
