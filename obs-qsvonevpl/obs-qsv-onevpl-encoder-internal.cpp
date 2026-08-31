@@ -1399,32 +1399,64 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
   }
 
   if (InputParams->VPPDenoiseMode.has_value()) {
-    auto DenoiseParams = QSVProcessingParams.AddExtBuffer<mfxExtVPPDenoise2>();
-    DenoiseParams->Header.BufferId = MFX_EXTBUFF_VPP_DENOISE2;
-    DenoiseParams->Header.BufferSz = sizeof(mfxExtVPPDenoise2);
-    switch (InputParams->VPPDenoiseMode.value()) {
-    case 1:
-      DenoiseParams->Mode = MFX_DENOISE_MODE_INTEL_HVS_AUTO_BDRATE;
-      break;
-    case 2:
-      DenoiseParams->Mode = MFX_DENOISE_MODE_INTEL_HVS_AUTO_ADJUST;
-      break;
-    case 3:
-      DenoiseParams->Mode = MFX_DENOISE_MODE_INTEL_HVS_AUTO_SUBJECTIVE;
-      break;
-    case 4:
-      DenoiseParams->Mode = MFX_DENOISE_MODE_INTEL_HVS_PRE_MANUAL;
-      DenoiseParams->Strength =
-          static_cast<mfxU16>(InputParams->DenoiseStrength);
-      break;
-    case 5:
-      DenoiseParams->Mode = MFX_DENOISE_MODE_INTEL_HVS_POST_MANUAL;
-      DenoiseParams->Strength =
-          static_cast<mfxU16>(InputParams->DenoiseStrength);
-      break;
-    default:
-      DenoiseParams->Mode = MFX_DENOISE_MODE_DEFAULT;
-      break;
+    const int DenoiseMode = InputParams->VPPDenoiseMode.value();
+    const mfxU16 DenoiseStrength =
+        static_cast<mfxU16>(InputParams->DenoiseStrength);
+
+    auto probeFilterSupported = [&](mfxExtBuffer *Filter) -> bool {
+      MFXVideoParam Probe = {};
+      Probe.vpp.In = QSVProcessingParams.vpp.In;
+      Probe.vpp.Out = QSVProcessingParams.vpp.Out;
+      Probe.IOPattern =
+          MFX_IOPATTERN_IN_VIDEO_MEMORY | MFX_IOPATTERN_OUT_VIDEO_MEMORY;
+      Probe.AddExtBuffer(Filter->BufferId, Filter->BufferSz);
+      mfxExtBuffer *ProbeOutBuf[1] = {Filter};
+      mfxVideoParam ProbeOut = {};
+      ProbeOut.NumExtParam = 1;
+      ProbeOut.ExtParam = ProbeOutBuf;
+      mfxStatus sts = QSVProcessing->Query(&Probe, &ProbeOut);
+      return sts == MFX_ERR_NONE || sts == MFX_WRN_PARTIAL_ACCELERATION;
+    };
+
+    mfxExtVPPDenoise2 Denoise2Probe = {};
+    InitExtBuffer(Denoise2Probe);
+    mfxExtVPPDenoiseLegacy DenoiseLegacyProbe = {};
+    InitExtBuffer(DenoiseLegacyProbe);
+
+    if (probeFilterSupported(&Denoise2Probe.Header)) {
+      auto DenoiseParams = QSVProcessingParams.AddExtBuffer<mfxExtVPPDenoise2>();
+      switch (DenoiseMode) {
+      case 1:
+        DenoiseParams->Mode = MFX_DENOISE_MODE_INTEL_HVS_AUTO_BDRATE;
+        break;
+      case 2:
+        DenoiseParams->Mode = MFX_DENOISE_MODE_INTEL_HVS_AUTO_ADJUST;
+        break;
+      case 3:
+        DenoiseParams->Mode = MFX_DENOISE_MODE_INTEL_HVS_AUTO_SUBJECTIVE;
+        break;
+      case 4:
+        DenoiseParams->Mode = MFX_DENOISE_MODE_INTEL_HVS_PRE_MANUAL;
+        DenoiseParams->Strength = DenoiseStrength;
+        break;
+      case 5:
+        DenoiseParams->Mode = MFX_DENOISE_MODE_INTEL_HVS_POST_MANUAL;
+        DenoiseParams->Strength = DenoiseStrength;
+        break;
+      default:
+        DenoiseParams->Mode = MFX_DENOISE_MODE_DEFAULT;
+        break;
+      }
+    } else if (probeFilterSupported(&DenoiseLegacyProbe.Header)) {
+      auto LegacyParams =
+          QSVProcessingParams.AddExtBuffer<mfxExtVPPDenoiseLegacy>();
+      LegacyParams->DenoiseFactor = DenoiseStrength;
+      warn("Denoise2 (HVS) not supported by this GPU/driver, falling back "
+           "to legacy denoise (factor=%d)",
+           LegacyParams->DenoiseFactor);
+    } else {
+      warn("Neither Denoise2 nor legacy denoise is supported by this "
+           "GPU/driver; denoise disabled");
     }
   }
 
@@ -3924,12 +3956,20 @@ void QSVEncoder::LogActualParams() {
     auto *Denoise = QSVProcessingParams.GetExtBuffer<mfxExtVPPDenoise2>();
     if (Denoise) {
       static constexpr std::string_view kDenoiseModeNames[] = {
-        "UNKNOWN", "HVS_AUTO_BDRATE", "HVS_AUTO_ADJUST",
-        "HVS_AUTO_SUBJECTIVE", "HVS_PRE_MANUAL", "HVS_POST_MANUAL"
+        "DEFAULT", "HVS_AUTO_BDRATE", "HVS_AUTO_SUBJECTIVE",
+        "HVS_AUTO_ADJUST", "HVS_PRE_MANUAL", "HVS_POST_MANUAL"
       };
-      auto mode_idx = Denoise->Mode <= 5 ? Denoise->Mode : 0;
+      size_t mode_idx = 0;
+      if (Denoise->Mode >= MFX_DENOISE_MODE_VENDOR &&
+          Denoise->Mode <= MFX_DENOISE_MODE_VENDOR + 5)
+        mode_idx = Denoise->Mode - MFX_DENOISE_MODE_VENDOR;
+      else if (Denoise->Mode == MFX_DENOISE_MODE_DEFAULT)
+        mode_idx = 0;
       info("\tDenoise: mode=%s (%d), strength=%d",
            kDenoiseModeNames[mode_idx].data(), Denoise->Mode, Denoise->Strength);
+    } else if (auto *Legacy =
+                   QSVProcessingParams.GetExtBuffer<mfxExtVPPDenoiseLegacy>()) {
+      info("\tDenoise: legacy (factor=%d)", Legacy->DenoiseFactor);
     } else {
       info("\tDenoise: OFF");
     }

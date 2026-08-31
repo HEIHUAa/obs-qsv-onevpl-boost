@@ -116,6 +116,13 @@ template <> struct MFXExtBufferID<mfxExtPartialBitstreamParam> {
 template <> struct MFXExtBufferID<mfxExtVPPDenoise2> {
   enum { id = MFX_EXTBUFF_VPP_DENOISE2 };
 };
+struct mfxExtVPPDenoiseLegacy {
+  mfxExtBuffer Header;
+  mfxU16 DenoiseFactor;
+};
+template <> struct MFXExtBufferID<mfxExtVPPDenoiseLegacy> {
+  enum { id = MFX_MAKEFOURCC('D', 'N', 'I', 'S') };
+};
 template <> struct MFXExtBufferID<mfxExtVPPProcAmp> {
   enum { id = MFX_EXTBUFF_VPP_PROCAMP };
 };

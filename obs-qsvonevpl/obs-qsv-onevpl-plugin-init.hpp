@@ -3,6 +3,7 @@
 #include "obs-qsv-onevpl-encoder.hpp"
 
 mfxU16 QueryPlatformCodeName();
+bool PlatformSupportsDenoise2();
 
 struct plugin_context {
   obs_encoder_t *EncoderData;
@@ -278,7 +279,9 @@ struct plugin_context {
 #define TEXT_ENC_TOOLS_BRC_DESC obs_module_text("EncToolsBRCDesc")
 #define TEXT_ENC_TOOLS_SALIENCY_MAP_HINT_DESC obs_module_text("EncToolsSaliencyMapHintDesc")
 #define TEXT_DENOISE_MODE_DESC obs_module_text("Denoise_ModeDesc")
+#define TEXT_DENOISE_MODE_DESC_LEGACY obs_module_text("Denoise_ModeDescLegacy")
 #define TEXT_DENOISE_STRENGTH_DESC obs_module_text("Denoise_StrengthDesc")
+#define TEXT_DENOISE_STRENGTH_DESC_LEGACY obs_module_text("Denoise_StrengthDescLegacy")
 #define TEXT_SCALING_MODE_DESC obs_module_text("Scaling_ModeDesc")
 #define TEXT_VPP_OUT_WIDTH_DESC obs_module_text("VPPOutWidthDesc")
 #define TEXT_VPP_OUT_HEIGHT_DESC obs_module_text("VPPOutHeightDesc")

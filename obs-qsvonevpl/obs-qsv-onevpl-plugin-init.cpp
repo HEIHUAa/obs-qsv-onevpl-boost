@@ -207,6 +207,16 @@ mfxU16 QueryPlatformCodeName() {
   return CachedQSVPlatformValid ? CachedQSVPlatform.CodeName : 0;
 }
 
+bool PlatformSupportsDenoise2() {
+  mfxU16 PlatformCode = QueryPlatformCodeName();
+  if (PlatformCode == 0)
+    return true; // unknown platform — assume capable, runtime probes anyway
+  if (PlatformCode >= MFX_PLATFORM_DG2)
+    // Alder Lake N (55) is numerically above DG2 but still lacks Denoise2
+    return PlatformCode != MFX_PLATFORM_ALDERLAKE_N;
+  return false;
+}
+
 enum class TargetUsageUIMode {
     Full,   // all 7 TU entries
     Three,  // collapsed to effective TU1/TU4/TU7
@@ -606,8 +616,12 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
 #endif
 
   const char *denoise_mode = obs_data_get_string(Settings, "denoise_mode");
-  bVisible = sv(denoise_mode) == "MANUAL | PRE ENCODE" ||
-             sv(denoise_mode) == "MANUAL | POST ENCODE";
+  if (PlatformSupportsDenoise2()) {
+    bVisible = sv(denoise_mode) == "MANUAL | PRE ENCODE" ||
+               sv(denoise_mode) == "MANUAL | POST ENCODE";
+  } else {
+    bVisible = sv(denoise_mode) != "OFF";
+  }
   SetVisible("denoise_strength", bVisible && bVisibleVPP);
 
   const char *detail = obs_data_get_string(Settings, "detail");
@@ -1107,12 +1121,16 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   Prop = obs_properties_add_list(VFGroup, "denoise_mode", TEXT_DENOISE_MODE,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_denoise_mode);
-  obs_property_set_long_description(Prop, TEXT_DENOISE_MODE_DESC);
+  obs_property_set_long_description(
+      Prop, PlatformSupportsDenoise2() ? TEXT_DENOISE_MODE_DESC
+                                       : TEXT_DENOISE_MODE_DESC_LEGACY);
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
   Prop = obs_properties_add_int_slider(VFGroup, "denoise_strength",
                                 TEXT_DENOISE_STRENGTH, 1, 100, 1);
-  obs_property_set_long_description(Prop, TEXT_DENOISE_STRENGTH_DESC);
+  obs_property_set_long_description(
+      Prop, PlatformSupportsDenoise2() ? TEXT_DENOISE_STRENGTH_DESC
+                                       : TEXT_DENOISE_STRENGTH_DESC_LEGACY);
 
   Prop = obs_properties_add_list(VFGroup, "scaling_mode", TEXT_SCALING_MODE,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
