@@ -124,13 +124,6 @@ struct encoder_params {
   std::optional<bool> RepartitionCheckEnable;
   std::optional<int> AV1Segmentation;
   std::optional<mfxU16> DisableDeblockingIdc; // 0=all enabled, 1=partial(slice), 2=all disabled
-  // H.264 chroma QP index offset (-12..12, 0 = native/driver default).
-  // Applied via SPS/PPS injection at encoder init (chroma_qp_index_offset /
-  // second_chroma_qp_index_offset). Negative = finer chroma quantization.
-  std::optional<int> ChromaQPOffset;
-  // H.264 custom quant matrix preset (0=default/none, 1=Flat16, 2=JM,
-  // 3=detail*0.6). Applied by rewriting SPS/PPS with scaling lists at init.
-  std::optional<int> QMatrixPreset;
   mfxU32 TuneQuality = 0;
   std::optional<mfxU16> VPPOutWidth;
   std::optional<mfxU16> VPPOutHeight;
