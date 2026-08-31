@@ -898,6 +898,25 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
       Params.ChromaQPOffset = ChQp;
   }
 
+  // Quant matrix preset (H.264 only): 0=default, 1=Flat16, 2=JM, 3=detail
+  {
+    const char *Qm = obs_data_get_string(Settings, "quant_matrix");
+    int qm = 0;
+    if (Qm) {
+      auto sv = std::string_view(Qm);
+      if (sv == "flat16")
+        qm = 1;
+      else if (sv == "jm")
+        qm = 2;
+      else if (sv == "detail")
+        qm = 3;
+      else if (sv == "nv_edge")
+        qm = 4;
+    }
+    if (qm != 0)
+      Params.QMatrixPreset = qm;
+  }
+
   Params.GPUNum = GPUNumData;
 
   // ProcessingEnable is derived from VPP settings + input format, so leave it

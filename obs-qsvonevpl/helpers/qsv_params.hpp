@@ -128,6 +128,9 @@ struct encoder_params {
   // Applied via SPS/PPS injection at encoder init (chroma_qp_index_offset /
   // second_chroma_qp_index_offset). Negative = finer chroma quantization.
   std::optional<int> ChromaQPOffset;
+  // H.264 custom quant matrix preset (0=default/none, 1=Flat16, 2=JM,
+  // 3=detail*0.6). Applied by rewriting SPS/PPS with scaling lists at init.
+  std::optional<int> QMatrixPreset;
   mfxU32 TuneQuality = 0;
   std::optional<mfxU16> VPPOutWidth;
   std::optional<mfxU16> VPPOutHeight;

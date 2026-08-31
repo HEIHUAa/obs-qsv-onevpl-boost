@@ -830,6 +830,18 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(Prop, TEXT_CHROMA_QP_OFFSET_DESC);
   obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC);
 
+  // Custom quant matrix (H.264 only): rewrites SPS/PPS scaling lists at init.
+  Prop = obs_properties_add_list(RCGroup, "quant_matrix",
+                                 TEXT_QUANT_MATRIX,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  obs_property_set_long_description(Prop, TEXT_QUANT_MATRIX_DESC);
+  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC);
+  obs_property_list_add_string(Prop, TEXT_QUANT_MATRIX_DEFAULT, "default");
+  obs_property_list_add_string(Prop, TEXT_QUANT_MATRIX_FLAT16, "flat16");
+  obs_property_list_add_string(Prop, TEXT_QUANT_MATRIX_JM, "jm");
+  obs_property_list_add_string(Prop, TEXT_QUANT_MATRIX_DETAIL, "detail");
+  obs_property_list_add_string(Prop, TEXT_QUANT_MATRIX_EDGE, "nv_edge");
+
   Prop = obs_properties_add_int(RCGroup, "bitrate", TEXT_TARGET_BITRATE, 50,
                                 6553500, 1000);
   obs_property_int_set_suffix(Prop, " Kbps");
