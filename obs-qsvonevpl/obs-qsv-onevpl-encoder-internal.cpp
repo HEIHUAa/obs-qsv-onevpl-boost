@@ -666,6 +666,10 @@ static mfxU16 H264RebuildPps(const H264PpsFields &p, int preset,
       w.u(1, 1); H264WriteScalingList(w, i8, 64);  // Intra8x8
       w.u(1, 1); H264WriteScalingList(w, p8, 64);  // Inter8x8
     }
+    // second_chroma_qp_index_offset is MANDATORY once more_rbsp_data() is
+    // true (H.264 7.3.2.2). Dropping it desyncs the driver's PPS parser and
+    // breaks P/B-frame encoding. Same value as chroma_qp_index_offset here.
+    w.se(chroma_offset);
   }
   w.rbsp_trailing();
   size_t out = H264SerializeNal(w, nal_hdr, sc_len, dst, dst_cap);
