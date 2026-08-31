@@ -217,8 +217,9 @@ constexpr uint16_t MaxNumExtBuffers =
 // helper function to initialize mfx ext Bufferfer structure
 template <class T> void InitExtBuffer(T &ExtBuffer) {
   memset(&ExtBuffer, 0, sizeof(ExtBuffer));
-  static_cast<mfxExtBuffer *>(&ExtBuffer)->BufferId = MFXExtBufferID<T>::ID;
-  static_cast<mfxExtBuffer *>(&ExtBuffer)->BufferSz = sizeof(ExtBuffer);
+  reinterpret_cast<mfxExtBuffer *>(&ExtBuffer)->BufferId =
+      MFXExtBufferID<T>::id;
+  reinterpret_cast<mfxExtBuffer *>(&ExtBuffer)->BufferSz = sizeof(ExtBuffer);
 }
 
 template <typename T> struct IsPairedMFXExtBuffer : std::false_type {};
