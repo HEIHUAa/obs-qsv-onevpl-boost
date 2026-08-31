@@ -890,6 +890,14 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
       obs_data_get_bool(Settings, "video_header_hex_dump");
   Params.FrameStatistics = obs_data_get_bool(Settings, "frame_statistics");
 
+  // Chroma QP offset (H.264 only): slider -12..12, 0 = disabled (native)
+  {
+    const int ChQp =
+        static_cast<int>(obs_data_get_int(Settings, "chroma_qp_offset"));
+    if (ChQp != 0)
+      Params.ChromaQPOffset = ChQp;
+  }
+
   Params.GPUNum = GPUNumData;
 
   // ProcessingEnable is derived from VPP settings + input format, so leave it

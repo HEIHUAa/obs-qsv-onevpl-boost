@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <sstream>
 #include <span>
@@ -15,6 +16,231 @@
 #include <thread>
 
 constexpr mfxU32 BRC_MAX_KBPS_LIMIT = 65535;
+
+// Rewrite the H.264 Picture Parameter Set so chroma_qp_index_offset (and
+// second_chroma_qp_index_offset when the PPS carries one) equals target_offset.
+// src: PPS NAL with start code + emulation prevention (as returned by
+// GetVideoParam). dst gets the rebuilt PPS (same prefix style). Returns the
+// new PPS size on success, 0 on unsupported structure (slice groups or
+// scaling matrices) so the caller can keep the native PPS.
+static mfxU16 RewriteH264PpsChromaQpOffset(const mfxU8 *src, mfxU16 src_size,
+                                           int target_offset, mfxU8 *dst,
+                                           mfxU16 dst_cap) {
+  if (!src || src_size < 6 || !dst || dst_cap < 32)
+    return 0;
+
+  // ---- strip emulation prevention (0x03 after 0x0000) ----
+  std::array<mfxU8, 512> rbsp{};
+  size_t rs = 0;
+  for (mfxU16 i = 0; i < src_size && rs + 2 < rbsp.size(); i++) {
+    if (i + 2 < src_size && src[i] == 0 && src[i + 1] == 0 && src[i + 2] == 3) {
+      rbsp[rs++] = 0;
+      rbsp[rs++] = 0;
+      i += 2;  // skip the 0x03
+    } else {
+      rbsp[rs++] = src[i];
+    }
+  }
+
+  // ---- locate start code + nal header ----
+  size_t sc = 0;
+  if (rs >= 4 && rbsp[0] == 0 && rbsp[1] == 0 && rbsp[2] == 0 && rbsp[3] == 1)
+    sc = 4;
+  else if (rs >= 3 && rbsp[0] == 0 && rbsp[1] == 0 && rbsp[2] == 1)
+    sc = 3;
+  else
+    return 0;
+  const bool prefix4 = (sc == 4);
+  const mfxU8 nal_hdr = rbsp[sc];
+  // SPS header byte is [f:1][nri:2][type:5]; PPS is type 8
+  if ((nal_hdr & 0x1F) != 8)
+    return 0;
+  const size_t pstart = sc + 1;
+  if (pstart >= rs)
+    return 0;
+
+  // ---- bit reader over the RBSP payload ----
+  uint64_t bit_pos = 0;
+  const uint64_t max_bit = static_cast<uint64_t>(rs - pstart) * 8;
+  bool malformed = false;
+  auto get_bit = [&]() -> uint32_t {
+    if (bit_pos >= max_bit) {
+      malformed = true;
+      return 0;
+    }
+    const uint8_t b = rbsp[pstart + (bit_pos >> 3)];
+    const uint32_t bit = (b >> (7 - (bit_pos & 7))) & 1;
+    bit_pos++;
+    return bit;
+  };
+  auto read_bits = [&](int n) -> uint32_t {
+    uint32_t v = 0;
+    for (int i = 0; i < n; i++)
+      v = (v << 1) | get_bit();
+    return v;
+  };
+  auto read_ue = [&]() -> int64_t {
+    int64_t lz = 0;
+    while (get_bit() == 0) {
+      if (++lz > 31) {
+        malformed = true;
+        return 0;
+      }
+    }
+    if (lz == 0)
+      return 0;
+    return (static_cast<int64_t>(1) << lz) - 1 + read_bits(static_cast<int>(lz));
+  };
+  auto read_se = [&]() -> int64_t {
+    const int64_t k = read_ue();
+    return (k & 1) ? (k + 1) / 2 : -(k / 2);
+  };
+  auto has_more_rbsp = [&]() -> bool {
+    // more_rbsp_data() is false when the remaining bits are just the
+    // rbsp trailing bit (1 followed by zeros). Count set bits: a second
+    // one beyond the trailing bit means real data follows (transform_8x8,
+    // scaling flag and second_chroma_qp_index_offset).
+    int ones = 0;
+    for (uint64_t i = bit_pos; i < max_bit && ones < 2; i++) {
+      const uint8_t b = rbsp[pstart + (i >> 3)];
+      if (((b >> (7 - (i & 7))) & 1) != 0)
+        ones++;
+    }
+    return ones >= 2;
+  };
+
+  struct PpsFields {
+    int64_t pic_parameter_set_id, seq_parameter_set_id;
+    uint32_t entropy, bottom_field;
+    int64_t num_slice_groups_minus1, ref_l0, ref_l1;
+    uint32_t weighted_pred, weighted_bipred;
+    int64_t pic_init_qp_minus26, pic_init_qs_minus26;
+    uint32_t deblocking, constrained_intra, redundant;
+    bool has_more{};
+    uint32_t transform8x8{};
+  };
+  PpsFields f;
+  f.pic_parameter_set_id = read_ue();
+  f.seq_parameter_set_id = read_ue();
+  f.entropy = read_bits(1);
+  f.bottom_field = read_bits(1);
+  f.num_slice_groups_minus1 = read_ue();
+  if (f.num_slice_groups_minus1 != 0)
+    return 0;  // slice groups not supported -> keep native PPS
+  f.ref_l0 = read_ue();
+  f.ref_l1 = read_ue();
+  f.weighted_pred = read_bits(1);
+  f.weighted_bipred = read_bits(2);
+  f.pic_init_qp_minus26 = read_se();
+  f.pic_init_qs_minus26 = read_se();
+  (void)read_se();  // chroma_qp_index_offset (replaced on write)
+  f.deblocking = read_bits(1);
+  f.constrained_intra = read_bits(1);
+  f.redundant = read_bits(1);
+  f.has_more = has_more_rbsp();
+  if (f.has_more) {
+    f.transform8x8 = read_bits(1);
+    const uint32_t scaling_present = read_bits(1);
+    if (scaling_present)
+      return 0;  // scaling matrices not supported -> keep native PPS
+    (void)read_se();  // second_chroma_qp_index_offset (replaced on write)
+  }
+
+  if (malformed)
+    return 0;  // malformed input -> keep native PPS
+
+  const int clamp = target_offset > 12   ? 12
+                    : target_offset < -12 ? -12
+                                          : target_offset;
+
+  // ---- rebuild ----
+  std::array<mfxU8, 512> payload{};
+  uint32_t wpos = 0;
+  auto put_bit = [&](uint32_t b) {
+    if (b) payload[wpos >> 3] |= static_cast<mfxU8>(1u << (7 - (wpos & 7)));
+    wpos++;
+  };
+  auto put_bits2 = [&](uint32_t v, int n) {
+    for (int i = n - 1; i >= 0; i--)
+      put_bit((v >> i) & 1);
+  };
+  auto put_ue = [&](int64_t v) {
+    // exp-Golomb: (bits-1) zeros then the (bits) binary digits of m = v+1
+    if (v < 0)
+      return;
+    int64_t m = v + 1;
+    int bits = 0;
+    for (int64_t t = m; t > 0; t >>= 1)
+      bits++;
+    if (bits == 0)
+      bits = 1;
+    for (int i = 0; i < bits - 1; i++)
+      put_bit(0);
+    for (int i = bits - 1; i >= 0; i--)
+      put_bit(static_cast<uint32_t>((m >> i) & 1));
+  };
+  auto put_se = [&](int64_t v) {
+    const int64_t kk = v > 0 ? 2 * v - 1 : -2 * v;
+    put_ue(kk);
+  };
+  auto finish_rbsp = [&]() {
+    put_bit(1);
+    while (wpos & 7)
+      put_bit(0);
+  };
+
+  // nal header is emitted separately during serialization
+  put_ue(f.pic_parameter_set_id);
+  put_ue(f.seq_parameter_set_id);
+  put_bit(f.entropy);
+  put_bit(f.bottom_field);
+  put_ue(0);  // num_slice_groups_minus1 preserved as 0
+  put_ue(f.ref_l0);
+  put_ue(f.ref_l1);
+  put_bit(f.weighted_pred);
+  put_bits2(f.weighted_bipred, 2);
+  put_se(f.pic_init_qp_minus26);
+  put_se(f.pic_init_qs_minus26);
+  put_se(clamp);
+  put_bit(f.deblocking);
+  put_bit(f.constrained_intra);
+  put_bit(f.redundant);
+  if (f.has_more) {
+    put_bit(f.transform8x8);
+    put_bit(0);  // pic_scaling_matrix_present_flag stays 0
+    put_se(clamp);  // second_chroma_qp_index_offset
+  }
+  finish_rbsp();
+
+  // start code + nal header
+  const mfxU16 scLen = prefix4 ? 4 : 3;
+  std::array<mfxU8, 4> scBytes{mfxU8(0), mfxU8(0),
+                               mfxU8(prefix4 ? 0 : 1), mfxU8(1)};
+  size_t out = 0;
+  if (dst_cap < scLen + 1 + (wpos + 7) / 8 + 2)
+    return 0;
+
+  // ---- serialize with emulation prevention ----
+  for (mfxU16 i = 0; i < scLen; i++)
+    dst[out++] = scBytes[i];
+  int zero_run = 0;
+  auto put_ep = [&](mfxU8 b) {
+    if (out + 1 >= dst_cap)
+      return;
+    if (zero_run >= 2 && b <= 3) {
+      dst[out++] = 3;
+      zero_run = 0;
+    }
+    dst[out++] = b;
+    zero_run = (b == 0) ? zero_run + 1 : 0;
+  };
+  put_ep(nal_hdr);
+  const uint32_t total_bits = wpos;
+  for (uint32_t i = 0; i * 8 < total_bits; i++)
+    put_ep(payload[i]);
+
+  return static_cast<mfxU16>(out);
+}
 
 // VP9 doesn't fill mfxExtEncodedFrameInfo.QP, so pull base_q_idx from the bitstream header.
 // Returns 0 on parse failure.
@@ -812,6 +1038,102 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
            requested_profile, requested_chroma, requested_bitdepth,
            actual_profile, actual_chroma, actual_bitdepth);
     }
+  }
+
+  // AVC only: chroma QP offset via SPS/PPS injection.
+  //
+  // The oneVPL driver has no public "chroma QP offset" knob for H.264, but it
+  // DOES consume a user-supplied SPS/PPS attached through
+  // MFX_EXTBUFF_CODING_OPTION_SPSPPS at Init time (ReadSpsPpsHeaders in
+  // mfx_h264_enc_common_hw.cpp: it parses the injected headers into the
+  // internal param set, including chroma_qp_index_offset / 
+  // second_chroma_qp_index_offset). Those values are then used both for the
+  // hardware encode quantization AND for the SPS/PPS emitted in the
+  // bitstream, so encoder and decoder sides stay consistent.
+  //
+  // Flow: native Init -> grab runtime headers via GetVideoParam -> rewrite the
+  // PPS with the requested chroma offset -> close -> re-init with the patched
+  // SPS/PPS attached.
+  if (Status >= MFX_ERR_NONE &&
+      InputParams->ChromaQPOffset.has_value() &&
+      InputParams->ChromaQPOffset.value() != 0 &&
+      QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC) {
+    const int chromaOffset = InputParams->ChromaQPOffset.value();
+    info("\tChromaQPOffset (AVC): injecting chroma_qp_index_offset=%+d via "
+         "SPS/PPS",
+         chromaOffset);
+
+    auto *SPSPPSParams =
+        QSVEncodeParams.AddExtBuffer<mfxExtCodingOptionSPSPPS>();
+    SPSPPSParams->Header.BufferId = MFX_EXTBUFF_CODING_OPTION_SPSPPS;
+    SPSPPSParams->Header.BufferSz = sizeof(mfxExtCodingOptionSPSPPS);
+    SPSPPSParams->SPSBuffer = QSVSPSBuffer;
+    SPSPPSParams->PPSBuffer = QSVPPSBuffer;
+    SPSPPSParams->SPSBufSize = 1024;
+    SPSPPSParams->PPSBufSize = 1024;
+    SPSPPSParams->SPSId = 0;
+    SPSPPSParams->PPSId = 0;
+
+    // Grab the runtime-generated SPS/PPS (driver fills QSVPPSBuffer).
+    mfxStatus GvpSts = QSVEncode->GetVideoParam(&QSVEncodeParams);
+
+    bool Injected = false;
+    if (GvpSts >= MFX_ERR_NONE && SPSPPSParams->PPSBufSize > 0) {
+      std::array<mfxU8, 512> PatchedPps{};
+      const mfxU16 PatchedSize = RewriteH264PpsChromaQpOffset(
+          QSVPPSBuffer, SPSPPSParams->PPSBufSize, chromaOffset,
+          PatchedPps.data(), static_cast<mfxU16>(PatchedPps.size()));
+      if (PatchedSize > 0) {
+        memcpy(QSVPPSBuffer, PatchedPps.data(), PatchedSize);
+        SPSPPSParams->PPSBufSize = PatchedSize;
+
+        // Re-init with the patched headers. Init failure -> drop the SPSPPS
+        // extension and fall back to native headers (offset inactive, warned).
+        mfxStatus ReSts = MFX_ERR_NONE;
+        QSVEncode->Close();
+        if (QSVUseSystemMemoryPath) {
+          // QueryIOSurf must be called before Init on the system-memory path
+          mfxFrameAllocRequest IOSurfRequest[2] = {};
+          ReSts = QSVEncode->QueryIOSurf(&QSVEncodeParams, IOSurfRequest);
+          if (ReSts == MFX_ERR_NONE && IOSurfRequest[0].NumFrameSuggested > 0)
+            QSVSystemMemPoolSize = IOSurfRequest[0].NumFrameSuggested;
+        }
+        ReSts = QSVEncode->Init(&QSVEncodeParams);
+        if (ReSts == MFX_ERR_NONE) {
+          Injected = true;
+          info("\tChromaQPOffset (AVC): re-init with injected PPS OK");
+        } else {
+          warn("ChromaQPOffset (AVC): re-init with injected PPS failed (%d), "
+               "falling back to native headers (offset not applied)",
+               ReSts);
+          QSVEncode->Close();
+          QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOptionSPSPPS>();
+          SPSPPSParams = nullptr;
+          ReSts = QSVEncode->Init(&QSVEncodeParams);
+          if (ReSts == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM)
+            ReSts = MFX_ERR_NONE;
+          if (ReSts < MFX_ERR_NONE) {
+            error("ChromaQPOffset (AVC): fallback native init failed (%d)", ReSts);
+            Status = ReSts;
+          }
+        }
+      } else {
+        warn("ChromaQPOffset (AVC): could not rewrite PPS (unsupported "
+             "structure), keeping native headers (offset not applied)");
+        QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOptionSPSPPS>();
+        SPSPPSParams = nullptr;
+      }
+    } else {
+      warn("ChromaQPOffset (AVC): GetVideoParam SPS/PPS retrieval failed "
+           "(%d), keeping native headers (offset not applied)",
+           GvpSts);
+      QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOptionSPSPPS>();
+      SPSPPSParams = nullptr;
+    }
+
+    if (Injected && Status >= MFX_ERR_NONE)
+      info("\tChromaQPOffset (AVC): chroma_qp_index_offset=%+d active",
+           chromaOffset);
   }
 
   if (Status < MFX_ERR_NONE) {

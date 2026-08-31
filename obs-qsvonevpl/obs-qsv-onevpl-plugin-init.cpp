@@ -748,6 +748,13 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
     obs_property_set_long_description(Prop, TEXT_CQP_DESC);
   }
 
+  // Chroma QP offset (H.264 only): shifts chroma quantization relative to
+  // luma (applied via SPS/PPS injection at encoder init).
+  Prop = obs_properties_add_int_slider(RCGroup, "chroma_qp_offset",
+                                       TEXT_CHROMA_QP_OFFSET, -12, 12, 1);
+  obs_property_set_long_description(Prop, TEXT_CHROMA_QP_OFFSET_DESC);
+  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC);
+
   Prop = obs_properties_add_int(RCGroup, "bitrate", TEXT_TARGET_BITRATE, 50,
                                 6553500, 1000);
   obs_property_int_set_suffix(Prop, " Kbps");
