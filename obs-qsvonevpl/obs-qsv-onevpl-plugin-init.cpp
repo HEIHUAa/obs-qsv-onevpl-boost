@@ -682,7 +682,6 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
       denoise_mode = "MANUAL | PRE ENCODE";
     }
     SetVisible("denoise_strength", bVisibleVPP && sv(denoise_mode) != "OFF");
-    SetVisible("denoise_legacy_info", bVisibleVPP);
   }
 
   const char *detail = obs_data_get_string(Settings, "detail");
@@ -1180,8 +1179,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   } else {
     AddStrings(Prop, qsv_params_condition_denoise_mode_legacy);
     obs_property_set_long_description(Prop, TEXT_DENOISE_MODE_LEGACY_DESC);
-    obs_properties_add_text(VFGroup, "denoise_legacy_info",
-                            TEXT_DENOISE_LEGACY_INFO, OBS_TEXT_INFO);
   }
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 

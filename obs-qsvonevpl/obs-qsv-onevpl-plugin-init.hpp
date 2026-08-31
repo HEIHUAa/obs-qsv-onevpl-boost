@@ -279,7 +279,6 @@ struct plugin_context {
 #define TEXT_DENOISE_STRENGTH_DESC obs_module_text("Denoise_StrengthDesc")
 #define TEXT_DENOISE_MODE_LEGACY_DESC                                \
   obs_module_text("Denoise_ModeLegacyDesc")
-#define TEXT_DENOISE_LEGACY_INFO obs_module_text("Denoise_LegacyInfo")
 #define TEXT_DENOISE_STRENGTH_LEGACY_DESC                            \
   obs_module_text("Denoise_StrengthLegacyDesc")
 #define TEXT_SCALING_MODE_DESC obs_module_text("Scaling_ModeDesc")
