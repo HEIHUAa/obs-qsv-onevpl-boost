@@ -541,6 +541,8 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
 
   obs_data_set_default_int(Settings, "keyint_sec", 4);
   obs_data_set_default_int(Settings, "b_frames", Codec == QSV_CODEC_VP9 ? 0 : 4);
+  // Used only when AdaptiveB=ON; 3 maps to GopRefDist=4 (EncTools stays on).
+  obs_data_set_default_int(Settings, "b_frames_select", 3);
   obs_data_set_default_int(Settings, "async_depth", 4);
 
   obs_data_set_default_string(Settings, "intra_ref_encoding", "OFF");
@@ -705,14 +707,23 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   SetVisible("convergence", bIsAVBR);
   // VCM is IPPP-only, no B-frames (H264 GopRefDist forced to 1;
   // HEVC uses VA_RC_VCM without MB BRC, conceptually IPPP)
-  SetVisible("b_frames", !bIsVCM && codec != QSV_CODEC_VP9);
+  const bool bfUsable = !bIsVCM && codec != QSV_CODEC_VP9;
+  // AdaptiveB lives with the B-frame input; ON swaps the free-form counter
+  // for the constrained dropdown {0,1,3,7,15} (GopRefDist 1/2/4/8/16).
+  const bool bfDropdown =
+      bfUsable
 #ifdef QSV_UHD600_SUPPORT
-  // UHD600 family: adaptive I/B is HEVC-rejected, keep it for H.264 only.
-  SetVisible("adaptive_b", !bIsVCM && codec != QSV_CODEC_VP9 &&
-                           codec != QSV_CODEC_HEVC);
-#else
-  SetVisible("adaptive_b", !bIsVCM && codec != QSV_CODEC_VP9);
+      // UHD600 family: adaptive B is HEVC-rejected, keep it for H.264 only.
+      && codec != QSV_CODEC_HEVC
 #endif
+      && sv(obs_data_get_string(Settings, "adaptive_b")) == "ON";
+  SetVisible("adaptive_b", bfUsable
+#ifdef QSV_UHD600_SUPPORT
+                             && codec != QSV_CODEC_HEVC
+#endif
+  );
+  SetVisible("b_frames", bfUsable && !bfDropdown);
+  SetVisible("b_frames_select", bfDropdown);
   SetVisible("cqp_separate_ipb", bIsCQP);
 
   bool separateIPB = obs_data_get_bool(Settings, "cqp_separate_ipb");
@@ -1158,10 +1169,39 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(Prop,
                                     obs_module_text("NumRefFrame.Tooltip"));
 
+  // AdaptiveB sits directly above the B-frame input: when turned ON it
+  // swaps the free-form input for the only B-frame counts the driver keeps
+  // for EncTools (GopRefDist must stay in {1,2,4,8,16}). Off/AUTO keep the
+  // free-form input.
+  Prop = obs_properties_add_list(IFGroup, "adaptive_b", TEXT_ADAPTIVE_B,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition_tristate);
+  obs_property_set_long_description(Prop, TEXT_ADAPTIVE_B_DESC);
+  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
+  obs_property_set_visible(Prop, Codec != QSV_CODEC_VP9 &&
+#ifdef QSV_UHD600_SUPPORT
+                                     Codec != QSV_CODEC_HEVC
+#else
+                                     true
+#endif
+  );
+
   Prop = obs_properties_add_int(IFGroup, "b_frames", TEXT_B_FRAMES, 0,
                                 65534, 1);
   obs_property_set_long_description(Prop, TEXT_B_FRAMES_DESC);
   obs_property_set_visible(Prop, Codec != QSV_CODEC_VP9);
+
+  // Shown only when AdaptiveB=ON (see ParamsVisibilityModifier); values map
+  // to GopRefDist 1/2/4/8/16 so EncTools stays active.
+  Prop = obs_properties_add_list(IFGroup, "b_frames_select", TEXT_B_FRAMES,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+  for (int bf : kBFramesSupported) {
+    char label[8];
+    snprintf(label, sizeof(label), "%d", bf);
+    obs_property_list_add_int(Prop, label, bf);
+  }
+  obs_property_set_long_description(Prop, TEXT_B_FRAMES_DESC);
+  obs_property_set_visible(Prop, false);
 
   Prop = obs_properties_add_list(IFGroup, "lookahead", TEXT_LA,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -1282,18 +1322,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(Prop, TEXT_ADAPTIVE_I_DESC);
   // UHD600 GPU family: adaptive I/B only exists on H.264 (FF CBR/VBR);
   // HEVC rejects them (QSVEncC on UHD620: all x).
-  obs_property_set_visible(Prop, Codec != QSV_CODEC_VP9 &&
-#ifdef QSV_UHD600_SUPPORT
-                                 Codec != QSV_CODEC_HEVC
-#else
-                                 true
-#endif
-  );
-
-  Prop = obs_properties_add_list(ETGroup, "adaptive_b", TEXT_ADAPTIVE_B,
-                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition_tristate);
-  obs_property_set_long_description(Prop, TEXT_ADAPTIVE_B_DESC);
   obs_property_set_visible(Prop, Codec != QSV_CODEC_VP9 &&
 #ifdef QSV_UHD600_SUPPORT
                                  Codec != QSV_CODEC_HEVC
