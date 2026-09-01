@@ -101,6 +101,10 @@ extern std::mutex GlobalLoaderMutex;
 void InitGlobalLoader();
 void ReleaseGlobalLoader();
 
+bool PlatformSupportsIntraRefreshEncode(enum codec_enum Codec);
+bool PlatformSupportsImageStabVPP();
+bool PlatformSupportsFRCVPP();
+
 struct plugin_context;
 extern std::unordered_map<obs_encoder_t *, plugin_context *> EncoderDataMap;
 extern std::mutex EncoderDataMapMutex;

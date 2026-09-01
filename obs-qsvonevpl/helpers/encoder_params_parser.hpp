@@ -361,9 +361,7 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
   const char *AdaptiveBData = obs_data_get_string(Settings, "adaptive_b");
   const char *GopOptFlagData = obs_data_get_string(Settings, "gop_opt_flag");
 #ifndef QSV_UHD600_SUPPORT
-  const char *AdaptiveRefData = obs_data_get_string(Settings, "adaptive_ref");
   const char *AdaptiveCQMData = obs_data_get_string(Settings, "adaptive_cqm");
-  const char *AdaptiveLTRData = obs_data_get_string(Settings, "adaptive_ltr");
 #endif
   const char *LowPowerData = obs_data_get_string(Settings, "low_power");
   const char *UseRawRefData = obs_data_get_string(Settings, "use_raw_ref");
@@ -710,9 +708,7 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
     Params.GopOptFlag = *v;
   }
 #ifndef QSV_UHD600_SUPPORT
-  ParseOptionalBool(AdaptiveRefData, Params.AdaptiveRef);
   ParseOptionalBool(AdaptiveCQMData, Params.AdaptiveCQM);
-  ParseOptionalBool(AdaptiveLTRData, Params.AdaptiveLTR);
 #endif
 
   if (auto v = MapString(LowPowerData, kLowPowerMap))

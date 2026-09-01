@@ -51,9 +51,7 @@ struct encoder_params {
   std::optional<bool> AdaptiveI;
   std::optional<bool> AdaptiveB;
 #ifndef QSV_UHD600_SUPPORT
-  std::optional<bool> AdaptiveRef;
   std::optional<bool> AdaptiveCQM;
-  std::optional<bool> AdaptiveLTR;
 #endif
   mfxU32 AdaptiveMaxFrameSize;
   mfxU32 MaxFrameSizeMode; // 0=auto(driver), 1=all, 2=per_type

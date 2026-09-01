@@ -1,9 +1,9 @@
-
-
 #pragma warning(disable : 4996)
 
 #include <algorithm>
+#include <optional>
 #include <string_view>
+#include <unordered_map>
 
 #include "helpers/encoder_params_parser.hpp"
 #include "obs-qsv-onevpl-encoder.hpp"
@@ -272,6 +272,177 @@ static bool PlatformSupportsDenoise2VPP() {
   return Supported;
 }
 
+
+// Is the VPP filter with `BufferId` accepted by MFXVideoVPP_Query?
+static bool ProbeVPPFilterSupport(mfxU32 BufferId) {
+  static std::mutex ProbeMutex;
+  static std::unordered_map<mfxU32, std::optional<bool>> Cache;
+
+  {
+    std::lock_guard<std::mutex> Lock(ProbeMutex);
+    if (auto it = Cache.find(BufferId); it != Cache.end())
+      return it->second.value_or(true);
+  }
+
+  mfxLoader Loader = nullptr;
+  {
+    std::lock_guard<std::mutex> LoaderLock(GlobalLoaderMutex);
+    Loader = GlobalQSVLoader;
+  }
+  if (Loader == nullptr)
+    return true; // loader not up yet — retry next UI refresh
+
+  bool ok = false;
+  mfxSession Session{};
+  if (MFXCreateSession(Loader, 0, &Session) >= MFX_ERR_NONE) {
+    try {
+      MFXVideoVPP VPP(Session);
+      mfxVideoParam Params = {};
+      Params.vpp.In.FourCC = MFX_FOURCC_NV12;
+      Params.vpp.In.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
+      Params.vpp.In.Width = 1920;
+      Params.vpp.In.Height = 1080;
+      Params.vpp.In.CropW = 1920;
+      Params.vpp.In.CropH = 1080;
+      Params.vpp.In.PicStruct = MFX_PICSTRUCT_PROGRESSIVE;
+      Params.vpp.In.FrameRateExtN = 30;
+      Params.vpp.In.FrameRateExtD = 1;
+      Params.vpp.Out = Params.vpp.In;
+      Params.IOPattern =
+          MFX_IOPATTERN_IN_VIDEO_MEMORY | MFX_IOPATTERN_OUT_VIDEO_MEMORY;
+
+      mfxExtVPPImageStab ImageStab = {};
+      mfxExtVPPFrameRateConversion FRC = {};
+      mfxExtBuffer *InExt[1] = {nullptr};
+      if (BufferId == MFX_EXTBUFF_VPP_IMAGE_STABILIZATION) {
+        ImageStab.Header.BufferId = BufferId;
+        ImageStab.Header.BufferSz = sizeof(ImageStab);
+        ImageStab.Mode = MFX_IMAGESTAB_MODE_UPSCALE;
+        InExt[0] = &ImageStab.Header;
+      } else if (BufferId == MFX_EXTBUFF_VPP_FRAME_RATE_CONVERSION) {
+        FRC.Header.BufferId = BufferId;
+        FRC.Header.BufferSz = sizeof(FRC);
+        FRC.Algorithm = MFX_FRCALGM_FRAME_INTERPOLATION;
+        InExt[0] = &FRC.Header;
+      }
+      if (InExt[0]) {
+        Params.NumExtParam = 1;
+        Params.ExtParam = InExt;
+
+        mfxVideoParam Out = {};
+        mfxExtBuffer *OutExt[1] = {InExt[0]};
+        Out.NumExtParam = 1;
+        Out.ExtParam = OutExt;
+
+        mfxStatus sts = VPP.Query(&Params, &Out);
+        ok = (sts == MFX_ERR_NONE || sts == MFX_WRN_PARTIAL_ACCELERATION);
+      }
+    } catch (...) {
+      ok = false;
+    }
+    MFXClose(Session);
+  }
+
+  {
+    std::lock_guard<std::mutex> Lock(ProbeMutex);
+    Cache[BufferId] = ok;
+  }
+  return ok;
+}
+
+bool PlatformSupportsImageStabVPP() {
+  return ProbeVPPFilterSupport(MFX_EXTBUFF_VPP_IMAGE_STABILIZATION);
+}
+
+bool PlatformSupportsFRCVPP() {
+  return ProbeVPPFilterSupport(MFX_EXTBUFF_VPP_FRAME_RATE_CONVERSION);
+}
+
+bool PlatformSupportsIntraRefreshEncode(codec_enum Codec) {
+  static std::mutex ProbeMutex;
+  static bool Probed[2] = {false, false}; // 0 = AVC, 1 = HEVC
+  static bool Supported[2] = {false, false};
+
+  const int idx = (Codec == QSV_CODEC_HEVC) ? 1 : 0;
+  {
+    std::lock_guard<std::mutex> Lock(ProbeMutex);
+    if (Probed[idx])
+      return Supported[idx];
+  }
+
+  mfxLoader Loader = nullptr;
+  {
+    std::lock_guard<std::mutex> LoaderLock(GlobalLoaderMutex);
+    Loader = GlobalQSVLoader;
+  }
+  if (Loader == nullptr)
+    return true; // not ready yet — retry next call
+
+  bool ok = false;
+  mfxSession Session = nullptr;
+  if (MFXCreateSession(Loader, 0, &Session) >= MFX_ERR_NONE) {
+    try {
+      MFXVideoENCODE Encode(Session);
+      mfxVideoParam Params = {};
+      Params.mfx.CodecId =
+          (Codec == QSV_CODEC_HEVC) ? MFX_CODEC_HEVC : MFX_CODEC_AVC;
+      Params.mfx.CodecProfile = (Codec == QSV_CODEC_HEVC)
+                                    ? MFX_PROFILE_HEVC_MAIN
+                                    : MFX_PROFILE_AVC_HIGH;
+      Params.mfx.TargetUsage = MFX_TARGETUSAGE_4;
+      Params.mfx.TargetKbps = 6000;
+      Params.mfx.RateControlMethod = MFX_RATECONTROL_CBR;
+      Params.mfx.FrameInfo.FourCC = MFX_FOURCC_NV12;
+      Params.mfx.FrameInfo.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
+      Params.mfx.FrameInfo.Width = 1280;
+      Params.mfx.FrameInfo.Height = 720;
+      Params.mfx.FrameInfo.CropW = 1280;
+      Params.mfx.FrameInfo.CropH = 720;
+      Params.mfx.FrameInfo.FrameRateExtN = 30;
+      Params.mfx.FrameInfo.FrameRateExtD = 1;
+      Params.mfx.FrameInfo.PicStruct = MFX_PICSTRUCT_PROGRESSIVE;
+      Params.mfx.GopPicSize = 60;
+      Params.mfx.GopRefDist = 1;  // intra refresh needs no B-frames
+      Params.mfx.NumRefFrame = 1; // ...and a single reference
+      Params.AsyncDepth = 4;
+      Params.mfx.LowPower = MFX_CODINGOPTION_UNKNOWN;
+      Params.mfx.BRCParamMultiplier = 1;
+
+      mfxExtCodingOption2 CO2 = {};
+      CO2.Header.BufferId = MFX_EXTBUFF_CODING_OPTION2;
+      CO2.Header.BufferSz = sizeof(CO2);
+      CO2.IntRefType = MFX_REFRESH_VERTICAL;
+      CO2.IntRefCycleSize = 30;
+      mfxExtBuffer *Ext[1] = {&CO2.Header};
+      Params.NumExtParam = 1;
+      Params.ExtParam = Ext;
+
+      mfxStatus Sts = Encode.Query(&Params, &Params);
+      bool kept = false;
+      for (mfxU16 i = 0; i < Params.NumExtParam; ++i) {
+        if (Params.ExtParam[i] &&
+            Params.ExtParam[i]->BufferId == MFX_EXTBUFF_CODING_OPTION2) {
+          auto *co2 = reinterpret_cast<mfxExtCodingOption2 *>(Params.ExtParam[i]);
+          kept = (co2->IntRefType == MFX_REFRESH_VERTICAL);
+          break;
+        }
+      }
+      ok = (Sts >= MFX_ERR_NONE) && kept;
+      Encode.Close();
+    } catch (...) {
+      ok = false;
+    }
+    MFXClose(Session);
+  }
+
+  {
+    std::lock_guard<std::mutex> Lock(ProbeMutex);
+    Probed[idx] = true;
+    Supported[idx] = ok;
+  }
+  return ok;
+}
+
 enum class TargetUsageUIMode {
     Full,   // all 7 TU entries
     Three,  // collapsed to effective TU1/TU4/TU7
@@ -357,9 +528,7 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(Settings, "adaptive_i", "AUTO");
   obs_data_set_default_string(Settings, "adaptive_b", "AUTO");
 #ifndef QSV_UHD600_SUPPORT
-  obs_data_set_default_string(Settings, "adaptive_ref", "AUTO");
   obs_data_set_default_string(Settings, "adaptive_cqm", "AUTO");
-  obs_data_set_default_string(Settings, "adaptive_ltr", "AUTO");
 #endif
   obs_data_set_default_string(Settings, "use_raw_ref", "AUTO");
   obs_data_set_default_string(Settings, "rdo", "AUTO");
@@ -519,6 +688,10 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
 
   SetVisible("icq_quality", bIsICQ && codec != QSV_CODEC_VP9);
 
+  const char *low_power = obs_data_get_string(Settings, "low_power");
+  const bool lowPowerOn = sv(low_power) == "ON";
+  SetVisible("adaptive_cqm", codec == QSV_CODEC_AVC && lowPowerOn);
+
   // EncTools visibility: VP9 has no EncTools; other codecs share the same
   // rate-control visibility + platform gate.  Even though EncTools BRC
   // features (BRC, BRCBufferHints, AdaptiveMBQP) only work with CBR/VBR in
@@ -650,14 +823,14 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   const char *vpp = obs_data_get_string(Settings, "vpp");
   bool bVisibleVPP = sv(vpp) == "ON";
   SetVisible("detail", bVisibleVPP);
-  SetVisible("image_stab_mode", bVisibleVPP);
+  SetVisible("image_stab_mode", bVisibleVPP && PlatformSupportsImageStabVPP());
   SetVisible("perc_enc_prefilter", bVisibleVPP);
   SetVisible("denoise_mode", bVisibleVPP);
   SetVisible("scaling_mode", bVisibleVPP);
   SetVisible("vpp_procamp", bVisibleVPP);
   SetVisible("vpp_rotation", bVisibleVPP);
   SetVisible("vpp_mirroring", bVisibleVPP);
-  SetVisible("vpp_frc", bVisibleVPP);
+  SetVisible("vpp_frc", bVisibleVPP && PlatformSupportsFRCVPP());
   const char *scaling_mode = obs_data_get_string(Settings, "scaling_mode");
   bool bScalingModeActive = sv(scaling_mode) != "OFF";
   SetVisible("vpp_out_width", bVisibleVPP && bScalingModeActive);
@@ -696,9 +869,9 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   SetVisible("vpp_procamp_hue", bProcAmpActive);
   SetVisible("vpp_procamp_saturation", bProcAmpActive);
 
-  // FRC sub-control: show output fps when FRC mode is not OFF
   const char *vpp_frc = obs_data_get_string(Settings, "vpp_frc");
-  bool bFRCActive = bVisibleVPP && sv(vpp_frc) != "OFF";
+  bool bFRCActive = bVisibleVPP && PlatformSupportsFRCVPP() &&
+                    sv(vpp_frc) != "OFF";
   SetVisible("vpp_frc_out_fps", bFRCActive);
 
   const char *intra_ref_encoding =
@@ -1065,26 +1238,11 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_visible(Prop, Codec != QSV_CODEC_VP9);
 
 #ifndef QSV_UHD600_SUPPORT
-  Prop = obs_properties_add_list(ETGroup, "adaptive_ref", TEXT_ADAPTIVE_REF,
-                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition_tristate);
-  obs_property_set_long_description(Prop, TEXT_ADAPTIVE_REF_DESC);
-  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC ||
-                           Codec == QSV_CODEC_HEVC);
-
   Prop = obs_properties_add_list(ETGroup, "adaptive_cqm", TEXT_ADAPTIVE_CQM,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_long_description(Prop, TEXT_ADAPTIVE_CQM_DESC);
-  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC ||
-                           Codec == QSV_CODEC_HEVC);
-
-  Prop = obs_properties_add_list(ETGroup, "adaptive_ltr", TEXT_ADAPTIVE_LTR,
-                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition_tristate);
-  obs_property_set_long_description(Prop, TEXT_ADAPTIVE_LTR_DESC);
-  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC ||
-                           Codec == QSV_CODEC_HEVC);
+  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC); // H264 only; LowPower gate in ParamsVisibilityModifier
 #endif
 
   Prop = obs_properties_add_list(ETGroup, "trellis", TEXT_TRELLIS,
@@ -1146,7 +1304,8 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_long_description(Prop, TEXT_DIRECT_BIAS_DESC);
-  obs_property_set_visible(Prop, bIsAVCOrHEVC);
+  // H.264 only: no HEVC encoder in vpl-gpu-rt implements DirectBiasAdjustment.
+  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC);
 
   Prop = obs_properties_add_list(RMGroup, "mv_overpic_boundaries",
                                  TEXT_MV_OVER_PIC_BOUNDARIES,
@@ -1443,7 +1602,10 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 
   obs_properties_t *IRGroup = obs_properties_create();
 
-  if (Codec != QSV_CODEC_AV1 && Codec != QSV_CODEC_VP9) {
+  // IntraRefresh is a rolling HW capability (RollingIntraRefresh).  Skip the
+  // whole group when the driver would zero it out / fail Init over it.
+  if (Codec != QSV_CODEC_AV1 && Codec != QSV_CODEC_VP9 &&
+      PlatformSupportsIntraRefreshEncode(Codec)) {
     Prop = obs_properties_add_list(IRGroup, "intra_ref_encoding",
                                    TEXT_INTRA_REF_ENCODING,
                                    OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);

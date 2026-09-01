@@ -1183,7 +1183,8 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
     }
   }
 
-  if (InputParams->VPPImageStabMode.has_value()) {
+  if (InputParams->VPPImageStabMode.has_value() &&
+      PlatformSupportsImageStabVPP()) {
     auto ImageStabParams =
         QSVProcessingParams.AddExtBuffer<mfxExtVPPImageStab>();
     ImageStabParams->Header.BufferId = MFX_EXTBUFF_VPP_IMAGE_STABILIZATION;
@@ -1198,6 +1199,8 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
     default:
       break;
     }
+  } else if (InputParams->VPPImageStabMode.has_value()) {
+    info("\tImageStab skipped: not supported by this platform");
   }
 
   if (InputParams->PercEncPrefilter == true) {
@@ -1244,8 +1247,8 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
     MirroringParams->Type = static_cast<mfxU16>(InputParams->VPPMirroring.value());
   }
 
-  // Frame Rate Conversion
-  if (InputParams->VPPFRCMode.has_value()) {
+  // Frame Rate Conversion (per-platform VPP filter, same stale-value guard)
+  if (InputParams->VPPFRCMode.has_value() && PlatformSupportsFRCVPP()) {
     auto FRCParams = QSVProcessingParams.AddExtBuffer<mfxExtVPPFrameRateConversion>();
     FRCParams->Header.BufferId = MFX_EXTBUFF_VPP_FRAME_RATE_CONVERSION;
     FRCParams->Header.BufferSz = sizeof(mfxExtVPPFrameRateConversion);
@@ -1254,6 +1257,8 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
       QSVProcessingParams.vpp.Out.FrameRateExtN = InputParams->VPPOutFpsNum.value();
       QSVProcessingParams.vpp.Out.FrameRateExtD = InputParams->VPPOutFpsDen.value();
     }
+  } else if (InputParams->VPPFRCMode.has_value()) {
+    info("\tFRC skipped: not supported by this platform");
   }
 
   QSVProcessingParams.IOPattern =
@@ -1468,9 +1473,7 @@ static constexpr std::array<FieldEntry, 75> CO3_FIELDS{
   FieldEntry{"EncodedUnitsInfo", offsetof(mfxExtCodingOption3, EncodedUnitsInfo), FT_U16},
   FieldEntry{"EnableNalUnitType", offsetof(mfxExtCodingOption3, EnableNalUnitType), FT_U16},
 #ifndef QSV_UHD600_SUPPORT
-  FieldEntry{"AdaptiveLTR", offsetof(mfxExtCodingOption3, AdaptiveLTR), FT_U16},
   FieldEntry{"AdaptiveCQM", offsetof(mfxExtCodingOption3, AdaptiveCQM), FT_U16},
-  FieldEntry{"AdaptiveRef", offsetof(mfxExtCodingOption3, AdaptiveRef), FT_U16},
 #endif
 };
 
@@ -2166,23 +2169,31 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     }
 
     if (InputParams->IntraRefEncoding == true) {
-      CO2Params->IntRefType =
-          static_cast<mfxU16>(InputParams->IntraRefType > 0
-                                  ? InputParams->IntraRefType
-                                  : MFX_REFRESH_HORIZONTAL);
+      // Rolling intra-refresh is a per-platform HW cap.  When absent, H264
+      // silently zeroes IntRefType and HEVC fails Init with
+      // MFX_ERR_UNSUPPORTED, so drop a stale ON value (UI already hides the
+      // group on unsupported hardware, but old profiles may still carry it).
+      if (!PlatformSupportsIntraRefreshEncode(Codec)) {
+        info("\tIntraRefresh skipped: not supported by this platform");
+      } else {
+        CO2Params->IntRefType =
+            static_cast<mfxU16>(InputParams->IntraRefType > 0
+                                    ? InputParams->IntraRefType
+                                    : MFX_REFRESH_HORIZONTAL);
 
-      CO2Params->IntRefCycleSize =
-          static_cast<mfxU16>(InputParams->IntraRefCycleSize > 1
-                                  ? InputParams->IntraRefCycleSize
-                                  : (QSVEncodeParams.mfx.GopRefDist > 1
-                                         ? QSVEncodeParams.mfx.GopRefDist
-                                         : 2));
-      info("\tIntraRefCycleSize set: %d", CO2Params->IntRefCycleSize);
-      if (InputParams->IntraRefQPDelta > -52 &&
-          InputParams->IntraRefQPDelta < 52) {
-        CO2Params->IntRefQPDelta =
-            static_cast<mfxU16>(InputParams->IntraRefQPDelta);
-        info("\tIntraRefQPDelta set: %d", CO2Params->IntRefQPDelta);
+        CO2Params->IntRefCycleSize =
+            static_cast<mfxU16>(InputParams->IntraRefCycleSize > 1
+                                    ? InputParams->IntraRefCycleSize
+                                    : (QSVEncodeParams.mfx.GopRefDist > 1
+                                           ? QSVEncodeParams.mfx.GopRefDist
+                                           : 2));
+        info("\tIntraRefCycleSize set: %d", CO2Params->IntRefCycleSize);
+        if (InputParams->IntraRefQPDelta > -52 &&
+            InputParams->IntraRefQPDelta < 52) {
+          CO2Params->IntRefQPDelta =
+              static_cast<mfxU16>(InputParams->IntraRefQPDelta);
+          info("\tIntraRefQPDelta set: %d", CO2Params->IntRefQPDelta);
+        }
       }
     }
 
@@ -2349,13 +2360,30 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       CO3Params->ScenarioInfo = static_cast<mfxU16>(InputParams->ScenarioInfo.value());
     }
 
-    // HEVC/AV1 hardware EncTools lookahead requires ScenarioInfo ==
-    // GAME_STREAMING to work. Force it when lookahead is enabled.
+    bool needGameStreaming = false;
+    const char *why = nullptr;
     if (InputParams->Lookahead &&
         (QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC ||
          QSVEncodeParams.mfx.CodecId == MFX_CODEC_AV1)) {
-      CO3Params->ScenarioInfo = MFX_SCENARIO_GAME_STREAMING;
-      info("\tScenarioInfo forced to GAME_STREAMING for HEVC/AV1 lookahead");
+      needGameStreaming = true;
+      why = "HEVC/AV1 lookahead";
+    } else if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC &&
+               CO3Params->AdaptiveCQM == MFX_CODINGOPTION_ON &&
+               QSVEncodeParams.mfx.LowPower == MFX_CODINGOPTION_ON) {
+      needGameStreaming = true;
+      why = "H264 AdaptiveCQM (LowPower)";
+    }
+
+    if (needGameStreaming) {
+      bool pinnedIncompatible =
+          InputParams->ScenarioInfo.has_value() &&
+          InputParams->ScenarioInfo.value() != 0 &&
+          InputParams->ScenarioInfo.value() != MFX_SCENARIO_GAME_STREAMING &&
+          InputParams->ScenarioInfo.value() != MFX_SCENARIO_REMOTE_GAMING;
+      if (!pinnedIncompatible) {
+        CO3Params->ScenarioInfo = MFX_SCENARIO_GAME_STREAMING;
+        info("\tScenarioInfo forced to GAME_STREAMING (%s)", why);
+      }
     }
 
     if (QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_CQP) {
@@ -2378,10 +2406,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
 #ifndef QSV_UHD600_SUPPORT
     CO3Params->AdaptiveCQM = GetCodingOpt(InputParams->AdaptiveCQM);
-
-    CO3Params->AdaptiveRef = GetCodingOpt(InputParams->AdaptiveRef);
-
-    CO3Params->AdaptiveLTR = GetCodingOpt(InputParams->AdaptiveLTR);
 #endif
 
     if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC) {
@@ -2442,9 +2466,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     EncToolsParams->SceneChange = GetCodingOpt(InputParams->EncToolsSceneChange);
     EncToolsParams->AdaptiveRefP = GetCodingOpt(InputParams->EncToolsAdaptiveRefP);
     EncToolsParams->AdaptiveRefB = GetCodingOpt(InputParams->EncToolsAdaptiveRefB);
-#ifndef QSV_UHD600_SUPPORT
-    EncToolsParams->AdaptiveLTR = GetCodingOpt(InputParams->AdaptiveLTR);
-#endif
     EncToolsParams->AdaptivePyramidQuantP = GetCodingOpt(InputParams->EncToolsAdaptivePyramidQuantP);
     EncToolsParams->AdaptivePyramidQuantB = GetCodingOpt(InputParams->EncToolsAdaptivePyramidQuantB);
 #ifndef QSV_UHD600_SUPPORT
@@ -3493,10 +3514,6 @@ void QSVEncoder::LogActualParams() {
 #ifndef QSV_UHD600_SUPPORT
     info("\tAdaptiveCQM set: %s",
          GetCodingOptStatus(CO3->AdaptiveCQM).c_str());
-    info("\tAdaptiveRef set: %s",
-         GetCodingOptStatus(CO3->AdaptiveRef).c_str());
-    info("\tAdaptiveLTR set: %s",
-         GetCodingOptStatus(CO3->AdaptiveLTR).c_str());
 #endif
     info("\tMotionVectorsOverPicBoundaries set: %s",
          GetCodingOptStatus(CO3->MotionVectorsOverPicBoundaries).c_str());
