@@ -2394,6 +2394,12 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
                QSVEncodeParams.mfx.LowPower == MFX_CODINGOPTION_ON) {
       needGameStreaming = true;
       why = "H264 AdaptiveCQM (LowPower)";
+    } else if (InputParams->AdaptiveB == true) {
+      // GAME_STREAMING makes the EncTools library light up supportedConfig
+      // unconditionally, so CO2.AdaptiveB is never force-disabled by the
+      // GopRefDist gate {1,2,4,8,16} — any B-frame count keeps working.
+      needGameStreaming = true;
+      why = "AdaptiveB (any codec)";
     }
 
     if (needGameStreaming) {

@@ -346,13 +346,7 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
   }
 
   int KeyIntervalData = static_cast<int>(obs_data_get_int(Settings, "keyint_sec"));
-  const char *AdaptiveBData = obs_data_get_string(Settings, "adaptive_b");
-  // AdaptiveB=ON swaps the free-form B-frame input for the constrained
-  // dropdown {0,1,3,7,15} — the only counts that keep GopRefDist inside the
-  // EncTools-supported set {1,2,4,8,16}.
-  int BFramesData = (AdaptiveBData && std::string_view(AdaptiveBData) == "ON")
-      ? static_cast<int>(obs_data_get_int(Settings, "b_frames_select"))
-      : static_cast<int>(obs_data_get_int(Settings, "b_frames"));
+  int BFramesData = static_cast<int>(obs_data_get_int(Settings, "b_frames"));
 
   const char *HRDConformanceData =
       obs_data_get_string(Settings, "hrd_conformance");
@@ -364,6 +358,7 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
 
   const char *MBBRCData = obs_data_get_string(Settings, "mbbrc");
   const char *AdaptiveIData = obs_data_get_string(Settings, "adaptive_i");
+  const char *AdaptiveBData = obs_data_get_string(Settings, "adaptive_b");
   const char *GopOptFlagData = obs_data_get_string(Settings, "gop_opt_flag");
 #ifndef QSV_UHD600_SUPPORT
   const char *AdaptiveCQMData = obs_data_get_string(Settings, "adaptive_cqm");
