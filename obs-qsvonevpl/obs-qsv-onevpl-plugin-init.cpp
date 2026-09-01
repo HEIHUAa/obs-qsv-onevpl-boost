@@ -313,6 +313,10 @@ static bool ProbeVPPFilterSupport(mfxU32 BufferId) {
 
       mfxExtVPPImageStab ImageStab = {};
       mfxExtVPPFrameRateConversion FRC = {};
+      mfxExtVPPMirroring Mirror = {};
+#ifdef ONEVPL_EXPERIMENTAL
+      mfxExtVPPPercEncPrefilter PercEnc = {};
+#endif
       mfxExtBuffer *InExt[1] = {nullptr};
       if (BufferId == MFX_EXTBUFF_VPP_IMAGE_STABILIZATION) {
         ImageStab.Header.BufferId = BufferId;
@@ -324,7 +328,19 @@ static bool ProbeVPPFilterSupport(mfxU32 BufferId) {
         FRC.Header.BufferSz = sizeof(FRC);
         FRC.Algorithm = MFX_FRCALGM_FRAME_INTERPOLATION;
         InExt[0] = &FRC.Header;
+      } else if (BufferId == MFX_EXTBUFF_VPP_MIRRORING) {
+        Mirror.Header.BufferId = BufferId;
+        Mirror.Header.BufferSz = sizeof(Mirror);
+        Mirror.Type = 1; /* MFX_MIRRORING_HORIZONTAL */
+        InExt[0] = &Mirror.Header;
       }
+#ifdef ONEVPL_EXPERIMENTAL
+      else if (BufferId == MFX_EXTBUFF_VPP_PERC_ENC_PREFILTER) {
+        PercEnc.Header.BufferId = BufferId;
+        PercEnc.Header.BufferSz = sizeof(PercEnc);
+        InExt[0] = &PercEnc.Header;
+      }
+#endif
       if (InExt[0]) {
         Params.NumExtParam = 1;
         Params.ExtParam = InExt;
@@ -356,6 +372,14 @@ bool PlatformSupportsImageStabVPP() {
 
 bool PlatformSupportsFRCVPP() {
   return ProbeVPPFilterSupport(MFX_EXTBUFF_VPP_FRAME_RATE_CONVERSION);
+}
+
+bool PlatformSupportsMirrorVPP() {
+  return ProbeVPPFilterSupport(MFX_EXTBUFF_VPP_MIRRORING);
+}
+
+bool PlatformSupportsPercEncVPP() {
+  return ProbeVPPFilterSupport(MFX_EXTBUFF_VPP_PERC_ENC_PREFILTER);
 }
 
 bool PlatformSupportsIntraRefreshEncode(codec_enum Codec) {
@@ -536,10 +560,12 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(Settings, "mbbrc", "AUTO");
   obs_data_set_default_string(Settings, "trellis", "AUTO");
   obs_data_set_default_int(Settings, "num_ref_frame", Codec == QSV_CODEC_VP9 ? 1 : 4);
+  #ifndef QSV_UHD600_SUPPORT
   obs_data_set_default_string(Settings, "global_motion_bias_adjustment",
                               "AUTO");
   obs_data_set_default_string(Settings, "mv_cost_scaling_factor", "AUTO");
   obs_data_set_default_string(Settings, "direct_bias_adjustment", "AUTO");
+#endif
   obs_data_set_default_string(Settings, "mv_overpic_boundaries", "AUTO");
   obs_data_set_default_int(Settings, "la_depth", 60);
 
@@ -554,13 +580,16 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(Settings, "enc_tools_scene_change", "ON");
   obs_data_set_default_string(Settings, "enc_tools_adaptive_ref_p", "ON");
   obs_data_set_default_string(Settings, "enc_tools_adaptive_ref_b", "ON");
+  obs_data_set_default_string(Settings, "enc_tools_adaptive_ltr", "ON");
   obs_data_set_default_string(Settings, "enc_tools_adaptive_pyramid_quant_p", "ON");
   obs_data_set_default_string(Settings, "enc_tools_adaptive_pyramid_quant_b", "ON");
   obs_data_set_default_string(Settings, "enc_tools_adaptive_mbqp", "ON");
   obs_data_set_default_string(Settings, "enc_tools_brc_buffer_hints", "ON");
   obs_data_set_default_string(Settings, "enc_tools_brc", "ON");
   obs_data_set_default_string(Settings, "enc_tools_saliency_map_hint", "ON");
+  #ifndef QSV_UHD600_SUPPORT
   obs_data_set_default_string(Settings, "hevc_sao", "AUTO");
+#endif
   obs_data_set_default_string(Settings, "hevc_gpb", "AUTO");
   obs_data_set_default_string(Settings, "deblocking", "OFF");
 
@@ -677,7 +706,13 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   // VCM is IPPP-only, no B-frames (H264 GopRefDist forced to 1;
   // HEVC uses VA_RC_VCM without MB BRC, conceptually IPPP)
   SetVisible("b_frames", !bIsVCM && codec != QSV_CODEC_VP9);
+#ifdef QSV_UHD600_SUPPORT
+  // UHD600 family: adaptive I/B is HEVC-rejected, keep it for H.264 only.
+  SetVisible("adaptive_b", !bIsVCM && codec != QSV_CODEC_VP9 &&
+                           codec != QSV_CODEC_HEVC);
+#else
   SetVisible("adaptive_b", !bIsVCM && codec != QSV_CODEC_VP9);
+#endif
   SetVisible("cqp_separate_ipb", bIsCQP);
 
   bool separateIPB = obs_data_get_bool(Settings, "cqp_separate_ipb");
@@ -711,6 +746,7 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   // EncTools sub-options visibility (only when enc_tools is ON)
   for (const char *opt : {
     "enc_tools_scene_change", "enc_tools_adaptive_ref_p", "enc_tools_adaptive_ref_b",
+    "enc_tools_adaptive_ltr",
     "enc_tools_adaptive_pyramid_quant_p", "enc_tools_adaptive_pyramid_quant_b",
     "enc_tools_adaptive_mbqp", "enc_tools_brc_buffer_hints", "enc_tools_brc",
     "enc_tools_saliency_map_hint"
@@ -812,6 +848,7 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   SetVisible("min_qp", bVisible);
   SetVisible("max_qp", bVisible);
 
+  #ifndef QSV_UHD600_SUPPORT
   const char *global_motion_bias_adjustment_enable =
       obs_data_get_string(Settings, "global_motion_bias_adjustment");
   bVisible = sv(global_motion_bias_adjustment_enable) == "ON";
@@ -819,17 +856,20 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   // Keep the stored value even when hidden: MVCostScalingFactor is only applied
   // when GlobalMotionBiasAdjustment is ON (see internal.cpp), and erasing it
   // here would permanently delete the user's configured choice from the profile.
+#endif
 
   const char *vpp = obs_data_get_string(Settings, "vpp");
   bool bVisibleVPP = sv(vpp) == "ON";
   SetVisible("detail", bVisibleVPP);
+  // ImageStab / FRC / Mirror / PercEnc are HW-dependent — probe the driver.
   SetVisible("image_stab_mode", bVisibleVPP && PlatformSupportsImageStabVPP());
-  SetVisible("perc_enc_prefilter", bVisibleVPP);
+  SetVisible("perc_enc_prefilter",
+             bVisibleVPP && PlatformSupportsPercEncVPP());
   SetVisible("denoise_mode", bVisibleVPP);
   SetVisible("scaling_mode", bVisibleVPP);
   SetVisible("vpp_procamp", bVisibleVPP);
   SetVisible("vpp_rotation", bVisibleVPP);
-  SetVisible("vpp_mirroring", bVisibleVPP);
+  SetVisible("vpp_mirroring", bVisibleVPP && PlatformSupportsMirrorVPP());
   SetVisible("vpp_frc", bVisibleVPP && PlatformSupportsFRCVPP());
   const char *scaling_mode = obs_data_get_string(Settings, "scaling_mode");
   bool bScalingModeActive = sv(scaling_mode) != "OFF";
@@ -936,7 +976,12 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                          sv(rcInfo->name) == "VCM" ||
                          sv(rcInfo->name) == "QVBR");
       bool skipForHEVC = Codec == QSV_CODEC_HEVC &&
-                         sv(rcInfo->name) == "AVBR";
+                         (sv(rcInfo->name) == "AVBR"
+#ifdef QSV_UHD600_SUPPORT
+                          // UHD620 HEVC rejects QVBR (QSVEncC: x); 730 accepts.
+                          || sv(rcInfo->name) == "QVBR"
+#endif
+                         );
       bool skipForVP9 = Codec == QSV_CODEC_VP9 &&
                         (sv(rcInfo->name) == "AVBR" ||
                          sv(rcInfo->name) == "QVBR" ||
@@ -1183,6 +1228,12 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   AddStrings(Prop, qsv_params_condition);
   obs_property_set_long_description(Prop, TEXT_ENC_TOOLS_ADAPTIVE_REF_B_DESC);
 
+  Prop = obs_properties_add_list(ETGroup, "enc_tools_adaptive_ltr",
+                                 TEXT_ENC_TOOLS_ADAPTIVE_LTR,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition);
+  obs_property_set_long_description(Prop, TEXT_ENC_TOOLS_ADAPTIVE_LTR_DESC);
+
   Prop = obs_properties_add_list(ETGroup, "enc_tools_adaptive_pyramid_quant_p",
                                  TEXT_ENC_TOOLS_ADAPTIVE_PYRAMID_QUANT_P,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -1229,13 +1280,27 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_long_description(Prop, TEXT_ADAPTIVE_I_DESC);
-  obs_property_set_visible(Prop, Codec != QSV_CODEC_VP9);
+  // UHD600 GPU family: adaptive I/B only exists on H.264 (FF CBR/VBR);
+  // HEVC rejects them (QSVEncC on UHD620: all x).
+  obs_property_set_visible(Prop, Codec != QSV_CODEC_VP9 &&
+#ifdef QSV_UHD600_SUPPORT
+                                 Codec != QSV_CODEC_HEVC
+#else
+                                 true
+#endif
+  );
 
   Prop = obs_properties_add_list(ETGroup, "adaptive_b", TEXT_ADAPTIVE_B,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_tristate);
   obs_property_set_long_description(Prop, TEXT_ADAPTIVE_B_DESC);
-  obs_property_set_visible(Prop, Codec != QSV_CODEC_VP9);
+  obs_property_set_visible(Prop, Codec != QSV_CODEC_VP9 &&
+#ifdef QSV_UHD600_SUPPORT
+                                 Codec != QSV_CODEC_HEVC
+#else
+                                 true
+#endif
+  );
 
 #ifndef QSV_UHD600_SUPPORT
   Prop = obs_properties_add_list(ETGroup, "adaptive_cqm", TEXT_ADAPTIVE_CQM,
@@ -1283,6 +1348,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 
   const bool bIsAVCOrHEVC = Codec == QSV_CODEC_AVC || Codec == QSV_CODEC_HEVC;
 
+  #ifndef QSV_UHD600_SUPPORT
   Prop = obs_properties_add_list(RMGroup, "global_motion_bias_adjustment",
                                  TEXT_GLOBAL_MOTION_BIAS_ADJUSTMENT,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -1306,6 +1372,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(Prop, TEXT_DIRECT_BIAS_DESC);
   // H.264 only: no HEVC encoder in vpl-gpu-rt implements DirectBiasAdjustment.
   obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC);
+#endif
 
   Prop = obs_properties_add_list(RMGroup, "mv_overpic_boundaries",
                                  TEXT_MV_OVER_PIC_BOUNDARIES,
@@ -1545,10 +1612,12 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
     AddStrings(Prop, qsv_params_condition_tristate);
     obs_property_set_long_description(Prop, TEXT_HEVC_GPB_DESC);
 
+    #ifndef QSV_UHD600_SUPPORT
     Prop = obs_properties_add_list(CSGroup, "hevc_sao", TEXT_HEVC_SAO,
                                    OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
     AddStrings(Prop, qsv_params_condition_hevc_sao);
     obs_property_set_long_description(Prop, TEXT_HEVC_SAO_DESC);
+#endif
   }
 
   if (Codec == QSV_CODEC_AV1) {
@@ -1646,6 +1715,11 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_scenario_info);
   obs_property_set_long_description(Prop, TEXT_SCENARIO_INFO_DESC);
+#ifdef QSV_UHD600_SUPPORT
+  // UHD620 rejects CO3 ScenarioInfo on HEVC (all x); H.264 still accepts it.
+  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC ||
+                                 Codec == QSV_CODEC_AV1);
+#endif
 
   Prop = obs_properties_add_list(MXGroup, "content_info", TEXT_CONTENT_INFO,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);

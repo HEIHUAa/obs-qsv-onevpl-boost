@@ -104,6 +104,8 @@ void ReleaseGlobalLoader();
 bool PlatformSupportsIntraRefreshEncode(enum codec_enum Codec);
 bool PlatformSupportsImageStabVPP();
 bool PlatformSupportsFRCVPP();
+bool PlatformSupportsMirrorVPP();
+bool PlatformSupportsPercEncVPP();
 
 struct plugin_context;
 extern std::unordered_map<obs_encoder_t *, plugin_context *> EncoderDataMap;

@@ -1203,12 +1203,16 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
     info("\tImageStab skipped: not supported by this platform");
   }
 
-  if (InputParams->PercEncPrefilter == true) {
+  // PercEnc prefilter is a per-platform VPP filter; skip stale values on
+  // hardware that lacks it so VPP Query/Init below doesn't fail.
+  if (InputParams->PercEncPrefilter == true && PlatformSupportsPercEncVPP()) {
     auto PercEncPrefilterParams =
         QSVProcessingParams.AddExtBuffer<mfxExtVPPPercEncPrefilter>();
     PercEncPrefilterParams->Header.BufferId =
         MFX_EXTBUFF_VPP_PERC_ENC_PREFILTER;
     PercEncPrefilterParams->Header.BufferSz = sizeof(mfxExtVPPPercEncPrefilter);
+  } else if (InputParams->PercEncPrefilter == true) {
+    info("\tPercEncPrefilter skipped: not supported by this platform");
   }
 
 #ifndef QSV_UHD600_SUPPORT
@@ -1239,12 +1243,14 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
     RotationParams->Angle = static_cast<mfxU16>(InputParams->VPPRotation.value());
   }
 
-  // Mirroring
-  if (InputParams->VPPMirroring.has_value()) {
+  // Mirroring (per-platform VPP filter, same stale-value guard)
+  if (InputParams->VPPMirroring.has_value() && PlatformSupportsMirrorVPP()) {
     auto MirroringParams = QSVProcessingParams.AddExtBuffer<mfxExtVPPMirroring>();
     MirroringParams->Header.BufferId = MFX_EXTBUFF_VPP_MIRRORING;
     MirroringParams->Header.BufferSz = sizeof(mfxExtVPPMirroring);
     MirroringParams->Type = static_cast<mfxU16>(InputParams->VPPMirroring.value());
+  } else if (InputParams->VPPMirroring.has_value()) {
+    info("\tMirroring skipped: not supported by this platform");
   }
 
   // Frame Rate Conversion (per-platform VPP filter, same stale-value guard)
@@ -1396,9 +1402,9 @@ static constexpr std::array<FieldEntry, 29> CO2_FIELDS{
 };
 
 #ifdef QSV_UHD600_SUPPORT
-static constexpr std::array<FieldEntry, 72> CO3_FIELDS{
+static constexpr std::array<FieldEntry, 69> CO3_FIELDS{
 #else
-static constexpr std::array<FieldEntry, 75> CO3_FIELDS{
+static constexpr std::array<FieldEntry, 73> CO3_FIELDS{
 #endif
   FieldEntry{"NumSliceI", offsetof(mfxExtCodingOption3, NumSliceI), FT_U16},
   FieldEntry{"NumSliceP", offsetof(mfxExtCodingOption3, NumSliceP), FT_U16},
@@ -1408,9 +1414,11 @@ static constexpr std::array<FieldEntry, 75> CO3_FIELDS{
   FieldEntry{"QVBRQuality", offsetof(mfxExtCodingOption3, QVBRQuality), FT_U16},
   FieldEntry{"EnableMBQP", offsetof(mfxExtCodingOption3, EnableMBQP), FT_U16},
   FieldEntry{"IntRefCycleDist", offsetof(mfxExtCodingOption3, IntRefCycleDist), FT_U16},
+#ifndef QSV_UHD600_SUPPORT
   FieldEntry{"DirectBiasAdjustment", offsetof(mfxExtCodingOption3, DirectBiasAdjustment), FT_U16},
   FieldEntry{"GlobalMotionBiasAdjustment", offsetof(mfxExtCodingOption3, GlobalMotionBiasAdjustment), FT_U16},
   FieldEntry{"MVCostScalingFactor", offsetof(mfxExtCodingOption3, MVCostScalingFactor), FT_U16},
+#endif
   FieldEntry{"MBDisableSkipMap", offsetof(mfxExtCodingOption3, MBDisableSkipMap), FT_U16},
   FieldEntry{"WeightedPred", offsetof(mfxExtCodingOption3, WeightedPred), FT_U16},
   FieldEntry{"WeightedBiPred", offsetof(mfxExtCodingOption3, WeightedBiPred), FT_U16},
@@ -1531,9 +1539,14 @@ static constexpr std::array<FieldEntry, 11> AV1AUX_FIELDS{
 };
 
 // ─ HEVCParam field table ─
+#ifdef QSV_UHD600_SUPPORT
+static constexpr std::array<FieldEntry, 0> HEVC_FIELDS{
+};
+#else
 static constexpr std::array<FieldEntry, 1> HEVC_FIELDS{
   FieldEntry{"SampleAdaptiveOffset", offsetof(mfxExtHEVCParam, SampleAdaptiveOffset), FT_U16},
 };
+#endif
 
 // Log driver-corrected fields by diffing before/after state using field tables.
 // Only emits output when the driver actually changed something.
@@ -2246,9 +2259,18 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       }
     }
 
+    #ifdef QSV_UHD600_SUPPORT
+    // HEVC on the UHD600 family does not support adaptive I/B frames at all
+    // (QSVEncC on UHD620: all x); H.264 still supports them on FF(CBR/VBR).
+    if (QSVEncodeParams.mfx.CodecId != MFX_CODEC_HEVC) {
+      CO2Params->AdaptiveI = GetCodingOpt(InputParams->AdaptiveI);
+      CO2Params->AdaptiveB = GetCodingOpt(InputParams->AdaptiveB);
+    }
+#else
     CO2Params->AdaptiveI = GetCodingOpt(InputParams->AdaptiveI);
 
     CO2Params->AdaptiveB = GetCodingOpt(InputParams->AdaptiveB);
+#endif
 
     if (InputParams->RateControl == MFX_RATECONTROL_CBR ||
         InputParams->RateControl == MFX_RATECONTROL_VBR ||
@@ -2413,6 +2435,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
           GetCodingOpt(InputParams->MotionVectorsOverPicBoundaries);
     }
 
+    #ifndef QSV_UHD600_SUPPORT
     if (InputParams->GlobalMotionBiasAdjustment.has_value() &&
         InputParams->GlobalMotionBiasAdjustment.value() == true) {
       CO3Params->GlobalMotionBiasAdjustment = MFX_CODINGOPTION_ON;
@@ -2438,6 +2461,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
     CO3Params->DirectBiasAdjustment =
         GetCodingOpt(InputParams->DirectBiasAdjustment);
+#endif
 
     // Per-frame-type max frame size (CO3) takes priority over CO2 MaxFrameSize
     // for their respective frame types. Only active in per_type mode.
@@ -2461,11 +2485,19 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     auto EncToolsParams = QSVEncodeParams.AddExtBuffer<mfxExtEncToolsConfig>();
     EncToolsParams->Header.BufferId = MFX_EXTBUFF_ENCTOOLS_CONFIG;
     EncToolsParams->Header.BufferSz = sizeof(mfxExtEncToolsConfig);
+#ifdef QSV_UHD600_SUPPORT
+    if (QSVEncodeParams.mfx.CodecId != MFX_CODEC_HEVC) {
+      EncToolsParams->AdaptiveI = GetCodingOpt(InputParams->AdaptiveI);
+      EncToolsParams->AdaptiveB = GetCodingOpt(InputParams->AdaptiveB);
+    }
+#else
     EncToolsParams->AdaptiveI = GetCodingOpt(InputParams->AdaptiveI);
     EncToolsParams->AdaptiveB = GetCodingOpt(InputParams->AdaptiveB);
+#endif
     EncToolsParams->SceneChange = GetCodingOpt(InputParams->EncToolsSceneChange);
     EncToolsParams->AdaptiveRefP = GetCodingOpt(InputParams->EncToolsAdaptiveRefP);
     EncToolsParams->AdaptiveRefB = GetCodingOpt(InputParams->EncToolsAdaptiveRefB);
+    EncToolsParams->AdaptiveLTR = GetCodingOpt(InputParams->EncToolsAdaptiveLTR);
     EncToolsParams->AdaptivePyramidQuantP = GetCodingOpt(InputParams->EncToolsAdaptivePyramidQuantP);
     EncToolsParams->AdaptivePyramidQuantB = GetCodingOpt(InputParams->EncToolsAdaptivePyramidQuantB);
 #ifndef QSV_UHD600_SUPPORT
@@ -2526,6 +2558,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     HevcParams->PicWidthInLumaSamples = QSVEncodeParams.mfx.FrameInfo.Width;
     HevcParams->PicHeightInLumaSamples = QSVEncodeParams.mfx.FrameInfo.Height;
 
+    #ifndef QSV_UHD600_SUPPORT
     if (InputParams->SAO.has_value()) {
       switch (InputParams->SAO.value()) {
       case 0:
@@ -2543,6 +2576,7 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
         break;
       }
     }
+#endif
 
     auto HevcTilesParams = QSVEncodeParams.AddExtBuffer<mfxExtHEVCTiles>();
     HevcTilesParams->Header.BufferId = MFX_EXTBUFF_HEVC_TILES;
@@ -3517,6 +3551,7 @@ void QSVEncoder::LogActualParams() {
 #endif
     info("\tMotionVectorsOverPicBoundaries set: %s",
          GetCodingOptStatus(CO3->MotionVectorsOverPicBoundaries).c_str());
+#ifndef QSV_UHD600_SUPPORT
     info("\tGlobalMotionBiasAdjustment set: %s",
          GetCodingOptStatus(CO3->GlobalMotionBiasAdjustment).c_str());
     if (CO3->GlobalMotionBiasAdjustment == MFX_CODINGOPTION_ON &&
@@ -3530,6 +3565,7 @@ void QSVEncoder::LogActualParams() {
     }
     info("\tDirectBiasAdjustment set: %s",
          GetCodingOptStatus(CO3->DirectBiasAdjustment).c_str());
+#endif
     info("\tWeightedPred set: %s",
          GetWeightedPredStatus(CO3->WeightedPred).c_str());
     info("\tWeightedBiPred set: %s",
@@ -3556,17 +3592,26 @@ void QSVEncoder::LogActualParams() {
 
   auto *EncTools = QSVEncodeParams.GetExtBuffer<mfxExtEncToolsConfig>();
   if (EncTools) {
+    // order matches mfxExtEncToolsConfig field layout (mfxenctools.h)
     info("\tEncTools sub-options:");
-    info("\t  SceneChange: %s",
-         GetCodingOptStatus(EncTools->SceneChange).c_str());
+    info("\t  AdaptiveI: %s",
+         GetCodingOptStatus(EncTools->AdaptiveI).c_str());
+    info("\t  AdaptiveB: %s",
+         GetCodingOptStatus(EncTools->AdaptiveB).c_str());
     info("\t  AdaptiveRefP: %s",
          GetCodingOptStatus(EncTools->AdaptiveRefP).c_str());
     info("\t  AdaptiveRefB: %s",
          GetCodingOptStatus(EncTools->AdaptiveRefB).c_str());
+    info("\t  SceneChange: %s",
+         GetCodingOptStatus(EncTools->SceneChange).c_str());
+    info("\t  AdaptiveLTR: %s",
+         GetCodingOptStatus(EncTools->AdaptiveLTR).c_str());
     info("\t  AdaptivePyramidQuantP: %s",
          GetCodingOptStatus(EncTools->AdaptivePyramidQuantP).c_str());
     info("\t  AdaptivePyramidQuantB: %s",
          GetCodingOptStatus(EncTools->AdaptivePyramidQuantB).c_str());
+    info("\t  AdaptiveQuantMatrices: %s",
+         GetCodingOptStatus(EncTools->AdaptiveQuantMatrices).c_str());
     info("\t  AdaptiveMBQP: %s",
          GetCodingOptStatus(EncTools->AdaptiveMBQP).c_str());
     info("\t  BRCBufferHints: %s",
@@ -3636,8 +3681,10 @@ void QSVEncoder::LogActualParams() {
 
     auto *HEVC = QSVEncodeParams.GetExtBuffer<mfxExtHEVCParam>();
     if (HEVC) {
+#ifndef QSV_UHD600_SUPPORT
       info("\tSAO set: %s",
            GetSAOStatus(HEVC->SampleAdaptiveOffset).c_str());
+#endif
     }
   }
 

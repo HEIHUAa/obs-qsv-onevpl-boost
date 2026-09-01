@@ -61,10 +61,15 @@ struct encoder_params {
   std::optional<bool> RDO;
   std::optional<bool> RawRef;
   std::optional<bool> GPB;
-  std::optional<bool> DirectBiasAdjustment;
-  std::optional<mfxU16> GopOptFlag;
+  std::optional<bool> GopOptFlag;
   std::optional<mfxU16> WeightedPred;
+  // HME (hierarchical motion estimation) tuning is H.264-only and the UHD600
+  // GPU family does not expose it at all (QSVEncC on UHD620: all x).
+  // Keep them out of the UHD600 variant build entirely.
+#ifndef QSV_UHD600_SUPPORT
+  std::optional<bool> DirectBiasAdjustment;
   std::optional<bool> GlobalMotionBiasAdjustment;
+#endif
   std::optional<bool> HRDConformance;
   std::optional<bool> LowDelayHRD;
   std::optional<bool> LowDelayBRC;
@@ -85,6 +90,7 @@ struct encoder_params {
   std::optional<bool> EncToolsSceneChange;
   std::optional<bool> EncToolsAdaptiveRefP;
   std::optional<bool> EncToolsAdaptiveRefB;
+  std::optional<bool> EncToolsAdaptiveLTR;
   std::optional<bool> EncToolsAdaptivePyramidQuantP;
   std::optional<bool> EncToolsAdaptivePyramidQuantB;
   std::optional<bool> EncToolsAdaptiveMBQP;
@@ -103,7 +109,9 @@ struct encoder_params {
   std::optional<int> VPPScalingMode;
   std::optional<int> VPPImageStabMode;
   std::optional<int> VPPDetail;
+  #ifndef QSV_UHD600_SUPPORT
   std::optional<int> MVCostScalingFactor;
+#endif
   std::optional<int> LookAheadDS;
   std::optional<bool> MotionVectorsOverPicBoundaries;
   std::optional<int> NumRefFrameLayers;
@@ -111,7 +119,9 @@ struct encoder_params {
   std::optional<int> VPPMCTFMode;
   mfxU16 VPPMCTFStrength;
 #endif
+  #ifndef QSV_UHD600_SUPPORT
   std::optional<int> SAO;
+#endif
   std::optional<int> AV1CDEF;
   std::optional<int> AV1Restoration;
   std::optional<int> AV1LoopFilter;

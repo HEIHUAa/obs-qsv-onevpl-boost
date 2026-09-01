@@ -368,17 +368,23 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
   const char *RDOData = obs_data_get_string(Settings, "rdo");
   const char *TrellisData = obs_data_get_string(Settings, "trellis");
   int NumRefFrameData = static_cast<int>(obs_data_get_int(Settings, "num_ref_frame"));
+#ifndef QSV_UHD600_SUPPORT
   const char *GlobalMotionBiasAdjustmentData =
       obs_data_get_string(Settings, "global_motion_bias_adjustment");
   const char *MVCostScalingFactorData =
       obs_data_get_string(Settings, "mv_cost_scaling_factor");
+#endif
   const char *LookaheadData = obs_data_get_string(Settings, "lookahead");
   const char *LookaheadDSData = obs_data_get_string(Settings, "lookahead_ds");
+#ifndef QSV_UHD600_SUPPORT
   const char *DirectBiasAdjustmentData =
       obs_data_get_string(Settings, "direct_bias_adjustment");
+#endif
   const char *MVOverPicBoundariesData =
       obs_data_get_string(Settings, "mv_overpic_boundaries");
+  #ifndef QSV_UHD600_SUPPORT
   const char *SAOData = obs_data_get_string(Settings, "hevc_sao");
+#endif
   const char *GPBData = obs_data_get_string(Settings, "hevc_gpb");
   const char *ScenarioInfoData =
       obs_data_get_string(Settings, "scenario_info");
@@ -630,6 +636,8 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
                     Params.EncToolsAdaptiveRefP);
   ParseOptionalBool(obs_data_get_string(Settings, "enc_tools_adaptive_ref_b"),
                     Params.EncToolsAdaptiveRefB);
+  ParseOptionalBool(obs_data_get_string(Settings, "enc_tools_adaptive_ltr"),
+                    Params.EncToolsAdaptiveLTR);
   ParseOptionalBool(
       obs_data_get_string(Settings, "enc_tools_adaptive_pyramid_quant_p"),
       Params.EncToolsAdaptivePyramidQuantP);
@@ -647,18 +655,22 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
       obs_data_get_string(Settings, "enc_tools_saliency_map_hint"),
       Params.EncToolsSaliencyMapHint);
 
+  #ifndef QSV_UHD600_SUPPORT
   ParseOptionalBool(DirectBiasAdjustmentData,
                     Params.DirectBiasAdjustment);
 
   if (auto v = MapString(MVCostScalingFactorData, kMVCostScalingFactorMap))
     Params.MVCostScalingFactor = *v;
+#endif
 
   ParseOptionalBool(UseRawRefData, Params.RawRef);
 
   Params.PPyramid = (std::string_view(PPyramidData) == "ON");
 
+  #ifndef QSV_UHD600_SUPPORT
   ParseOptionalBool(GlobalMotionBiasAdjustmentData,
                     Params.GlobalMotionBiasAdjustment);
+#endif
 
   // Lookahead
   auto svLookahead = std::string_view(LookaheadData);
@@ -719,8 +731,10 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
   if (auto v = MapString(TrellisData, kTrellisMap))
     Params.Trellis = *v;
 
+  #ifndef QSV_UHD600_SUPPORT
   if (auto v = MapString(SAOData, kSAOMap))
     Params.SAO = *v;
+#endif
 
   ParseOptionalBool(GPBData, Params.GPB);
 
