@@ -148,12 +148,14 @@ void DestroyPluginContext(void *Data) {
           if (Context->SentPackets || Context->ZeroDtsPackets)
             blog(LOG_INFO,
                  "[QSV VPL] packet debug: delivered=%llu zero_dts=%llu "
-                 "first_pts=%lld first_dts=%lld nonmono=%llu neg_dts=%llu",
+                 "first_pts=%lld first_dts=%lld nonmono=%llu neg_dts=%llu "
+                 "dts_fixed=%llu",
                  static_cast<unsigned long long>(Context->SentPackets),
                  static_cast<unsigned long long>(Context->ZeroDtsPackets),
                  Context->FirstPts, Context->FirstDts,
                  static_cast<unsigned long long>(Context->NonMonoDts),
-                 static_cast<unsigned long long>(Context->NegDts));
+                 static_cast<unsigned long long>(Context->NegDts),
+                 static_cast<unsigned long long>(Context->DtsFixed));
           for (uint64_t i = 0; i < Context->HeadCount; i++) {
             blog(LOG_INFO, "[QSV VPL]   pkt[%llu] pts=%lld dts=%lld",
                  static_cast<unsigned long long>(i),
@@ -560,19 +562,12 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
           : ConvertTSMFXOBS(Bitstream->DecodeTimeStamp,
                             Context->CachedFpsNum, Context->CachedFpsDen,
                             Context->CachedTSDiv);
-  bool isKeyframe = ((Bitstream->FrameType & MFX_FRAMETYPE_I) ||
-                     (Bitstream->FrameType & MFX_FRAMETYPE_IDR) ||
-                     (Bitstream->FrameType & MFX_FRAMETYPE_S) ||
-                     (Bitstream->FrameType & MFX_FRAMETYPE_xI) ||
-                     (Bitstream->FrameType & MFX_FRAMETYPE_xIDR) ||
-                     (Bitstream->FrameType & MFX_FRAMETYPE_xS));
-  Packet->keyframe = isKeyframe;
 
   Context->SentPackets++;
   if (Bitstream->DecodeTimeStamp == 0)
     Context->ZeroDtsPackets++;
 
-  // Timing diagnostics for the intermittent empty-recording failure.
+  // Timing diagnostics (record the raw driver DTS before we fix it up).
   if (Context->SentPackets == 1) {
     Context->FirstPts = Packet->pts;
     Context->FirstDts = Packet->dts;
@@ -587,6 +582,35 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
   if (Context->HeadCount < Context->HeadPackets.size()) {
     Context->HeadPackets[Context->HeadCount++] = {Packet->pts, Packet->dts};
   }
+
+  // AVC/HEVC only (B-frame reorder). The driver can emit non-monotonic or
+  // negative DTS after the SPS/PPS re-init, which breaks OBS's mp4 muxer
+  // (giant sample durations -> only 1 frame written) and the reencoder
+  // (av_interleaved_write_frame -22). Rebuild a monotonic, zero-based DTS
+  // timeline here; PTS is left untouched so playback order is preserved.
+  if (Context->Codec == QSV_CODEC_AVC || Context->Codec == QSV_CODEC_HEVC) {
+    if (!Context->DtsInit) {
+      Context->DtsInit = true;
+      Context->DtsBase = Packet->dts;
+      Context->LastDts = 0;
+      Packet->dts = 0;
+    } else {
+      int64_t rel = Packet->dts - Context->DtsBase;
+      if (rel <= Context->LastDts) {
+        rel = Context->LastDts + 1;
+        Context->DtsFixed++;
+      }
+      Context->LastDts = rel;
+      Packet->dts = rel;
+    }
+  }
+  bool isKeyframe = ((Bitstream->FrameType & MFX_FRAMETYPE_I) ||
+                     (Bitstream->FrameType & MFX_FRAMETYPE_IDR) ||
+                     (Bitstream->FrameType & MFX_FRAMETYPE_S) ||
+                     (Bitstream->FrameType & MFX_FRAMETYPE_xI) ||
+                     (Bitstream->FrameType & MFX_FRAMETYPE_xIDR) ||
+                     (Bitstream->FrameType & MFX_FRAMETYPE_xS));
+  Packet->keyframe = isKeyframe;
 
   if (isKeyframe) {
     Packet->priority = static_cast<int>(OBS_NAL_PRIORITY_HIGHEST);
