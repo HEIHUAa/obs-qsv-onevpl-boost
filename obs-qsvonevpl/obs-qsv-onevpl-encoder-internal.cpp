@@ -388,6 +388,18 @@ mfxStatus QSVEncoder::CreateSession([[maybe_unused]] enum codec_enum Codec,
 
 #if defined(_WIN32) || defined(_WIN64)
   if (QSVIsTextureEncoder) {
+    if (UsingGlobalLoader) {
+      QSVLoader = MFXLoad();
+      if (QSVLoader == nullptr) {
+        return MFX_ERR_UNDEFINED_BEHAVIOR;
+      }
+      Loader = QSVLoader;
+      UsingGlobalLoader = false;
+
+      makeConfig(0, MFX_IMPL_TYPE_HARDWARE, "mfxImplDescription.Impl");
+      makeConfig(1, static_cast<mfxU32>(0x8086), "mfxImplDescription.VendorID");
+    }
+
     makeConfig(3, MFX_ACCEL_MODE_VIA_D3D11, "mfxImplDescription.AccelerationMode");
 
     // D3D11 surface sharing mode — all 3 associated parameters must be
@@ -420,6 +432,12 @@ mfxStatus QSVEncoder::CreateSession([[maybe_unused]] enum codec_enum Codec,
   Status = MFXCreateSession(Loader, GPUNum, &QSVSession);
 
   if (Status < MFX_ERR_NONE) {
+    // A local loader created above must be released even when session
+    // creation fails — ClearData() only unloads it when a session exists.
+    if (QSVLoader && !QSVSession) {
+      MFXUnload(QSVLoader);
+      QSVLoader = nullptr;
+    }
     error("Error code: %d", Status);
     throw std::runtime_error("CreateSession(): MFXCreateSession error");
   }
