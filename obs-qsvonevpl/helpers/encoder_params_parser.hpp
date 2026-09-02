@@ -909,25 +909,27 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
       Params.ChromaQPOffset = ChQp;
   }
 
-  // Quant matrix preset (H.264 only): 0=default, 1=Flat16, 2=JM, 3=detail,
-  // 4=NV edge, 5=custom (lists from the qm_* text boxes below).
+  // Quant matrix preset (H.264 only): 0=default, 1..5=driver CQM matrices
+  // (flat/weak/medium/strong/extreme), 6=custom (lists from the qm_* boxes).
   {
     const char *Qm = obs_data_get_string(Settings, "quant_matrix");
     int qm = 0;
     if (Qm) {
       auto sv = std::string_view(Qm);
-      if (sv == "flat16")
+      if (sv == "drv_flat")
         qm = 1;
-      else if (sv == "jm")
+      else if (sv == "drv_weak")
         qm = 2;
-      else if (sv == "detail")
+      else if (sv == "drv_medium")
         qm = 3;
-      else if (sv == "nv_edge")
+      else if (sv == "drv_strong")
         qm = 4;
-      else if (sv == "custom")
+      else if (sv == "drv_extreme")
         qm = 5;
+      else if (sv == "custom")
+        qm = 6;
     }
-    if (qm == 5) {
+    if (qm == 6) {
       H264ScalingLists cl;
       // Each qm_* box is optional: filled lists are used, missing ones fall
       // back to the driver default. Values are space-separated, 1..255,

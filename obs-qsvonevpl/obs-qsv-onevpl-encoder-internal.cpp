@@ -36,13 +36,13 @@ static constexpr mfxU16 kLegacyDenoiseAutoFactor = 50;
 // the H.264 defaults are diagonal-symmetric so zigzag == row-major here.
 // ---------------------------------------------------------------------------
 enum QMatrixPreset {
-  QM_DEFAULT = 0,  // leave SPS/PPS untouched (native default matrices)
-  QM_FLAT16 = 1,   // x264 --cqm flat: uniform, keeps every frequency
-  QM_JM = 2,       // JM reference config (smoother, detail-leaning)
-  QM_DETAIL = 3,   // default * 0.6: finer quantization everywhere
-  QM_EDGEKEEP = 4, // NV-like: coarser low freq (smooth areas), finer high
-                   // freq (edges) -- keeps edges crisp at low bitrate
-  QM_CUSTOM = 5,   // fully user-supplied lists (H264ScalingLists in params)
+  QM_DEFAULT = 0,      // leave SPS/PPS untouched (native default matrices)
+  QM_DRV_FLAT = 1,     // driver CQM matrix 0 -- recommended avg QP < 32
+  QM_DRV_WEAK = 2,     // driver CQM matrix 1 -- recommended avg QP 32..38
+  QM_DRV_MEDIUM = 3,   // driver CQM matrix 2 -- recommended avg QP 38..44
+  QM_DRV_STRONG = 4,   // driver CQM matrix 3 -- recommended avg QP 44..50
+  QM_DRV_EXTREME = 5,  // driver CQM matrix 4 -- recommended avg QP >= 50
+  QM_CUSTOM = 6,       // fully user-supplied lists (H264ScalingLists in params)
 };
 
 static const uint8_t kDefaultI4[16] = {6, 13, 20, 28, 13, 20, 28, 32,
@@ -54,81 +54,132 @@ static const uint8_t kDefaultI8[64] = {
     13, 16, 18, 23, 25, 27, 29, 31, 16, 18, 23, 25, 27, 29, 31, 33,
     18, 23, 25, 27, 29, 31, 33, 36, 23, 25, 27, 29, 31, 33, 36, 38,
     25, 27, 29, 31, 33, 36, 38, 40, 27, 29, 31, 33, 36, 38, 40, 42};
-static const uint8_t kDefaultP8[64] = {
-    9, 13, 15, 17, 19, 21, 22, 24, 13, 13, 17, 19, 21, 22, 24, 25,
-    15, 17, 19, 21, 22, 24, 25, 27, 17, 19, 21, 22, 24, 25, 27, 28,
-    19, 21, 22, 24, 25, 27, 28, 30, 21, 22, 24, 25, 27, 28, 30, 32,
-    22, 24, 25, 27, 28, 30, 32, 33, 24, 25, 27, 28, 30, 32, 33, 35};
+// kDefault* above are only used for the H.264 7.3.2.1.1.1 fallback rule A
+// (fill the leading luma list when the user supplies chroma/8x8 only); they
+// are not selectable presets.
 
-// JM reference config matrices (leading 0 = use-default marker stripped, DC
-// reused from the first real coefficient so the table stays symmetric).
-static const uint8_t kJmI4[16] = {12, 12, 19, 26, 12, 19, 26, 31,
-                                  19, 26, 31, 35, 26, 31, 35, 39};
-static const uint8_t kJmP4[16] = {13, 13, 18, 21, 13, 18, 21, 24,
-                                  18, 21, 24, 27, 21, 24, 27, 30};
-static const uint8_t kJmI8[64] = {
-    10, 10, 13, 16, 19, 24, 26, 28, 10, 12, 16, 19, 24, 26, 28, 31,
-    13, 16, 19, 24, 26, 28, 31, 33, 16, 19, 24, 26, 28, 31, 33, 35,
-    19, 24, 26, 28, 31, 33, 35, 37, 24, 26, 28, 31, 33, 35, 37, 39,
-    26, 28, 31, 33, 35, 37, 39, 42, 28, 31, 33, 35, 37, 39, 42, 44};
-static const uint8_t kJmP8[64] = {
-    12, 12, 14, 16, 18, 19, 21, 22, 12, 13, 16, 18, 19, 21, 22, 24,
-    14, 16, 18, 19, 21, 22, 24, 25, 16, 18, 19, 21, 22, 24, 25, 27,
-    18, 19, 21, 22, 24, 25, 27, 28, 19, 21, 22, 24, 25, 27, 28, 30,
-    21, 22, 24, 25, 27, 28, 30, 31, 22, 24, 25, 27, 28, 30, 31, 33};
+// ---------------------------------------------------------------------------
+// Driver "custom quant matrix" presets, copied verbatim from
+// FillCustomScalingLists() in vpl-gpu-rt
+// (mfx_lib/encode_hw/h264/src/mfx_h264_encode_hw_utils_new.cpp).  The driver
+// picks one of these per-frame by average QP (SetupAdaptiveCQM); we expose
+// them as fixed presets.  Stored in PLANE (row-major) order like the driver
+// and converted to zigzag before being written into the injected SPS/PPS.
+//   index 0 = FLAT    (avg QP < 32)
+//   index 1 = weak    (avg QP 32..38)
+//   index 2 = medium  (avg QP 38..44)
+//   index 3 = strong  (avg QP 44..50)
+//   index 4 = extreme (avg QP >= 50)
+// ---------------------------------------------------------------------------
+static const uint8_t kDrvIntra4[5][16] = {
+    {16, 34, 53, 74, 34, 53, 74, 85, 53, 74, 85, 98, 74, 85, 98, 112},
+    {21, 21, 21, 24, 21, 21, 24, 26, 21, 24, 26, 29, 24, 26, 29, 32},
+    {27, 29, 36, 46, 29, 36, 46, 52, 36, 46, 52, 58, 46, 52, 58, 64},
+    {28, 31, 53, 74, 31, 53, 74, 85, 53, 74, 85, 98, 74, 85, 98, 112},
+    {31, 31, 53, 74, 31, 53, 74, 85, 53, 74, 85, 98, 74, 85, 98, 112}};
+static const uint8_t kDrvInter4[5][16] = {
+    {16, 22, 32, 38, 22, 32, 38, 43, 32, 38, 43, 48, 38, 43, 48, 54},
+    {21, 21, 21, 24, 21, 21, 24, 26, 21, 24, 26, 29, 24, 26, 29, 32},
+    {27, 29, 32, 38, 29, 32, 38, 43, 32, 38, 43, 48, 38, 43, 48, 54},
+    {28, 31, 36, 46, 31, 36, 46, 52, 36, 46, 52, 58, 46, 52, 58, 64},
+    {31, 31, 36, 46, 31, 36, 46, 52, 36, 46, 52, 58, 46, 52, 58, 64}};
+static const uint8_t kDrvIntra8[5][64] = {
+    {16, 26, 34, 42, 48, 61, 66, 72, 26, 29, 42, 48, 61, 66, 72, 77,
+     34, 42, 48, 61, 66, 72, 77, 82, 42, 48, 61, 66, 72, 77, 82, 88,
+     48, 61, 66, 72, 77, 82, 88, 96, 61, 66, 72, 77, 82, 88, 96, 101,
+     66, 72, 77, 82, 88, 96, 101, 106, 72, 77, 82, 88, 96, 101, 106, 112},
+    {16, 16, 34, 42, 48, 61, 66, 72, 16, 29, 42, 48, 61, 66, 72, 77,
+     34, 42, 48, 61, 66, 72, 77, 82, 42, 48, 61, 66, 72, 77, 82, 88,
+     48, 61, 66, 72, 77, 82, 88, 96, 61, 66, 72, 77, 82, 88, 96, 101,
+     66, 72, 77, 82, 88, 96, 101, 106, 72, 77, 82, 88, 96, 101, 106, 112},
+    {16, 19, 34, 42, 48, 61, 66, 72, 19, 29, 42, 48, 61, 66, 72, 77,
+     34, 42, 48, 61, 66, 72, 77, 82, 42, 48, 61, 66, 72, 77, 82, 88,
+     48, 61, 66, 72, 77, 82, 88, 96, 61, 66, 72, 77, 82, 88, 96, 101,
+     66, 72, 77, 82, 88, 96, 101, 106, 72, 77, 82, 88, 96, 101, 106, 112},
+    {19, 25, 34, 42, 48, 61, 66, 72, 25, 29, 42, 48, 61, 66, 72, 77,
+     34, 42, 48, 61, 66, 72, 77, 82, 42, 48, 61, 66, 72, 77, 82, 88,
+     48, 61, 66, 72, 77, 82, 88, 96, 61, 66, 72, 77, 82, 88, 96, 101,
+     66, 72, 77, 82, 88, 96, 101, 106, 72, 77, 82, 88, 96, 101, 106, 112},
+    {22, 22, 34, 42, 48, 61, 66, 72, 22, 29, 42, 48, 61, 66, 72, 77,
+     34, 42, 48, 61, 66, 72, 77, 82, 42, 48, 61, 66, 72, 77, 82, 88,
+     48, 61, 66, 72, 77, 82, 88, 96, 61, 66, 72, 77, 82, 88, 96, 101,
+     66, 72, 77, 82, 88, 96, 101, 106, 72, 77, 82, 88, 96, 101, 106, 112}};
+static const uint8_t kDrvInter8[5][64] = {
+    {16, 23, 26, 30, 33, 37, 39, 42, 23, 23, 30, 33, 37, 39, 42, 44,
+     26, 30, 33, 37, 39, 42, 44, 48, 30, 33, 37, 39, 42, 44, 48, 49,
+     33, 37, 39, 42, 44, 48, 49, 53, 37, 39, 42, 44, 48, 49, 53, 56,
+     39, 42, 44, 48, 49, 53, 56, 58, 42, 44, 48, 49, 53, 56, 58, 62},
+    {16, 16, 26, 30, 33, 37, 39, 42, 16, 23, 30, 33, 37, 39, 42, 44,
+     26, 30, 33, 37, 39, 42, 44, 48, 30, 33, 37, 39, 42, 44, 48, 49,
+     33, 37, 39, 42, 44, 48, 49, 53, 37, 39, 42, 44, 48, 49, 53, 56,
+     39, 42, 44, 48, 49, 53, 56, 58, 42, 44, 48, 49, 53, 56, 58, 62},
+    {16, 16, 26, 30, 33, 37, 39, 42, 16, 23, 30, 33, 37, 39, 42, 44,
+     26, 30, 33, 37, 39, 42, 44, 48, 30, 33, 37, 39, 42, 44, 48, 49,
+     33, 37, 39, 42, 44, 48, 49, 53, 37, 39, 42, 44, 48, 49, 53, 56,
+     39, 42, 44, 48, 49, 53, 56, 58, 42, 44, 48, 49, 53, 56, 58, 62},
+    {19, 22, 26, 30, 33, 37, 39, 42, 22, 23, 30, 33, 37, 39, 42, 44,
+     26, 30, 33, 37, 39, 42, 44, 48, 30, 33, 37, 39, 42, 44, 48, 49,
+     33, 37, 39, 42, 44, 48, 49, 53, 37, 39, 42, 44, 48, 49, 53, 56,
+     39, 42, 44, 48, 49, 53, 56, 58, 42, 44, 48, 49, 53, 56, 58, 62},
+    {19, 22, 26, 30, 33, 37, 39, 42, 22, 23, 30, 33, 37, 39, 42, 44,
+     26, 30, 33, 37, 39, 42, 44, 48, 30, 33, 37, 39, 42, 44, 48, 49,
+     33, 37, 39, 42, 44, 48, 49, 53, 37, 39, 42, 44, 48, 49, 53, 56,
+     39, 42, 44, 48, 49, 53, 56, 58, 42, 44, 48, 49, 53, 56, 58, 62}};
+static const uint8_t kDrvFlat4[16] = {16, 16, 16, 16, 16, 16, 16, 16,
+                                      16, 16, 16, 16, 16, 16, 16, 16};
 
-struct H264MatrixSet {
-  const uint8_t *i4 = nullptr;
-  const uint8_t *p4 = nullptr;
-  const uint8_t *i8 = nullptr;
-  const uint8_t *p8 = nullptr;
-};
+// Plane (row-major) -> zigzag. H.264 carries scaling lists in zigzag scan
+// order (7.3.2.1.1.1 / Table 6-14) while the driver CQM tables are planar,
+// so this is required before writing them into the injected SPS/PPS.  Tables
+// below are the standard scan: entry k of the list lives at row-major index
+// zz[k] (same as ffmpeg ff_zigzag_direct).
+template <size_t N>
+static void H264PlaneToZigZag(const uint8_t *plane, uint8_t *zigzag) {
+  static const uint8_t zz4[16] = {
+      0, 1, 4, 8, 5, 2, 3, 6, 9, 12, 13, 10, 7, 11, 14, 15};
+  static const uint8_t zz8[64] = {
+      0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5,
+      12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6, 7, 14, 21, 28,
+      35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51,
+      58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63};
+  const uint8_t *zz = (N == 4) ? zz4 : zz8;
+  for (size_t k = 0; k < N * N; ++k)
+    zigzag[k] = plane[zz[k]];
+}
 
-// detail preset = default * 0.6 (rounded), never below 1
-static H264MatrixSet GetH264Matrices(int preset) {
-  static uint8_t detail_i4[16], detail_p4[16], detail_i8[64], detail_p8[64];
-  static uint8_t edge_i4[16], edge_p4[16], edge_i8[64], edge_p8[64];
-  H264MatrixSet m;
-  switch (preset) {
-  case QM_JM:
-    m.i4 = kJmI4; m.p4 = kJmP4; m.i8 = kJmI8; m.p8 = kJmP8;
-    break;
-  case QM_DETAIL:
-    for (int i = 0; i < 16; i++) {
-      detail_i4[i] = (uint8_t)std::max(1, (kDefaultI4[i] * 3 + 2) / 5);
-      detail_p4[i] = (uint8_t)std::max(1, (kDefaultP4[i] * 3 + 2) / 5);
-    }
-    for (int i = 0; i < 64; i++) {
-      detail_i8[i] = (uint8_t)std::max(1, (kDefaultI8[i] * 3 + 2) / 5);
-      detail_p8[i] = (uint8_t)std::max(1, (kDefaultP8[i] * 3 + 2) / 5);
-    }
-    m.i4 = detail_i4; m.p4 = detail_p4; m.i8 = detail_i8; m.p8 = detail_p8;
-    break;
-  case QM_EDGEKEEP: {
-    // NV-like edge retention: scale default weights linearly by position so
-    // low frequency (zigzag head) quantizes coarser (saves bits on flat
-    // areas) while high frequency (zigzag tail, edges/texture) stays finer.
-    // weight goes 1.8 (DC) -> 0.8 (highest freq).
-    auto make = [](const uint8_t *src, uint8_t *dst, int n) {
-      for (int i = 0; i < n; i++) {
-        const double t = (double)i / (double)(n - 1);
-        const double w = 1.8 - 1.0 * t;
-        double v = (double)src[i] * w;
-        int iv = (int)(v + 0.5);
-        dst[i] = (uint8_t)std::clamp(iv, 1, 255);
-      }
-    };
-    make(kDefaultI4, edge_i4, 16);
-    make(kDefaultP4, edge_p4, 16);
-    make(kDefaultI8, edge_i8, 64);
-    make(kDefaultP8, edge_p8, 64);
-    m.i4 = edge_i4; m.p4 = edge_p4; m.i8 = edge_i8; m.p8 = edge_p8;
-    break;
-  }
-  default:
-    break;
-  }
-  return m;
+// Build a fully-expanded (all 8 lists) custom matrix set for a driver preset,
+// in zigzag order ready for SPS/PPS injection.  Chroma follows the driver's
+// rule: strong/extreme reuse the weak/medium luma tables, the rest stay flat.
+static std::optional<H264ScalingLists> MakeDriverPresetLists(int preset) {
+  H264ScalingLists l;
+  const int idx = preset - QM_DRV_FLAT;  // 0..4 = driver matrix index
+  uint8_t z[64];
+  auto arr16 = [](const uint8_t src[16]) {
+    std::array<uint8_t, 16> a{};
+    std::copy_n(src, 16, a.begin());
+    return a;
+  };
+  auto arr64 = [](const uint8_t src[64]) {
+    std::array<uint8_t, 64> a{};
+    std::copy_n(src, 64, a.begin());
+    return a;
+  };
+  H264PlaneToZigZag<4>(kDrvIntra4[idx], z);
+  l.Intra4x4Y = arr16(z);
+  H264PlaneToZigZag<4>(kDrvInter4[idx], z);
+  l.Inter4x4Y = arr16(z);
+  H264PlaneToZigZag<8>(kDrvIntra8[idx], z);
+  l.Intra8x8 = arr64(z);
+  H264PlaneToZigZag<8>(kDrvInter8[idx], z);
+  l.Inter8x8 = arr64(z);
+  const int cIdx = (idx > 2) ? (idx - 2) : -1;
+  const uint8_t *cIntra = (cIdx >= 0) ? kDrvIntra4[cIdx] : kDrvFlat4;
+  const uint8_t *cInter = (cIdx >= 0) ? kDrvInter4[cIdx] : kDrvFlat4;
+  H264PlaneToZigZag<4>(cIntra, z);
+  l.Intra4x4Cb = l.Intra4x4Cr = arr16(z);
+  H264PlaneToZigZag<4>(cInter, z);
+  l.Inter4x4Cb = l.Inter4x4Cr = arr16(z);
+  return l;
 }
 
 // Per-list pointers used by the SPS/PPS writers. Each group is independent:
@@ -150,50 +201,43 @@ struct H264ScalingSetPointers {
   }
 };
 
-// preset -> pointers. Custom path reads the raw lists straight from params;
-// unmatched groups stay null (default). Preset path mirrors the old
-// chroma-copies-luma layout. flat16 is materialized in a static buffer.
+// preset -> pointers. DEFAULT returns empty (native matrices); driver presets
+// are expanded by MakeDriverPresetLists; CUSTOM reads the raw lists straight
+// from params.  Unmatched groups stay null (driver default).
 static H264ScalingSetPointers GetH264ScalingSetPointers(
     int preset, const H264ScalingLists *custom) {
   H264ScalingSetPointers s;
-  if (preset == QM_CUSTOM) {
-    if (custom) {
-      auto p16 = [](const std::optional<std::array<uint8_t, 16>> &o) {
-        return o ? o->data() : nullptr;
-      };
-      auto p64 = [](const std::optional<std::array<uint8_t, 64>> &o) {
-        return o ? o->data() : nullptr;
-      };
-      s.intra4y = p16(custom->Intra4x4Y);
-      s.intra4cb = p16(custom->Intra4x4Cb);
-      s.intra4cr = p16(custom->Intra4x4Cr);
-      s.inter4y = p16(custom->Inter4x4Y);
-      s.inter4cb = p16(custom->Inter4x4Cb);
-      s.inter4cr = p16(custom->Inter4x4Cr);
-      s.intra8 = p64(custom->Intra8x8);
-      s.inter8 = p64(custom->Inter8x8);
-      // H.264 7.3.2.1.1.1: list i can only be present when the previous one
-      // is present too, so Cb/Cr (and Inter8x8) need their leading luma list
-      // written anyway -- fill with the standard tables.
-      if ((s.intra4cb || s.intra4cr) && !s.intra4y) s.intra4y = kDefaultI4;
-      if ((s.inter4cb || s.inter4cr) && !s.inter4y) s.inter4y = kDefaultP4;
-      if (s.inter8 && !s.intra8) s.intra8 = kDefaultI8;
-    }
+  std::optional<H264ScalingLists> built;
+  const H264ScalingLists *lists = custom;
+  if (preset == QM_DEFAULT) {
     return s;
+  } else if (preset == QM_CUSTOM) {
+    if (!lists) return s;
+  } else {
+    built = MakeDriverPresetLists(preset);
+    lists = &*built;
   }
 
-  H264MatrixSet m = GetH264Matrices(preset);
-  static uint8_t flat16v[16], flat64v[64];
-  if (preset == QM_FLAT16) {
-    std::fill_n(flat16v, 16, 16);
-    std::fill_n(flat64v, 64, 16);
-    m.i4 = m.p4 = flat16v;
-    m.i8 = m.p8 = flat64v;
-  }
-  s.intra4y = s.intra4cb = s.intra4cr = m.i4;
-  s.inter4y = s.inter4cb = s.inter4cr = m.p4;
-  s.intra8 = m.i8;
-  s.inter8 = m.p8;
+  auto p16 = [](const std::optional<std::array<uint8_t, 16>> &o) {
+    return o ? o->data() : nullptr;
+  };
+  auto p64 = [](const std::optional<std::array<uint8_t, 64>> &o) {
+    return o ? o->data() : nullptr;
+  };
+  s.intra4y = p16(lists->Intra4x4Y);
+  s.intra4cb = p16(lists->Intra4x4Cb);
+  s.intra4cr = p16(lists->Intra4x4Cr);
+  s.inter4y = p16(lists->Inter4x4Y);
+  s.inter4cb = p16(lists->Inter4x4Cb);
+  s.inter4cr = p16(lists->Inter4x4Cr);
+  s.intra8 = p64(lists->Intra8x8);
+  s.inter8 = p64(lists->Inter8x8);
+  // H.264 7.3.2.1.1.1: list i can only be present when the previous one
+  // is present too, so Cb/Cr (and Inter8x8) need their leading luma list
+  // written anyway -- fill with the standard tables.
+  if ((s.intra4cb || s.intra4cr) && !s.intra4y) s.intra4y = kDefaultI4;
+  if ((s.inter4cb || s.inter4cr) && !s.inter4y) s.inter4y = kDefaultP4;
+  if (s.inter8 && !s.intra8) s.intra8 = kDefaultI8;
   return s;
 }
 
@@ -1626,8 +1670,8 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
 
         std::array<mfxU8, 2048> NewSps{};
         std::array<mfxU8, 2048> NewPps{};
-        // Resolve preset/custom into per-list pointers once; custom reads the
-        // raw lists from params, presets go through GetH264Matrices.
+        // Resolve preset/custom into per-list pointers once; driver presets
+        // are expanded here, custom reads the raw lists from params.
         H264ScalingSetPointers Effects = GetH264ScalingSetPointers(
             qmPreset, InputParams->QMatrixCustom
                           ? &*InputParams->QMatrixCustom

@@ -1765,10 +1765,14 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC);
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
   obs_property_list_add_string(Prop, TEXT_QUANT_MATRIX_DEFAULT, "default");
-  obs_property_list_add_string(Prop, TEXT_QUANT_MATRIX_FLAT16, "flat16");
-  obs_property_list_add_string(Prop, TEXT_QUANT_MATRIX_JM, "jm");
-  obs_property_list_add_string(Prop, TEXT_QUANT_MATRIX_DETAIL, "detail");
-  obs_property_list_add_string(Prop, TEXT_QUANT_MATRIX_EDGE, "nv_edge");
+  obs_property_list_add_string(Prop, TEXT_QUANT_MATRIX_DRV_FLAT, "drv_flat");
+  obs_property_list_add_string(Prop, TEXT_QUANT_MATRIX_DRV_WEAK, "drv_weak");
+  obs_property_list_add_string(Prop, TEXT_QUANT_MATRIX_DRV_MEDIUM,
+                               "drv_medium");
+  obs_property_list_add_string(Prop, TEXT_QUANT_MATRIX_DRV_STRONG,
+                               "drv_strong");
+  obs_property_list_add_string(Prop, TEXT_QUANT_MATRIX_DRV_EXTREME,
+                               "drv_extreme");
   obs_property_list_add_string(Prop, TEXT_QUANT_MATRIX_CUSTOM, "custom");
 
   // Custom granularity selector + per-list input boxes. Only shown when
