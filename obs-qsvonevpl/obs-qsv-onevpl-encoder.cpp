@@ -148,12 +148,15 @@ void DestroyPluginContext(void *Data) {
           if (Context->SentPackets || Context->ZeroDtsPackets)
             blog(LOG_INFO,
                  "[QSV VPL] packet debug: delivered=%llu zero_dts=%llu "
-                 "first_pts=%lld first_dts=%lld nonmono=%llu neg_dts=%llu",
+                 "first_pts=%lld first_dts=%lld nonmono=%llu neg_dts=%llu "
+                 "dts_fixed=%llu dropped_late=%llu",
                  static_cast<unsigned long long>(Context->SentPackets),
                  static_cast<unsigned long long>(Context->ZeroDtsPackets),
                  Context->FirstPts, Context->FirstDts,
                  static_cast<unsigned long long>(Context->NonMonoDts),
-                 static_cast<unsigned long long>(Context->NegDts));
+                 static_cast<unsigned long long>(Context->NegDts),
+                 static_cast<unsigned long long>(Context->DtsFixed),
+                 static_cast<unsigned long long>(Context->DroppedLate));
           for (uint64_t i = 0; i < Context->HeadCount; i++) {
             blog(LOG_INFO, "[QSV VPL]   pkt[%llu] pts=%lld dts=%lld",
                  static_cast<unsigned long long>(i),
@@ -560,6 +563,65 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
           : ConvertTSMFXOBS(Bitstream->DecodeTimeStamp,
                             Context->CachedFpsNum, Context->CachedFpsDen,
                             Context->CachedTSDiv);
+
+  Context->SentPackets++;
+  if (Bitstream->DecodeTimeStamp == 0)
+    Context->ZeroDtsPackets++;
+
+  // Timing diagnostics (record the raw driver DTS before we fix it up).
+  if (Context->SentPackets == 1) {
+    Context->FirstPts = Packet->pts;
+    Context->FirstDts = Packet->dts;
+    Context->PrevDts = Packet->dts;
+  } else {
+    if (Packet->dts <= Context->PrevDts)
+      Context->NonMonoDts++;
+    if (Packet->dts < 0)
+      Context->NegDts++;
+    Context->PrevDts = Packet->dts;
+  }
+  if (Context->HeadCount < Context->HeadPackets.size()) {
+    Context->HeadPackets[Context->HeadCount++] = {Packet->pts, Packet->dts};
+  }
+
+  // AVC/HEVC only (B-frame reorder). After the SPS/PPS-injection re-init the
+  // driver can emit frames out of order: raw dts goes negative/non-monotonic,
+  // and clamping dts past a B-frame's pts is rejected by ffmpeg's mov muxer
+  // (pts < dts -> EINVAL). Rebuild a strictly increasing zero-based DTS
+  // clamped to <= pts; a frame whose display slot already passed is dropped
+  // (this only happens in the short transient right after re-init).
+  if (Context->Codec == QSV_CODEC_AVC || Context->Codec == QSV_CODEC_HEVC) {
+    if (!Context->DtsInit) {
+      Context->DtsInit = true;
+      Context->DtsBase = Packet->dts;
+      Context->LastDts = 0;
+      Packet->dts = 0;
+    } else {
+      int64_t dts = Packet->dts - Context->DtsBase;
+      if (dts <= Context->LastDts) {
+        dts = Context->LastDts + 1;
+        Context->DtsFixed++;
+      }
+      if (dts > Packet->pts) {
+        // try clamping to the frame's own display time first
+        if (Packet->pts > Context->LastDts) {
+          dts = Packet->pts;
+        } else {
+          Context->DroppedLate++;
+          warn("[QSV VPL] dropping late out-of-order frame (pts=%lld "
+               "last_dts=%lld)",
+               static_cast<long long>(Packet->pts),
+               static_cast<long long>(Context->LastDts));
+          Bitstream->DataLength = 0;
+          Bitstream->DataOffset = 0;
+          *ReceivedPacketStatus = false;
+          return;
+        }
+      }
+      Context->LastDts = dts;
+      Packet->dts = dts;
+    }
+  }
   bool isKeyframe = ((Bitstream->FrameType & MFX_FRAMETYPE_I) ||
                      (Bitstream->FrameType & MFX_FRAMETYPE_IDR) ||
                      (Bitstream->FrameType & MFX_FRAMETYPE_S) ||

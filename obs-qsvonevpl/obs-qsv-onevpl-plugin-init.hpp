@@ -45,6 +45,17 @@ struct plugin_context {
   uint64_t NegDts = 0;
   std::array<std::pair<int64_t, int64_t>, 8> HeadPackets{};
   uint64_t HeadCount = 0;
+  // DTS timeline enforcement for AVC/HEVC. After the SPS/PPS-injection
+  // re-init the driver can emit frames out of order (both pts and dts),
+  // which breaks OBS's mp4 muxer (giant sample durations -> 1-frame file)
+  // and the reencoder (ffmpeg EINVAL -22). We rebuild a strictly increasing,
+  // zero-based DTS clamped to <= pts; frames whose display slot already
+  // passed are dropped (only happens in the transient right after re-init).
+  bool DtsInit = false;
+  int64_t DtsBase = 0;
+  int64_t LastDts = 0;
+  uint64_t DtsFixed = 0;   // packets whose dts was pushed up to stay monotonic
+  uint64_t DroppedLate = 0; // packets dropped because pts <= LastDts
 };
 
 #define TEXT_SPEED obs_module_text("TargetUsage")
