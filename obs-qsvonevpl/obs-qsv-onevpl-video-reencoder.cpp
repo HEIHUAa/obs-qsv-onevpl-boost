@@ -89,10 +89,10 @@ bool LoadFFmpegAPI(ffmpeg_api &ff)
 {
   memset(&ff, 0, sizeof(ff));
 
-  HMODULE avutil = GetLoadedModule(L"avutil", 55, 60);
-  HMODULE avcodec = GetLoadedModule(L"avcodec", 57, 62);
-  HMODULE avformat = GetLoadedModule(L"avformat", 57, 62);
-  HMODULE swscale = GetLoadedModule(L"swscale", 5, 8);
+  HMODULE avutil = GetLoadedModule(L"avutil", 55, 99);
+  HMODULE avcodec = GetLoadedModule(L"avcodec", 57, 99);
+  HMODULE avformat = GetLoadedModule(L"avformat", 57, 99);
+  HMODULE swscale = GetLoadedModule(L"swscale", 5, 99);
 
   if (!avutil || !avcodec || !avformat || !swscale) {
     blog(LOG_ERROR, "[QSV VPL ReEncoder] Failed to find FFmpeg DLLs "
