@@ -1,5 +1,24 @@
 #pragma once
 
+#include <array>
+#include <optional>
+
+// Fully-expanded H.264 scaling lists for the custom quant matrix path
+// (QMatrixPreset == QM_CUSTOM). Each list is in zigzag scan order, values
+// 1..255. An unset list means "keep the driver default" for that group; the
+// injector fills luma placeholders automatically when only chroma/groups are
+// given, because H.264 forces the 4x4 luma list in front of Cb/Cr.
+struct H264ScalingLists {
+  std::optional<std::array<uint8_t, 16>> Intra4x4Y;
+  std::optional<std::array<uint8_t, 16>> Intra4x4Cb;
+  std::optional<std::array<uint8_t, 16>> Intra4x4Cr;
+  std::optional<std::array<uint8_t, 16>> Inter4x4Y;
+  std::optional<std::array<uint8_t, 16>> Inter4x4Cb;
+  std::optional<std::array<uint8_t, 16>> Inter4x4Cr;
+  std::optional<std::array<uint8_t, 64>> Intra8x8;
+  std::optional<std::array<uint8_t, 64>> Inter8x8;
+};
+
 struct encoder_params {
   mfxU16 TargetUsage; /* 1 through 7, 1 being best quality and 7
                                   being the best speed */
@@ -132,6 +151,20 @@ struct encoder_params {
   std::optional<bool> RepartitionCheckEnable;
   std::optional<int> AV1Segmentation;
   std::optional<mfxU16> DisableDeblockingIdc; // 0=all enabled, 1=partial(slice), 2=all disabled
+  // H.264 chroma QP index offset (-12..12, 0 = native/driver default).
+  // Applied via SPS/PPS injection at encoder init (chroma_qp_index_offset /
+  // second_chroma_qp_index_offset). Negative = finer chroma quantization.
+  std::optional<int> ChromaQPOffset;
+  // H.264 custom quant matrix preset (0=default/none, 1=Flat16, 2=JM,
+  // 3=detail*0.6). Applied by rewriting SPS/PPS with scaling lists at init.
+  // 5 = custom matrices filled in QMatrixCustom below.
+  std::optional<int> QMatrixPreset;
+  // Custom matrix granularity: 0 = 2 lists (4x4 + 8x8, I/P & chroma shared),
+  // 1 = 4 lists (I4/P4/I8/P8 separated), 2 = full set: luma 4x4/8x8 by I/P
+  // + chroma 4x4 by I/P (covers every H.264 scaling list).
+  int QMatrixGranularity = 0;
+  // Raw custom lists, only used when QMatrixPreset == QM_CUSTOM.
+  std::optional<H264ScalingLists> QMatrixCustom;
   mfxU32 TuneQuality = 0;
   std::optional<mfxU16> VPPOutWidth;
   std::optional<mfxU16> VPPOutHeight;

@@ -932,6 +932,21 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
       obs_data_set_string(Settings, "hevc_tier", "main");
   }
 
+  // Custom quant matrix cascade: quant_matrix == "custom" -> granularity ->
+  // the matching per-list input boxes (all H.264 only, boxes hidden by
+  // default in GetParamProps).
+  const char *qmSel = obs_data_get_string(Settings, "quant_matrix");
+  const bool qmCustom = sv(qmSel) == "custom" && codec == QSV_CODEC_AVC;
+  SetVisible("qm_granularity", qmCustom);
+  const int qmGran = static_cast<int>(obs_data_get_int(Settings, "qm_granularity"));
+  const char *boxes2[2] = {"qm_4x4", "qm_8x8"};
+  const char *boxes4[4] = {"qm_i4", "qm_p4", "qm_i8", "qm_p8"};
+  const char *boxesFull[6] = {"qm_i4y", "qm_p4y", "qm_i8y",
+                              "qm_p8y", "qm_ci4", "qm_cp4"};
+  for (const char *b : boxes2) SetVisible(b, qmCustom && qmGran <= 0);
+  for (const char *b : boxes4) SetVisible(b, qmCustom && qmGran == 1);
+  for (const char *b : boxesFull) SetVisible(b, qmCustom && qmGran >= 2);
+
   return true;
 }
 
@@ -1734,6 +1749,61 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                 0, 4, 1);
   obs_property_set_long_description(Prop, TEXT_GPU_NUMBER_DESC);
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
+
+  // Chroma QP offset (H.264 only): shifts chroma quantization relative to
+  // luma (applied via SPS/PPS injection at encoder init).
+  Prop = obs_properties_add_int_slider(MXGroup, "chroma_qp_offset",
+                                       TEXT_CHROMA_QP_OFFSET, -12, 12, 1);
+  obs_property_set_long_description(Prop, TEXT_CHROMA_QP_OFFSET_DESC);
+  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC);
+
+  // Custom quant matrix (H.264 only): rewrites SPS/PPS scaling lists at init.
+  Prop = obs_properties_add_list(MXGroup, "quant_matrix",
+                                 TEXT_QUANT_MATRIX,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  obs_property_set_long_description(Prop, TEXT_QUANT_MATRIX_DESC);
+  obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC);
+  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
+  obs_property_list_add_string(Prop, TEXT_QUANT_MATRIX_DEFAULT, "default");
+  obs_property_list_add_string(Prop, TEXT_QUANT_MATRIX_FLAT16, "flat16");
+  obs_property_list_add_string(Prop, TEXT_QUANT_MATRIX_JM, "jm");
+  obs_property_list_add_string(Prop, TEXT_QUANT_MATRIX_DETAIL, "detail");
+  obs_property_list_add_string(Prop, TEXT_QUANT_MATRIX_EDGE, "nv_edge");
+  obs_property_list_add_string(Prop, TEXT_QUANT_MATRIX_CUSTOM, "custom");
+
+  // Custom granularity selector + per-list input boxes. Only shown when
+  // quant_matrix == "custom" (visibility handled in ParamsVisibilityModifier).
+  Prop = obs_properties_add_list(MXGroup, "qm_granularity",
+                                 TEXT_QM_GRANULARITY,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
+  obs_property_set_visible(Prop, false);
+  obs_property_list_add_int(Prop, TEXT_QM_GRAN_2, 0);
+  obs_property_list_add_int(Prop, TEXT_QM_GRAN_4, 1);
+  obs_property_list_add_int(Prop, TEXT_QM_GRAN_FULL, 2);
+
+  auto AddMatrixBox = [&](const char *Id, const char *Label) {
+    auto *BoxProp =
+        obs_properties_add_text(MXGroup, Id, Label, OBS_TEXT_MULTILINE);
+    obs_property_set_long_description(BoxProp, TEXT_QM_BOX_DESC);
+    obs_property_set_visible(BoxProp, false);
+    return BoxProp;
+  };
+  // 2-list mode: one 4x4 (I/P & chroma shared) + one 8x8 (I/P shared)
+  AddMatrixBox("qm_4x4", TEXT_QM_4X4);
+  AddMatrixBox("qm_8x8", TEXT_QM_8X8);
+  // 4-list mode: I/P separated, chroma copies luma
+  AddMatrixBox("qm_i4", TEXT_QM_I4);
+  AddMatrixBox("qm_p4", TEXT_QM_P4);
+  AddMatrixBox("qm_i8", TEXT_QM_I8);
+  AddMatrixBox("qm_p8", TEXT_QM_P8);
+  // Full mode: luma 4x4/8x8 by I/P + chroma 4x4 by I/P
+  AddMatrixBox("qm_i4y", TEXT_QM_I4Y);
+  AddMatrixBox("qm_p4y", TEXT_QM_P4Y);
+  AddMatrixBox("qm_i8y", TEXT_QM_I8Y);
+  AddMatrixBox("qm_p8y", TEXT_QM_P8Y);
+  AddMatrixBox("qm_ci4", TEXT_QM_CI4);
+  AddMatrixBox("qm_cp4", TEXT_QM_CP4);
 
   Prop = obs_properties_add_text(MXGroup, "custom_coding_options",
                                  TEXT_CUSTOM_CODING_OPTIONS,

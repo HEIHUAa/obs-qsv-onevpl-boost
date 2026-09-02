@@ -13,6 +13,7 @@ mfxU16 QueryPlatformCodeName();
 #include <algorithm>
 #include <optional>
 #include <ranges>
+#include <sstream>
 #include <string_view>
 #include <utility>
 
@@ -899,6 +900,106 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
   Params.VideoHeaderHexDump =
       obs_data_get_bool(Settings, "video_header_hex_dump");
   Params.FrameStatistics = obs_data_get_bool(Settings, "frame_statistics");
+
+  // Chroma QP offset (H.264 only): slider -12..12, 0 = disabled (native)
+  {
+    const int ChQp =
+        static_cast<int>(obs_data_get_int(Settings, "chroma_qp_offset"));
+    if (ChQp != 0)
+      Params.ChromaQPOffset = ChQp;
+  }
+
+  // Quant matrix preset (H.264 only): 0=default, 1=Flat16, 2=JM, 3=detail,
+  // 4=NV edge, 5=custom (lists from the qm_* text boxes below).
+  {
+    const char *Qm = obs_data_get_string(Settings, "quant_matrix");
+    int qm = 0;
+    if (Qm) {
+      auto sv = std::string_view(Qm);
+      if (sv == "flat16")
+        qm = 1;
+      else if (sv == "jm")
+        qm = 2;
+      else if (sv == "detail")
+        qm = 3;
+      else if (sv == "nv_edge")
+        qm = 4;
+      else if (sv == "custom")
+        qm = 5;
+    }
+    if (qm == 5) {
+      H264ScalingLists cl;
+      // Each qm_* box is optional: filled lists are used, missing ones fall
+      // back to the driver default. Values are space-separated, 1..255,
+      // exact count (16 or 64) required.
+      auto fillList = [&]<size_t N>(
+                          const char *key,
+                          std::optional<std::array<uint8_t, N>> &out) -> bool {
+        const char *txt = obs_data_get_string(Settings, key);
+        if (!txt || !*txt)
+          return false;
+        std::istringstream ss(txt);
+        std::array<uint8_t, N> buf{};
+        int n = 0, v;
+        while (ss >> v) {
+          if (n >= static_cast<int>(N) || v < 1 || v > 255)
+            return false;
+          buf[static_cast<size_t>(n++)] = static_cast<uint8_t>(v);
+        }
+        if (n != static_cast<int>(N))
+          return false;
+        out = buf;
+        return true;
+      };
+
+      const int gran = static_cast<int>(
+          obs_data_get_int(Settings, "qm_granularity"));
+      bool any = false;
+      if (gran <= 0) {  // 2 lists: 4x4 + 8x8, shared across I/P & chroma
+        if (fillList("qm_4x4", cl.Intra4x4Y)) {
+          cl.Inter4x4Y = cl.Intra4x4Y;
+          cl.Intra4x4Cb = cl.Intra4x4Cr = cl.Intra4x4Y;
+          cl.Inter4x4Cb = cl.Inter4x4Cr = cl.Intra4x4Y;
+          any = true;
+        }
+        if (fillList("qm_8x8", cl.Intra8x8)) {
+          cl.Inter8x8 = cl.Intra8x8;
+          any = true;
+        }
+      } else if (gran == 1) {  // 4 lists: I/P separated, chroma copies luma
+        if (fillList("qm_i4", cl.Intra4x4Y)) {
+          cl.Intra4x4Cb = cl.Intra4x4Cr = cl.Intra4x4Y;
+          any = true;
+        }
+        if (fillList("qm_p4", cl.Inter4x4Y)) {
+          cl.Inter4x4Cb = cl.Inter4x4Cr = cl.Inter4x4Y;
+          any = true;
+        }
+        any |= fillList("qm_i8", cl.Intra8x8);
+        any |= fillList("qm_p8", cl.Inter8x8);
+      } else {  // full set: luma 4x4/8x8 by I/P + chroma 4x4 by I/P
+        any |= fillList("qm_i4y", cl.Intra4x4Y);
+        any |= fillList("qm_p4y", cl.Inter4x4Y);
+        any |= fillList("qm_i8y", cl.Intra8x8);
+        any |= fillList("qm_p8y", cl.Inter8x8);
+        if (fillList("qm_ci4", cl.Intra4x4Cb)) {
+          cl.Intra4x4Cr = cl.Intra4x4Cb;
+          any = true;
+        }
+        if (fillList("qm_cp4", cl.Inter4x4Cb)) {
+          cl.Inter4x4Cr = cl.Inter4x4Cb;
+          any = true;
+        }
+      }
+      if (any) {
+        Params.QMatrixPreset = 5;
+        Params.QMatrixGranularity = gran;
+        Params.QMatrixCustom = std::move(cl);
+      }
+    } else if (qm != 0) {
+      Params.QMatrixPreset = qm;
+    }
+  }
 
   Params.GPUNum = GPUNumData;
 

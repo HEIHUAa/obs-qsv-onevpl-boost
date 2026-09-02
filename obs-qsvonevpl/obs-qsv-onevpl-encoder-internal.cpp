@@ -22,6 +22,716 @@ constexpr mfxU32 BRC_MAX_KBPS_LIMIT = 65535;
 // legacy 'DNIS' denoise filter, which has no automatic mode.
 static constexpr mfxU16 kLegacyDenoiseAutoFactor = 50;
 
+// ---------------------------------------------------------------------------
+// H.264 quant matrix (scaling list) injection.
+//
+// QSV has no public "custom quant matrix" knob, but the driver consumes
+// user-supplied SPS/PPS attached via MFX_EXTBUFF_CODING_OPTION_SPSPPS at Init
+// time (ReadSpsPpsHeaders in mfx_h264_enc_common_hw.cpp parses the injected
+// headers into the internal param set, including the scaling lists). We take
+// the runtime SPS/PPS, rewrite them with our matrices inserted, and re-init.
+//
+// Presets (values verified against FFmpeg libavcodec/h264_ps.c defaults and
+// the JM reference configuration). Matrices are stored in zigzag order --
+// the H.264 defaults are diagonal-symmetric so zigzag == row-major here.
+// ---------------------------------------------------------------------------
+enum QMatrixPreset {
+  QM_DEFAULT = 0,  // leave SPS/PPS untouched (native default matrices)
+  QM_FLAT16 = 1,   // x264 --cqm flat: uniform, keeps every frequency
+  QM_JM = 2,       // JM reference config (smoother, detail-leaning)
+  QM_DETAIL = 3,   // default * 0.6: finer quantization everywhere
+  QM_EDGEKEEP = 4, // NV-like: coarser low freq (smooth areas), finer high
+                   // freq (edges) -- keeps edges crisp at low bitrate
+  QM_CUSTOM = 5,   // fully user-supplied lists (H264ScalingLists in params)
+};
+
+static const uint8_t kDefaultI4[16] = {6, 13, 20, 28, 13, 20, 28, 32,
+                                       20, 28, 32, 37, 28, 32, 37, 42};
+static const uint8_t kDefaultP4[16] = {10, 14, 20, 24, 14, 20, 24, 27,
+                                       20, 24, 27, 30, 24, 27, 30, 34};
+static const uint8_t kDefaultI8[64] = {
+    6, 10, 13, 16, 18, 23, 25, 27, 10, 11, 16, 18, 23, 25, 27, 29,
+    13, 16, 18, 23, 25, 27, 29, 31, 16, 18, 23, 25, 27, 29, 31, 33,
+    18, 23, 25, 27, 29, 31, 33, 36, 23, 25, 27, 29, 31, 33, 36, 38,
+    25, 27, 29, 31, 33, 36, 38, 40, 27, 29, 31, 33, 36, 38, 40, 42};
+static const uint8_t kDefaultP8[64] = {
+    9, 13, 15, 17, 19, 21, 22, 24, 13, 13, 17, 19, 21, 22, 24, 25,
+    15, 17, 19, 21, 22, 24, 25, 27, 17, 19, 21, 22, 24, 25, 27, 28,
+    19, 21, 22, 24, 25, 27, 28, 30, 21, 22, 24, 25, 27, 28, 30, 32,
+    22, 24, 25, 27, 28, 30, 32, 33, 24, 25, 27, 28, 30, 32, 33, 35};
+
+// JM reference config matrices (leading 0 = use-default marker stripped, DC
+// reused from the first real coefficient so the table stays symmetric).
+static const uint8_t kJmI4[16] = {12, 12, 19, 26, 12, 19, 26, 31,
+                                  19, 26, 31, 35, 26, 31, 35, 39};
+static const uint8_t kJmP4[16] = {13, 13, 18, 21, 13, 18, 21, 24,
+                                  18, 21, 24, 27, 21, 24, 27, 30};
+static const uint8_t kJmI8[64] = {
+    10, 10, 13, 16, 19, 24, 26, 28, 10, 12, 16, 19, 24, 26, 28, 31,
+    13, 16, 19, 24, 26, 28, 31, 33, 16, 19, 24, 26, 28, 31, 33, 35,
+    19, 24, 26, 28, 31, 33, 35, 37, 24, 26, 28, 31, 33, 35, 37, 39,
+    26, 28, 31, 33, 35, 37, 39, 42, 28, 31, 33, 35, 37, 39, 42, 44};
+static const uint8_t kJmP8[64] = {
+    12, 12, 14, 16, 18, 19, 21, 22, 12, 13, 16, 18, 19, 21, 22, 24,
+    14, 16, 18, 19, 21, 22, 24, 25, 16, 18, 19, 21, 22, 24, 25, 27,
+    18, 19, 21, 22, 24, 25, 27, 28, 19, 21, 22, 24, 25, 27, 28, 30,
+    21, 22, 24, 25, 27, 28, 30, 31, 22, 24, 25, 27, 28, 30, 31, 33};
+
+struct H264MatrixSet {
+  const uint8_t *i4 = nullptr;
+  const uint8_t *p4 = nullptr;
+  const uint8_t *i8 = nullptr;
+  const uint8_t *p8 = nullptr;
+};
+
+// detail preset = default * 0.6 (rounded), never below 1
+static H264MatrixSet GetH264Matrices(int preset) {
+  static uint8_t detail_i4[16], detail_p4[16], detail_i8[64], detail_p8[64];
+  static uint8_t edge_i4[16], edge_p4[16], edge_i8[64], edge_p8[64];
+  H264MatrixSet m;
+  switch (preset) {
+  case QM_JM:
+    m.i4 = kJmI4; m.p4 = kJmP4; m.i8 = kJmI8; m.p8 = kJmP8;
+    break;
+  case QM_DETAIL:
+    for (int i = 0; i < 16; i++) {
+      detail_i4[i] = (uint8_t)std::max(1, (kDefaultI4[i] * 3 + 2) / 5);
+      detail_p4[i] = (uint8_t)std::max(1, (kDefaultP4[i] * 3 + 2) / 5);
+    }
+    for (int i = 0; i < 64; i++) {
+      detail_i8[i] = (uint8_t)std::max(1, (kDefaultI8[i] * 3 + 2) / 5);
+      detail_p8[i] = (uint8_t)std::max(1, (kDefaultP8[i] * 3 + 2) / 5);
+    }
+    m.i4 = detail_i4; m.p4 = detail_p4; m.i8 = detail_i8; m.p8 = detail_p8;
+    break;
+  case QM_EDGEKEEP: {
+    // NV-like edge retention: scale default weights linearly by position so
+    // low frequency (zigzag head) quantizes coarser (saves bits on flat
+    // areas) while high frequency (zigzag tail, edges/texture) stays finer.
+    // weight goes 1.8 (DC) -> 0.8 (highest freq).
+    auto make = [](const uint8_t *src, uint8_t *dst, int n) {
+      for (int i = 0; i < n; i++) {
+        const double t = (double)i / (double)(n - 1);
+        const double w = 1.8 - 1.0 * t;
+        double v = (double)src[i] * w;
+        int iv = (int)(v + 0.5);
+        dst[i] = (uint8_t)std::clamp(iv, 1, 255);
+      }
+    };
+    make(kDefaultI4, edge_i4, 16);
+    make(kDefaultP4, edge_p4, 16);
+    make(kDefaultI8, edge_i8, 64);
+    make(kDefaultP8, edge_p8, 64);
+    m.i4 = edge_i4; m.p4 = edge_p4; m.i8 = edge_i8; m.p8 = edge_p8;
+    break;
+  }
+  default:
+    break;
+  }
+  return m;
+}
+
+// Per-list pointers used by the SPS/PPS writers. Each group is independent:
+// a null pointer keeps the driver default (list flag written as 0 unless a
+// later list forces it; the assembler resolves those cases below).
+struct H264ScalingSetPointers {
+  const uint8_t *intra4y = nullptr;
+  const uint8_t *intra4cb = nullptr;
+  const uint8_t *intra4cr = nullptr;
+  const uint8_t *inter4y = nullptr;
+  const uint8_t *inter4cb = nullptr;
+  const uint8_t *inter4cr = nullptr;
+  const uint8_t *intra8 = nullptr;
+  const uint8_t *inter8 = nullptr;
+
+  bool HasLists() const {
+    return intra4y || intra4cb || intra4cr || inter4y || inter4cb ||
+           inter4cr || intra8 || inter8;
+  }
+};
+
+// preset -> pointers. Custom path reads the raw lists straight from params;
+// unmatched groups stay null (default). Preset path mirrors the old
+// chroma-copies-luma layout. flat16 is materialized in a static buffer.
+static H264ScalingSetPointers GetH264ScalingSetPointers(
+    int preset, const H264ScalingLists *custom) {
+  H264ScalingSetPointers s;
+  if (preset == QM_CUSTOM) {
+    if (custom) {
+      auto p16 = [](const std::optional<std::array<uint8_t, 16>> &o) {
+        return o ? o->data() : nullptr;
+      };
+      auto p64 = [](const std::optional<std::array<uint8_t, 64>> &o) {
+        return o ? o->data() : nullptr;
+      };
+      s.intra4y = p16(custom->Intra4x4Y);
+      s.intra4cb = p16(custom->Intra4x4Cb);
+      s.intra4cr = p16(custom->Intra4x4Cr);
+      s.inter4y = p16(custom->Inter4x4Y);
+      s.inter4cb = p16(custom->Inter4x4Cb);
+      s.inter4cr = p16(custom->Inter4x4Cr);
+      s.intra8 = p64(custom->Intra8x8);
+      s.inter8 = p64(custom->Inter8x8);
+      // H.264 7.3.2.1.1.1: list i can only be present when the previous one
+      // is present too, so Cb/Cr (and Inter8x8) need their leading luma list
+      // written anyway -- fill with the standard tables.
+      if ((s.intra4cb || s.intra4cr) && !s.intra4y) s.intra4y = kDefaultI4;
+      if ((s.inter4cb || s.inter4cr) && !s.inter4y) s.inter4y = kDefaultP4;
+      if (s.inter8 && !s.intra8) s.intra8 = kDefaultI8;
+    }
+    return s;
+  }
+
+  H264MatrixSet m = GetH264Matrices(preset);
+  static uint8_t flat16v[16], flat64v[64];
+  if (preset == QM_FLAT16) {
+    std::fill_n(flat16v, 16, 16);
+    std::fill_n(flat64v, 64, 16);
+    m.i4 = m.p4 = flat16v;
+    m.i8 = m.p8 = flat64v;
+  }
+  s.intra4y = s.intra4cb = s.intra4cr = m.i4;
+  s.inter4y = s.inter4cb = s.inter4cr = m.p4;
+  s.intra8 = m.i8;
+  s.inter8 = m.p8;
+  return s;
+}
+
+// Minimal MSB-first bit reader/writer for SPS/PPS header rewriting.
+class H264BitReader {
+public:
+  const uint8_t *d;
+  size_t n;
+  uint64_t pos = 0;
+  bool bad = false;
+  H264BitReader(const uint8_t *data, size_t size) : d(data), n(size) {}
+  uint32_t u(int bits) {
+    uint32_t v = 0;
+    for (int i = 0; i < bits; i++) {
+      if (pos >= n * 8) { bad = true; return 0; }
+      v = (v << 1) | ((d[pos >> 3] >> (7 - (pos & 7))) & 1);
+      pos++;
+    }
+    return v;
+  }
+  uint32_t ue() {
+    int lz = 0;
+    while (u(1) == 0) {
+      if (++lz > 31) { bad = true; return 0; }
+    }
+    if (lz == 0) return 0;
+    return ((1u << lz) - 1) + u(lz);
+  }
+  int32_t se() {
+    uint32_t k = ue();
+    return (int32_t)((k & 1) ? (int32_t)(k + 1) / 2 : -(int32_t)(k / 2));
+  }
+  bool more_rbsp_data() {
+    int ones = 0;
+    for (uint64_t i = pos; i < n * 8 && ones < 2; i++) {
+      if ((d[i >> 3] >> (7 - (i & 7))) & 1) ones++;
+    }
+    return ones >= 2;
+  }
+};
+
+class H264BitWriter {
+public:
+  std::vector<uint8_t> data;
+  uint64_t pos = 0;
+  void u(uint32_t v, int bits) {
+    for (int i = bits - 1; i >= 0; i--) {
+      if (pos / 8 >= data.size()) data.push_back(0);
+      if ((v >> i) & 1) data[pos / 8] |= (uint8_t)(1u << (7 - (pos & 7)));
+      pos++;
+    }
+  }
+  void ue(uint32_t v) {
+    uint32_t m = v + 1;
+    int bits = 0;
+    for (uint32_t t = m; t > 0; t >>= 1) bits++;
+    if (bits == 0) bits = 1;
+    for (int i = 0; i < bits - 1; i++) u(0, 1);
+    for (int i = bits - 1; i >= 0; i--) u((m >> i) & 1, 1);
+  }
+  void se(int32_t v) {
+    uint32_t k = (v > 0) ? (uint32_t)(2 * v - 1) : (uint32_t)(-2 * v);
+    ue(k);
+  }
+  void rbsp_trailing() {
+    u(1, 1);
+    while (pos & 7) u(0, 1);
+  }
+};
+
+static size_t H264StripEP(const uint8_t *src, size_t src_size,
+                          std::vector<uint8_t> &out) {
+  out.clear();
+  for (size_t i = 0; i < src_size; i++) {
+    if (i + 2 < src_size && src[i] == 0 && src[i + 1] == 0 && src[i + 2] == 3) {
+      out.push_back(0);
+      out.push_back(0);
+      i += 2;
+    } else {
+      out.push_back(src[i]);
+    }
+  }
+  return out.size();
+}
+
+// Write one scaling list, diff-encoded per H.264 7.3.2.1.1.1.
+static void H264WriteScalingList(H264BitWriter &w, const uint8_t *vals,
+                                 int count) {
+  int32_t last = 8;
+  for (int j = 0; j < count; j++) {
+    int32_t cur = vals[j];
+    w.se(cur - last);
+    last = cur;
+  }
+}
+
+// Emulate-Prevention serialize: append NAL payload bytes to dst with EP bytes
+// inserted. Returns bytes appended.
+static size_t H264SerializeNal(const H264BitWriter &w, uint8_t nal_hdr,
+                               size_t sc_len, uint8_t *dst, size_t dst_cap) {
+  int zero_run = 0;
+  size_t out = 0;
+  auto put_ep = [&](uint8_t b) {
+    if (out + 1 >= dst_cap) return;
+    if (zero_run >= 2 && b <= 3) {
+      dst[out++] = 3;
+      zero_run = 0;
+    }
+    dst[out++] = b;
+    zero_run = (b == 0) ? zero_run + 1 : 0;
+  };
+  // start code (3 or 4 bytes) + nal header
+  if (sc_len == 4) { dst[out++] = 0; dst[out++] = 0; dst[out++] = 0; dst[out++] = 1; }
+  else { dst[out++] = 0; dst[out++] = 0; dst[out++] = 1; }
+  put_ep(nal_hdr);
+  const auto &buf = w.data;
+  for (uint64_t i = 0; i * 8 < w.pos; i++) put_ep(buf[(size_t)i]);
+  return out;
+}
+
+// Full SPS fields we must preserve when rewriting.
+struct H264SpsFields {
+  uint8_t profile_idc = 0, level_idc = 0, constraint = 0;
+  uint32_t sps_id = 0;
+  uint32_t chroma_format_idc = 1;
+  bool separate_colour_plane = false;
+  uint32_t bit_depth_luma_minus8 = 0, bit_depth_chroma_minus8 = 0;
+  bool qpprime = false;
+  bool is_high = false;
+  uint32_t log2_max_frame_num_minus4 = 0;
+  uint32_t pic_order_cnt_type = 0;
+  uint32_t log2_max_pic_order_cnt_lsb_minus4 = 0;
+  bool delta_pic_order_always_zero = false;
+  int32_t offset_for_non_ref_pic = 0, offset_for_top_to_bottom_field = 0;
+  std::vector<int32_t> offset_for_ref_frame;
+  uint32_t max_num_ref_frames = 0;
+  bool gaps_in_frame_num_value_allowed = false;
+  uint32_t pic_width_in_mbs_minus1 = 0, pic_height_in_map_units_minus1 = 0;
+  bool frame_mbs_only = true, mb_adaptive_frame_field = false;
+  bool direct_8x8_inference = false;
+  bool frame_cropping = false;
+  uint32_t crop_l = 0, crop_r = 0, crop_t = 0, crop_b = 0;
+  bool vui_present = false;
+  bool aspect_ratio_info_present = false;
+  uint8_t aspect_ratio_idc = 0;
+  uint16_t sar_w = 0, sar_h = 0;
+  bool overscan_info_present = false, overscan_appropriate = false;
+  bool video_signal_type_present = false;
+  uint8_t video_format = 0;
+  bool video_full_range = false;
+  bool colour_description_present = false;
+  uint8_t colour_primaries = 0, transfer_characteristics = 0, matrix_coefficients = 0;
+  bool chroma_loc_info_present = false;
+  uint32_t chroma_sample_loc_type_top = 0, bottom = 0;
+  bool timing_info_present = false;
+  uint32_t num_units_in_tick = 0, time_scale = 0;
+  bool fixed_frame_rate = false;
+  bool nal_hrd_present = false, vcl_hrd_present = false, low_delay_hrd = false;
+  bool pic_struct_present = false;
+  bool bitstream_restriction_present = false;
+  bool motion_vectors_over_pic_boundaries = false;
+  uint32_t max_bytes_per_pic_denom = 0, max_bits_per_mb_denom = 0;
+  uint32_t log2_max_mv_length_h = 0, log2_max_mv_length_v = 0;
+  uint32_t num_reorder_frames = 0, max_dec_frame_buffering = 0;
+  uint32_t cpb_cnt_minus1 = 0;
+  uint8_t bit_rate_scale = 0, cpb_size_scale = 0;
+  uint8_t initial_cpb_removal_delay_length_minus1 = 0;
+  uint8_t cpb_removal_delay_length_minus1 = 0;
+  uint8_t dpb_output_delay_length_minus1 = 0;
+  uint8_t time_offset_length = 0;
+  struct CpbEntry {
+    uint32_t bit_rate_value_minus1, cpb_size_value_minus1;
+    bool cbr;
+  };
+  std::vector<CpbEntry> cpb;
+};
+
+static bool H264IsHighProfile(uint8_t profile) {
+  switch (profile) {
+  case 100: case 110: case 122: case 244: case 44: case 83: case 86:
+  case 118: case 128: case 138: case 139: case 134:
+    return true;
+  default:
+    return false;
+  }
+}
+
+static bool H264ParseHrd(H264BitReader &r, H264SpsFields &s) {
+  s.cpb_cnt_minus1 = r.ue();
+  s.bit_rate_scale = (uint8_t)r.u(4);
+  s.cpb_size_scale = (uint8_t)r.u(4);
+  s.initial_cpb_removal_delay_length_minus1 = (uint8_t)r.u(5);
+  s.cpb_removal_delay_length_minus1 = (uint8_t)r.u(5);
+  s.dpb_output_delay_length_minus1 = (uint8_t)r.u(5);
+  s.time_offset_length = (uint8_t)r.u(5);
+  s.cpb.clear();
+  for (uint32_t i = 0; i <= s.cpb_cnt_minus1; i++) {
+    H264SpsFields::CpbEntry e;
+    e.bit_rate_value_minus1 = r.ue();
+    e.cpb_size_value_minus1 = r.ue();
+    e.cbr = r.u(1) != 0;
+    s.cpb.push_back(e);
+  }
+  return !r.bad;
+}
+
+static void H264WriteHrd(H264BitWriter &w, const H264SpsFields &s) {
+  w.ue(s.cpb_cnt_minus1);
+  w.u(s.bit_rate_scale, 4);
+  w.u(s.cpb_size_scale, 4);
+  w.u(s.initial_cpb_removal_delay_length_minus1, 5);
+  w.u(s.cpb_removal_delay_length_minus1, 5);
+  w.u(s.dpb_output_delay_length_minus1, 5);
+  w.u(s.time_offset_length, 5);
+  for (const auto &e : s.cpb) {
+    w.ue(e.bit_rate_value_minus1);
+    w.ue(e.cpb_size_value_minus1);
+    w.u(e.cbr ? 1 : 0, 1);
+  }
+}
+
+// pstart points at the NAL payload (after the NAL header byte).
+static bool H264ParseSps(const uint8_t *payload, size_t len, H264SpsFields &s) {
+  H264BitReader r(payload, len);
+  s.profile_idc = (uint8_t)r.u(8);
+  s.constraint = (uint8_t)r.u(8);
+  s.level_idc = (uint8_t)r.u(8);
+  s.sps_id = r.ue();
+  s.is_high = H264IsHighProfile(s.profile_idc);
+  if (s.is_high) {
+    s.chroma_format_idc = r.ue();
+    if (s.chroma_format_idc == 3) s.separate_colour_plane = r.u(1) != 0;
+    s.bit_depth_luma_minus8 = r.ue();
+    s.bit_depth_chroma_minus8 = r.ue();
+    s.qpprime = r.u(1) != 0;
+    if (r.u(1) != 0) {  // seq_scaling_matrix_present_flag (skip native lists)
+      uint32_t n = (s.chroma_format_idc != 3) ? 8 : 12;
+      uint32_t flags[12] = {0};
+      for (uint32_t i = 0; i < n; i++) {
+        if (i == 0 || i == 3 || i == 6) flags[i] = r.u(1);
+        else flags[i] = (flags[i - 1] ? r.u(1) : 0);
+        if (flags[i]) {
+          int cnt = (i < 6) ? 16 : 64;
+          int32_t last = 8;
+          for (int j = 0; j < cnt; j++) {
+            int32_t d = r.se();
+            if (r.bad) return false;
+            int32_t nxt = (last + d + 256) % 256;
+            if (nxt != 0) last = nxt;
+          }
+        }
+      }
+    }
+  }
+  s.log2_max_frame_num_minus4 = r.ue();
+  s.pic_order_cnt_type = r.ue();
+  if (s.pic_order_cnt_type == 0) {
+    s.log2_max_pic_order_cnt_lsb_minus4 = r.ue();
+  } else if (s.pic_order_cnt_type == 1) {
+    s.delta_pic_order_always_zero = r.u(1) != 0;
+    s.offset_for_non_ref_pic = r.se();
+    s.offset_for_top_to_bottom_field = r.se();
+    uint32_t n = r.ue();
+    s.offset_for_ref_frame.clear();
+    for (uint32_t i = 0; i < n; i++) s.offset_for_ref_frame.push_back(r.se());
+  }
+  s.max_num_ref_frames = r.ue();
+  s.gaps_in_frame_num_value_allowed = r.u(1) != 0;
+  s.pic_width_in_mbs_minus1 = r.ue();
+  s.pic_height_in_map_units_minus1 = r.ue();
+  s.frame_mbs_only = r.u(1) != 0;
+  if (!s.frame_mbs_only) s.mb_adaptive_frame_field = r.u(1) != 0;
+  s.direct_8x8_inference = r.u(1) != 0;
+  s.frame_cropping = r.u(1) != 0;
+  if (s.frame_cropping) {
+    s.crop_l = r.ue(); s.crop_r = r.ue(); s.crop_t = r.ue(); s.crop_b = r.ue();
+  }
+  s.vui_present = r.u(1) != 0;
+  if (s.vui_present) {
+    s.aspect_ratio_info_present = r.u(1) != 0;
+    if (s.aspect_ratio_info_present) {
+      s.aspect_ratio_idc = (uint8_t)r.u(8);
+      if (s.aspect_ratio_idc == 255) {
+        s.sar_w = (uint16_t)r.u(16);
+        s.sar_h = (uint16_t)r.u(16);
+      }
+    }
+    s.overscan_info_present = r.u(1) != 0;
+    if (s.overscan_info_present) s.overscan_appropriate = r.u(1) != 0;
+    s.video_signal_type_present = r.u(1) != 0;
+    if (s.video_signal_type_present) {
+      s.video_format = (uint8_t)r.u(3);
+      s.video_full_range = r.u(1) != 0;
+      s.colour_description_present = r.u(1) != 0;
+      if (s.colour_description_present) {
+        s.colour_primaries = (uint8_t)r.u(8);
+        s.transfer_characteristics = (uint8_t)r.u(8);
+        s.matrix_coefficients = (uint8_t)r.u(8);
+      }
+    }
+    s.chroma_loc_info_present = r.u(1) != 0;
+    if (s.chroma_loc_info_present) {
+      s.chroma_sample_loc_type_top = r.ue();
+      s.bottom = r.ue();
+    }
+    s.timing_info_present = r.u(1) != 0;
+    if (s.timing_info_present) {
+      s.num_units_in_tick = r.u(32);
+      s.time_scale = r.u(32);
+      s.fixed_frame_rate = r.u(1) != 0;
+    }
+    s.nal_hrd_present = r.u(1) != 0;
+    if (s.nal_hrd_present) { if (!H264ParseHrd(r, s)) return false; }
+    s.vcl_hrd_present = r.u(1) != 0;
+    if (s.vcl_hrd_present) { if (!H264ParseHrd(r, s)) return false; }
+    if (s.nal_hrd_present || s.vcl_hrd_present) s.low_delay_hrd = r.u(1) != 0;
+    s.pic_struct_present = r.u(1) != 0;
+    s.bitstream_restriction_present = r.u(1) != 0;
+    if (s.bitstream_restriction_present) {
+      s.motion_vectors_over_pic_boundaries = r.u(1) != 0;
+      s.max_bytes_per_pic_denom = r.ue();
+      s.max_bits_per_mb_denom = r.ue();
+      s.log2_max_mv_length_h = r.ue();
+      s.log2_max_mv_length_v = r.ue();
+      s.num_reorder_frames = r.ue();
+      s.max_dec_frame_buffering = r.ue();
+    }
+  }
+  return !r.bad;
+}
+
+// Rebuild SPS, inserting the scaling lists (4x4 x6 + 8x8 x2) from `sl` when
+// any of them is set; unset groups keep the driver default. Returns new NAL
+// size (with start code + EP), 0 on failure.
+static mfxU16 H264RebuildSps(const H264SpsFields &s,
+                             const H264ScalingSetPointers &sl,
+                             uint8_t nal_hdr, size_t sc_len,
+                             uint8_t *dst, size_t dst_cap) {
+  H264BitWriter w;
+  w.u(s.profile_idc, 8);
+  w.u(s.constraint, 8);
+  w.u(s.level_idc, 8);
+  w.ue(s.sps_id);
+  if (s.is_high) {
+    w.ue(s.chroma_format_idc);
+    if (s.chroma_format_idc == 3) w.u(s.separate_colour_plane ? 1 : 0, 1);
+    w.ue(s.bit_depth_luma_minus8);
+    w.ue(s.bit_depth_chroma_minus8);
+    w.u(s.qpprime ? 1 : 0, 1);
+    // groups: 0..5 = 4x4 (IntraY, IntraCb, IntraCr, InterY, InterCb,
+    // InterCr), 6..7 = 8x8 (IntraY8, InterY8).
+    const uint8_t *groups4[6] = {sl.intra4y, sl.intra4cb, sl.intra4cr,
+                                 sl.inter4y, sl.inter4cb, sl.inter4cr};
+    const bool anyList = sl.HasLists();
+    w.u(anyList ? 1 : 0, 1);  // seq_scaling_matrix_present_flag
+    if (anyList) {
+      for (int i = 0; i < 6; i++) {
+        w.u(groups4[i] ? 1 : 0, 1);
+        if (groups4[i]) H264WriteScalingList(w, groups4[i], 16);
+      }
+      for (int i = 0; i < 2; i++) {
+        const uint8_t *p = i == 0 ? sl.intra8 : sl.inter8;
+        w.u(p ? 1 : 0, 1);
+        if (p) H264WriteScalingList(w, p, 64);
+      }
+    }
+  }
+  w.ue(s.log2_max_frame_num_minus4);
+  w.ue(s.pic_order_cnt_type);
+  if (s.pic_order_cnt_type == 0) {
+    w.ue(s.log2_max_pic_order_cnt_lsb_minus4);
+  } else if (s.pic_order_cnt_type == 1) {
+    w.u(s.delta_pic_order_always_zero ? 1 : 0, 1);
+    w.se(s.offset_for_non_ref_pic);
+    w.se(s.offset_for_top_to_bottom_field);
+    w.ue((uint32_t)s.offset_for_ref_frame.size());
+    for (int32_t v : s.offset_for_ref_frame) w.se(v);
+  }
+  w.ue(s.max_num_ref_frames);
+  w.u(s.gaps_in_frame_num_value_allowed ? 1 : 0, 1);
+  w.ue(s.pic_width_in_mbs_minus1);
+  w.ue(s.pic_height_in_map_units_minus1);
+  w.u(s.frame_mbs_only ? 1 : 0, 1);
+  if (!s.frame_mbs_only) w.u(s.mb_adaptive_frame_field ? 1 : 0, 1);
+  w.u(s.direct_8x8_inference ? 1 : 0, 1);
+  w.u(s.frame_cropping ? 1 : 0, 1);
+  if (s.frame_cropping) {
+    w.ue(s.crop_l); w.ue(s.crop_r); w.ue(s.crop_t); w.ue(s.crop_b);
+  }
+  w.u(s.vui_present ? 1 : 0, 1);
+  if (s.vui_present) {
+    w.u(s.aspect_ratio_info_present ? 1 : 0, 1);
+    if (s.aspect_ratio_info_present) {
+      w.u(s.aspect_ratio_idc, 8);
+      if (s.aspect_ratio_idc == 255) { w.u(s.sar_w, 16); w.u(s.sar_h, 16); }
+    }
+    w.u(s.overscan_info_present ? 1 : 0, 1);
+    if (s.overscan_info_present) w.u(s.overscan_appropriate ? 1 : 0, 1);
+    w.u(s.video_signal_type_present ? 1 : 0, 1);
+    if (s.video_signal_type_present) {
+      w.u(s.video_format, 3);
+      w.u(s.video_full_range ? 1 : 0, 1);
+      w.u(s.colour_description_present ? 1 : 0, 1);
+      if (s.colour_description_present) {
+        w.u(s.colour_primaries, 8);
+        w.u(s.transfer_characteristics, 8);
+        w.u(s.matrix_coefficients, 8);
+      }
+    }
+    w.u(s.chroma_loc_info_present ? 1 : 0, 1);
+    if (s.chroma_loc_info_present) {
+      w.ue(s.chroma_sample_loc_type_top);
+      w.ue(s.bottom);
+    }
+    w.u(s.timing_info_present ? 1 : 0, 1);
+    if (s.timing_info_present) {
+      w.u(s.num_units_in_tick, 32);
+      w.u(s.time_scale, 32);
+      w.u(s.fixed_frame_rate ? 1 : 0, 1);
+    }
+    w.u(s.nal_hrd_present ? 1 : 0, 1);
+    if (s.nal_hrd_present) H264WriteHrd(w, s);
+    w.u(s.vcl_hrd_present ? 1 : 0, 1);
+    if (s.vcl_hrd_present) H264WriteHrd(w, s);
+    if (s.nal_hrd_present || s.vcl_hrd_present) w.u(s.low_delay_hrd ? 1 : 0, 1);
+    w.u(s.pic_struct_present ? 1 : 0, 1);
+    w.u(s.bitstream_restriction_present ? 1 : 0, 1);
+    if (s.bitstream_restriction_present) {
+      w.u(s.motion_vectors_over_pic_boundaries ? 1 : 0, 1);
+      w.ue(s.max_bytes_per_pic_denom);
+      w.ue(s.max_bits_per_mb_denom);
+      w.ue(s.log2_max_mv_length_h);
+      w.ue(s.log2_max_mv_length_v);
+      w.ue(s.num_reorder_frames);
+      w.ue(s.max_dec_frame_buffering);
+    }
+  }
+  w.rbsp_trailing();
+  size_t out = H264SerializeNal(w, nal_hdr, sc_len, dst, dst_cap);
+  return out > 0 ? (mfxU16)out : 0;
+}
+
+// PPS fields we must preserve when rewriting.
+struct H264PpsFields {
+  uint32_t pps_id = 0, sps_id = 0;
+  bool entropy = false, bottom_field = false;
+  uint32_t ref_l0 = 0, ref_l1 = 0;
+  bool weighted_pred = false;
+  uint32_t weighted_bipred = 0;
+  int32_t pic_init_qp_minus26 = 0, pic_init_qs_minus26 = 0;
+  int32_t chroma_qp_index_offset = 0;
+  bool deblocking = false, constrained_intra = false, redundant = false;
+  bool has_extra = false;
+  bool transform8x8 = false;
+  bool pic_scaling_matrix_present = false;
+};
+
+static bool H264ParsePps(const uint8_t *payload, size_t len, H264PpsFields &p) {
+  H264BitReader r(payload, len);
+  p.pps_id = r.ue();
+  p.sps_id = r.ue();
+  p.entropy = r.u(1) != 0;
+  p.bottom_field = r.u(1) != 0;
+  if (r.ue() != 0) return false;  // slice groups unsupported
+  p.ref_l0 = r.ue();
+  p.ref_l1 = r.ue();
+  p.weighted_pred = r.u(1) != 0;
+  p.weighted_bipred = r.u(2);
+  p.pic_init_qp_minus26 = r.se();
+  p.pic_init_qs_minus26 = r.se();
+  p.chroma_qp_index_offset = r.se();
+  p.deblocking = r.u(1) != 0;
+  p.constrained_intra = r.u(1) != 0;
+  p.redundant = r.u(1) != 0;
+  p.has_extra = r.more_rbsp_data();
+  if (p.has_extra) {
+    p.transform8x8 = r.u(1) != 0;
+    p.pic_scaling_matrix_present = r.u(1) != 0;
+    if (p.pic_scaling_matrix_present) {
+      uint32_t flags[2] = {0};
+      for (int i = 0; i < 2; i++) {
+        if (i == 0) flags[i] = r.u(1);
+        else flags[i] = (flags[i - 1] ? r.u(1) : 0);
+        if (flags[i]) {
+          int32_t last = 8;
+          for (int j = 0; j < 64; j++) {
+            int32_t d = r.se();
+            if (r.bad) return false;
+            int32_t nxt = (last + d + 256) % 256;
+            if (nxt != 0) last = nxt;
+          }
+        }
+      }
+    }
+  }
+  return !r.bad;
+}
+
+static mfxU16 H264RebuildPps(const H264PpsFields &p,
+                             const H264ScalingSetPointers &sl,
+                             int chroma_offset, uint8_t nal_hdr,
+                             size_t sc_len, uint8_t *dst, size_t dst_cap) {
+  H264BitWriter w;
+  w.ue(p.pps_id);
+  w.ue(p.sps_id);
+  w.u(p.entropy ? 1 : 0, 1);
+  w.u(p.bottom_field ? 1 : 0, 1);
+  w.ue(0);  // num_slice_groups_minus1
+  w.ue(p.ref_l0);
+  w.ue(p.ref_l1);
+  w.u(p.weighted_pred ? 1 : 0, 1);
+  w.u(p.weighted_bipred, 2);
+  w.se(p.pic_init_qp_minus26);
+  w.se(p.pic_init_qs_minus26);
+  w.se(chroma_offset);
+  w.u(p.deblocking ? 1 : 0, 1);
+  w.u(p.constrained_intra ? 1 : 0, 1);
+  w.u(p.redundant ? 1 : 0, 1);
+  bool write8x8 = p.transform8x8 && (sl.intra8 || sl.inter8);
+  if (p.has_extra) {
+    w.u(p.transform8x8 ? 1 : 0, 1);
+    w.u(write8x8 ? 1 : 0, 1);  // pic_scaling_matrix_present_flag
+    if (write8x8) {
+      w.u(sl.intra8 ? 1 : 0, 1);
+      if (sl.intra8) H264WriteScalingList(w, sl.intra8, 64);  // Intra8x8
+      w.u(sl.inter8 ? 1 : 0, 1);
+      if (sl.inter8) H264WriteScalingList(w, sl.inter8, 64);  // Inter8x8
+    }
+    // second_chroma_qp_index_offset is MANDATORY once more_rbsp_data() is
+    // true (H.264 7.3.2.2). Dropping it desyncs the driver's PPS parser and
+    // breaks P/B-frame encoding. Same value as chroma_qp_index_offset here.
+    w.se(chroma_offset);
+  }
+  w.rbsp_trailing();
+  size_t out = H264SerializeNal(w, nal_hdr, sc_len, dst, dst_cap);
+  return out > 0 ? (mfxU16)out : 0;
+}
+
 // VP9 doesn't fill mfxExtEncodedFrameInfo.QP, so pull base_q_idx from the bitstream header.
 // Returns 0 on parse failure.
 static mfxU16 ExtractVP9QP(std::span<const uint8_t> data) {
@@ -838,6 +1548,185 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
     }
   }
 
+  // AVC only: chroma QP offset and/or custom quant matrices injected through
+  // SPS/PPS. The oneVPL driver has no public knobs for either, but it DOES
+  // consume user-supplied SPS/PPS attached via MFX_EXTBUFF_CODING_OPTION_SPSPPS
+  // at Init time (ReadSpsPpsHeaders in mfx_h264_enc_common_hw.cpp parses the
+  // injected headers into the internal param set, including
+  // chroma_qp_index_offset and the scaling lists). Those values are used both
+  // for the hardware encode quantization AND for the SPS/PPS emitted in the
+  // bitstream, so encoder and decoder sides stay consistent.
+  //
+  // Flow: native Init -> grab runtime headers via GetVideoParam -> rewrite SPS
+  // (scaling lists) and/or PPS (chroma offset + 8x8 lists) -> close -> re-init
+  // with the patched headers attached.
+  if (Status >= MFX_ERR_NONE &&
+      QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC) {
+    const int chromaOffset =
+        InputParams->ChromaQPOffset.has_value()
+            ? InputParams->ChromaQPOffset.value()
+            : 0;
+    const int qmPreset = InputParams->QMatrixPreset.has_value()
+                             ? *InputParams->QMatrixPreset
+                             : QM_DEFAULT;
+    const bool wantMatrix = qmPreset != QM_DEFAULT;
+    const bool wantChroma = chromaOffset != 0;
+    if (wantMatrix || wantChroma) {
+      info("\tH264HeaderInjection: matrix_preset=%d chroma_offset=%+d", qmPreset,
+           chromaOffset);
+
+      // Patched headers only take effect through the sw BRC path; on other
+      // paths (CBR, no Lookahead, non-VBR/ICQ RC) the Intel driver skips the
+      // injected values and may even freeze frames, so warn loudly upfront.
+      const bool swBrcPath = InputParams->Lookahead &&
+                             (InputParams->RateControl == MFX_RATECONTROL_VBR ||
+                              InputParams->RateControl == MFX_RATECONTROL_ICQ);
+      if (!swBrcPath)
+        warn("H264HeaderInjection: chroma_qp_offset/quant_matrix need the "
+             "sw BRC path (Lookahead ON + VBR/ICQ) to take effect; current "
+             "ratcontrol=%d lookahead=%d, driver may ignore or freeze",
+             InputParams->RateControl, InputParams->Lookahead ? 1 : 0);
+
+      auto *SPSPPSParams =
+          QSVEncodeParams.AddExtBuffer<mfxExtCodingOptionSPSPPS>();
+      SPSPPSParams->Header.BufferId = MFX_EXTBUFF_CODING_OPTION_SPSPPS;
+      SPSPPSParams->Header.BufferSz = sizeof(mfxExtCodingOptionSPSPPS);
+      SPSPPSParams->SPSBuffer = QSVSPSBuffer;
+      SPSPPSParams->PPSBuffer = QSVPPSBuffer;
+      SPSPPSParams->SPSBufSize = 1024;
+      SPSPPSParams->PPSBufSize = 1024;
+      SPSPPSParams->SPSId = 0;
+      SPSPPSParams->PPSId = 0;
+
+      // Grab the runtime-generated SPS/PPS (driver fills the buffers).
+      mfxStatus GvpSts = QSVEncode->GetVideoParam(&QSVEncodeParams);
+
+      bool Injected = false;
+      bool spsOk = !wantMatrix;  // native SPS is fine unless a matrix is wanted
+      bool ppsOk = false;
+      if (GvpSts >= MFX_ERR_NONE && SPSPPSParams->SPSBufSize > 0 &&
+          SPSPPSParams->PPSBufSize > 0) {
+        // strip EP and locate start code + nal header of each NAL
+        std::vector<uint8_t> spsRbsp, ppsRbsp;
+        H264StripEP(QSVSPSBuffer, SPSPPSParams->SPSBufSize, spsRbsp);
+        H264StripEP(QSVPPSBuffer, SPSPPSParams->PPSBufSize, ppsRbsp);
+        size_t ssc = 0, psc = 0;
+        if (spsRbsp.size() >= 4 && spsRbsp[0] == 0 && spsRbsp[1] == 0 &&
+            spsRbsp[2] == 0 && spsRbsp[3] == 1)
+          ssc = 4;
+        else if (spsRbsp.size() >= 3 && spsRbsp[0] == 0 && spsRbsp[1] == 0 &&
+                 spsRbsp[2] == 1)
+          ssc = 3;
+        if (ppsRbsp.size() >= 4 && ppsRbsp[0] == 0 && ppsRbsp[1] == 0 &&
+            ppsRbsp[2] == 0 && ppsRbsp[3] == 1)
+          psc = 4;
+        else if (ppsRbsp.size() >= 3 && ppsRbsp[0] == 0 && ppsRbsp[1] == 0 &&
+                 ppsRbsp[2] == 1)
+          psc = 3;
+
+        std::array<mfxU8, 2048> NewSps{};
+        std::array<mfxU8, 2048> NewPps{};
+        // Resolve preset/custom into per-list pointers once; custom reads the
+        // raw lists from params, presets go through GetH264Matrices.
+        H264ScalingSetPointers Effects = GetH264ScalingSetPointers(
+            qmPreset, InputParams->QMatrixCustom
+                          ? &*InputParams->QMatrixCustom
+                          : nullptr);
+        if (wantMatrix && ssc > 0) {
+          const uint8_t spsHdr = spsRbsp[ssc];
+          H264SpsFields sf;
+          if (H264ParseSps(spsRbsp.data() + ssc + 1,
+                           spsRbsp.size() - ssc - 1, sf) &&
+              sf.is_high) {
+            const mfxU16 n = H264RebuildSps(sf, Effects, spsHdr, ssc,
+                                            NewSps.data(),
+                                            static_cast<mfxU16>(NewSps.size()));
+            if (n > 0) {
+              memcpy(QSVSPSBuffer, NewSps.data(), n);
+              SPSPPSParams->SPSBufSize = n;
+              spsOk = true;
+            }
+          }
+          if (!spsOk)
+            warn("H264HeaderInjection: SPS rewrite failed (non-High profile "
+                 "or parse error), quant matrix skipped");
+        }
+
+        if (psc > 0) {
+          const uint8_t ppsHdr = ppsRbsp[psc];
+          H264PpsFields pf;
+          if (H264ParsePps(ppsRbsp.data() + psc + 1,
+                           ppsRbsp.size() - psc - 1, pf)) {
+            const mfxU16 n = H264RebuildPps(pf, Effects, chromaOffset, ppsHdr,
+                                            psc, NewPps.data(),
+                                            static_cast<mfxU16>(NewPps.size()));
+            if (n > 0) {
+              memcpy(QSVPPSBuffer, NewPps.data(), n);
+              SPSPPSParams->PPSBufSize = n;
+              ppsOk = true;
+            }
+          }
+        }
+
+        const bool needInject =
+            ppsOk && (Effects.HasLists() || wantChroma);
+        if (needInject) {
+          // Re-init with the patched headers. Init failure -> drop the SPSPPS
+          // extension and fall back to native headers (warned).
+          mfxStatus ReSts = MFX_ERR_NONE;
+          QSVEncode->Close();
+          if (QSVUseSystemMemoryPath) {
+            // QueryIOSurf must be called before Init on the system-memory path
+            mfxFrameAllocRequest IOSurfRequest[2] = {};
+            ReSts = QSVEncode->QueryIOSurf(&QSVEncodeParams, IOSurfRequest);
+            if (ReSts == MFX_ERR_NONE &&
+                IOSurfRequest[0].NumFrameSuggested > 0)
+              QSVSystemMemPoolSize = IOSurfRequest[0].NumFrameSuggested;
+          }
+          ReSts = QSVEncode->Init(&QSVEncodeParams);
+          if (ReSts == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
+            info("\tH264HeaderInjection: re-init returned "
+                 "MFX_WRN_INCOMPATIBLE_VIDEO_PARAM (headers applied)");
+            ReSts = MFX_ERR_NONE;
+          }
+          if (ReSts == MFX_ERR_NONE) {
+            Injected = true;
+            info("\tH264HeaderInjection: re-init with patched SPS/PPS OK");
+          } else {
+            warn("H264HeaderInjection: re-init failed (%d), falling back to "
+                 "native headers",
+                 ReSts);
+            QSVEncode->Close();
+            QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOptionSPSPPS>();
+            SPSPPSParams = nullptr;
+            ReSts = QSVEncode->Init(&QSVEncodeParams);
+            if (ReSts == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM)
+              ReSts = MFX_ERR_NONE;
+            if (ReSts < MFX_ERR_NONE) {
+              error("H264HeaderInjection: fallback native init failed (%d)",
+                    ReSts);
+              Status = ReSts;
+            }
+          }
+        } else {
+          warn("H264HeaderInjection: PPS rewrite failed, keeping native "
+               "headers (features not applied)");
+          QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOptionSPSPPS>();
+          SPSPPSParams = nullptr;
+        }
+      } else {
+        warn("H264HeaderInjection: GetVideoParam SPS/PPS retrieval failed "
+             "(%d), keeping native headers (features not applied)",
+             GvpSts);
+        QSVEncodeParams.RemoveExtBuffer<mfxExtCodingOptionSPSPPS>();
+        SPSPPSParams = nullptr;
+      }
+
+      if (Injected && Status >= MFX_ERR_NONE)
+        info("\tH264HeaderInjection: matrix_preset=%d chroma_offset=%+d active",
+             qmPreset, chromaOffset);
+    }
+  }
 
   if (Status < MFX_ERR_NONE) {
     QSVEncode->Close();
