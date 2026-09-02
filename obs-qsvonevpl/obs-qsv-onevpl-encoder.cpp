@@ -145,6 +145,11 @@ void DestroyPluginContext(void *Data) {
       if (Context->EncoderPTR) {
         try {
           Context->EncoderPTR->ClearData();
+          if (Context->SentPackets || Context->ZeroDtsPackets)
+            blog(LOG_INFO,
+                 "[QSV VPL] packet debug: delivered=%llu zero_dts=%llu",
+                 static_cast<unsigned long long>(Context->SentPackets),
+                 static_cast<unsigned long long>(Context->ZeroDtsPackets));
           Context->EncoderPTR = nullptr;
         } catch (const std::exception &e) {
           error("QSV ERROR: %s", e.what());
@@ -552,6 +557,10 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
                      (Bitstream->FrameType & MFX_FRAMETYPE_xIDR) ||
                      (Bitstream->FrameType & MFX_FRAMETYPE_xS));
   Packet->keyframe = isKeyframe;
+
+  Context->SentPackets++;
+  if (Bitstream->DecodeTimeStamp == 0)
+    Context->ZeroDtsPackets++;
 
   if (isKeyframe) {
     Packet->priority = static_cast<int>(OBS_NAL_PRIORITY_HIGHEST);

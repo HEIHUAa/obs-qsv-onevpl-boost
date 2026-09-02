@@ -29,6 +29,9 @@ struct plugin_context {
   std::mutex EncoderMutex;
   std::atomic<int> EncodingCount{0};
   std::condition_variable EncodingCV;
+
+  uint64_t SentPackets = 0;
+  uint64_t ZeroDtsPackets = 0;
 };
 
 #define TEXT_SPEED obs_module_text("TargetUsage")
