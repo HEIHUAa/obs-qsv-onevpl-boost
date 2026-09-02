@@ -1571,7 +1571,7 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
                              : QM_DEFAULT;
     const bool wantMatrix = qmPreset != QM_DEFAULT;
     const bool wantChroma = chromaOffset != 0;
-    if (wantMatrix || wantChroma) {
+    if ((wantMatrix || wantChroma) && !QSVUseSystemMemoryPath) {
       info("\tH264HeaderInjection: matrix_preset=%d chroma_offset=%+d", qmPreset,
            chromaOffset);
 
@@ -1725,6 +1725,10 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
       if (Injected && Status >= MFX_ERR_NONE)
         info("\tH264HeaderInjection: matrix_preset=%d chroma_offset=%+d active",
              qmPreset, chromaOffset);
+    } else if (wantMatrix || wantChroma) {
+      warn("H264HeaderInjection: skipped on SYSTEM_MEMORY path (re-init "
+           "unsafe); enable VPP / a VIDEO_MEMORY path to use quant matrix "
+           "or chroma QP offset");
     }
   }
 
@@ -1808,7 +1812,9 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
     //   - Other codecs → try system memory first (saves GPU VRAM), fallback
     //                     to VIDEO_MEMORY
     if (!QSVIsTextureEncoder) {
-      if (QSVProcessingEnable || Codec == QSV_CODEC_VP9) {
+      const bool wantInjection = InputParams->ChromaQPOffset.has_value() ||
+                                 InputParams->QMatrixPreset.has_value();
+      if (QSVProcessingEnable || Codec == QSV_CODEC_VP9 || wantInjection) {
         QSVUseSystemMemoryPath = false;
         Status = InitEncoderInternal(InputParams, Codec, "");
         if (Status < MFX_ERR_NONE) {
