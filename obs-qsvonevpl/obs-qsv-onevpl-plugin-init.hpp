@@ -45,14 +45,6 @@ struct plugin_context {
   uint64_t NegDts = 0;
   std::array<std::pair<int64_t, int64_t>, 8> HeadPackets{};
   uint64_t HeadCount = 0;
-  // DTS timeline enforcement. The driver can emit non-monotonic/negative DTS
-  // after the SPS/PPS re-init, which breaks OBS mp4 muxing (only 1 frame
-  // written) and the reencoder (av_interleaved_write_frame -22). We rebuild a
-  // monotonic, zero-based DTS here; PTS is left untouched.
-  bool DtsInit = false;
-  int64_t DtsBase = 0;
-  int64_t LastDts = 0;
-  uint64_t DtsFixed = 0;  // how many packets had their DTS corrected
 };
 
 #define TEXT_SPEED obs_module_text("TargetUsage")
