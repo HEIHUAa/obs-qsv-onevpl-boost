@@ -263,21 +263,24 @@ struct H264ScalingSetPointers {
 // are expanded by MakeDriverPresetLists; texture presets by
 // MakeTexturePresetLists; CUSTOM reads the raw lists straight from params.
 // Unmatched groups stay null (driver default).
+//
+// `owned` is filled for the preset paths so the returned pointers stay valid:
+// the caller must keep `owned` alive until it stops using the returned set.
 static H264ScalingSetPointers GetH264ScalingSetPointers(
-    int preset, const H264ScalingLists *custom) {
+    int preset, const H264ScalingLists *custom,
+    std::optional<H264ScalingLists> &owned) {
   H264ScalingSetPointers s;
-  std::optional<H264ScalingLists> built;
   const H264ScalingLists *lists = custom;
   if (preset == QM_DEFAULT) {
     return s;
   } else if (preset == QM_CUSTOM) {
     if (!lists) return s;
   } else if (preset == QM_TEX_DETAIL || preset == QM_TEX_STRONG) {
-    built = MakeTexturePresetLists(preset);
-    lists = &*built;
+    owned = MakeTexturePresetLists(preset);
+    lists = &*owned;
   } else {
-    built = MakeDriverPresetLists(preset);
-    lists = &*built;
+    owned = MakeDriverPresetLists(preset);
+    lists = &*owned;
   }
 
   auto p16 = [](const std::optional<std::array<uint8_t, 16>> &o) {
@@ -1733,11 +1736,15 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
         std::array<mfxU8, 2048> NewSps{};
         std::array<mfxU8, 2048> NewPps{};
         // Resolve preset/custom into per-list pointers once; driver presets
-        // are expanded here, custom reads the raw lists from params.
+        // are expanded here, custom reads the raw lists from params.  The
+        // preset matrices are owned by `owned` below, kept alive for the whole
+        // injection block so the returned pointers never dangle.
+        std::optional<H264ScalingLists> EffectOwned;
         H264ScalingSetPointers Effects = GetH264ScalingSetPointers(
             qmPreset, InputParams->QMatrixCustom
                           ? &*InputParams->QMatrixCustom
-                          : nullptr);
+                          : nullptr,
+            EffectOwned);
         if (wantMatrix && ssc > 0) {
           const uint8_t spsHdr = spsRbsp[ssc];
           H264SpsFields sf;
