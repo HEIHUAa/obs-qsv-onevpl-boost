@@ -928,6 +928,10 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
         qm = 5;
       else if (sv == "custom")
         qm = 6;
+      else if (sv == "tex_detail")
+        qm = 7;
+      else if (sv == "tex_strong")
+        qm = 8;
     }
     if (qm == 6) {
       H264ScalingLists cl;
@@ -994,7 +998,7 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
         }
       }
       if (any) {
-        Params.QMatrixPreset = 5;
+        Params.QMatrixPreset = 6;  // QM_CUSTOM
         Params.QMatrixGranularity = gran;
         Params.QMatrixCustom = std::move(cl);
       }

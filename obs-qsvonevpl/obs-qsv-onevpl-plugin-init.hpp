@@ -138,6 +138,8 @@ struct plugin_context {
 #define TEXT_QUANT_MATRIX_DRV_MEDIUM obs_module_text("QUANT_MATRIX_DRV_MEDIUM")
 #define TEXT_QUANT_MATRIX_DRV_STRONG obs_module_text("QUANT_MATRIX_DRV_STRONG")
 #define TEXT_QUANT_MATRIX_DRV_EXTREME obs_module_text("QUANT_MATRIX_DRV_EXTREME")
+#define TEXT_QUANT_MATRIX_TEX_DETAIL obs_module_text("QUANT_MATRIX_TEX_DETAIL")
+#define TEXT_QUANT_MATRIX_TEX_STRONG obs_module_text("QUANT_MATRIX_TEX_STRONG")
 #define TEXT_QUANT_MATRIX_CUSTOM obs_module_text("QUANT_MATRIX_CUSTOM")
 #define TEXT_QM_GRANULARITY obs_module_text("QM_GRANULARITY")
 #define TEXT_QM_GRAN_2 obs_module_text("QM_GRAN_2")

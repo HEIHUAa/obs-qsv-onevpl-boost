@@ -1773,6 +1773,10 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                "drv_strong");
   obs_property_list_add_string(Prop, TEXT_QUANT_MATRIX_DRV_EXTREME,
                                "drv_extreme");
+  obs_property_list_add_string(Prop, TEXT_QUANT_MATRIX_TEX_DETAIL,
+                               "tex_detail");
+  obs_property_list_add_string(Prop, TEXT_QUANT_MATRIX_TEX_STRONG,
+                               "tex_strong");
   obs_property_list_add_string(Prop, TEXT_QUANT_MATRIX_CUSTOM, "custom");
 
   // Custom granularity selector + per-list input boxes. Only shown when

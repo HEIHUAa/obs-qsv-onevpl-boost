@@ -43,6 +43,8 @@ enum QMatrixPreset {
   QM_DRV_STRONG = 4,   // driver CQM matrix 3 -- recommended avg QP 44..50
   QM_DRV_EXTREME = 5,  // driver CQM matrix 4 -- recommended avg QP >= 50
   QM_CUSTOM = 6,       // fully user-supplied lists (H264ScalingLists in params)
+  QM_TEX_DETAIL = 7,   // user-validated texture preset (low-freq fine, hi-freq coarse)
+  QM_TEX_STRONG = 8,   // enhanced version of TEX_DETAIL: hi-freq pushed much harder
 };
 
 static const uint8_t kDefaultI4[16] = {6, 13, 20, 28, 13, 20, 28, 32,
@@ -182,6 +184,62 @@ static std::optional<H264ScalingLists> MakeDriverPresetLists(int preset) {
   return l;
 }
 
+static const uint8_t kTexI4Y[16]  = {7, 11, 16, 22, 28, 35, 42, 49, 56, 64, 72, 79, 87, 95, 104, 112};
+static const uint8_t kTexP4Y[16]  = {9, 13, 19, 26, 33, 40, 47, 55, 63, 71, 80, 88, 97, 106, 115, 124};
+static const uint8_t kTexI8Y[64]  = {
+    6, 7, 7, 8, 9, 11, 12, 13, 14, 16, 17, 19, 20, 22, 23, 25,
+    27, 28, 30, 32, 33, 35, 37, 39, 41, 43, 45, 47, 49, 50, 53, 55,
+    57, 59, 61, 63, 65, 67, 69, 71, 74, 76, 78, 80, 83, 85, 87, 89,
+    92, 94, 96, 99, 101, 103, 106, 108, 111, 113, 116, 118, 121, 123, 125, 128};
+static const uint8_t kTexP8Y[64]  = {
+    8, 9, 9, 11, 12, 13, 14, 16, 17, 19, 20, 22, 23, 25, 27, 28,
+    30, 32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56, 58, 61,
+    63, 65, 67, 69, 72, 74, 76, 79, 81, 84, 86, 88, 91, 93, 96, 98,
+    101, 103, 106, 108, 111, 113, 116, 119, 121, 124, 127, 129, 132, 135, 137, 140};
+static const uint8_t kTexCi4[16] = {14, 19, 25, 31, 38, 46, 53, 61, 69, 78, 87, 95, 104, 113, 123, 132};
+static const uint8_t kTexCp4[16] = {16, 21, 27, 35, 42, 50, 59, 67, 76, 85, 95, 104, 114, 124, 134, 144};
+
+static const uint8_t kTexS_I4Y[16]  = {7, 11, 17, 24, 32, 41, 51, 62, 72, 85, 98, 111, 125, 140, 157, 174};
+static const uint8_t kTexS_P4Y[16]  = {9, 13, 20, 29, 38, 47, 57, 69, 81, 94, 109, 123, 140, 157, 174, 192};
+static const uint8_t kTexS_I8Y[64]  = {
+    6, 7, 7, 8, 9, 11, 13, 14, 15, 17, 18, 21, 22, 24, 26, 28,
+    31, 32, 35, 37, 39, 41, 44, 47, 50, 52, 55, 58, 61, 63, 67, 70,
+    73, 76, 79, 82, 85, 89, 92, 95, 100, 103, 107, 110, 115, 118, 122, 126,
+    131, 134, 138, 143, 147, 151, 156, 160, 165, 169, 175, 179, 184, 189, 193, 198};
+static const uint8_t kTexS_P8Y[64]  = {
+    8, 9, 9, 11, 12, 14, 15, 17, 18, 20, 22, 24, 25, 28, 30, 32,
+    34, 37, 39, 42, 45, 47, 50, 53, 56, 58, 61, 64, 67, 70, 73, 78,
+    81, 84, 87, 90, 95, 98, 101, 106, 109, 114, 118, 121, 126, 130, 135, 138,
+    143, 147, 152, 156, 161, 165, 171, 176, 180, 186, 191, 195, 201, 207, 211, 217};
+static const uint8_t kTexS_Ci4[16] = {14, 20, 27, 34, 44, 54, 65, 77, 89, 104, 119, 133, 150, 167, 186, 205};
+static const uint8_t kTexS_Cp4[16] = {16, 22, 29, 39, 48, 59, 72, 84, 98, 113, 130, 146, 164, 183, 203, 223};
+
+// Texture presets are stored already in zigzag order, so just copy them into
+// an H264ScalingLists directly (no PlaneToZigZag needed).
+static std::optional<H264ScalingLists> MakeTexturePresetLists(int preset) {
+  const bool strong = (preset == QM_TEX_STRONG);
+  H264ScalingLists l;
+  auto a16 = [](const uint8_t s[16]) {
+    std::array<uint8_t, 16> a{};
+    std::copy_n(s, 16, a.begin());
+    return a;
+  };
+  auto a64 = [](const uint8_t s[64]) {
+    std::array<uint8_t, 64> a{};
+    std::copy_n(s, 64, a.begin());
+    return a;
+  };
+  l.Intra4x4Y = a16(strong ? kTexS_I4Y : kTexI4Y);
+  l.Inter4x4Y = a16(strong ? kTexS_P4Y : kTexP4Y);
+  l.Intra4x4Cb = a16(strong ? kTexS_Ci4 : kTexCi4);
+  l.Intra4x4Cr = a16(strong ? kTexS_Ci4 : kTexCi4);
+  l.Inter4x4Cb = a16(strong ? kTexS_Cp4 : kTexCp4);
+  l.Inter4x4Cr = a16(strong ? kTexS_Cp4 : kTexCp4);
+  l.Intra8x8 = a64(strong ? kTexS_I8Y : kTexI8Y);
+  l.Inter8x8 = a64(strong ? kTexS_P8Y : kTexP8Y);
+  return l;
+}
+
 // Per-list pointers used by the SPS/PPS writers. Each group is independent:
 // a null pointer keeps the driver default (list flag written as 0 unless a
 // later list forces it; the assembler resolves those cases below).
@@ -202,8 +260,9 @@ struct H264ScalingSetPointers {
 };
 
 // preset -> pointers. DEFAULT returns empty (native matrices); driver presets
-// are expanded by MakeDriverPresetLists; CUSTOM reads the raw lists straight
-// from params.  Unmatched groups stay null (driver default).
+// are expanded by MakeDriverPresetLists; texture presets by
+// MakeTexturePresetLists; CUSTOM reads the raw lists straight from params.
+// Unmatched groups stay null (driver default).
 static H264ScalingSetPointers GetH264ScalingSetPointers(
     int preset, const H264ScalingLists *custom) {
   H264ScalingSetPointers s;
@@ -213,6 +272,9 @@ static H264ScalingSetPointers GetH264ScalingSetPointers(
     return s;
   } else if (preset == QM_CUSTOM) {
     if (!lists) return s;
+  } else if (preset == QM_TEX_DETAIL || preset == QM_TEX_STRONG) {
+    built = MakeTexturePresetLists(preset);
+    lists = &*built;
   } else {
     built = MakeDriverPresetLists(preset);
     lists = &*built;
