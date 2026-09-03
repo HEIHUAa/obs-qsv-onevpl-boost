@@ -31,20 +31,6 @@ struct plugin_context {
   std::mutex EncoderMutex;
   std::atomic<int> EncodingCount{0};
   std::condition_variable EncodingCV;
-
-  uint64_t SentPackets = 0;
-  uint64_t ZeroDtsPackets = 0;
-  // Deeper timing diagnostics: first PTS/DTS, non-monotonic-DTS and negative
-  // DTS counters, plus the (pts,dts) of the first few packets. OBS drops
-  // video packets when DTS ordering looks broken, so these pin down whether
-  // the re-init (SPS/PPS injection) corrupts the timeline.
-  int64_t FirstPts = 0;
-  int64_t FirstDts = 0;
-  int64_t PrevDts = 0;
-  uint64_t NonMonoDts = 0;
-  uint64_t NegDts = 0;
-  std::array<std::pair<int64_t, int64_t>, 8> HeadPackets{};
-  uint64_t HeadCount = 0;
 };
 
 #define TEXT_SPEED obs_module_text("TargetUsage")

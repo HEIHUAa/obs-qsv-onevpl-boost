@@ -145,21 +145,6 @@ void DestroyPluginContext(void *Data) {
       if (Context->EncoderPTR) {
         try {
           Context->EncoderPTR->ClearData();
-          if (Context->SentPackets || Context->ZeroDtsPackets)
-            blog(LOG_INFO,
-                 "[QSV VPL] packet debug: delivered=%llu zero_dts=%llu "
-                 "first_pts=%lld first_dts=%lld nonmono=%llu neg_dts=%llu",
-                 static_cast<unsigned long long>(Context->SentPackets),
-                 static_cast<unsigned long long>(Context->ZeroDtsPackets),
-                 Context->FirstPts, Context->FirstDts,
-                 static_cast<unsigned long long>(Context->NonMonoDts),
-                 static_cast<unsigned long long>(Context->NegDts));
-          for (uint64_t i = 0; i < Context->HeadCount; i++) {
-            blog(LOG_INFO, "[QSV VPL]   pkt[%llu] pts=%lld dts=%lld",
-                 static_cast<unsigned long long>(i),
-                 Context->HeadPackets[i].first,
-                 Context->HeadPackets[i].second);
-          }
           Context->EncoderPTR = nullptr;
         } catch (const std::exception &e) {
           error("QSV ERROR: %s", e.what());
@@ -567,26 +552,6 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
                      (Bitstream->FrameType & MFX_FRAMETYPE_xIDR) ||
                      (Bitstream->FrameType & MFX_FRAMETYPE_xS));
   Packet->keyframe = isKeyframe;
-
-  Context->SentPackets++;
-  if (Bitstream->DecodeTimeStamp == 0)
-    Context->ZeroDtsPackets++;
-
-  // Timing diagnostics for the intermittent empty-recording failure.
-  if (Context->SentPackets == 1) {
-    Context->FirstPts = Packet->pts;
-    Context->FirstDts = Packet->dts;
-    Context->PrevDts = Packet->dts;
-  } else {
-    if (Packet->dts <= Context->PrevDts)
-      Context->NonMonoDts++;
-    if (Packet->dts < 0)
-      Context->NegDts++;
-    Context->PrevDts = Packet->dts;
-  }
-  if (Context->HeadCount < Context->HeadPackets.size()) {
-    Context->HeadPackets[Context->HeadCount++] = {Packet->pts, Packet->dts};
-  }
 
   if (isKeyframe) {
     Packet->priority = static_cast<int>(OBS_NAL_PRIORITY_HIGHEST);
