@@ -1009,7 +1009,9 @@ void QSVEncoder::InitSystemMemorySurfacePool() {
       warn("QueryIOSurf failed: %d, using default 4 surfaces", Sts);
       QSVSystemMemPoolSize = 4;
     } else {
-      QSVSystemMemPoolSize = Request[0].NumFrameSuggested;
+      // official obs-qsv11 adds AsyncDepth margin on top of the suggestion
+      QSVSystemMemPoolSize = static_cast<mfxU16>(
+          Request[0].NumFrameSuggested + QSVEncodeParams.AsyncDepth);
       if (QSVSystemMemPoolSize < 4)
         QSVSystemMemPoolSize = 4;
     }
@@ -1383,11 +1385,15 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
         mfxStatus QISSts =
             QSVEncode->QueryIOSurf(&QSVEncodeParams, IOSurfRequest);
         if (QISSts == MFX_ERR_NONE) {
-          QSVSystemMemPoolSize = IOSurfRequest[0].NumFrameSuggested;
+          // official obs-qsv11 adds AsyncDepth margin on top of the suggestion
+          QSVSystemMemPoolSize = static_cast<mfxU16>(
+              IOSurfRequest[0].NumFrameSuggested +
+              QSVEncodeParams.AsyncDepth);
           if (QSVSystemMemPoolSize < 4)
             QSVSystemMemPoolSize = 4;
-          info("\tQueryIOSurf%s: NumFrameSuggested=%d",
-               log_prefix, QSVSystemMemPoolSize);
+          info("\tQueryIOSurf%s: NumFrameSuggested=%d (pool=%d)",
+               log_prefix, IOSurfRequest[0].NumFrameSuggested,
+               QSVSystemMemPoolSize);
         } else {
           warn("\tQueryIOSurf%s failed: %d, using default 4 surfaces",
                log_prefix, QISSts);
@@ -1795,7 +1801,9 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
             ReSts = QSVEncode->QueryIOSurf(&QSVEncodeParams, IOSurfRequest);
             if (ReSts == MFX_ERR_NONE &&
                 IOSurfRequest[0].NumFrameSuggested > 0)
-              QSVSystemMemPoolSize = IOSurfRequest[0].NumFrameSuggested;
+              QSVSystemMemPoolSize = static_cast<mfxU16>(
+                  IOSurfRequest[0].NumFrameSuggested +
+                  QSVEncodeParams.AsyncDepth);
           }
           ReSts = QSVEncode->Init(&QSVEncodeParams);
           if (ReSts == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
@@ -5098,7 +5106,21 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
   int TaskID = GetFreeTaskIndex();
   int SurfID = GetFreeSurface();
 
+  // hard cap so a starved pool can never spin the video thread forever
+  // (a silent hot loop here = 0-byte recording + stop hanging)
+  constexpr int MAX_STARVE_ROUNDS = 200;
+  int starveRounds = 0;
+
   while (MFX_ERR_NOT_FOUND == TaskID || MFX_ERR_NOT_FOUND == SurfID) {
+    if (++starveRounds > MAX_STARVE_ROUNDS) {
+      error("EncodeFrameSystemMemory: pool starved for %d rounds "
+            "(tasks=%d surfaces=%d), aborting encode",
+            starveRounds, static_cast<int>(QSVTaskPool.size()),
+            static_cast<int>(QSVSystemMemPool.size()));
+      throw std::runtime_error(
+          "Encode(): surface pool starved - unrecoverable error");
+    }
+
     // Sync the oldest pending task (QSVSyncTaskID points to it)
     mfxU32 syncRetries = 0;
     unsigned busyCount = 0;
@@ -5140,6 +5162,16 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
             "Encode(): Sync operation failed - unrecoverable error");
       }
       break; // SyncStatus >= MFX_ERR_NONE — done
+    }
+
+    // Never loop past a finished bitstream: a second swap would overwrite
+    // QSVBitstream and silently drop that frame.  Return it instead and
+    // defer this frame's submit to the next encode call.
+    if (*Bitstream != nullptr) {
+      warn("EncodeFrameSystemMemory: surface pool starved (%d rounds), "
+           "deferring frame submit",
+           starveRounds);
+      return MFX_ERR_NONE;
     }
 
     // Record QP stats before swap — the task's bitstream still has
@@ -5477,6 +5509,14 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
            "increased by %d times. New value: %d KB",
            BITSTREAM_GROW_FACTOR, (newSize / 8 / 1000));
     } else if (MFX_ERR_MORE_DATA == Status) [[unlikely]] {
+      // driver refused the submit — this frame is silently dropped.
+      // Throttled log so pipeline starvation shows up in the log.
+      m_SubmitSkipCount++;
+      if (m_SubmitSkipCount == 1 || (m_SubmitSkipCount % 300) == 0) {
+        warn("EncodeFrameAsync returned MORE_DATA on submit — input frame "
+             "dropped (total: %u)",
+             m_SubmitSkipCount);
+      }
       break;
     } else [[unlikely]] {
       const auto &bs = QSVTaskPool[TaskID].Bitstream;
@@ -6316,14 +6356,19 @@ mfxStatus QSVEncoder::Drain() {
     return MFX_ERR_DEVICE_FAILED;
   }
 
-  // Drain the encoder: repeatedly submit nullptr surface until MFX_ERR_MORE_DATA
+  // Drain the encoder: repeatedly submit flush requests until MFX_ERR_MORE_DATA
   // (OneVPL spec: in drain mode, MORE_DATA means no more buffered frames)
   constexpr int MAX_DRAIN_ITERS = 1024;
   int iter = 0;
+  int drainedFrames = 0;
   while (Status >= MFX_ERR_NONE && iter++ < MAX_DRAIN_ITERS) {
     mfxSyncPoint SyncPoint = nullptr;
+    // flush submit needs a real bitstream — a nullptr bs makes the driver
+    // error out (or silently discard) instead of emitting the frame
+    QSVBitstream.DataLength = 0;
+    QSVBitstream.DataOffset = 0;
     Status = QSVEncode->EncodeFrameAsync(
-        nullptr, nullptr, nullptr, &SyncPoint);
+        nullptr, nullptr, &QSVBitstream, &SyncPoint);
     if (Status == MFX_ERR_NONE && SyncPoint != nullptr) {
       mfxStatus SyncSts = MFXVideoCORE_SyncOperation(QSVSession, SyncPoint, 5000);
       // SyncOperation may return MFX_ERR_NULL_PTR on some drivers when the
@@ -6331,12 +6376,21 @@ mfxStatus QSVEncoder::Drain() {
       if (SyncSts < MFX_ERR_NONE) {
         warn("Drain sync warning: %d", SyncSts);
       }
+      if (QSVBitstream.DataLength > 0)
+        drainedFrames++;
     }
   }
 
   if (iter >= MAX_DRAIN_ITERS) {
     warn("Drain: exceeded max iterations (%d), driver may be stuck",
          MAX_DRAIN_ITERS);
+  }
+  // Frames recovered here are stats-only: at destroy time there is no
+  // packet channel back to OBS, so they cannot be muxed.
+  if (drainedFrames > 0) {
+    warn("Drain: %d trailing frames reached the encoder after the last "
+         "encode call and could not be delivered",
+         drainedFrames);
   }
 
   // MFX_ERR_MORE_DATA is the normal drain exit condition
@@ -6440,6 +6494,88 @@ mfxStatus QSVEncoder::Drain() {
   return Status;
 }
 
+// System-memory warm-up: submit a few dummy frames synchronously so the
+// driver pays its one-time init costs (context setup, first DMA maps,
+// B-frame path allocation) before the real stream starts.  Without this the
+// encode thread stalls on the first syncs and OBS drops a burst of frames
+// right after recording starts; the resulting content jump then shows as
+// wrong-reference ghosting for the rest of the first GOP.
+// Reset afterwards clears the dummy sequence so frame 1 is a clean IDR.
+void QSVEncoder::WarmUpSystemMemoryPipeline() {
+  if (QSVSystemMemPool.empty() || QSVTaskPool.empty())
+    return;
+
+  mfxFrameSurface1 *Surf = &QSVSystemMemPool[0].Surface;
+  const mfxU16 h = Surf->Info.CropH ? Surf->Info.CropH : Surf->Info.Height;
+  const mfxU32 pitch = Surf->Data.Pitch;
+
+  // fill mid-gray (legal black) so encoder stats stay sane during warm-up
+  if (Surf->Info.FourCC == MFX_FOURCC_P010) {
+    std::fill_n(reinterpret_cast<mfxU16 *>(Surf->Data.Y),
+                static_cast<size_t>(h) * pitch / 2, 64);
+    std::fill_n(reinterpret_cast<mfxU16 *>(Surf->Data.UV),
+                static_cast<size_t>(h / 2) * pitch / 2, 512);
+  } else {
+    std::fill_n(Surf->Data.Y, static_cast<size_t>(h) * pitch, 16);
+    if (Surf->Data.UV)
+      std::fill_n(Surf->Data.UV, static_cast<size_t>(h / 2) * pitch, 128);
+  }
+
+  int TaskID = GetFreeTaskIndex();
+  if (TaskID < 0) {
+    warn("WarmUp: no free task, skipping");
+    return;
+  }
+
+  // covers IDR + P + the first B-frames of a full GopRefDist group
+  constexpr int WARMUP_FRAMES = 6;
+  for (int i = 0; i < WARMUP_FRAMES; i++) {
+    Surf->Data.TimeStamp = static_cast<mfxU64>(i);
+    QSVTaskPool[TaskID].Bitstream.TimeStamp = Surf->Data.TimeStamp;
+    QSVTaskPool[TaskID].Bitstream.DataLength = 0;
+    QSVTaskPool[TaskID].Bitstream.DataOffset = 0;
+    QSVTaskPool[TaskID].SyncPoint = nullptr;
+
+    mfxStatus sts = MFX_ERR_NONE;
+    for (int retry = 0; retry < 100; retry++) {
+      QSVTaskPool[TaskID].SyncPoint = nullptr;
+      sts = QSVEncode->EncodeFrameAsync(nullptr, Surf,
+                                        &QSVTaskPool[TaskID].Bitstream,
+                                        &QSVTaskPool[TaskID].SyncPoint);
+      if (sts == MFX_ERR_NONE)
+        break;
+      if (sts == MFX_WRN_DEVICE_BUSY) {
+        Sleep(1);
+        continue;
+      }
+      break;
+    }
+    if (sts != MFX_ERR_NONE || !QSVTaskPool[TaskID].SyncPoint) {
+      warn("WarmUp: submit failed (%d), aborting warm-up", sts);
+      return;
+    }
+    mfxStatus sync = MFXVideoCORE_SyncOperation(
+        QSVSession, QSVTaskPool[TaskID].SyncPoint, 10000);
+    if (sync < MFX_ERR_NONE) {
+      warn("WarmUp: sync failed (%d), aborting warm-up", sync);
+      return;
+    }
+    QSVTaskPool[TaskID].SyncPoint = nullptr;
+    QSVTaskPool[TaskID].Bitstream.DataLength = 0;
+    QSVTaskPool[TaskID].Bitstream.DataOffset = 0;
+  }
+
+  // Reset the sequence: dummy frames never enter the output stream and the
+  // first real encode starts a fresh IDR from a warm pipeline.
+  mfxVideoParam Tmp{};
+  if (QSVEncode->GetVideoParam(&Tmp) >= MFX_ERR_NONE) {
+    Tmp.NumExtParam = 0;
+    Tmp.ExtParam = nullptr;
+    mfxStatus rst = QSVEncode->Reset(&Tmp);
+    info("\tWarm-up done (%d frames), reset status: %d", WARMUP_FRAMES, rst);
+  }
+}
+
 // Don't call EncodeFrameAsync here — it'd eat the first IDR slot
 void QSVEncoder::WarmUpEncoder() {
   // Texture-encoder path: surfaces are already pre-registered in Init,
@@ -6452,8 +6588,10 @@ void QSVEncoder::WarmUpEncoder() {
   // Frame-encoder path (video / system memory)
   if (!QSVEncode)
     return;
-  if (QSVUseSystemMemoryPath)
+  if (QSVUseSystemMemoryPath) {
+    WarmUpSystemMemoryPipeline();
     return;
+  }
   mfxFrameSurface1 *Surf = nullptr;
   mfxStatus sts = QSVEncode->GetSurface(&Surf);
   if (sts < MFX_ERR_NONE) {

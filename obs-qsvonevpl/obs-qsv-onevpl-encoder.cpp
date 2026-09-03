@@ -273,6 +273,11 @@ bool GetExtraData(void *Data, uint8_t **ExtraData, size_t *Size) {
   if (!Context->EncoderPTR)
     return false;
 
+  // Empty extra data must report failure, otherwise the muxer writes a
+  // 0-byte codec header once and the whole file becomes undecodable.
+  if (!Context->ExtraData.first || Context->ExtraData.second == 0)
+    return false;
+
   *ExtraData = Context->ExtraData.first;
   *Size = Context->ExtraData.second;
   return true;
@@ -610,8 +615,30 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
 
   *ReceivedPacketStatus = true;
 
+  mfxU16 FrameTypeSnapshot = Bitstream->FrameType;
   Bitstream->DataLength = 0;
   Bitstream->DataOffset = 0;
+
+  // start-of-stream diagnostics: the first packet and the first keyframes
+  // pin down missing-start/corrupt-start reports (keyframe flag, dts base,
+  // header extraction) without flooding the log
+  Context->DeliveredPacketCount++;
+  if (!Context->FirstPacketLogged) {
+    Context->FirstPacketLogged = true;
+    info("First encoded packet: pts=%lld dts=%lld keyframe=%d size=%zu "
+         "FrameType=0x%x extraData=%uB sei=%uB (packet #%llu)",
+         static_cast<long long>(Packet->pts),
+         static_cast<long long>(Packet->dts),
+         static_cast<int>(Packet->keyframe), Packet->size,
+         FrameTypeSnapshot, static_cast<unsigned>(Context->ExtraData.second),
+         static_cast<unsigned>(Context->SEI.second),
+         static_cast<unsigned long long>(Context->DeliveredPacketCount));
+  } else if (isKeyframe && Context->DeliveredPacketCount <= 64) {
+    info("Keyframe packet: pts=%lld dts=%lld size=%zu (packet #%llu)",
+         static_cast<long long>(Packet->pts),
+         static_cast<long long>(Packet->dts), Packet->size,
+         static_cast<unsigned long long>(Context->DeliveredPacketCount));
+  }
 }
 
 bool EncodeTexture(void *Data, encoder_texture *Texture, int64_t PTS,

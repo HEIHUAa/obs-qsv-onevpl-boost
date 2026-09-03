@@ -24,6 +24,11 @@ struct plugin_context {
 
   uint32_t roi_increment;
 
+  // one-shot diagnostics: first delivered packet pins down start-of-stream
+  // issues (keyframe flag, dts/pts base, header extraction)
+  bool FirstPacketLogged = false;
+  uint64_t DeliveredPacketCount = 0;
+
   mfxU32 CachedFpsNum;
   mfxU32 CachedFpsDen;
   int64_t CachedTSDiv;

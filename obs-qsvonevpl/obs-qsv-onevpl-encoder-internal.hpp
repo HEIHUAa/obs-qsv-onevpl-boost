@@ -82,6 +82,9 @@ void InitSystemMemorySurfacePool();
   void DisableVPP();
 
   void WarmUpEncoder();
+  // sysmem path: submit dummy frames synchronously, then Reset so the real
+  // stream starts from a warm pipeline with a clean IDR
+  void WarmUpSystemMemoryPipeline();
 
   template <typename T>
   static inline T GetTriState(const std::optional<bool> &Value,
@@ -170,6 +173,9 @@ private:
   // Set when the hardware device fails (MFX_ERR_DEVICE_FAILED).
   // Skip drain/encode ops in cleanup to avoid double-crash on a dead device.
   bool m_DeviceFailed{false};
+  // Count of frames the driver refused to submit (MFX_ERR_MORE_DATA on
+  // EncodeFrameAsync). Each one is a silently dropped input frame.
+  mfxU32 m_SubmitSkipCount{0};
   mfxMemoryInterface *QSVMemoryInterface{};
 
   std::unique_ptr<class HWManager> HWManager{};
