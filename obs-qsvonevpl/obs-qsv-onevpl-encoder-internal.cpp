@@ -1686,16 +1686,17 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
 
       // Patched headers only take effect through the sw BRC path; on other
       // paths (CBR, no Lookahead, non-VBR/ICQ RC) the Intel driver skips the
-      // injected values and may even freeze frames, so warn loudly upfront.
+      // injected values and may even freeze frames, so bail out here and
+      // keep native headers instead of risking the freeze.
       const bool swBrcPath = InputParams->Lookahead &&
                              (InputParams->RateControl == MFX_RATECONTROL_VBR ||
                               InputParams->RateControl == MFX_RATECONTROL_ICQ);
-      if (!swBrcPath)
+      if (!swBrcPath) {
         warn("H264HeaderInjection: chroma_qp_offset/quant_matrix need the "
-             "sw BRC path (Lookahead ON + VBR/ICQ) to take effect; current "
-             "ratcontrol=%d lookahead=%d, driver may ignore or freeze",
+             "sw BRC path (Lookahead ON + VBR/ICQ); current ratcontrol=%d "
+             "lookahead=%d, injection skipped",
              InputParams->RateControl, InputParams->Lookahead ? 1 : 0);
-
+      } else {
       auto *SPSPPSParams =
           QSVEncodeParams.AddExtBuffer<mfxExtCodingOptionSPSPPS>();
       SPSPPSParams->Header.BufferId = MFX_EXTBUFF_CODING_OPTION_SPSPPS;
@@ -1838,6 +1839,7 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
       if (Injected && Status >= MFX_ERR_NONE)
         info("\tH264HeaderInjection: matrix_preset=%d chroma_offset=%+d active",
              qmPreset, chromaOffset);
+      }
     }
   }
 
