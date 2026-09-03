@@ -932,11 +932,15 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
       obs_data_set_string(Settings, "hevc_tier", "main");
   }
 
+  const bool bQMVisible = codec == QSV_CODEC_AVC && (bIsVBR || bIsICQ);
+  SetVisible("quant_matrix", bQMVisible);
+  SetVisible("chroma_qp_offset", bQMVisible);
+
   // Custom quant matrix cascade: quant_matrix == "custom" -> granularity ->
   // the matching per-list input boxes (all H.264 only, boxes hidden by
   // default in GetParamProps).
   const char *qmSel = obs_data_get_string(Settings, "quant_matrix");
-  const bool qmCustom = sv(qmSel) == "custom" && codec == QSV_CODEC_AVC;
+  const bool qmCustom = bQMVisible && sv(qmSel) == "custom";
   SetVisible("qm_granularity", qmCustom);
   const int qmGran = static_cast<int>(obs_data_get_int(Settings, "qm_granularity"));
   const char *boxes2[2] = {"qm_4x4", "qm_8x8"};
