@@ -39,6 +39,8 @@ struct plugin_context {
 };
 
 #define TEXT_SPEED obs_module_text("TargetUsage")
+#define TEXT_USE_ADVANCED obs_module_text("UseAdvancedSettings")
+#define TEXT_USE_ADVANCED_DESC obs_module_text("UseAdvancedSettings.Tooltip")
 #define TEXT_TARGET_BITRATE obs_module_text("Bitrate")
 #define TEXT_BUFFER_SIZE obs_module_text("BufferSize")
 #define TEXT_MAX_BITRATE obs_module_text("MaxBitrate")

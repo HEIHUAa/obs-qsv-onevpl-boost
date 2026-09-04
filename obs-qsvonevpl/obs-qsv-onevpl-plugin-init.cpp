@@ -510,6 +510,7 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
     obs_data_set_default_string(Settings, "target_usage", "TU4 (Balanced)");
   }
   obs_data_set_default_int(Settings, "bitrate", 6000);
+  obs_data_set_default_bool(Settings, "use_advanced", false);
   obs_data_set_default_int(Settings, "max_bitrate", 6000);
   obs_data_set_default_int(Settings, "buffer_size", 0);
   obs_data_set_default_string(
@@ -951,6 +952,49 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   for (const char *b : boxes4) SetVisible(b, qmCustom && qmGran == 1);
   for (const char *b : boxesFull) SetVisible(b, qmCustom && qmGran >= 2);
 
+  if (!obs_data_get_bool(Settings, "use_advanced")) {
+    // 子项显隐完全由既有 vpp 开关级联逻辑控制。
+    static const char *const HiddenGroups[] = {
+        "group_enc_tools",     "group_ref_motion",
+        "group_intra_refresh", "group_misc",
+        "group_debug",
+    };
+    for (auto *g : HiddenGroups)
+      SetVisible(g, false);
+
+    static const char *const BasicOptions[] = {
+        "target_usage",  "rate_control", "bitrate",
+        "max_bitrate",   "buffer_size",  "cqp",
+        "cqp_separate_ipb", "qpi",       "qpp",
+        "qpb",           "icq_quality",  "qvbr_quality",
+        "accuracy",      "convergence",  "profile",
+        "keyint_sec",    "b_frames",
+    };
+    auto IsBasic = [](const char *n) {
+      for (auto *b : BasicOptions)
+        if (n && strcmp(n, b) == 0)
+          return true;
+      return false;
+    };
+    static const char *const KeptGroups[] = {
+        "group_rate_control", "group_codec_specific", "group_inter_frame",
+    };
+    for (auto *g : KeptGroups) {
+      auto *grp = obs_properties_get(Properties, g);
+      if (!grp || obs_property_get_type(grp) != OBS_PROPERTY_GROUP)
+        continue;
+      obs_properties_t *Sub = obs_property_group_content(grp);
+      if (!Sub)
+        continue;
+      obs_property_t *c = obs_properties_first(Sub);
+      while (c) {
+        if (!IsBasic(obs_property_name(c)))
+          obs_property_set_visible(c, false);
+        obs_property_next(&c);
+      }
+    }
+  }
+
   return true;
 }
 
@@ -962,6 +1006,10 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
       Props, reinterpret_cast<void *>(static_cast<intptr_t>(Codec)), nullptr);
   obs_property_t *Prop;
   mfxU16 platformCode = QueryPlatformCodeName();
+
+  Prop = obs_properties_add_bool(Props, "use_advanced", TEXT_USE_ADVANCED);
+  obs_property_set_long_description(Prop, TEXT_USE_ADVANCED_DESC);
+  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
   obs_properties_t *RCGroup = obs_properties_create();
 
