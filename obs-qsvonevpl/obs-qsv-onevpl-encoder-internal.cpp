@@ -6584,7 +6584,8 @@ void QSVEncoder::WarmUpEncoder() {
   if (!QSVEncode)
     return;
   if (QSVUseSystemMemoryPath) {
-    WarmUpSystemMemoryPipeline();
+    if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC)
+      WarmUpSystemMemoryPipeline();
     return;
   }
   mfxFrameSurface1 *Surf = nullptr;
