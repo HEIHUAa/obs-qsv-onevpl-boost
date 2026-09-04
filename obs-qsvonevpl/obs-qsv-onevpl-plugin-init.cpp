@@ -953,7 +953,6 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   for (const char *b : boxesFull) SetVisible(b, qmCustom && qmGran >= 2);
 
   if (!obs_data_get_bool(Settings, "use_advanced")) {
-    // 子项显隐完全由既有 vpp 开关级联逻辑控制。
     static const char *const HiddenGroups[] = {
         "group_enc_tools",     "group_ref_motion",
         "group_intra_refresh", "group_misc",
