@@ -6494,85 +6494,80 @@ mfxStatus QSVEncoder::Drain() {
   return Status;
 }
 
-// System-memory warm-up: submit a few dummy frames synchronously so the
-// driver pays its one-time init costs (context setup, first DMA maps,
-// B-frame path allocation) before the real stream starts.  Without this the
-// encode thread stalls on the first syncs and OBS drops a burst of frames
-// right after recording starts; the resulting content jump then shows as
-// wrong-reference ghosting for the rest of the first GOP.
+// System-memory warm-up: push a few gray frames through the REAL encode path
+// and sync them all, so the driver pays its one-time init costs (context
+// setup, first DMA maps, B-frame path allocation) before the real stream
+// starts.  Without this the encode thread stalls on the first syncs and OBS
+// drops a burst of frames right after recording starts; the content jump
+// then shows as wrong-reference ghosting for the rest of the first GOP.
 // Reset afterwards clears the dummy sequence so frame 1 is a clean IDR.
 void QSVEncoder::WarmUpSystemMemoryPipeline() {
   if (QSVSystemMemPool.empty() || QSVTaskPool.empty())
     return;
 
-  mfxFrameSurface1 *Surf = &QSVSystemMemPool[0].Surface;
-  const mfxU16 h = Surf->Info.CropH ? Surf->Info.CropH : Surf->Info.Height;
-  const mfxU32 pitch = Surf->Data.Pitch;
+  // one gray frame laid out exactly like OBS feeds LoadFrameData
+  const mfxU32 W = QSVEncodeParams.mfx.FrameInfo.Width;
+  const mfxU32 H = QSVEncodeParams.mfx.FrameInfo.Height;
+  const bool isP010 = QSVEncodeParams.mfx.FrameInfo.FourCC == MFX_FOURCC_P010;
+  const mfxU32 bytesPerPx = isP010 ? 2u : 1u;
+  std::vector<uint8_t> Y(static_cast<size_t>(W) * H * bytesPerPx,
+                         isP010 ? 64 : 16);
+  std::vector<uint8_t> UV(static_cast<size_t>(W) * (H / 2) * bytesPerPx,
+                          isP010 ? 512 : 128);
+  uint8_t *Data[3] = {Y.data(), UV.data(), nullptr};
+  uint32_t Linesize[2] = {W * bytesPerPx, W * bytesPerPx};
 
-  // fill mid-gray (legal black) so encoder stats stay sane during warm-up
-  if (Surf->Info.FourCC == MFX_FOURCC_P010) {
-    std::fill_n(reinterpret_cast<mfxU16 *>(Surf->Data.Y),
-                static_cast<size_t>(h) * pitch / 2, 64);
-    std::fill_n(reinterpret_cast<mfxU16 *>(Surf->Data.UV),
-                static_cast<size_t>(h / 2) * pitch / 2, 512);
-  } else {
-    std::fill_n(Surf->Data.Y, static_cast<size_t>(h) * pitch, 16);
-    if (Surf->Data.UV)
-      std::fill_n(Surf->Data.UV, static_cast<size_t>(h / 2) * pitch, 128);
-  }
+  // keep dummy frames out of the QP/frame statistics
+  const bool qpSaved = QPStatsEnabled;
+  const bool fsSaved = FrameStatsEnabled;
+  QPStatsEnabled = false;
+  FrameStatsEnabled = false;
 
-  int TaskID = GetFreeTaskIndex();
-  if (TaskID < 0) {
-    warn("WarmUp: no free task, skipping");
-    return;
-  }
-
-  // covers IDR + P + the first B-frames of a full GopRefDist group
-  constexpr int WARMUP_FRAMES = 6;
+  // submit a few frames through the REAL encode path
+  constexpr int WARMUP_FRAMES = 5;
   for (int i = 0; i < WARMUP_FRAMES; i++) {
-    Surf->Data.TimeStamp = static_cast<mfxU64>(i);
-    QSVTaskPool[TaskID].Bitstream.TimeStamp = Surf->Data.TimeStamp;
-    QSVTaskPool[TaskID].Bitstream.DataLength = 0;
-    QSVTaskPool[TaskID].Bitstream.DataOffset = 0;
-    QSVTaskPool[TaskID].SyncPoint = nullptr;
-
-    mfxStatus sts = MFX_ERR_NONE;
-    for (int retry = 0; retry < 100; retry++) {
-      QSVTaskPool[TaskID].SyncPoint = nullptr;
-      sts = QSVEncode->EncodeFrameAsync(nullptr, Surf,
-                                        &QSVTaskPool[TaskID].Bitstream,
-                                        &QSVTaskPool[TaskID].SyncPoint);
-      if (sts == MFX_ERR_NONE)
-        break;
-      if (sts == MFX_WRN_DEVICE_BUSY) {
-        Sleep(1);
-        continue;
-      }
-      break;
-    }
-    if (sts != MFX_ERR_NONE || !QSVTaskPool[TaskID].SyncPoint) {
-      warn("WarmUp: submit failed (%d), aborting warm-up", sts);
+    mfxBitstream *bs = nullptr;
+    try {
+      EncodeFrameSystemMemory(static_cast<mfxU64>(i) * 1000, Data, Linesize,
+                              &bs);
+    } catch (const std::exception &e) {
+      warn("WarmUp: encode failed: %s", e.what());
+      QPStatsEnabled = qpSaved;
+      FrameStatsEnabled = fsSaved;
       return;
     }
-    mfxStatus sync = MFXVideoCORE_SyncOperation(
-        QSVSession, QSVTaskPool[TaskID].SyncPoint, 10000);
-    if (sync < MFX_ERR_NONE) {
-      warn("WarmUp: sync failed (%d), aborting warm-up", sync);
-      return;
-    }
-    QSVTaskPool[TaskID].SyncPoint = nullptr;
-    QSVTaskPool[TaskID].Bitstream.DataLength = 0;
-    QSVTaskPool[TaskID].Bitstream.DataOffset = 0;
+    // returned bitstreams are dropped — warm-up frames never reach OBS
   }
 
-  // Reset the sequence: dummy frames never enter the output stream and the
-  // first real encode starts a fresh IDR from a warm pipeline.
+  // sync every remaining pending task so the batch is fully executed
+  int synced = 0;
+  for (;;) {
+    mfxBitstream *bs = nullptr;
+    mfxStatus sts = SyncAndSwapPendingTask(&bs);
+    if (sts == MFX_ERR_MORE_DATA)
+      break;
+    if (sts < MFX_ERR_NONE) {
+      warn("WarmUp: sync failed (%d)", sts);
+      QPStatsEnabled = qpSaved;
+      FrameStatsEnabled = fsSaved;
+      return;
+    }
+    if (++synced > WARMUP_FRAMES + 4)
+      break; // safety net
+  }
+
+  QPStatsEnabled = qpSaved;
+  FrameStatsEnabled = fsSaved;
+
+  // Reset the sequence: dummy frames never enter the stream, the first real
+  // frame starts a clean IDR from a warm pipeline
   mfxVideoParam Tmp{};
   if (QSVEncode->GetVideoParam(&Tmp) >= MFX_ERR_NONE) {
     Tmp.NumExtParam = 0;
     Tmp.ExtParam = nullptr;
     mfxStatus rst = QSVEncode->Reset(&Tmp);
-    info("\tWarm-up done (%d frames), reset status: %d", WARMUP_FRAMES, rst);
+    info("\tWarm-up done (%d frames, %d synced), reset status: %d",
+         WARMUP_FRAMES, synced, rst);
   }
 }
 
