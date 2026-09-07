@@ -173,8 +173,9 @@ private:
   // Set when the hardware device fails (MFX_ERR_DEVICE_FAILED).
   // Skip drain/encode ops in cleanup to avoid double-crash on a dead device.
   bool m_DeviceFailed{false};
-  // Count of frames the driver refused to submit (MFX_ERR_MORE_DATA on
-  // EncodeFrameAsync). Each one is a silently dropped input frame.
+  // Count of MFX_ERR_MORE_DATA returns on EncodeFrameAsync submit. With
+  // lookahead enabled this is normal back-pressure: the driver has buffered
+  // the frame and will encode it later — the frame is NOT lost.
   mfxU32 m_SubmitSkipCount{0};
   mfxMemoryInterface *QSVMemoryInterface{};
 

@@ -1,8 +1,10 @@
 #pragma warning(disable : 4996)
 
 #include <algorithm>
+#include <chrono>
 #include <optional>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 
 #include "helpers/encoder_params_parser.hpp"
@@ -138,10 +140,12 @@ static bool IsFeatureSupported(const char *PropertyName) {
     return true;
 }
 
-static mfxPlatform CachedQSVPlatform{};
-static bool CachedQSVPlatformValid = false;
+// read-only from the UI / encoder threads.
+static std::atomic<mfxU16> CachedQSVPlatformCode{0};
+static std::atomic<bool> QSVPlatformProbed{false};
+static std::mutex QSVPlatformProbeMutex;
 
-static bool TryQueryPlatformCodeName(mfxLoader Loader) {
+static bool TryQueryPlatformCodeName(mfxLoader Loader, mfxU16 &OutCodeName) {
     mfxConfig Config = MFXCreateConfig(Loader);
     mfxVariant Variant{};
     Variant.Type = MFX_VARIANT_TYPE_U32;
@@ -166,8 +170,7 @@ static bool TryQueryPlatformCodeName(mfxLoader Loader) {
         mfxStatus qStatus = MFXVideoCORE_QueryPlatform(Session, &platform);
         MFXClose(Session);
         if (qStatus >= MFX_ERR_NONE) {
-            CachedQSVPlatform = platform;
-            CachedQSVPlatformValid = true;
+            OutCodeName = platform.CodeName;
             return true;
         }
         return false;
@@ -175,296 +178,466 @@ static bool TryQueryPlatformCodeName(mfxLoader Loader) {
     return false;
 }
 
+// returns 0 (callers fall back to "unknown platform" defaults). The probe
+// itself runs once on the background thread — UI never triggers VPL probing.
 mfxU16 QueryPlatformCodeName() {
-  // Unlike std::call_once (which caches a failed probe forever), a failed
-  // probe is retried on the next call — the driver may still be loading when
-  // OBS first asks.  ProbeMutex also serializes cache writes (probe) against
-  // reads, so callers never race CachedQSVPlatform.
-  static std::mutex ProbeMutex;
-  static std::atomic<bool> Probing{false};
+    return CachedQSVPlatformCode.load(std::memory_order_acquire);
+}
 
-  std::lock_guard<std::mutex> Lock(ProbeMutex);
-  if (!Probing.exchange(true)) {
+// Background probe entry: runs once and fills the cache; no-op if already done.
+static bool ProbePlatformCodeName() {
+    std::lock_guard<std::mutex> Lock(QSVPlatformProbeMutex);
+    if (QSVPlatformProbed.load(std::memory_order_acquire))
+        return true;
+
     bool ok = false;
+    mfxU16 code = 0;
     mfxLoader GlobalLoader = nullptr;
     {
-      std::lock_guard<std::mutex> LoaderLock(GlobalLoaderMutex);
-      GlobalLoader = GlobalQSVLoader;
+        std::lock_guard<std::mutex> LoaderLock(GlobalLoaderMutex);
+        GlobalLoader = GlobalQSVLoader;
     }
 
     if (GlobalLoader != nullptr) {
-      ok = TryQueryPlatformCodeName(GlobalLoader);
+        ok = TryQueryPlatformCodeName(GlobalLoader, code);
     } else {
-      mfxLoader Loader = MFXLoad();
-      if (Loader != nullptr) {
-        ok = TryQueryPlatformCodeName(Loader);
-        MFXUnload(Loader);
-      }
+        mfxLoader Loader = MFXLoad();
+        if (Loader != nullptr) {
+            ok = TryQueryPlatformCodeName(Loader, code);
+            MFXUnload(Loader);
+        }
     }
-    Probing.store(false);
-    return ok ? CachedQSVPlatform.CodeName : 0;
-  }
 
-  // Another thread is probing right now (or a previous probe succeeded).
-  return CachedQSVPlatformValid ? CachedQSVPlatform.CodeName : 0;
+    if (ok) {
+        CachedQSVPlatformCode.store(code, std::memory_order_release);
+        QSVPlatformProbed.store(true, std::memory_order_release);
+        return true;
+    }
+    return false;
 }
 
-static bool PlatformSupportsDenoise2VPP() {
-  static std::mutex ProbeMutex;
-  static bool Probed = false;
-  static bool Supported = true;
-
-  std::lock_guard<std::mutex> Lock(ProbeMutex);
   if (Probed)
-    return Supported;
+// Denoise2 support — probed in background, read-only from UI; defaults to
+// enabled until known (driver rejects at runtime if unsupported).
+static std::atomic<bool> Denoise2Known{false};
+static std::atomic<bool> Denoise2Supported{true};
 
+static bool ProbeDenoise2VPPOnce() {
+  bool ok = false;
   mfxLoader Loader = nullptr;
   {
     std::lock_guard<std::mutex> LoaderLock(GlobalLoaderMutex);
     Loader = GlobalQSVLoader;
   }
-  if (Loader == nullptr)
-    return true; // not initialized yet, retry next UI refresh
+  if (Loader != nullptr) {
+    mfxSession Session{};
+    if (MFXCreateSession(Loader, 0, &Session) >= MFX_ERR_NONE) {
+      try {
+        MFXVideoVPP VPP(Session);
+        mfxVideoParam Params = {};
+        Params.vpp.In.FourCC = MFX_FOURCC_NV12;
+        Params.vpp.In.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
+        Params.vpp.In.Width = 1920;
+        Params.vpp.In.Height = 1080;
+        Params.vpp.In.CropW = 1920;
+        Params.vpp.In.CropH = 1080;
+        Params.vpp.In.PicStruct = MFX_PICSTRUCT_PROGRESSIVE;
+        Params.vpp.In.FrameRateExtN = 30;
+        Params.vpp.In.FrameRateExtD = 1;
+        Params.vpp.Out = Params.vpp.In;
+        Params.IOPattern =
+            MFX_IOPATTERN_IN_VIDEO_MEMORY | MFX_IOPATTERN_OUT_VIDEO_MEMORY;
 
-  bool ok = false;
-  mfxSession Session{};
-  if (MFXCreateSession(Loader, 0, &Session) >= MFX_ERR_NONE) {
-    try {
-      MFXVideoVPP VPP(Session);
-      mfxVideoParam Params = {};
-      Params.vpp.In.FourCC = MFX_FOURCC_NV12;
-      Params.vpp.In.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
-      Params.vpp.In.Width = 1920;
-      Params.vpp.In.Height = 1080;
-      Params.vpp.In.CropW = 1920;
-      Params.vpp.In.CropH = 1080;
-      Params.vpp.In.PicStruct = MFX_PICSTRUCT_PROGRESSIVE;
-      Params.vpp.In.FrameRateExtN = 30;
-      Params.vpp.In.FrameRateExtD = 1;
-      Params.vpp.Out = Params.vpp.In;
-      Params.IOPattern =
-          MFX_IOPATTERN_IN_VIDEO_MEMORY | MFX_IOPATTERN_OUT_VIDEO_MEMORY;
-
-      mfxExtVPPDenoise2 Denoise2 = {};
-      Denoise2.Header.BufferId = MFX_EXTBUFF_VPP_DENOISE2;
-      Denoise2.Header.BufferSz = sizeof(Denoise2);
-      Denoise2.Mode = MFX_DENOISE_MODE_INTEL_HVS_PRE_MANUAL;
-      Denoise2.Strength = 25;
-      mfxExtBuffer *InExt[1] = {&Denoise2.Header};
-      Params.NumExtParam = 1;
-      Params.ExtParam = InExt;
-
-      mfxExtBuffer *OutExt[1] = {&Denoise2.Header};
-      mfxVideoParam Out = {};
-      Out.NumExtParam = 1;
-      Out.ExtParam = OutExt;
-
-      mfxStatus sts = VPP.Query(&Params, &Out);
-      ok = (sts == MFX_ERR_NONE || sts == MFX_WRN_PARTIAL_ACCELERATION);
-    } catch (...) {
-      ok = false;
-    }
-    MFXClose(Session);
-  }
-
-  Supported = ok;
-  Probed = true;
-  return Supported;
-}
-
-
-// Is the VPP filter with `BufferId` accepted by MFXVideoVPP_Query?
-static bool ProbeVPPFilterSupport(mfxU32 BufferId) {
-  static std::mutex ProbeMutex;
-  static std::unordered_map<mfxU32, std::optional<bool>> Cache;
-
-  {
-    std::lock_guard<std::mutex> Lock(ProbeMutex);
-    if (auto it = Cache.find(BufferId); it != Cache.end())
-      return it->second.value_or(true);
-  }
-
-  mfxLoader Loader = nullptr;
-  {
-    std::lock_guard<std::mutex> LoaderLock(GlobalLoaderMutex);
-    Loader = GlobalQSVLoader;
-  }
-  if (Loader == nullptr)
-    return true; // loader not up yet — retry next UI refresh
-
-  bool ok = false;
-  mfxSession Session{};
-  if (MFXCreateSession(Loader, 0, &Session) >= MFX_ERR_NONE) {
-    try {
-      MFXVideoVPP VPP(Session);
-      mfxVideoParam Params = {};
-      Params.vpp.In.FourCC = MFX_FOURCC_NV12;
-      Params.vpp.In.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
-      Params.vpp.In.Width = 1920;
-      Params.vpp.In.Height = 1080;
-      Params.vpp.In.CropW = 1920;
-      Params.vpp.In.CropH = 1080;
-      Params.vpp.In.PicStruct = MFX_PICSTRUCT_PROGRESSIVE;
-      Params.vpp.In.FrameRateExtN = 30;
-      Params.vpp.In.FrameRateExtD = 1;
-      Params.vpp.Out = Params.vpp.In;
-      Params.IOPattern =
-          MFX_IOPATTERN_IN_VIDEO_MEMORY | MFX_IOPATTERN_OUT_VIDEO_MEMORY;
-
-      mfxExtVPPImageStab ImageStab = {};
-      mfxExtVPPFrameRateConversion FRC = {};
-      mfxExtVPPMirroring Mirror = {};
-#ifdef ONEVPL_EXPERIMENTAL
-      mfxExtVPPPercEncPrefilter PercEnc = {};
-#endif
-      mfxExtBuffer *InExt[1] = {nullptr};
-      if (BufferId == MFX_EXTBUFF_VPP_IMAGE_STABILIZATION) {
-        ImageStab.Header.BufferId = BufferId;
-        ImageStab.Header.BufferSz = sizeof(ImageStab);
-        ImageStab.Mode = MFX_IMAGESTAB_MODE_UPSCALE;
-        InExt[0] = &ImageStab.Header;
-      } else if (BufferId == MFX_EXTBUFF_VPP_FRAME_RATE_CONVERSION) {
-        FRC.Header.BufferId = BufferId;
-        FRC.Header.BufferSz = sizeof(FRC);
-        FRC.Algorithm = MFX_FRCALGM_FRAME_INTERPOLATION;
-        InExt[0] = &FRC.Header;
-      } else if (BufferId == MFX_EXTBUFF_VPP_MIRRORING) {
-        Mirror.Header.BufferId = BufferId;
-        Mirror.Header.BufferSz = sizeof(Mirror);
-        Mirror.Type = 1; /* MFX_MIRRORING_HORIZONTAL */
-        InExt[0] = &Mirror.Header;
-      }
-#ifdef ONEVPL_EXPERIMENTAL
-      else if (BufferId == MFX_EXTBUFF_VPP_PERC_ENC_PREFILTER) {
-        PercEnc.Header.BufferId = BufferId;
-        PercEnc.Header.BufferSz = sizeof(PercEnc);
-        InExt[0] = &PercEnc.Header;
-      }
-#endif
-      if (InExt[0]) {
+        mfxExtVPPDenoise2 Denoise2 = {};
+        Denoise2.Header.BufferId = MFX_EXTBUFF_VPP_DENOISE2;
+        Denoise2.Header.BufferSz = sizeof(Denoise2);
+        Denoise2.Mode = MFX_DENOISE_MODE_INTEL_HVS_PRE_MANUAL;
+        Denoise2.Strength = 25;
+        mfxExtBuffer *InExt[1] = {&Denoise2.Header};
         Params.NumExtParam = 1;
         Params.ExtParam = InExt;
 
+        mfxExtBuffer *OutExt[1] = {&Denoise2.Header};
         mfxVideoParam Out = {};
-        mfxExtBuffer *OutExt[1] = {InExt[0]};
         Out.NumExtParam = 1;
         Out.ExtParam = OutExt;
 
         mfxStatus sts = VPP.Query(&Params, &Out);
         ok = (sts == MFX_ERR_NONE || sts == MFX_WRN_PARTIAL_ACCELERATION);
+      } catch (...) {
+        ok = false;
       }
-    } catch (...) {
-      ok = false;
+      MFXClose(Session);
     }
-    MFXClose(Session);
   }
 
-  {
-    std::lock_guard<std::mutex> Lock(ProbeMutex);
-    Cache[BufferId] = ok;
-  }
+  Denoise2Supported.store(ok, std::memory_order_release);
+  Denoise2Known.store(true, std::memory_order_release);
   return ok;
 }
 
-bool PlatformSupportsImageStabVPP() {
-  return ProbeVPPFilterSupport(MFX_EXTBUFF_VPP_IMAGE_STABILIZATION);
+static bool PlatformSupportsDenoise2VPP() {
+  if (Denoise2Known.load(std::memory_order_acquire))
+    return Denoise2Supported.load(std::memory_order_acquire);
+  return true; // unknown yet — assume capable
 }
 
-bool PlatformSupportsFRCVPP() {
-  return ProbeVPPFilterSupport(MFX_EXTBUFF_VPP_FRAME_RATE_CONVERSION);
+// VPP filter support — probed in background, read-only from UI; defaults to
+// enabled until known.
+enum class VPPFilterId : uint8_t { ImageStab = 0, FRC, Mirror, PercEnc, Count };
+static constexpr mfxU32 kVPPFilterBuffers[] = {
+    MFX_EXTBUFF_VPP_IMAGE_STABILIZATION,
+    MFX_EXTBUFF_VPP_FRAME_RATE_CONVERSION,
+    MFX_EXTBUFF_VPP_MIRRORING,
+#ifdef ONEVPL_EXPERIMENTAL
+    MFX_EXTBUFF_VPP_PERC_ENC_PREFILTER,
+#else
+    0, // not probed in non-experimental builds
+#endif
+};
+static_assert(std::size(kVPPFilterBuffers) ==
+              static_cast<size_t>(VPPFilterId::Count));
+
+static std::atomic<uint8_t> VPPFilterKnownMask{0};
+static std::atomic<uint8_t> VPPFilterSupportedMask{0};
+
+static uint8_t VPPFilterBit(VPPFilterId Id) {
+  return static_cast<uint8_t>(1u << static_cast<unsigned>(Id));
 }
 
-bool PlatformSupportsMirrorVPP() {
-  return ProbeVPPFilterSupport(MFX_EXTBUFF_VPP_MIRRORING);
-}
-
-bool PlatformSupportsPercEncVPP() {
-  return ProbeVPPFilterSupport(MFX_EXTBUFF_VPP_PERC_ENC_PREFILTER);
-}
-
-bool PlatformSupportsIntraRefreshEncode(codec_enum Codec) {
-  static std::mutex ProbeMutex;
-  static bool Probed[2] = {false, false}; // 0 = AVC, 1 = HEVC
-  static bool Supported[2] = {false, false};
-
-  const int idx = (Codec == QSV_CODEC_HEVC) ? 1 : 0;
-  {
-    std::lock_guard<std::mutex> Lock(ProbeMutex);
-    if (Probed[idx])
-      return Supported[idx];
+static bool ProbeVPPFilterOnce(VPPFilterId Id) {
+  const mfxU32 BufferId = kVPPFilterBuffers[static_cast<unsigned>(Id)];
+  const uint8_t Bit = VPPFilterBit(Id);
+  if (BufferId == 0) {
+    // Filters not enabled above are recorded as unsupported.
+    VPPFilterKnownMask.fetch_or(Bit, std::memory_order_release);
+    return false;
   }
 
+  bool ok = false;
   mfxLoader Loader = nullptr;
   {
     std::lock_guard<std::mutex> LoaderLock(GlobalLoaderMutex);
     Loader = GlobalQSVLoader;
   }
-  if (Loader == nullptr)
-    return true; // not ready yet — retry next call
+  if (Loader != nullptr) {
+    mfxSession Session{};
+    if (MFXCreateSession(Loader, 0, &Session) >= MFX_ERR_NONE) {
+      try {
+        MFXVideoVPP VPP(Session);
+        mfxVideoParam Params = {};
+        Params.vpp.In.FourCC = MFX_FOURCC_NV12;
+        Params.vpp.In.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
+        Params.vpp.In.Width = 1920;
+        Params.vpp.In.Height = 1080;
+        Params.vpp.In.CropW = 1920;
+        Params.vpp.In.CropH = 1080;
+        Params.vpp.In.PicStruct = MFX_PICSTRUCT_PROGRESSIVE;
+        Params.vpp.In.FrameRateExtN = 30;
+        Params.vpp.In.FrameRateExtD = 1;
+        Params.vpp.Out = Params.vpp.In;
+        Params.IOPattern =
+            MFX_IOPATTERN_IN_VIDEO_MEMORY | MFX_IOPATTERN_OUT_VIDEO_MEMORY;
 
-  bool ok = false;
-  mfxSession Session = nullptr;
-  if (MFXCreateSession(Loader, 0, &Session) >= MFX_ERR_NONE) {
-    try {
-      MFXVideoENCODE Encode(Session);
-      mfxVideoParam Params = {};
-      Params.mfx.CodecId =
-          (Codec == QSV_CODEC_HEVC) ? MFX_CODEC_HEVC : MFX_CODEC_AVC;
-      Params.mfx.CodecProfile = (Codec == QSV_CODEC_HEVC)
-                                    ? MFX_PROFILE_HEVC_MAIN
-                                    : MFX_PROFILE_AVC_HIGH;
-      Params.mfx.TargetUsage = MFX_TARGETUSAGE_4;
-      Params.mfx.TargetKbps = 6000;
-      Params.mfx.RateControlMethod = MFX_RATECONTROL_CBR;
-      Params.mfx.FrameInfo.FourCC = MFX_FOURCC_NV12;
-      Params.mfx.FrameInfo.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
-      Params.mfx.FrameInfo.Width = 1280;
-      Params.mfx.FrameInfo.Height = 720;
-      Params.mfx.FrameInfo.CropW = 1280;
-      Params.mfx.FrameInfo.CropH = 720;
-      Params.mfx.FrameInfo.FrameRateExtN = 30;
-      Params.mfx.FrameInfo.FrameRateExtD = 1;
-      Params.mfx.FrameInfo.PicStruct = MFX_PICSTRUCT_PROGRESSIVE;
-      Params.mfx.GopPicSize = 60;
-      Params.mfx.GopRefDist = 1;  // intra refresh needs no B-frames
-      Params.mfx.NumRefFrame = 1; // ...and a single reference
-      Params.AsyncDepth = 4;
-      Params.mfx.LowPower = MFX_CODINGOPTION_UNKNOWN;
-      Params.mfx.BRCParamMultiplier = 1;
-
-      mfxExtCodingOption2 CO2 = {};
-      CO2.Header.BufferId = MFX_EXTBUFF_CODING_OPTION2;
-      CO2.Header.BufferSz = sizeof(CO2);
-      CO2.IntRefType = MFX_REFRESH_VERTICAL;
-      CO2.IntRefCycleSize = 30;
-      mfxExtBuffer *Ext[1] = {&CO2.Header};
-      Params.NumExtParam = 1;
-      Params.ExtParam = Ext;
-
-      mfxStatus Sts = Encode.Query(&Params, &Params);
-      bool kept = false;
-      for (mfxU16 i = 0; i < Params.NumExtParam; ++i) {
-        if (Params.ExtParam[i] &&
-            Params.ExtParam[i]->BufferId == MFX_EXTBUFF_CODING_OPTION2) {
-          auto *co2 = reinterpret_cast<mfxExtCodingOption2 *>(Params.ExtParam[i]);
-          kept = (co2->IntRefType == MFX_REFRESH_VERTICAL);
-          break;
+        mfxExtVPPImageStab ImageStab = {};
+        mfxExtVPPFrameRateConversion FRC = {};
+        mfxExtVPPMirroring Mirror = {};
+#ifdef ONEVPL_EXPERIMENTAL
+        mfxExtVPPPercEncPrefilter PercEnc = {};
+#endif
+        mfxExtBuffer *InExt[1] = {nullptr};
+        if (BufferId == MFX_EXTBUFF_VPP_IMAGE_STABILIZATION) {
+          ImageStab.Header.BufferId = BufferId;
+          ImageStab.Header.BufferSz = sizeof(ImageStab);
+          ImageStab.Mode = MFX_IMAGESTAB_MODE_UPSCALE;
+          InExt[0] = &ImageStab.Header;
+        } else if (BufferId == MFX_EXTBUFF_VPP_FRAME_RATE_CONVERSION) {
+          FRC.Header.BufferId = BufferId;
+          FRC.Header.BufferSz = sizeof(FRC);
+          FRC.Algorithm = MFX_FRCALGM_FRAME_INTERPOLATION;
+          InExt[0] = &FRC.Header;
+        } else if (BufferId == MFX_EXTBUFF_VPP_MIRRORING) {
+          Mirror.Header.BufferId = BufferId;
+          Mirror.Header.BufferSz = sizeof(Mirror);
+          Mirror.Type = 1; /* MFX_MIRRORING_HORIZONTAL */
+          InExt[0] = &Mirror.Header;
         }
+#ifdef ONEVPL_EXPERIMENTAL
+        else if (BufferId == MFX_EXTBUFF_VPP_PERC_ENC_PREFILTER) {
+          PercEnc.Header.BufferId = BufferId;
+          PercEnc.Header.BufferSz = sizeof(PercEnc);
+          InExt[0] = &PercEnc.Header;
+        }
+#endif
+        if (InExt[0]) {
+          Params.NumExtParam = 1;
+          Params.ExtParam = InExt;
+
+          mfxVideoParam Out = {};
+          mfxExtBuffer *OutExt[1] = {InExt[0]};
+          Out.NumExtParam = 1;
+          Out.ExtParam = OutExt;
+
+          mfxStatus sts = VPP.Query(&Params, &Out);
+          ok = (sts == MFX_ERR_NONE || sts == MFX_WRN_PARTIAL_ACCELERATION);
+        }
+      } catch (...) {
+        ok = false;
       }
-      ok = (Sts >= MFX_ERR_NONE) && kept;
-      Encode.Close();
-    } catch (...) {
-      ok = false;
+      MFXClose(Session);
     }
-    MFXClose(Session);
   }
 
-  {
-    std::lock_guard<std::mutex> Lock(ProbeMutex);
-    Probed[idx] = true;
-    Supported[idx] = ok;
-  }
+  if (ok)
+    VPPFilterSupportedMask.fetch_or(Bit, std::memory_order_release);
+  VPPFilterKnownMask.fetch_or(Bit, std::memory_order_release);
   return ok;
+}
+
+static bool GetVPPFilterCache(VPPFilterId Id) {
+  const uint8_t Bit = VPPFilterBit(Id);
+  if (VPPFilterKnownMask.load(std::memory_order_acquire) & Bit)
+    return (VPPFilterSupportedMask.load(std::memory_order_acquire) & Bit) != 0;
+  return true; // unknown yet — assume capable
+}
+
+bool PlatformSupportsImageStabVPP() {
+  return GetVPPFilterCache(VPPFilterId::ImageStab);
+}
+
+bool PlatformSupportsFRCVPP() {
+  return GetVPPFilterCache(VPPFilterId::FRC);
+}
+
+bool PlatformSupportsMirrorVPP() {
+  return GetVPPFilterCache(VPPFilterId::Mirror);
+}
+
+bool PlatformSupportsPercEncVPP() {
+  return GetVPPFilterCache(VPPFilterId::PercEnc);
+}
+
+// IntraRefresh encode support — probed in background, read-only from UI.
+static std::atomic<bool> IntraRefreshKnown[2]{false, false};   // 0 = AVC, 1 = HEVC
+static std::atomic<bool> IntraRefreshSupported[2]{false, false};
+
+static bool ProbeIntraRefreshOnce(codec_enum Codec) {
+  const int idx = (Codec == QSV_CODEC_HEVC) ? 1 : 0;
+  bool ok = false;
+  mfxLoader Loader = nullptr;
+  {
+    std::lock_guard<std::mutex> LoaderLock(GlobalLoaderMutex);
+    Loader = GlobalQSVLoader;
+  }
+  if (Loader != nullptr) {
+    mfxSession Session = nullptr;
+    if (MFXCreateSession(Loader, 0, &Session) >= MFX_ERR_NONE) {
+      try {
+        MFXVideoENCODE Encode(Session);
+        mfxVideoParam Params = {};
+        Params.mfx.CodecId =
+            (Codec == QSV_CODEC_HEVC) ? MFX_CODEC_HEVC : MFX_CODEC_AVC;
+        Params.mfx.CodecProfile = (Codec == QSV_CODEC_HEVC)
+                                      ? MFX_PROFILE_HEVC_MAIN
+                                      : MFX_PROFILE_AVC_HIGH;
+        Params.mfx.TargetUsage = MFX_TARGETUSAGE_4;
+        Params.mfx.TargetKbps = 6000;
+        Params.mfx.RateControlMethod = MFX_RATECONTROL_CBR;
+        Params.mfx.FrameInfo.FourCC = MFX_FOURCC_NV12;
+        Params.mfx.FrameInfo.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
+        Params.mfx.FrameInfo.Width = 1280;
+        Params.mfx.FrameInfo.Height = 720;
+        Params.mfx.FrameInfo.CropW = 1280;
+        Params.mfx.FrameInfo.CropH = 720;
+        Params.mfx.FrameInfo.FrameRateExtN = 30;
+        Params.mfx.FrameInfo.FrameRateExtD = 1;
+        Params.mfx.FrameInfo.PicStruct = MFX_PICSTRUCT_PROGRESSIVE;
+        Params.mfx.GopPicSize = 60;
+        Params.mfx.GopRefDist = 1;  // intra refresh needs no B-frames
+        Params.mfx.NumRefFrame = 1; // ...and a single reference
+        Params.AsyncDepth = 4;
+        Params.mfx.LowPower = MFX_CODINGOPTION_UNKNOWN;
+        Params.mfx.BRCParamMultiplier = 1;
+
+        mfxExtCodingOption2 CO2 = {};
+        CO2.Header.BufferId = MFX_EXTBUFF_CODING_OPTION2;
+        CO2.Header.BufferSz = sizeof(CO2);
+        CO2.IntRefType = MFX_REFRESH_VERTICAL;
+        CO2.IntRefCycleSize = 30;
+        mfxExtBuffer *Ext[1] = {&CO2.Header};
+        Params.NumExtParam = 1;
+        Params.ExtParam = Ext;
+
+        mfxStatus Sts = Encode.Query(&Params, &Params);
+        bool kept = false;
+        for (mfxU16 i = 0; i < Params.NumExtParam; ++i) {
+          if (Params.ExtParam[i] &&
+              Params.ExtParam[i]->BufferId == MFX_EXTBUFF_CODING_OPTION2) {
+            auto *co2 = reinterpret_cast<mfxExtCodingOption2 *>(Params.ExtParam[i]);
+            kept = (co2->IntRefType == MFX_REFRESH_VERTICAL);
+            break;
+          }
+        }
+        ok = (Sts >= MFX_ERR_NONE) && kept;
+        Encode.Close();
+      } catch (...) {
+        ok = false;
+      }
+      MFXClose(Session);
+    }
+  }
+
+  IntraRefreshSupported[idx].store(ok, std::memory_order_release);
+  IntraRefreshKnown[idx].store(true, std::memory_order_release);
+  return ok;
+}
+
+bool PlatformSupportsIntraRefreshEncode(codec_enum Codec) {
+  const int idx = (Codec == QSV_CODEC_HEVC) ? 1 : 0;
+  if (IntraRefreshKnown[idx].load(std::memory_order_acquire))
+    return IntraRefreshSupported[idx].load(std::memory_order_acquire);
+  return true; // unknown yet — driver falls back at runtime
+}
+
+// Startup capability probe — kicked off from obs_module_load, all probing
+// runs on a background thread (platform name, VPP filters, Denoise2,
+// IntraRefresh) and fills the caches; UI / encoder threads only read them.
+
+const char *DescribePlatformCodeName(mfxU16 CodeName) {
+  // Note: DG2==ATS-M and XeHP SDV==Arctic Sound share enum values; keep one case each.
+  switch (CodeName) {
+    case MFX_PLATFORM_UNKNOWN:      return "Unknown";
+    case MFX_PLATFORM_SANDYBRIDGE:  return "Sandy Bridge";
+    case MFX_PLATFORM_IVYBRIDGE:    return "Ivy Bridge";
+    case MFX_PLATFORM_HASWELL:      return "Haswell";
+    case MFX_PLATFORM_BAYTRAIL:     return "Bay Trail";
+    case MFX_PLATFORM_BROADWELL:    return "Broadwell";
+    case MFX_PLATFORM_CHERRYTRAIL:  return "Cherry Trail";
+    case MFX_PLATFORM_SKYLAKE:      return "Skylake";
+    case MFX_PLATFORM_APOLLOLAKE:   return "Apollo Lake";
+    case MFX_PLATFORM_KABYLAKE:     return "Kaby Lake";
+    case MFX_PLATFORM_GEMINILAKE:   return "Gemini Lake";
+    case MFX_PLATFORM_COFFEELAKE:   return "Coffee Lake";
+    case MFX_PLATFORM_CANNONLAKE:   return "Cannon Lake";
+    case MFX_PLATFORM_ICELAKE:      return "Ice Lake";
+    case MFX_PLATFORM_JASPERLAKE:   return "Jasper Lake";
+    case MFX_PLATFORM_ELKHARTLAKE:  return "Elkhart Lake";
+    case MFX_PLATFORM_TIGERLAKE:    return "Tiger Lake";
+    case MFX_PLATFORM_ROCKETLAKE:   return "Rocket Lake";
+    case MFX_PLATFORM_ALDERLAKE_S:  return "Alder Lake S";
+    case MFX_PLATFORM_ALDERLAKE_P:  return "Alder Lake P";
+    case MFX_PLATFORM_ALDERLAKE_N:  return "Alder Lake N";
+    case MFX_PLATFORM_KEEMBAY:      return "Keem Bay";
+    case MFX_PLATFORM_METEORLAKE:   return "Meteor Lake";
+    case MFX_PLATFORM_BATTLEMAGE:   return "Battlemage";
+    case MFX_PLATFORM_LUNARLAKE:    return "Lunar Lake";
+    case MFX_PLATFORM_ARROWLAKE:    return "Arrow Lake";
+    case MFX_PLATFORM_DG2:          return "DG2 (ATS-M)";
+    case MFX_PLATFORM_XEHP_SDV:     return "XeHP SDV (Arctic Sound)";
+    case MFX_PLATFORM_MAXIMUM:      return "MAXIMUM";
+    default:                        return "Other";
+  }
+}
+
+static void RunCapabilityProbeWorker() {
+  using namespace std::chrono;
+  const steady_clock::time_point t0 = steady_clock::now();
+
+  // Platform name
+  {
+    const auto st = steady_clock::now();
+    const bool ok = ProbePlatformCodeName();
+    const double ms =
+        duration<double, std::milli>(steady_clock::now() - st).count();
+    info("\tCapability probe: %-20s %s (%.1f ms)", "Platform name",
+         ok ? "OK" : "FAILED", ms);
+  }
+
+  const mfxU16 code = QueryPlatformCodeName();
+
+  // VPP Denoise2
+  bool DenoiseOK = false;
+  {
+    const auto st = steady_clock::now();
+    DenoiseOK = ProbeDenoise2VPPOnce();
+    const double ms =
+        duration<double, std::milli>(steady_clock::now() - st).count();
+    info("\tCapability probe: %-20s %s (%.1f ms)", "VPP Denoise2",
+         DenoiseOK ? "supported" : "unsupported", ms);
+  }
+
+  // VPP filters
+  struct VPPItem {
+    VPPFilterId Id;
+    const char *Name;
+  };
+  const VPPItem kVPPItems[] = {
+      {VPPFilterId::ImageStab, "VPP ImageStab"},
+      {VPPFilterId::FRC,       "VPP FRC"},
+      {VPPFilterId::Mirror,    "VPP Mirror"},
+      {VPPFilterId::PercEnc,   "VPP PercEnc"},
+  };
+  bool VPPStatus[4] = {false, false, false, false};
+  for (size_t i = 0; i < std::size(kVPPItems); ++i) {
+    const auto st = steady_clock::now();
+    VPPStatus[i] = ProbeVPPFilterOnce(kVPPItems[i].Id);
+    const double ms =
+        duration<double, std::milli>(steady_clock::now() - st).count();
+    info("\tCapability probe: %-20s %s (%.1f ms)", kVPPItems[i].Name,
+         VPPStatus[i] ? "supported" : "unsupported", ms);
+  }
+
+  // IntraRefresh (AVC + HEVC)
+  bool IntraAVC = false, IntraHEVC = false;
+  {
+    const auto st = steady_clock::now();
+    IntraAVC = ProbeIntraRefreshOnce(QSV_CODEC_AVC);
+    IntraHEVC = ProbeIntraRefreshOnce(QSV_CODEC_HEVC);
+    const double ms =
+        duration<double, std::milli>(steady_clock::now() - st).count();
+    info("\tCapability probe: %-20s AVC=%s HEVC=%s (%.1f ms)", "IntraRefresh",
+         IntraAVC ? "supported" : "unsupported",
+         IntraHEVC ? "supported" : "unsupported", ms);
+  }
+
+  const double TotalMs =
+      duration<double, std::milli>(steady_clock::now() - t0).count();
+
+  // Platform probe failed -> whole probe failed: log an error with elapsed time.
+  if (code == 0) {
+    error("QSV capability probe FAILED after %.1f ms (platform not "
+          "queried); UI options fall back to generic defaults",
+          TotalMs);
+    return;
+  }
+
+  // Success: log elapsed time and the hardware capability summary.
+  info("QSV capability probe finished in %.1f ms", TotalMs);
+  info("\tPlatform: %s (CodeName %u)", DescribePlatformCodeName(code), code);
+  for (size_t i = 0; i < AdaptersCount; ++i) {
+    const adapter_info &A = AdaptersInfo[i];
+    info("\tAdapter %zu: Intel=%s DGPU=%s HEVC=%s AV1=%s VP9=%s", i,
+         A.IsIntel ? "yes" : "no", A.IsDGPU ? "yes" : "no",
+         A.SupportHEVC ? "yes" : "no", A.SupportAV1 ? "yes" : "no",
+         A.SupportVP9 ? "yes" : "no");
+  }
+}
+
+static std::thread CapabilityProbeThread;
+static std::atomic<bool> CapabilityProbeStarted{false};
+
+// Called from obs_module_load; starts the probe thread once per process.
+void StartCapabilityProbeThread() {
+  if (CapabilityProbeStarted.exchange(true, std::memory_order_acq_rel))
+    return;
+  CapabilityProbeThread = std::thread(RunCapabilityProbeWorker);
+}
+
+// Called from obs_module_unload; joins the probe thread before DLL unload.
+void JoinCapabilityProbeThread() {
+  if (CapabilityProbeStarted.load(std::memory_order_acquire) &&
+      CapabilityProbeThread.joinable())
+    CapabilityProbeThread.join();
 }
 
 enum class TargetUsageUIMode {

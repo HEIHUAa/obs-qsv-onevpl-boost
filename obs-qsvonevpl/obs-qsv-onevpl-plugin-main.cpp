@@ -292,12 +292,14 @@ bool obs_module_load([[maybe_unused]] void) {
   }
 
   if (SupportAVC || SupportAV1 || SupportHEVC || SupportVP9) {
-    // Pre-warm the platform name cache so the first ParamsVisibilityModifier
-    // call does not create a temporary VPL session.
-    QueryPlatformCodeName();
     // Deep warm-up: create MFXVideoENCODE pipeline for each supported
     // codec to trigger GPU shader JIT compilation ahead of time.
     DeepWarmUpVPL();
+    // Background thread runs the full hardware capability probe (platform
+    // name / VPP filters / Denoise2 / IntraRefresh) once at startup; UI and
+    // encoder threads only read the cached results, so opening the settings
+    // page never blocks. Success/failure and timing go to the log.
+    StartCapabilityProbeThread();
   }
 
   // Register ROI editor in Tools menu (only when frontend API is available)
@@ -310,5 +312,7 @@ bool obs_module_load([[maybe_unused]] void) {
 }
 
 void obs_module_unload(void) {
+  // Wait for the background probe thread to finish before unloading the DLL
+  JoinCapabilityProbeThread();
   ReleaseGlobalLoader();
 }

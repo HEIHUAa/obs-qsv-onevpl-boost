@@ -6,6 +6,10 @@
 
 mfxU16 QueryPlatformCodeName();
 
+// Startup background hardware capability probe (non-blocking) and its teardown
+void StartCapabilityProbeThread();
+void JoinCapabilityProbeThread();
+
 struct plugin_context {
   obs_encoder_t *EncoderData;
 

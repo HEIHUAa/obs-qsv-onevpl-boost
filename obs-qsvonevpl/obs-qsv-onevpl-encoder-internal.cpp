@@ -5509,12 +5509,14 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
            "increased by %d times. New value: %d KB",
            BITSTREAM_GROW_FACTOR, (newSize / 8 / 1000));
     } else if (MFX_ERR_MORE_DATA == Status) [[unlikely]] {
-      // driver refused the submit — this frame is silently dropped.
-      // Throttled log so pipeline starvation shows up in the log.
+      // The driver buffered the frame (lookahead / B-frame reorder window) —
+      // it is NOT lost and will be emitted by a later sync or drain.  The
+      // throttle keeps the pipeline back-pressure visible in the log without
+      // flooding it during the lookahead fill period.
       m_SubmitSkipCount++;
       if (m_SubmitSkipCount == 1 || (m_SubmitSkipCount % 300) == 0) {
-        warn("EncodeFrameAsync returned MORE_DATA on submit — input frame "
-             "dropped (total: %u)",
+        warn("EncodeFrameAsync returned MORE_DATA on submit — frame buffered "
+             "in driver lookahead, not lost (total: %u)",
              m_SubmitSkipCount);
       }
       break;
@@ -6539,21 +6541,32 @@ void QSVEncoder::WarmUpSystemMemoryPipeline() {
     // returned bitstreams are dropped — warm-up frames never reach OBS
   }
 
-  // sync every remaining pending task so the batch is fully executed
+  // Drain the pipeline: with lookahead the driver buffers every submitted
+  // frame (MORE_DATA on submit means "consumed, no output yet"), so syncing
+  // pending tasks alone never surfaces them.  Sync pending tasks first, then
+  // flush the lookahead-held frames with null submits until the driver
+  // reports MORE_DATA.  This both pays the one-time driver init costs and
+  // leaves the encoder quiesced — Reset with frames still in flight is
+  // rejected (MFX_ERR_NOT_FOUND) and the dummy frames then leak into the
+  // real stream as its first packets, with timestamps that make every
+  // downstream muxer reject the stream.
   int synced = 0;
-  for (;;) {
+  for (int drain = 0; drain < WARMUP_FRAMES + 32; drain++) {
     mfxBitstream *bs = nullptr;
-    mfxStatus sts = SyncAndSwapPendingTask(&bs);
+    mfxStatus sts = DrainAndRetrieveBitstream(&bs);
     if (sts == MFX_ERR_MORE_DATA)
       break;
     if (sts < MFX_ERR_NONE) {
-      warn("WarmUp: sync failed (%d)", sts);
+      warn("WarmUp: drain failed (%d)", sts);
       QPStatsEnabled = qpSaved;
       FrameStatsEnabled = fsSaved;
       return;
     }
-    if (++synced > WARMUP_FRAMES + 4)
-      break; // safety net
+    if (bs) {
+      bs->DataLength = 0;
+      bs->DataOffset = 0;
+    }
+    synced++;
   }
 
   QPStatsEnabled = qpSaved;
@@ -6566,8 +6579,14 @@ void QSVEncoder::WarmUpSystemMemoryPipeline() {
     Tmp.NumExtParam = 0;
     Tmp.ExtParam = nullptr;
     mfxStatus rst = QSVEncode->Reset(&Tmp);
-    info("\tWarm-up done (%d frames, %d synced), reset status: %d",
-         WARMUP_FRAMES, synced, rst);
+    if (rst == MFX_ERR_NONE) {
+      info("\tWarm-up done (%d frames, %d drained), reset OK", WARMUP_FRAMES,
+           synced);
+    } else {
+      warn("Warm-up done (%d frames, %d drained) but reset failed: %d — "
+           "dummy frames may leak into the encoded stream",
+           WARMUP_FRAMES, synced, rst);
+    }
   }
 }
 

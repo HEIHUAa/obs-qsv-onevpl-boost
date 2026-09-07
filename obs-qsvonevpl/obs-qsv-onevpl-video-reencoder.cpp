@@ -1287,6 +1287,11 @@ void ReEncodeDialog::FeedThreadMain()
       return true;
     };
 
+    // Last video DTS muxed, in output stream time_base ticks.  Used to skip
+    // packets that would make av_interleaved_write_frame fail with EINVAL
+    // (non-monotonic DTS) instead of failing the whole encode.
+    int64_t lastVideoDts = INT64_MIN;
+
     // Mux one encoded video packet.  Encoder PTS/DTS arrive in {1/fps} ticks,
     // but avformat_write_header() lets the MP4 muxer pick a finer stream
     // time_base (typically 1/15360 for 30fps) — so every packet must be
@@ -1311,6 +1316,20 @@ void ReEncodeDialog::FeedThreadMain()
       outPkt->duration = (int)ff.av_rescale_q(1, encTb, outTb);
       if (encPkt.keyframe)
         outPkt->flags |= AV_PKT_FLAG_KEY;
+
+      // Skip packets the muxer would reject (EINVAL: DTS going backwards or
+      // PTS < DTS) so one bad packet — e.g. stale-timestamp warm-up leakage —
+      // cannot fail the whole encode.
+      if (outPkt->dts < lastVideoDts || outPkt->pts < outPkt->dts) {
+        AppendLog(QString("WARNING: skipping video packet with non-monotonic "
+                          "timestamps (pts=%1 dts=%2, last dts=%3)")
+                      .arg((long long)outPkt->pts)
+                      .arg((long long)outPkt->dts)
+                      .arg((long long)lastVideoDts));
+        ff.av_packet_free(&outPkt);
+        return true;
+      }
+      lastVideoDts = outPkt->dts;
 
       int wr = ff.av_interleaved_write_frame(ctx.out_fmt_ctx, outPkt);
       ff.av_packet_free(&outPkt);
@@ -1588,6 +1607,11 @@ void ReEncodeDialog::FeedThreadMain()
       }
     }
 
+    // Frames recovered by the direct drain below never pass through the OBS
+    // encoder callback, so obs_encoder_get_encoded_frames() will never count
+    // them — keep them separate to avoid a misleading "did not finish" count.
+    int drainedFrames = 0;
+
     if (m_Encoder) {
       {
         auto deadline = std::chrono::steady_clock::now() + 5s;
@@ -1613,7 +1637,6 @@ void ReEncodeDialog::FeedThreadMain()
       if (pctx && pctx->EncoderPTR) {
         std::lock_guard lock(pctx->EncoderMutex);
         mfxBitstream *bs = nullptr;
-        int drained = 0;
         while (pctx->EncoderPTR->DrainAndRetrieveBitstream(&bs) == MFX_ERR_NONE &&
                bs && bs->DataLength > 0) {
           encoder_packet packet = {};
@@ -1629,10 +1652,10 @@ void ReEncodeDialog::FeedThreadMain()
               std::lock_guard lock2(ctx.pkt_mutex);
               ctx.pkt_queue.push_back(std::move(p));
             }
-            drained++;
+            drainedFrames++;
           }
         }
-        AppendLog(QString("Encoder drained: recovered %1 trailing frames").arg(drained));
+        AppendLog(QString("Encoder drained: recovered %1 trailing frames").arg(drainedFrames));
       }
     }
 
@@ -1646,11 +1669,16 @@ void ReEncodeDialog::FeedThreadMain()
     // for full equality could block for the whole 30s timeout on every run.
     // If encoded_frames stops advancing for 2s, accept the remainder.
     if (!ctx.stop_requested && m_Encoder) {
+      // Frames recovered by the drain above are already accounted for — only
+      // wait for (and warn about) the remainder, otherwise the 2s stall
+      // budget is always burned and the count is misleading.
+      const int64_t fed = ctx.frames_fed.load();
       auto deadline = std::chrono::steady_clock::now() + 30s;
       auto lastProgress = std::chrono::steady_clock::now();
       uint32_t lastEncoded = obs_encoder_get_encoded_frames(m_Encoder);
-      while (obs_encoder_get_encoded_frames(m_Encoder) <
-                 (uint32_t)ctx.frames_fed.load() &&
+      while ((int64_t)obs_encoder_get_encoded_frames(m_Encoder) +
+                 drainedFrames <
+                 fed &&
              std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(2ms);
         uint32_t cur = obs_encoder_get_encoded_frames(m_Encoder);
@@ -1661,11 +1689,13 @@ void ReEncodeDialog::FeedThreadMain()
           break; // stalled — remaining frames live in the lookahead window
         }
       }
-      if (obs_encoder_get_encoded_frames(m_Encoder) <
-          (uint32_t)ctx.frames_fed.load()) {
-        AppendLog(QString("WARNING: encoder did not finish all frames (%1/%2)")
-                      .arg((int)obs_encoder_get_encoded_frames(m_Encoder))
-                      .arg((int)ctx.frames_fed.load()));
+      int64_t delivered = obs_encoder_get_encoded_frames(m_Encoder);
+      if (delivered + drainedFrames < fed) {
+        AppendLog(QString("WARNING: encoder did not finish all frames "
+                          "(%1 delivered + %2 drained of %3 fed)")
+                      .arg((int)delivered)
+                      .arg(drainedFrames)
+                      .arg((int)fed));
       }
     }
 
