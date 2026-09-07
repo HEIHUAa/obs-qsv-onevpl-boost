@@ -145,7 +145,7 @@ if(WIN32)
       PREFIX ""
       AUTOMOC ON
       DEBUG_POSTFIX ""
-      OUTPUT_NAME "obs-qsvonevpl"
+      OUTPUT_NAME "obs-qsvonevpl-uhd600"
       MAP_IMPORTED_CONFIG_RELEASE "RELEASE;RelWithDebInfo"
     )
 

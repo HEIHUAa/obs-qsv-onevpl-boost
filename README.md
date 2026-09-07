@@ -41,6 +41,29 @@ obq-qsvonevpl-boost 是 obq-qsvonevpl 增强版本 —— OBS Studio（30 及以
 
 将下载下来的zip当中的`data`，`obs-plugins`文件夹解压到OBS Studio主目录下，也就是看得见`bin`，`data`，`obs-plugins`这三个文件的文件夹下
 
+### 本地编译（Windows）
+
+无需额外安装软件（需要机器上已装有 Visual Studio Build Tools 2026 与 Windows SDK 10.0.26100，CMake 会从 VS 自带目录自动定位）。
+
+1. **准备环境**（仅首次，约下载 2–3GB，全部存放在项目内 `build-env\` 文件夹）：
+
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Setup-Local-Build.ps1
+   ```
+
+   脚本会克隆 OBS Studio 32.2.0、oneVPL v2.14.0、MediaSDK 头文件和 FFmpeg 头文件（release/8.1 分支，与 OBS 预编译依赖版本一致）到 `build-env\`，并用目录联接（junction）把本仓库接入 OBS 源码树，构建方式与 `.github/workflows/build-uhd700.yml` 一致。
+
+2. **编译并打包**：
+
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Build-Local.ps1          # 标准版 (UHD700+)
+   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Build-Local.ps1 -UHD600  # 同时构建 UHD600 变体
+   ```
+
+3. **产物**位于 `release\uhd700\`（或 `release\uhd600\`），目录结构与插件包一致，把 `obs-plugins`、`data` 拷入 OBS 主目录即可使用。
+
+> 首次编译时 CMake 会自动下载 OBS 预编译依赖（obs-deps / Qt6）到 `build-env\obs-studio\.deps\`。日常修改代码后只需重复第 2 步；脚本可安全重复执行。
+
 ### 多显卡用户注意事项
 
 如果你有多张显卡（例如核显+独显），**强烈建议将 OBS 运行在你需要截取画面的那张显卡上**。例如，你要录制独显上的游戏画面，就将 OBS 的运行显卡也设置为独显。
@@ -87,6 +110,29 @@ Or go to the Actions page of this repository to download the latest build: <http
 ### Installation
 
 Extract the `data` and `obs-plugins` folders from the downloaded zip file into the OBS Studio main directory, i.e., the folder where you can see the `bin`, `data`, and `obs-plugins` folders.
+
+### Local Build (Windows)
+
+No extra software installation is required (Visual Studio Build Tools 2026 and Windows SDK 10.0.26100 must be present; CMake is located automatically from the VS installation).
+
+1. **Set up the environment** (first time only, downloads ~2–3 GB into the in-repo `build-env\` folder):
+
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Setup-Local-Build.ps1
+   ```
+
+   The script clones OBS Studio 32.2.0, oneVPL v2.14.0, the MediaSDK headers and the FFmpeg headers (release/8.1 branch, matching the version shipped in OBS's prebuilt deps) into `build-env\`, then links this repo into the OBS source tree with NTFS junctions, mirroring `.github/workflows/build-uhd700.yml`.
+
+2. **Build and package**:
+
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Build-Local.ps1          # standard (UHD700+)
+   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Build-Local.ps1 -UHD600  # also build the UHD600 variant
+   ```
+
+3. **Artifacts** land in `release\uhd700\` (or `release\uhd600\`) with the same layout as the plugin zip; copy `obs-plugins` and `data` into your OBS installation directory.
+
+> The first build automatically downloads the OBS prebuilt dependencies (obs-deps / Qt6) into `build-env\obs-studio\.deps\`. After editing the code, just repeat step 2. Both scripts are safe to re-run.
 
 ### Multi-GPU Users Notice
 
