@@ -140,6 +140,7 @@ static bool IsFeatureSupported(const char *PropertyName) {
     return true;
 }
 
+// Platform capability cache — filled once by the background probe thread,
 // read-only from the UI / encoder threads.
 static std::atomic<mfxU16> CachedQSVPlatformCode{0};
 static std::atomic<bool> QSVPlatformProbed{false};
@@ -178,6 +179,7 @@ static bool TryQueryPlatformCodeName(mfxLoader Loader, mfxU16 &OutCodeName) {
     return false;
 }
 
+// UI / encoder threads only read this cache; before the probe finishes it
 // returns 0 (callers fall back to "unknown platform" defaults). The probe
 // itself runs once on the background thread — UI never triggers VPL probing.
 mfxU16 QueryPlatformCodeName() {
@@ -216,7 +218,6 @@ static bool ProbePlatformCodeName() {
     return false;
 }
 
-  if (Probed)
 // Denoise2 support — probed in background, read-only from UI; defaults to
 // enabled until known (driver rejects at runtime if unsupported).
 static std::atomic<bool> Denoise2Known{false};
