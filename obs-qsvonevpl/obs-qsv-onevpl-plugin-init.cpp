@@ -1126,12 +1126,13 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   for (const char *b : boxes4) SetVisible(b, qmCustom && qmGran == 1);
   for (const char *b : boxesFull) SetVisible(b, qmCustom && qmGran >= 2);
 
+  static const char *const HiddenGroups[] = {
+      "group_enc_tools",     "group_ref_motion",
+      "group_intra_refresh", "group_misc",
+      "group_debug",
+  };
+
   if (!obs_data_get_bool(Settings, "use_advanced")) {
-    static const char *const HiddenGroups[] = {
-        "group_enc_tools",     "group_ref_motion",
-        "group_intra_refresh", "group_misc",
-        "group_debug",
-    };
     for (auto *g : HiddenGroups)
       SetVisible(g, false);
 
@@ -1166,7 +1167,48 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
         obs_property_next(&c);
       }
     }
+
+    return true;
   }
+
+  for (auto *g : HiddenGroups)
+    SetVisible(g, true);
+
+  SetVisible("brc_panic_mode", codec == QSV_CODEC_AVC);
+  SetVisible("skip_frame",
+             codec == QSV_CODEC_AVC || codec == QSV_CODEC_HEVC);
+  SetVisible("num_ref_frame", true);
+  SetVisible("p_pyramid",
+             codec == QSV_CODEC_AVC || codec == QSV_CODEC_HEVC);
+  SetVisible("use_raw_ref",
+             codec == QSV_CODEC_AVC || codec == QSV_CODEC_HEVC);
+  SetVisible("hevc_level", codec == QSV_CODEC_HEVC);
+  SetVisible("avc_level", codec == QSV_CODEC_AVC);
+  SetVisible("av1_level", codec == QSV_CODEC_AV1);
+  SetVisible("hevc_gpb", codec == QSV_CODEC_HEVC);
+  SetVisible("hevc_sao", codec == QSV_CODEC_HEVC);
+  SetVisible("screen_content_tools", codec == QSV_CODEC_AV1);
+  SetVisible("av1_cdef", codec == QSV_CODEC_AV1);
+  SetVisible("av1_restoration", codec == QSV_CODEC_AV1);
+  SetVisible("av1_loop_filter", codec == QSV_CODEC_AV1);
+  SetVisible("av1_super_res", codec == QSV_CODEC_AV1);
+  SetVisible("av1_interp_filter", codec == QSV_CODEC_AV1);
+  SetVisible("av1_error_resilient", codec == QSV_CODEC_AV1);
+  SetVisible("av1_segmentation", codec == QSV_CODEC_AV1);
+  SetVisible("transform_skip", codec == QSV_CODEC_HEVC &&
+                               IsFeatureSupported("transform_skip"));
+  SetVisible("tune_quality", codec == QSV_CODEC_AV1);
+  SetVisible("gop_opt_flag", codec != QSV_CODEC_VP9);
+  SetVisible("adaptive_i", codec != QSV_CODEC_VP9
+#ifdef QSV_UHD600_SUPPORT
+                               && codec != QSV_CODEC_HEVC
+#endif
+  );
+  SetVisible("trellis", codec == QSV_CODEC_AVC);
+  SetVisible("repartition_check", codec == QSV_CODEC_AVC);
+  SetVisible("rdo", codec != QSV_CODEC_VP9);
+  SetVisible("deblocking",
+             codec == QSV_CODEC_AVC || codec == QSV_CODEC_HEVC);
 
   return true;
 }
