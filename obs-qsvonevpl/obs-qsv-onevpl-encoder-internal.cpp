@@ -6361,26 +6361,96 @@ mfxStatus QSVEncoder::Drain() {
   // Drain the encoder: repeatedly submit flush requests until MFX_ERR_MORE_DATA
   // (OneVPL spec: in drain mode, MORE_DATA means no more buffered frames)
   constexpr int MAX_DRAIN_ITERS = 1024;
+  constexpr size_t MAX_INFLIGHT_FLUSHES = 8;
+  struct FlushSlot {
+    mfxBitstream Bs{};
+    std::vector<mfxU8> Storage;
+  };
+  std::vector<FlushSlot> Ring(MAX_INFLIGHT_FLUSHES);
+  const mfxU32 FlushBsSize =
+      std::min<mfxU32>(QSVBitstream.MaxLength, 8u << 20);
+  for (auto &Slot : Ring) {
+    Slot.Storage.resize(FlushBsSize);
+    Slot.Bs.Data = Slot.Storage.data();
+    Slot.Bs.MaxLength = FlushBsSize;
+  }
+  auto GrowFlushSlot = [&Ring](size_t Idx, mfxU32 NewSize) {
+    auto &Slot = Ring[Idx];
+    Slot.Storage.resize(NewSize);
+    Slot.Bs.Data = Slot.Storage.data();
+    Slot.Bs.MaxLength = NewSize;
+  };
+
+  auto SyncUntilDone = [this](mfxSyncPoint SyncPoint) -> mfxStatus {
+    constexpr int MAX_WAITS = 4; // 4 x 5s per frame is way beyond sane already
+    mfxStatus SyncSts = MFX_ERR_NONE;
+    for (int Wait = 0; Wait < MAX_WAITS; Wait++) {
+      SyncSts = MFXVideoCORE_SyncOperation(QSVSession, SyncPoint, 5000);
+      if (SyncSts != MFX_WRN_IN_EXECUTION)
+        return SyncSts;
+      warn("Drain: frame still in execution after %ds, retrying sync (%d/%d)",
+           5 * (Wait + 1), Wait + 1, MAX_WAITS);
+    }
+    error("Drain: sync point did not complete after %ds — driver pipeline "
+          "is stuck, aborting drain",
+          5 * MAX_WAITS);
+    m_DrainStalled = true;
+    return SyncSts;
+  };
+
   int iter = 0;
   int drainedFrames = 0;
-  while (Status >= MFX_ERR_NONE && iter++ < MAX_DRAIN_ITERS) {
-    mfxSyncPoint SyncPoint = nullptr;
-    // flush submit needs a real bitstream — a nullptr bs makes the driver
-    // error out (or silently discard) instead of emitting the frame
-    QSVBitstream.DataLength = 0;
-    QSVBitstream.DataOffset = 0;
-    Status = QSVEncode->EncodeFrameAsync(
-        nullptr, nullptr, &QSVBitstream, &SyncPoint);
-    if (Status == MFX_ERR_NONE && SyncPoint != nullptr) {
-      mfxStatus SyncSts = MFXVideoCORE_SyncOperation(QSVSession, SyncPoint, 5000);
+  size_t RingHead = 0; // next slot to submit into
+  std::vector<std::pair<mfxSyncPoint, size_t>> InFlight; // FIFO of pending ops
+  while (Status >= MFX_ERR_NONE && iter++ < MAX_DRAIN_ITERS &&
+         !m_DrainStalled) {
+    if (InFlight.size() >= MAX_INFLIGHT_FLUSHES) {
+      auto [SyncPoint, SlotIdx] = InFlight.front();
+      InFlight.erase(InFlight.begin());
+      mfxStatus SyncSts = SyncUntilDone(SyncPoint);
+      if (m_DrainStalled)
+        break;
+      if (SyncSts == MFX_ERR_DEVICE_FAILED) {
+        m_DeviceFailed = true;
+        break;
+      }
       // SyncOperation may return MFX_ERR_NULL_PTR on some drivers when the
       // sync point is a no-op during drain. This is benign.
       if (SyncSts < MFX_ERR_NONE) {
         warn("Drain sync warning: %d", SyncSts);
       }
-      if (QSVBitstream.DataLength > 0)
+      if (Ring[SlotIdx].Bs.DataLength > 0)
         drainedFrames++;
     }
+
+    mfxSyncPoint SyncPoint = nullptr;
+    auto &Op = Ring[RingHead];
+    Op.Bs.DataLength = 0;
+    Op.Bs.DataOffset = 0;
+    Status = QSVEncode->EncodeFrameAsync(nullptr, nullptr, &Op.Bs, &SyncPoint);
+    if (Status == MFX_ERR_NOT_ENOUGH_BUFFER ||
+        Status == MFX_ERR_MORE_BITSTREAM) {
+      GrowFlushSlot(RingHead, Op.Bs.MaxLength * 2);
+      Op.Bs.DataLength = 0;
+      Op.Bs.DataOffset = 0;
+      Status = QSVEncode->EncodeFrameAsync(nullptr, nullptr, &Op.Bs,
+                                           &SyncPoint);
+    }
+    if (Status == MFX_ERR_NONE && SyncPoint != nullptr) {
+      InFlight.emplace_back(SyncPoint, RingHead);
+      RingHead = (RingHead + 1) % MAX_INFLIGHT_FLUSHES;
+    }
+  }
+
+  for (auto &[SyncPoint, SlotIdx] : InFlight) {
+    if (m_DrainStalled)
+      break;
+    mfxStatus SyncSts = SyncUntilDone(SyncPoint);
+    if (SyncSts < MFX_ERR_NONE) {
+      warn("Drain sync warning: %d", SyncSts);
+    }
+    if (Ring[SlotIdx].Bs.DataLength > 0)
+      drainedFrames++;
   }
 
   if (iter >= MAX_DRAIN_ITERS) {
@@ -6395,17 +6465,28 @@ mfxStatus QSVEncoder::Drain() {
          drainedFrames);
   }
 
-  // MFX_ERR_MORE_DATA is the normal drain exit condition
-  if (Status != MFX_ERR_MORE_DATA && Status != MFX_ERR_NULL_PTR) {
-    warn("Drain: unexpected exit status: %d", Status);
+  if (!m_DrainStalled && Status != MFX_ERR_MORE_DATA &&
+      Status != MFX_ERR_NULL_PTR) {
+    if (Status == MFX_ERR_DEVICE_FAILED) {
+      info("\tDrain: driver ended flush with DEVICE_FAILED (-5) — known "
+           "EncTools driver behavior at EOS, trailing frames are recovered "
+           "from the task pool instead");
+    } else {
+      warn("Drain: unexpected exit status: %d", Status);
+    }
   }
   Status = MFX_ERR_NONE;
 
   // Sync and extract QP from any remaining pending tasks
   for (auto &Task : QSVTaskPool) {
+    if (m_DrainStalled) {
+      warn("Drain: skipping remaining pending-task syncs — pipeline stuck");
+      break;
+    }
     if (Task.SyncPoint != nullptr) {
-      mfxStatus SyncSts = MFXVideoCORE_SyncOperation(
-          QSVSession, Task.SyncPoint, 5000);
+      mfxStatus SyncSts = SyncUntilDone(Task.SyncPoint);
+      if (m_DrainStalled)
+        break;
       if (SyncSts >= MFX_ERR_NONE) {
         // Extract QP and frame stats from this task's bitstream
         if (QPStatsEnabled || FrameStatsEnabled) {
@@ -6657,6 +6738,7 @@ mfxStatus QSVEncoder::ClearData() {
   mfxStatus Status = MFX_ERR_NONE;
 
   m_DrainSubmitted = false;
+  m_DrainStalled = false;
 
   if (QSVEncode) {
     // Skip drain if the device has already failed — calling EncodeFrameAsync
@@ -6665,6 +6747,15 @@ mfxStatus QSVEncoder::ClearData() {
       Drain();
     } else {
       warn("ClearData: skipping drain — device already failed");
+    }
+    if (m_DrainStalled) {
+      warn("ClearData: drain never completed — skipping Close/MFXClose and "
+           "freeing (session leaked, GPU may need a driver reset)");
+      QSVEncode = nullptr;
+      QSVProcessing = nullptr;
+      QSVSession = nullptr;
+      QSVLoader = nullptr;
+      return MFX_ERR_DEVICE_FAILED;
     }
     Status = QSVEncode->Close();
     QSVEncode = nullptr;

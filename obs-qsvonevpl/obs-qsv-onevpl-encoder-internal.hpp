@@ -173,6 +173,11 @@ private:
   // Set when the hardware device fails (MFX_ERR_DEVICE_FAILED).
   // Skip drain/encode ops in cleanup to avoid double-crash on a dead device.
   bool m_DeviceFailed{false};
+  // Set when a drain sync point refuses to complete even after retries.
+  // The driver pipeline is wedged at that point — calling MFXVideoENCODE_Close
+  // then hangs the whole process (seen with EncTools + HW lookahead), so
+  // ClearData skips Close/MFXClose and leaks the session instead.
+  bool m_DrainStalled{false};
   // Count of MFX_ERR_MORE_DATA returns on EncodeFrameAsync submit. With
   // lookahead enabled this is normal back-pressure: the driver has buffered
   // the frame and will encode it later — the frame is NOT lost.
