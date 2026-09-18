@@ -20,7 +20,6 @@
 struct adapter_info AdaptersInfo[MAX_ADAPTERS] = {};
 size_t AdaptersCount = 0;
 
-// Encoder data registry
 std::unordered_map<obs_encoder_t *, plugin_context *> EncoderDataMap;
 std::mutex EncoderDataMapMutex;
 
@@ -32,7 +31,6 @@ std::mutex PendingROIMutex;
 pending_roi_config GlobalROIConfig;
 std::mutex GlobalROIConfigMutex;
 
-// Convert 0-1 normalized ROI coords → pixel values
 std::vector<encoder_params::roi_region> NormalizeROIToPixel(
     const std::vector<encoder_params::normalized_roi_region> &NormRegions,
     mfxU16 OutWidth, mfxU16 OutHeight,
@@ -100,25 +98,21 @@ std::vector<encoder_params::roi_region> ExpandGradientRegions(
       continue;
     }
 
-    // Calculate outer bounds (may extend beyond frame)
     int outerL = (int)reg.Left   - reg.GradLeft;
     int outerT = (int)reg.Top    - reg.GradTop;
     int outerR = (int)reg.Right  + reg.GradRight;
     int outerB = (int)reg.Bottom + reg.GradBottom;
-    // Clamp to frame
     outerL = std::max(outerL, 0);
     outerT = std::max(outerT, 0);
     outerR = std::min(outerR, (int)OutWidth);
     outerB = std::min(outerB, (int)OutHeight);
 
-    // Collect x boundary lines from outer → core → outer
-    // Left side: from outerL toward reg.Left (or reverse for inward gradient)
+    // x boundary lines from outer to core to outer (also handles inward gradient)
     auto genSteps = [](int from, int to, int steps,
                        std::vector<int> &out) {
       if (from == to) return;
       for (int i = 0; i <= steps; i++) {
         int v = from + (int)((long long)(to - from) * i / steps);
-        // deduplicate with last
         if (out.empty() || out.back() != v)
           out.push_back(v);
       }
@@ -130,14 +124,11 @@ std::vector<encoder_params::roi_region> ExpandGradientRegions(
     yUnique.clear();
 
     genSteps(outerL, reg.Left, reg.GradientSteps, xBounds);
-    // Add core boundaries
     if (xBounds.empty() || xBounds.back() != reg.Left)
       xBounds.push_back(reg.Left);
     xBounds.push_back(reg.Right);
     genSteps(reg.Right, outerR, reg.GradientSteps, xBounds);
-    // Remove duplicates between core Right and first right step,
-    // then sort so cells are in ascending order regardless of
-    // inward/outward gradient direction.
+    // sort ascending so cell order is independent of gradient direction
     for (auto v : xBounds)
       if (xUnique.empty() || xUnique.back() != v)
         xUnique.push_back(v);
@@ -153,7 +144,6 @@ std::vector<encoder_params::roi_region> ExpandGradientRegions(
         yUnique.push_back(v);
     std::sort(yUnique.begin(), yUnique.end());
 
-    // Generate grid cells
     for (size_t yi = 0; yi + 1 < yUnique.size(); yi++) {
       int y0 = yUnique[yi];
       int y1 = yUnique[yi + 1];
@@ -163,14 +153,12 @@ std::vector<encoder_params::roi_region> ExpandGradientRegions(
         int x1 = xUnique[xi + 1];
         if (x1 <= x0) continue;
 
-        // Skip only the exact core rectangle — it is handled by the
-        // original region entry above.  All other cells (including those
-        // inside the core for inward gradients) are created here.
+        // Skip only the exact core rectangle (handled by the original region
+        // entry); cells inside the core for inward gradients are kept.
         if (x0 == (int)reg.Left && x1 == (int)reg.Right &&
             y0 == (int)reg.Top  && y1 == (int)reg.Bottom)
           continue;
 
-        // Interpolate QP based on distance to core
         int cx = (x0 + x1) / 2;
         int cy = (y0 + y1) / 2;
         double t = 0.0;
@@ -181,10 +169,7 @@ std::vector<encoder_params::roi_region> ExpandGradientRegions(
           double total = (double)std::abs(gradExtent - coreEdge);
           return std::min(dist / total, 1.0);
         };
-        // Check if cell center lies in any of the 4 gradient bands
-        // (from each core edge to its gradient boundary).  The band
-        // works for both outward (gradExtent < coreEdge) and inward
-        // (gradExtent > coreEdge) cases.
+        // band test works for both outward and inward gradients
         auto inBand = [](int pos, int a, int b) -> bool {
           if (a == b) return false;
           int lo = std::min(a, b);
@@ -202,8 +187,7 @@ std::vector<encoder_params::roi_region> ExpandGradientRegions(
         if (inBand(cy, reg.Bottom, outerB))
           t = std::max(t, falloff(cy, reg.Bottom, outerB));
 
-        // Gradient is always outward (positive values only).
-        // Full QP at core edge (t=0), zero at gradient boundary (t=1).
+        // t=0 at core edge (full DeltaQP), t=1 at gradient boundary (zero)
         mfxI16 qp = (mfxI16)(reg.DeltaQP * (1.0 - t));
 
         encoder_params::roi_region cell;
@@ -216,7 +200,6 @@ std::vector<encoder_params::roi_region> ExpandGradientRegions(
       }
     }
 
-    // Always add the core region with original QP
     result.push_back(reg);
   }
 
@@ -231,7 +214,6 @@ void RegisterEncoderData(obs_encoder_t *Encoder, plugin_context *Context) {
     EncoderDataMap[Encoder] = Context;
   }
 
-  // Check if there is a pending ROI config for this encoder type
   if (!enc_id)
     return;
 
@@ -246,17 +228,12 @@ void RegisterEncoderData(obs_encoder_t *Encoder, plugin_context *Context) {
          enc_id);
   }
 
-  // (2) Try loading from this encoder's own persistent settings (per-profile)
-  // This also updates GlobalROIConfig and applies to the encoder
+  // Load this encoder's per-profile settings (also updates GlobalROIConfig)
   LoadROIFromEncoderSettings(Context);
 
-  // (3) Apply GlobalROIConfig to this encoder if populated.
-  // This handles the case where ROI was previously set via editor / loaded from
-  // file, but this encoder's obs_data_t does not persist custom keys.  Without
-  // this, a new encoder instance created *after* the editor was used would
-  // never receive the ROI config (see the "GlobalROIConfig already populated,
-  // skipping file fallback" bug - the file fallback is rightfully skipped
-  // because we already have data in memory; we just fail to apply it).
+  // Apply GlobalROIConfig if populated: obs_data_t may not persist the custom
+  // ROI keys, so an encoder created after the editor was used would otherwise
+  // never receive the config (the file fallback is rightly skipped then).
   {
     std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
     if (GlobalROIConfig.Enabled &&
@@ -271,9 +248,8 @@ void RegisterEncoderData(obs_encoder_t *Encoder, plugin_context *Context) {
     }
   }
 
-  // (4) File fallback (only reached if GlobalROIConfig was empty above)
-  // We re-check inside the mutex-free zone by calling LoadROIConfigFromFile
-  // which takes GlobalROIConfigMutex internally.
+  // File fallback, only if GlobalROIConfig is still empty;
+  // LoadROIConfigFromFile takes GlobalROIConfigMutex internally.
   {
     bool stillEmpty = false;
     {
@@ -283,7 +259,6 @@ void RegisterEncoderData(obs_encoder_t *Encoder, plugin_context *Context) {
     }
     if (stillEmpty) {
       if (LoadROIConfigFromFile()) {
-        // File was loaded, now apply to this encoder
         std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
         if (GlobalROIConfig.Enabled &&
             !GlobalROIConfig.NormalizedRegions.empty()) {
@@ -297,7 +272,6 @@ void RegisterEncoderData(obs_encoder_t *Encoder, plugin_context *Context) {
     }
   }
 
-  // Only log final ROI state when ROI is actually enabled
   if (Context->EncoderParams.ROIEnabled) {
     blog(LOG_INFO,
          "[QSV VPL] RegisterEncoderData: done for encoder=%s, roiEnabled=%d",
@@ -306,7 +280,7 @@ void RegisterEncoderData(obs_encoder_t *Encoder, plugin_context *Context) {
   }
 }
 
-// Serialize helper: format a double without scientific notation and with minimal precision
+// no scientific notation, minimal precision, trailing zeros trimmed
 std::string FormatROIDouble(double Value) {
   char buf[32];
   std::snprintf(buf, sizeof(buf), "%.6f", Value);
@@ -322,8 +296,6 @@ std::string FormatROIDouble(double Value) {
   }
   return s;
 }
-
-// ROI serialization helpers
 
 std::string SerializeROIRegions(
     const std::vector<encoder_params::normalized_roi_region> &Regions) {
@@ -387,8 +359,6 @@ std::vector<encoder_params::normalized_roi_region> DeserializeROIRegions(
   return result;
 }
 
-// Apply ROI to a single encoder
-
 void ApplyROIConfigToEncoder(
     plugin_context *Context,
     const std::vector<encoder_params::normalized_roi_region> &NormRegions,
@@ -398,7 +368,6 @@ void ApplyROIConfigToEncoder(
       Context->EncoderParams.Width,
       Context->EncoderParams.Height,
       GetCodecAlignment(Context->Codec));
-  // Expand gradient regions into sub-rectangles, cap total at 256
   auto expanded = ExpandGradientRegions(
       pixelRegions,
       Context->EncoderParams.Width,
@@ -425,7 +394,6 @@ void SaveROIToEncoderSettings(plugin_context *Context) {
   obs_data_set_bool(settings, "roi_enabled", GlobalROIConfig.Enabled);
   obs_data_set_int(settings, "roi_mode", GlobalROIConfig.Mode);
 
-  // Serialize normalized regions using the common helper
   std::string regionStr = SerializeROIRegions(GlobalROIConfig.NormalizedRegions);
   obs_data_set_string(settings, "roi_regions", regionStr.c_str());
 
@@ -456,14 +424,12 @@ void LoadROIFromEncoderSettings(plugin_context *Context) {
     GlobalROIConfig.Enabled = obs_data_get_bool(settings, "roi_enabled");
     GlobalROIConfig.Mode = (mfxU16)obs_data_get_int(settings, "roi_mode");
 
-    // Deserialize regions using the common helper
     const char *regionStr = obs_data_get_string(settings, "roi_regions");
     GlobalROIConfig.NormalizedRegions =
         regionStr ? DeserializeROIRegions(regionStr)
                   : std::vector<encoder_params::normalized_roi_region>();
   }
 
-  // Apply to this encoder if enabled and there are active regions
   if (GlobalROIConfig.Enabled && !GlobalROIConfig.NormalizedRegions.empty()) {
     blog(LOG_INFO,
          "[QSV VPL] ROI loaded from encoder settings: enabled=%d, mode=%d, "
@@ -494,7 +460,6 @@ plugin_context *LookupEncoderData(obs_encoder_t *Encoder) {
 static const char *kROIConfigFile = "obs-qsv-onevpl-roi.ini";
 
 static config_t *OpenROIConfig(bool ForWrite) {
-  // First try per-profile path
   char *profile_path = obs_frontend_get_current_profile_path();
   if (profile_path) {
     struct dstr config_path = {0};
@@ -525,7 +490,6 @@ static config_t *OpenROIConfig(bool ForWrite) {
   }
 
 try_module_path:
-  // Fallback to module config path
   char *config_path = obs_module_config_path(kROIConfigFile);
   if (!config_path) {
     blog(LOG_WARNING,

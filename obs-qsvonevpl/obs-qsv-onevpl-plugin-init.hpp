@@ -15,6 +15,9 @@ struct plugin_context {
 
   enum codec_enum Codec;
 
+  // from the profile instead (libobs does the conversion)
+  bool IsTextureEncoder = false;
+
   struct encoder_params EncoderParams;
 
   std::unique_ptr<class QSVEncoder> EncoderPTR;
@@ -43,8 +46,12 @@ struct plugin_context {
 };
 
 #define TEXT_SPEED obs_module_text("TargetUsage")
-#define TEXT_USE_ADVANCED obs_module_text("UseAdvancedSettings")
-#define TEXT_USE_ADVANCED_DESC obs_module_text("UseAdvancedSettings.Tooltip")
+#define TEXT_ENCODER_PRESET obs_module_text("EncoderPreset")
+#define TEXT_ENCODER_PRESET_DESC obs_module_text("EncoderPreset.Tooltip")
+#define TEXT_PRESET_CUSTOM obs_module_text("PresetCustom")
+#define TEXT_PRESET_QVBR_HIGH_QUALITY obs_module_text("PresetQVBRHighQuality")
+#define TEXT_PRESET_ICQ_LOSSLESS_HIGH_QUALITY \
+  obs_module_text("PresetICQLosslessHighQuality")
 #define TEXT_TARGET_BITRATE obs_module_text("Bitrate")
 #define TEXT_BUFFER_SIZE obs_module_text("BufferSize")
 #define TEXT_MAX_BITRATE obs_module_text("MaxBitrate")

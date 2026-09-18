@@ -38,3 +38,10 @@ bool EncodeFrame(void *Data, encoder_frame *Frame, encoder_packet *Packet,
 bool GetSEIData(void *Data, uint8_t **SEI, size_t *Size);
 
 void GetVideoInfo(void *Data, video_scale_info *Info);
+
+// Shared input-format decision: GetVideoInfo() (what format libobs feeds us)
+// and GetEncoderParams() (which FourCC/bit depth MFX allocates) must both use
+// it; a mismatch (e.g. 8-bit output + HEVC main10) yields green/corrupt frames.
+enum video_format ResolveEncoderInputFormat(enum codec_enum Codec,
+                                            std::string_view Profile,
+                                            video_format Current);

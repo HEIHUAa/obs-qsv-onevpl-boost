@@ -23,6 +23,7 @@ target_sources(
   obs-qsv-onevpl-video-reencoder.hpp
   helpers/common_utils.cpp
   helpers/common_utils.hpp
+  helpers/encoder_option_rules.hpp
   helpers/encoder_params_parser.hpp
   helpers/ext_buf_manager.hpp
   helpers/qsv_params.hpp
@@ -126,6 +127,7 @@ if(WIN32)
       obs-qsv-onevpl-video-reencoder.hpp
       helpers/common_utils.cpp
       helpers/common_utils.hpp
+      helpers/encoder_option_rules.hpp
       helpers/encoder_params_parser.hpp
       helpers/ext_buf_manager.hpp
       helpers/qsv_params.hpp

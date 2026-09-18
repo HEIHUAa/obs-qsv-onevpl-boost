@@ -20,8 +20,7 @@ static const char *default_av1_device = nullptr;
 static const char *default_vp9_device = nullptr;
 
 #define DEVICE_MGR_TYPE MFX_HANDLE_VA_DISPLAY
-// This ends up at like 72 for 1440p@120 av1 may end up hitting this in
-// practice?
+// usage reaches ~72 at 1440p120; AV1 may hit this in practice
 #define MAX_ALLOCABLE_SURFACES 128
 
 struct surface_info {
@@ -100,7 +99,7 @@ mfxStatus simple_alloc(mfxHDL pthis, mfxFrameAllocRequest *request,
   struct surface_info *surfaces = (struct surface_info *)bmalloc(
       sizeof(struct surface_info) * num_surfaces);
 
-  mids[num_surfaces] = surfaces; // store extra pointer at end (ffmpeg trick)
+  mids[num_surfaces] = surfaces;
   for (uint64_t i = 0; i < num_surfaces; i++) {
     surfaces[i].id = temp_surfaces[i];
     surfaces[i].width = request->Info.Width;
@@ -239,7 +238,6 @@ struct linux_data {
   VADisplay vaDisplay;
 };
 
-// Release per session resources.
 void ReleaseSessionData(void *data) {
   struct linux_data *d = (struct linux_data *)data;
   if (d) {
@@ -347,7 +345,6 @@ static bool vaapi_supports_h264(VADisplay display) {
 
 static bool vaapi_supports_av1(VADisplay display) {
   bool ret = false;
-  // Are there any devices with non-LowPower entrypoints?
   ret |=
       vaapi_check_support(display, VAProfileAV1Profile0, VAEntrypointEncSlice);
   ret |= vaapi_check_support(display, VAProfileAV1Profile0,

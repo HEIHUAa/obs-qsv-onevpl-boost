@@ -2,6 +2,7 @@
 #pragma warning(disable : 4996)
 
 #include "common_utils.hpp"
+#include "encoder_option_rules.hpp"
 
 extern "C" {
 #include <obs-module.h>
@@ -283,12 +284,13 @@ static constexpr std::pair<std::string_view, int> kScreenContentToolsMap[] = {
     {"ON", 2},
 };
 
+// "high10" removed: no Intel GPU/driver exposes 10-bit AVC encode (P010 fails
+// the AVC FourCC whitelist with MFX_ERR_UNSUPPORTED); old profiles fall through.
 static constexpr std::pair<std::string_view, mfxU16> kCodecProfileAVCMap[] = {
     {"baseline", MFX_PROFILE_AVC_BASELINE},
     {"main", MFX_PROFILE_AVC_MAIN},
     {"high", MFX_PROFILE_AVC_HIGH},
     {"extended", MFX_PROFILE_AVC_EXTENDED},
-    {"high10", MFX_PROFILE_AVC_HIGH10},
     {"constrained_baseline", MFX_PROFILE_AVC_CONSTRAINED_BASELINE},
     {"constrained_high", MFX_PROFILE_AVC_CONSTRAINED_HIGH},
 };
@@ -300,10 +302,11 @@ static constexpr std::pair<std::string_view, mfxU16> kCodecProfileHEVCMap[] = {
     {"scc", MFX_PROFILE_HEVC_SCC},
 };
 
+// "pro" removed: the AV1 driver zeroes MFX_PROFILE_AV1_PRO back to the default
+// (av1ehw profile whitelist is 0/MAIN/HIGH), so it silently encoded as main.
 static constexpr std::pair<std::string_view, mfxU16> kCodecProfileAV1Map[] = {
     {"main", MFX_PROFILE_AV1_MAIN},
     {"high", MFX_PROFILE_AV1_HIGH},
-    {"pro", MFX_PROFILE_AV1_PRO},
 };
 
 static constexpr std::pair<std::string_view, mfxU16> kCodecProfileVP9Map[] = {
@@ -313,13 +316,17 @@ static constexpr std::pair<std::string_view, mfxU16> kCodecProfileVP9Map[] = {
     {"3 (10-bit 4:4:4)", MFX_PROFILE_VP9_3},
 };
 
-// Parse all UI-configurable encoder params from an obs_data_t object.
-// This mirrors GetEncoderParams() but does NOT touch fields that come from
-// the OBS video output (width/height/fps, color info, FourCC, bit depth, HDR).
-// The caller is responsible for setting those after this call.
+// Parse all UI-configurable encoder params from an obs_data_t object.  Does NOT
+// touch fields that come from the OBS video output (width/height/fps, color
+// info, FourCC, bit depth, HDR) -- the caller sets those after this call.
 static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
                                                  codec_enum Codec,
                                                  encoder_params &Params) {
+  // Neutralize conflicting combos first so stale profiles can't trip
+  // MFX_ERR_UNSUPPORTED at Init (docs/option-dependency-matrix.md).  Feature
+  // conds count as satisfied; the driver + Init retry chain mop up.
+  qsv_rules::SanitizeConflicts(Settings, Codec, nullptr);
+
   const char *TargetUsageData = obs_data_get_string(Settings, "target_usage");
   const char *CodecProfileData = obs_data_get_string(Settings, "profile");
   const char *CodecProfileTierData = obs_data_get_string(Settings, "hevc_tier");
@@ -473,7 +480,6 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
   if (auto v = MapString(TargetUsageData, kTargetUsageMap))
     Params.TargetUsage = *v;
 
-  // 2. AV1 ternary options
   Params.AV1CDEF = ParseAV1Ternary(AV1CDEFData);
   Params.AV1Restoration = ParseAV1Ternary(AV1RestorationData);
   Params.AV1LoopFilter = ParseAV1Ternary(AV1LoopFilterData);
@@ -497,13 +503,12 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
       (Codec == QSV_CODEC_AV1) ? ParseTuneQuality(TuneQualityData) : 0;
 #endif
 
-  // 3. AV1InterpFilter
   if (auto v = MapString(AV1InterpFilterData, kAV1InterpFilterMap))
     Params.AV1InterpFilter = *v;
 
   Params.WeightedPred = ParseWeightedPredMode(WeightedPredData);
 
-  // Max frame size mode: auto/all/per_type
+  // MaxFrameSizeMode: 0=auto, 1=all, 2=per_type
   {
     auto svMode = std::string_view(MaxFrameSizeModeData);
     if (svMode == "per_type") {
@@ -537,7 +542,6 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
     }
   }
 
-  // BRCPanicMode
   {
     auto sv = std::string_view(BRCPanicModeData);
     if (sv == "ON")
@@ -547,7 +551,6 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
     // else AUTO: leave as std::nullopt (driver default)
   }
 
-  // SkipFrame
   auto svSkip = std::string_view(SkipFrameData);
   if (svSkip == "NO_SKIP")
     Params.SkipFrame = MFX_SKIPFRAME_NO_SKIP;
@@ -558,7 +561,6 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
   else if (svSkip == "BRC_ONLY")
     Params.SkipFrame = MFX_SKIPFRAME_BRC_ONLY;
 
-  // RepartitionCheckEnable
   auto svRepart = std::string_view(RepartitionCheckData);
   if (svRepart == "OFF")
     Params.RepartitionCheckEnable = false;
@@ -573,7 +575,6 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
   Params.VPPMCTFStrength = static_cast<mfxU16>(VPPMCTFStrengthData);
 #endif
 
-  // Codec profile/level
   switch (Codec) {
   case QSV_CODEC_AVC: {
     if (auto v = MapString(CodecProfileData, kCodecProfileAVCMap))
@@ -673,7 +674,6 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
                     Params.GlobalMotionBiasAdjustment);
 #endif
 
-  // Lookahead
   auto svLookahead = std::string_view(LookaheadData);
   if (svLookahead == "HQ") {
     Params.Lookahead = true;
@@ -696,7 +696,6 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
   if (auto v = MapString(LookaheadDSData, kLookaheadDSMap))
     Params.LookAheadDS = *v;
 
-  // IntraRefEncoding
   static constexpr std::pair<std::string_view, bool> kIntraRefEncodingMap[] = {
       {"ON", true},
       {"OFF", false},
@@ -748,11 +747,9 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
   if (auto v = MapString(TransformSkipData, kTransformSkipMap))
     Params.TransformSkip = *v;
 
-  // RateControl
   if (auto v = MapString(RateControlData, kRateControlMap))
     Params.RateControl = *v;
 
-  // DenoiseMode
   if (auto v = MapString(DenoiseModeData, kDenoiseModeMap))
     Params.VPPDenoiseMode = *v;
   auto svDenoise = std::string_view(DenoiseModeData);
@@ -764,8 +761,7 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
   if (auto v = MapString(ScalingModeData, kScalingModeMap))
     Params.VPPScalingMode = *v;
 
-  // Only apply VPPOutWidth/Height when scaling mode is actually active.
-  // If scaling is OFF, stale non-zero width/height values must not be applied.
+  // stale vpp_out_width/height must not apply when scaling is OFF
   if (std::string_view(ScalingModeData) != "OFF") {
     int64_t VPPOutWidthData = obs_data_get_int(Settings, "vpp_out_width");
     int64_t VPPOutHeightData = obs_data_get_int(Settings, "vpp_out_height");
@@ -787,7 +783,6 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
   if (auto v = MapString(PercEncPrefilterData, kPercEncPrefilterMap))
     Params.PercEncPrefilter = *v;
 
-  // ProcAmp
   if (std::string_view(VPPProcAmpData) == "ON") {
     Params.VPPProcAmpMode = 1;
     Params.VPPProcAmpBrightness =
@@ -800,7 +795,6 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
         obs_data_get_double(Settings, "vpp_procamp_saturation");
   }
 
-  // Rotation
   if (std::string_view(VPPRotationData) == "90")
     Params.VPPRotation = 90;
   else if (std::string_view(VPPRotationData) == "180")
@@ -808,7 +802,6 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
   else if (std::string_view(VPPRotationData) == "270")
     Params.VPPRotation = 270;
 
-  // Mirroring
   if (std::string_view(VPPMirroringData) == "HORIZONTAL")
     Params.VPPMirroring = 1;
   else if (std::string_view(VPPMirroringData) == "VERTICAL")
@@ -816,7 +809,6 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
   else if (std::string_view(VPPMirroringData) == "BOTH")
     Params.VPPMirroring = 3;
 
-  // Frame Rate Conversion
   static constexpr std::pair<std::string_view, int> kFRCModeMap[] = {
     {"PRESERVE_TIMESTAMP",                    0},
     {"DISTRIBUTED_TIMESTAMP",                 1},
@@ -834,7 +826,6 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
   Params.AsyncDepth =
       static_cast<mfxU16>(obs_data_get_int(Settings, "async_depth"));
 
-  // CQP / QPI/QPP/QPB
   bool CQPSeparateIPB = obs_data_get_bool(Settings, "cqp_separate_ipb");
   if (CQPSeparateIPB) {
     double QPIData, QPPData, QPBData;
@@ -1009,7 +1000,6 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
 
   Params.GPUNum = GPUNumData;
 
-  // ProcessingEnable is derived from VPP settings + input format, so leave it
-  // to the caller.
+  // ProcessingEnable is derived from VPP settings + input format -- caller's job
   Params.ProcessingEnable = false;
 }

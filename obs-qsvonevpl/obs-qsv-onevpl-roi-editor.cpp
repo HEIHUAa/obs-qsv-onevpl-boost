@@ -7,7 +7,6 @@
 #include <sstream>
 #include <cstdio>
 
-// Converts 0-1 normalized coordinates to pixel values per-encoder
 static void ApplyROIToAllActiveEncoders(
     const std::vector<encoder_params::normalized_roi_region> &NormRegions,
     mfxU16 Mode, bool Enabled) {
@@ -30,21 +29,18 @@ ROIDialog::ROIDialog(QWidget *Parent)
 
   auto *MainLayout = new QVBoxLayout(this);
 
-  // === Info label ===
   InfoLabel = new QLabel(obs_module_text("ROIEditorDesc"), this);
   InfoLabel->setWordWrap(true);
   MainLayout->addWidget(InfoLabel);
 
-  // === Preview canvas (OBS display) ===
   auto *PreviewGroup = new QGroupBox(obs_module_text("ROIPreview"), this);
   auto *PreviewLayout = new QVBoxLayout(PreviewGroup);
   PreviewWidget = new QWidget(this);
   PreviewWidget->setMinimumSize(1, 1);
   PreviewWidget->setStyleSheet("background-color: black;");
   PreviewLayout->addWidget(PreviewWidget);
-  MainLayout->addWidget(PreviewGroup, 1); // give preview majority of vertical space
+  MainLayout->addWidget(PreviewGroup, 1); // give preview most vertical space
 
-  // === Controls row: enable toggle + always-on-top ===
   auto *ControlsLayout = new QHBoxLayout();
   ROIEnableCheck = new QCheckBox(obs_module_text("ROIEnabled"), this);
   ROIEnableCheck->setChecked(true);
@@ -55,7 +51,6 @@ ROIDialog::ROIDialog(QWidget *Parent)
   ControlsLayout->addWidget(AlwaysOnTopCheck);
   MainLayout->addLayout(ControlsLayout);
 
-  // === ROI Mode selection ===
   auto *ModeGroupBox = new QGroupBox(obs_module_text("ROIMode"), this);
   auto *ModeLayout = new QVBoxLayout(ModeGroupBox);
   ModeGroup = new QButtonGroup(this);
@@ -68,7 +63,6 @@ ROIDialog::ROIDialog(QWidget *Parent)
   ModeLayout->addWidget(PriorityRadio);
   MainLayout->addWidget(ModeGroupBox);
 
-  // === ROI text input ===
   auto *ROIGroup = new QGroupBox(obs_module_text("ROIRegions"), this);
   auto *ROILayout = new QVBoxLayout(ROIGroup);
   FormatLabel = new QLabel(obs_module_text("ROIRegionFormat"), this);
@@ -83,7 +77,6 @@ ROIDialog::ROIDialog(QWidget *Parent)
   ROILayout->addWidget(ROITextEdit);
   MainLayout->addWidget(ROIGroup);
 
-  // === Buttons ===
   auto *ButtonLayout = new QHBoxLayout();
   ButtonLayout->addStretch();
   ApplyButton = new QPushButton(obs_module_text("ROIApply"), this);
@@ -92,7 +85,6 @@ ROIDialog::ROIDialog(QWidget *Parent)
   ButtonLayout->addWidget(CancelButton);
   MainLayout->addLayout(ButtonLayout);
 
-  // Connections
   connect(ApplyButton, &QPushButton::clicked, this, &ROIDialog::OnApplyClicked);
   connect(CancelButton, &QPushButton::clicked, this,
           &ROIDialog::OnCancelClicked);
@@ -102,16 +94,15 @@ ROIDialog::ROIDialog(QWidget *Parent)
     UpdatePreviewFromText();
   });
 
-  // Install event filter on preview widget for resize handling
+  // event filter handles preview widget resize
   PreviewWidget->installEventFilter(this);
 
-  // Periodic refresh timer: forces obs_display to redraw every ~100ms
+  // forces obs_display to redraw every ~100ms
   RefreshTimer->setInterval(100);
   connect(RefreshTimer, &QTimer::timeout, this, [this]() {
     ForceRefreshPreview();
   });
 
-  // Load saved ROI data (if any)
   LoadROIData();
 
   blog(LOG_DEBUG, "[QSV VPL] ROIDialog constructor finished");
@@ -132,7 +123,6 @@ void ROIDialog::showEvent(QShowEvent *Event) {
       }
     }
   });
-  // Start periodic refresh timer
   RefreshTimer->start();
 }
 
@@ -142,7 +132,6 @@ void ROIDialog::closeEvent(QCloseEvent *Event) {
   QDialog::closeEvent(Event);
 }
 
-// Preview (obs_display)
 bool ROIDialog::CreatePreview() {
   DestroyPreview();
 
@@ -150,7 +139,7 @@ bool ROIDialog::CreatePreview() {
     return false;
 
   try {
-    // Force creation of native window handle
+    // force native window handle creation
     PreviewWidget->setAttribute(Qt::WA_NativeWindow);
     PreviewWidget->winId();
 
@@ -158,7 +147,6 @@ bool ROIDialog::CreatePreview() {
     if (!hwnd)
       return false;
 
-    // Build gs_init_data for obs_display_create
     struct obs_video_info ovi;
     obs_get_video_info(&ovi);
 
@@ -179,7 +167,6 @@ bool ROIDialog::CreatePreview() {
       return false;
     }
 
-    // Add draw callback for the display
     obs_display_add_draw_callback(PreviewDisplay, PreviewDraw, this);
     obs_display_set_enabled(PreviewDisplay, true);
 
@@ -239,19 +226,17 @@ bool ROIDialog::eventFilter(QObject *Obj, QEvent *Event) {
   return QDialog::eventFilter(Obj, Event);
 }
 
-// Preview draw callback (called on OBS render thread)
+// draw callback, runs on the OBS render thread
 void ROIDialog::PreviewDraw(void *param, uint32_t cx, uint32_t cy) {
   auto *dialog = static_cast<ROIDialog *>(param);
   if (!dialog)
     return;
 
-  // Get base video info for aspect-ratio-correct scaling
   struct obs_video_info ovi;
   obs_get_video_info(&ovi);
   if (ovi.base_width < 1 || ovi.base_height < 1)
     return;
 
-  // Calculate centered, scaled viewport (maintain aspect ratio)
   float base_w = (float)ovi.base_width;
   float base_h = (float)ovi.base_height;
   float scale = std::min((float)cx / base_w, (float)cy / base_h);
@@ -279,7 +264,7 @@ void ROIDialog::PreviewDraw(void *param, uint32_t cx, uint32_t cy) {
   dialog->DrawROIOverlay(cx, cy, ovi);
 }
 
-// Draw a list of ROI rects (all share the same viewport mapping)
+// draw the ROI rects (all share the same viewport mapping)
 static void DrawROIRects(
     const std::vector<encoder_params::roi_region> &Rects,
     float vp_x, float vp_y, float vp_w, float vp_h,
@@ -297,7 +282,6 @@ static void DrawROIRects(
   gs_technique_begin(tech);
   gs_technique_begin_pass(tech, 0);
 
-  // Compute dynamic intensity range from actual DeltaQP values
   float dynMaxAbs = 0.0f;
   for (auto &r : Rects)
     dynMaxAbs = std::max(dynMaxAbs, (float)std::abs(r.DeltaQP));
@@ -308,8 +292,8 @@ static void DrawROIRects(
     return v < lo ? lo : (v > hi ? hi : v);
   };
 
-  // Reuse one cached GS_DYNAMIC vertex buffer instead of creating and
-  // destroying a new buffer per rect on the render thread every frame.
+  // reuse one cached GS_DYNAMIC vertex buffer instead of creating and
+  // destroying a buffer per rect on the render thread every frame
   const size_t needed = Rects.size() * 4;
   if (!*CachedVB || *CachedVBCapacity < needed) {
     if (*CachedVB) {
@@ -333,13 +317,12 @@ static void DrawROIRects(
 
   size_t vertIdx = 0;
   for (auto &r : Rects) {
-    // Map from output resolution → preview widget pixel coords
+    // map from output resolution to preview widget pixel coords
     float x1 = vp_x + (float)r.Left * (vp_w / out_w);
     float y1 = vp_y + (float)r.Top * (vp_h / out_h);
     float x2 = vp_x + (float)r.Right * (vp_w / out_w);
     float y2 = vp_y + (float)r.Bottom * (vp_h / out_h);
 
-    // Clamp
     x1 = clamp(x1, 0.0f, (float)cx);
     y1 = clamp(y1, 0.0f, (float)cy);
     x2 = clamp(x2, 0.0f, (float)cx);
@@ -371,12 +354,10 @@ static void DrawROIRects(
     if (x2 <= x1 || y2 <= y1)
       continue;
 
-    // Color depends on mode:
-    //   Priority mode (0): bigger value = better quality → positive = green
-    //   DeltaQP mode  (1): lesser value = better quality → negative = green
+    // priority mode (0): bigger value = better quality, so positive = green;
+    // deltaQP mode (1): lesser value = better quality, so negative = green
     bool isBetter = (mode == 0) ? (r.DeltaQP > 0) : (r.DeltaQP < 0);
     float absVal = (float)std::abs(r.DeltaQP);
-    // Use dynamic range so gradient cells get proportional intensity
     float intensity = std::min(absVal / dynMaxAbs, 1.0f);
     intensity = std::max(intensity, 0.3f); // minimum visibility
     vec4 color;
@@ -406,12 +387,10 @@ void ROIDialog::InvalidateROICache() {
 
 void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy,
                                  const struct obs_video_info &ovi) {
-  // Quick dimension checks
   if (ovi.output_width < 1 || ovi.output_height < 1 ||
       ovi.base_width < 1 || ovi.base_height < 1)
     return;
 
-  // --- 1. Compute cache key from normalized ROI data + output dims ---
   size_t newHash = 0;
   bool enabled = false;
   mfxU16 previewMode = 1; // default DeltaQP
@@ -451,9 +430,8 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy,
     return;
   }
 
-  // --- 2. Retrieve or compute the segmented grid ---
-  // Local copy — the shared cache may be cleared concurrently by the UI thread
-  // (InvalidateROICache from textChanged); never iterate the shared vector.
+  // local copy — the shared cache may be cleared concurrently by the UI thread
+  // (InvalidateROICache from textChanged); never iterate the shared vector
   std::vector<encoder_params::roi_region> drawRects;
   bool useSegmented = false;
   bool cacheHit = false;
@@ -467,8 +445,7 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy,
   }
 
   if (!cacheHit) {
-    // Cache miss — recompute
-    // Convert normalized regions → pixel (inside lock for data integrity)
+    // convert normalized regions to pixel (inside lock for data integrity)
     mfxU16 outW = (mfxU16)ovi.output_width;
     mfxU16 outH = (mfxU16)ovi.output_height;
     std::vector<encoder_params::roi_region> regions;
@@ -478,10 +455,10 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy,
                                      outW, outH);
     }
 
-    // Expand gradient regions
+    // expand gradient regions
     regions = ExpandGradientRegions(regions, outW, outH);
 
-    // Region segmentation for overlap resolution
+    // segment the output grid at region edges to resolve overlaps
     std::vector<mfxU16> xs, ys;
     for (auto &r : regions) {
       xs.push_back(r.Left);
@@ -517,7 +494,7 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy,
     if (!useSegmented)
       drawRects = regions;
 
-    // Store in cache (guarded — UI thread may invalidate concurrently)
+    // store in cache (guarded — UI thread may invalidate concurrently)
     {
       std::lock_guard<std::mutex> lock(m_CacheMutex);
       m_GridCacheHash = newHash;
@@ -526,7 +503,7 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy,
     }
   }
 
-  // --- 3. Viewport (same as PreviewDraw) ---
+  // viewport mapping, same as PreviewDraw
   float out_w = (float)ovi.output_width;
   float out_h = (float)ovi.output_height;
   float base_w = (float)ovi.base_width;
@@ -538,13 +515,11 @@ void ROIDialog::DrawROIOverlay(uint32_t cx, uint32_t cy,
   float vp_x = ((float)cx - vp_w) * 0.5f;
   float vp_y = ((float)cy - vp_h) * 0.5f;
 
-  // --- 4. Draw ---
   DrawROIRects(drawRects, vp_x, vp_y, vp_w, vp_h, out_w, out_h, cx, cy,
                &m_CachedVB, &m_CachedVBCapacity, previewMode);
 }
 
-// Convert normalized regions to space-separated UI text
-// Includes 4 extra gradient values if HasGradient is true.
+// serialize normalized regions to UI text, with 4 gradient values if HasGradient
 static std::string RegionsToUIFormat(
     const std::vector<encoder_params::normalized_roi_region> &Regions) {
   std::string text;
@@ -567,7 +542,6 @@ static std::string RegionsToUIFormat(
   return text;
 }
 
-// Populate UI controls from GlobalROIConfig
 void ROIDialog::SetUIFromGlobalConfig() {
   std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
   ROIEnableCheck->setChecked(GlobalROIConfig.Enabled);
@@ -576,19 +550,18 @@ void ROIDialog::SetUIFromGlobalConfig() {
   else
     QPDeltaRadio->setChecked(true);
 
-  // Guard against re-entrant locking: setPlainText triggers textChanged,
-  // which calls UpdatePreviewFromText, which also locks GlobalROIConfigMutex.
-  // On MSVC std::mutex (= SRWLOCK), recursive locking causes a deadlock;
-  // on other implementations it can throw std::system_error.
+  // setPlainText triggers textChanged → UpdatePreviewFromText, which locks
+  // GlobalROIConfigMutex again; recursive locking deadlocks on MSVC (SRWLOCK)
+  // and can throw std::system_error elsewhere.
   m_IsSettingText = true;
   ROITextEdit->setPlainText(
       QString::fromStdString(RegionsToUIFormat(GlobalROIConfig.NormalizedRegions)));
   m_IsSettingText = false;
 }
 
-// Parse text into normalized ROI regions.
-// Format: "L T R B DQP" or "L T R B DQP GradL GradT GradR GradB [Steps]"
-// Values 0.0~1.0. Gradients are outward only. Default Steps=3 (7x7 grid).
+// parse text into normalized ROI regions. Format: "L T R B DQP" or
+// "L T R B DQP GradL GradT GradR GradB [Steps]"; values 0.0-1.0, gradients
+// outward only, default Steps=3 (7x7 grid).
 static std::vector<encoder_params::normalized_roi_region> ParseROIText(
     const std::string &Text) {
   std::vector<encoder_params::normalized_roi_region> result;
@@ -600,7 +573,6 @@ static std::vector<encoder_params::normalized_roi_region> ParseROIText(
     if (line.empty() || line[0] == '#' || line[0] == ';')
       continue;
 
-    // Parse all tokens; must have at least 5 (l t r b dqp)
     std::istringstream ls(line);
     std::vector<double> tokens;
     double val;
@@ -616,10 +588,9 @@ static std::vector<encoder_params::normalized_roi_region> ParseROIText(
     nr.Bottom = tokens[3];
     nr.DeltaQP = (mfxI16)tokens[4];
 
-    // If a 6th token (GradLeft) is present, enable gradient
-    // (tokens 7-9: GradTop, GradRight, GradBottom are optional, default 0)
-    // Gradients are forced to positive (absolute value).
-    // Token 10 (optional): GradientSteps, number of subdivisions per side.
+    // 6th token (GradLeft) enables the gradient; GradTop/Right/Bottom (7-9)
+    // are optional and default to 0, all Grad* values are forced positive.
+    // Token 10 (optional): GradientSteps, subdivisions per side.
     if (tokens.size() >= 6) {
       nr.HasGradient = true;
       nr.GradLeft   = std::abs(tokens[5]);
@@ -634,10 +605,9 @@ static std::vector<encoder_params::normalized_roi_region> ParseROIText(
   return result;
 }
 
-// ROI data load / save
 void ROIDialog::UpdatePreviewFromText() {
-  // Suppress re-entrant calls: SetUIFromGlobalConfig → setPlainText → textChanged.
-// The mutex is already held, so re-locking would deadlock.
+  // suppress re-entrant call: SetUIFromGlobalConfig → setPlainText →
+  // textChanged; the mutex is already held, re-locking would deadlock
   if (m_IsSettingText)
     return;
 
@@ -668,7 +638,6 @@ void ROIDialog::LoadROIData() {
   }
 
   blog(LOG_DEBUG, "[QSV VPL] ROIDialog::LoadROIData: no saved config, using defaults");
-  // No saved config - use defaults
   ROIEnableCheck->setChecked(false);
   QPDeltaRadio->setChecked(true);
   ROITextEdit->clear();
@@ -698,10 +667,8 @@ void ROIDialog::SaveROIData() {
   // ALSO save to file for reliable persistence across OBS restarts
   SaveROIConfigToFile();
 
-  // If any encoder instances exist, apply immediately with per-encoder conversion
   ApplyROIToAllActiveEncoders(normRegions, mode, enabled);
 
-  // Force preview refresh to show updated ROI regions
   ForceRefreshPreview();
   blog(LOG_INFO,
        "[QSV VPL] ROI saved: enabled=%d, normalized regions=%zu, mode=%d",
@@ -735,21 +702,18 @@ void ROIDialog::OnToggleAlwaysOnTop(Qt::CheckState State) {
   setVisible(true);
 }
 
-// Frontend menu callback
-// Track the active ROI dialog instance so we can refresh it on profile change
+// track the active ROI dialog instance so we can refresh it on profile change
 static ROIDialog *ActiveDialog = nullptr;
 
-// Frontend event callback: reload ROI config when OBS profile changes
+// frontend event callback: reload ROI config when OBS profile changes
 static void OnFrontendEvent(obs_frontend_event Event, void *) {
   if (Event != OBS_FRONTEND_EVENT_PROFILE_CHANGED)
     return;
 
   blog(LOG_INFO, "[QSV VPL] Profile changed, reloading ROI config...");
 
-  // 1. Reload GlobalROIConfig from new profile's INI file
   LoadROIConfigFromFile();
 
-  // 2. Re-apply to all active encoders
   {
     std::lock_guard<std::mutex> lock(GlobalROIConfigMutex);
     if (GlobalROIConfig.Enabled &&
@@ -760,7 +724,6 @@ static void OnFrontendEvent(obs_frontend_event Event, void *) {
     }
   }
 
-  // 3. If ROI editor dialog is open, refresh its display
   if (ActiveDialog) {
     QMetaObject::invokeMethod(ActiveDialog, [dialog = ActiveDialog]() {
       dialog->LoadROIData();
@@ -774,7 +737,6 @@ static void OpenROIEditor(void * /*data*/) {
     auto *dialog = new ROIDialog();
     dialog->setAttribute(Qt::WA_DeleteOnClose);
 
-    // Track active dialog for profile-change refresh
     ActiveDialog = dialog;
     QObject::connect(dialog, &QObject::destroyed, []() {
       ActiveDialog = nullptr;

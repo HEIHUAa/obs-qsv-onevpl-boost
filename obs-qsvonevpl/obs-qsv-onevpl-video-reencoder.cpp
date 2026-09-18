@@ -18,9 +18,8 @@
 
 using namespace std::chrono_literals;
 
-// Debug helper: writes to debugger output (cheap — no-op without a debugger).
-// The old version opened/flushed/closed a log file on EVERY call (per-frame
-// disk I/O on the feed thread).  Define REENCODE_DEBUG_LOG_FILE to re-enable.
+// debugger output only; define REENCODE_DEBUG_LOG_FILE for per-frame file
+// logging (per-call disk I/O on the feed thread, so off by default)
 static void dbglog(const char *fmt, ...) {
   char buf[1024];
   va_list args;
@@ -39,9 +38,6 @@ static void dbglog(const char *fmt, ...) {
 #endif
 }
 
-// ============================================================================
-// Output ID for our custom qsv re-encode output
-// ============================================================================
 static const char *const REENCODE_OUTPUT_ID = "qsv_reencode_output";
 
 // Per-output context — passed to output callbacks via void *data
@@ -53,9 +49,7 @@ struct reencode_output_ctx {
   bool stop_thread_active = false;
 };
 
-// ============================================================================
-// FFmpeg API loading — resolve function pointers from OBS's bundled DLLs
-// ============================================================================
+// FFmpeg API — resolved from OBS's loaded DLLs at runtime
 
 // get a module handle for an already-loaded DLL by base name + version range
 static HMODULE GetLoadedModule(const wchar_t *baseName, int minVer, int maxVer)
@@ -67,12 +61,10 @@ static HMODULE GetLoadedModule(const wchar_t *baseName, int minVer, int maxVer)
     if (h)
       return h;
   }
-  // try unversioned
   swprintf_s(name, L"%s.dll", baseName);
   return GetModuleHandleW(name);
 }
 
-// resolve a single function pointer from a module
 template <typename T>
 static bool ResolveFunc(HMODULE mod, const char *name, T &ptr)
 {
@@ -130,7 +122,6 @@ bool LoadFFmpegAPI(ffmpeg_api &ff)
   ok = ok && ResolveFunc(avcodec, "av_packet_move_ref", ff.av_packet_move_ref);
   ok = ok && ResolveFunc(avcodec, "avcodec_parameters_copy", ff.avcodec_parameters_copy);
 
-  // av_packet_alloc/free from avcodec as fallback
   if (!ff.av_packet_alloc) {
     ff.av_packet_alloc = reinterpret_cast<decltype(ff.av_packet_alloc)>(
         GetProcAddress(avcodec, "av_packet_alloc"));
@@ -144,7 +135,6 @@ bool LoadFFmpegAPI(ffmpeg_api &ff)
     return false;
   }
 
-  // av_packet_move_ref from avformat as fallback (FFmpeg layout varies)
   if (!ff.av_packet_move_ref) {
     ff.av_packet_move_ref = reinterpret_cast<decltype(ff.av_packet_move_ref)>(
         GetProcAddress(avformat, "av_packet_move_ref"));
@@ -154,7 +144,6 @@ bool LoadFFmpegAPI(ffmpeg_api &ff)
     return false;
   }
 
-  // av_packet_unref from avformat as fallback (FFmpeg layout varies)
   if (!ff.av_packet_unref) {
     ff.av_packet_unref = reinterpret_cast<decltype(ff.av_packet_unref)>(
         GetProcAddress(avformat, "av_packet_unref"));
@@ -164,7 +153,6 @@ bool LoadFFmpegAPI(ffmpeg_api &ff)
     return false;
   }
 
-  // avcodec_parameters_copy from avformat as fallback (FFmpeg layout varies)
   if (!ff.avcodec_parameters_copy) {
     ff.avcodec_parameters_copy = reinterpret_cast<decltype(ff.avcodec_parameters_copy)>(
         GetProcAddress(avformat, "avcodec_parameters_copy"));
@@ -199,8 +187,8 @@ bool LoadFFmpegAPI(ffmpeg_api &ff)
     return false;
   }
 
-  // Optional — hardware decoding helpers (avutil).  Missing exports only
-  // disable the hw decode paths; decoding falls back to software.
+  // optional hw decode helpers; missing exports only disable the hw paths
+  // and decoding falls back to software
   ResolveFunc(avutil, "av_hwdevice_ctx_create", ff.av_hwdevice_ctx_create);
   ResolveFunc(avutil, "av_hwframe_transfer_data", ff.av_hwframe_transfer_data);
   ResolveFunc(avutil, "av_buffer_unref", ff.av_buffer_unref);
@@ -210,25 +198,20 @@ bool LoadFFmpegAPI(ffmpeg_api &ff)
   return true;
 }
 
-// ============================================================================
-// Custom output — receives encoded video packets, pushes to queue for feed
-// thread to mux.  Audio is handled separately by the feed thread.
-// ============================================================================
+// custom output: encoded video packets are queued for the feed thread to
+// mux; audio is handled by the feed thread
 
 static const char *reencode_output_getname(void *)
 {
   return "QSV Re-Encode Output";
 }
 
-// static used to pass the dialog pointer from StartEncoding() into
-// reencode_output_create(), since obs_output_t is opaque and we can't
-// access context.data from outside.
+// passes the dialog ptr from StartEncoding() into reencode_output_create();
+// obs_output_t is opaque, so context.data isn't reachable from outside
 static ReEncodeDialog *g_PendingOutputDialog = nullptr;
 
-// "stop" signal: the output has fully ended data capture and the video
-// encoder has been shut down, so every remaining packet is already in the
-// queue.  This is the point where the feed thread may collect the tail
-// packets and finalize.
+// "stop" signal: encoder shut down and data capture ended, so every remaining
+// packet is already queued — the feed thread's point to collect the tail
 static void reencode_output_stopped(void *data, calldata_t *)
 {
   auto *ctx = static_cast<reencode_output_ctx *>(data);
@@ -246,10 +229,9 @@ static void *reencode_output_create(obs_data_t *, obs_output_t *output)
   ctx->dialog = g_PendingOutputDialog;
   g_PendingOutputDialog = nullptr;
 
-  // The "stop" signal fires after the encoders have been fully stopped, so
-  // it is the safe point to tell the feed thread that the final packets
-  // are in its queue.  obs_output_stop() itself is asynchronous — treating
-  // it as "flush done" loses the tail packets of the B-frame pipeline.
+  // obs_output_stop() is async — treating it as "flush done" loses the tail
+  // packets of the B-frame pipeline; the "stop" signal fires after the
+  // encoders are fully stopped instead
   signal_handler_t *sh = obs_output_get_signal_handler(output);
   if (sh)
     signal_handler_connect(sh, "stop", reencode_output_stopped, ctx);
@@ -295,9 +277,8 @@ static bool reencode_output_start(void *data)
 static void *reencode_stop_thread(void *data)
 {
   auto *ctx = static_cast<reencode_output_ctx *>(data);
-  // Hold a reference while calling end_data_capture: StopEncoding() may
-  // obs_output_release() the last reference and destroy the output before
-  // this thread runs, which would be a use-after-free.
+  // hold a reference: StopEncoding() may release the last one and destroy
+  // the output before this thread runs (use-after-free)
   obs_output_t *ref = obs_output_get_ref(ctx->output);
   obs_output_end_data_capture(ctx->output);
   obs_output_release(ref);
@@ -309,7 +290,6 @@ static void reencode_output_stop(void *data, uint64_t)
 {
   auto *ctx = static_cast<reencode_output_ctx *>(data);
 
-  // signal feed thread to stop
   if (ctx->dialog) {
     auto &rc = ctx->dialog->m_Ctx;
     rc.encoder_done = true;
@@ -353,11 +333,8 @@ static obs_output_info reencode_output_info = {
     .encoded_packet = reencode_output_encoded_packet,
 };
 
-// ============================================================================
-// Encoder config loading
-// ============================================================================
+// encoder config loading
 
-// map encoder ID to FFmpeg codec ID
 static enum AVCodecID EncoderIDToAVCodecID(const std::string &id)
 {
   if (id.find("h264") != std::string::npos)
@@ -379,11 +356,9 @@ static std::string ToFrameEncoderID(const std::string &id)
   return id;
 }
 
-// get_format callback for generic hwaccel decoding (CUDA / D3D11VA): accept
-// only the hw pixel format matching the device attached to the decoder (the
-// expected format is stashed in avctx->opaque).  Returning NONE makes
-// avcodec_open2 fail, which is the signal to try the next device type or
-// fall back to software.
+// get_format callback for hwaccel decoding (CUDA / D3D11VA): accept only the
+// hw pixel format stashed in avctx->opaque.  Returning NONE fails
+// avcodec_open2 — the signal to try the next device type or software.
 static enum AVPixelFormat ReEncodeGetHWFormat(AVCodecContext *avctx,
                                               const enum AVPixelFormat *fmt)
 {
@@ -398,7 +373,6 @@ static enum AVPixelFormat ReEncodeGetHWFormat(AVCodecContext *avctx,
 // try to read encoder config from the active recording encoder
 bool ReEncodeDialog::LoadEncoderConfigFromActive()
 {
-  // check the EncoderDataMap for active QSV encoders
   extern std::mutex EncoderDataMapMutex;
   extern std::unordered_map<obs_encoder_t *, plugin_context *> EncoderDataMap;
 
@@ -419,9 +393,8 @@ bool ReEncodeDialog::LoadEncoderConfigFromActive()
       m_FpsDen = 1;
     }
 
-    // copy encoder settings as obs_data
-    // obs_encoder_get_settings() already returns an addref'd reference; the
-    // extra addref here leaked one reference on every call/refresh.
+    // obs_encoder_get_settings() already returns an addref'd reference —
+    // adding another one leaks
     if (m_EncoderSettings)
       obs_data_release(m_EncoderSettings);
     m_EncoderSettings = obs_encoder_get_settings(ctx->EncoderData);
@@ -443,7 +416,6 @@ bool ReEncodeDialog::LoadEncoderConfigFromFile()
     return false;
   }
 
-  // determine output mode and read recording encoder ID
   const char *mode = config_get_string(config, "Output", "Mode");
   const char *encId = nullptr;
   // when recording is set to use the stream encoder, its settings live in
@@ -453,12 +425,10 @@ bool ReEncodeDialog::LoadEncoderConfigFromFile()
   if (mode && strcmp(mode, "Advanced") == 0) {
     encId = config_get_string(config, "AdvOut", "RecEncoder");
     if (!encId || !*encId || strcmp(encId, "none") == 0) {
-      // "Use stream encoder" recording — settings come from the stream encoder
       encId = config_get_string(config, "AdvOut", "Encoder");
       usesStreamEncoder = true;
     }
   } else {
-    // Simple mode — check if using streaming encoder or separate recording
     encId = config_get_string(config, "SimpleOutput", "RecEncoder");
     if (!encId || !*encId || strcmp(encId, "none") == 0) {
       encId = config_get_string(config, "SimpleOutput", "StreamEncoder");
@@ -471,7 +441,6 @@ bool ReEncodeDialog::LoadEncoderConfigFromFile()
     return false;
   }
 
-  // check if it's a QSV encoder
   std::string encoderId(encId);
   if (encoderId.find("obs_qsv") == std::string::npos) {
     blog(LOG_WARNING, "[QSV VPL ReEncoder] Encoder '%s' is not a QSV encoder", encId);
@@ -480,7 +449,6 @@ bool ReEncodeDialog::LoadEncoderConfigFromFile()
 
   m_EncoderID = ToFrameEncoderID(encoderId);
 
-  // read basic settings
   m_Width = (int)config_get_uint(config, "Video", "BaseCX");
   m_Height = (int)config_get_uint(config, "Video", "BaseCY");
   m_FpsNum = (int)config_get_uint(config, "Video", "FPSNum");
@@ -494,11 +462,9 @@ bool ReEncodeDialog::LoadEncoderConfigFromFile()
   blog(LOG_INFO, "[QSV VPL ReEncoder] Loaded config from: %s %dx%d %d/%d fps",
        m_EncoderID.c_str(), m_Width, m_Height, m_FpsNum, m_FpsDen);
 
-  // Load encoder settings from the encoder's JSON file in the profile
-  // directory.  OBS stores encoder settings as separate JSON files, not in
-  // the INI config, and rewrites them whenever the settings are saved — so
-  // this always reflects the latest configuration without needing to start
-  // a recording first.
+  // OBS stores encoder settings as JSON files in the profile directory
+  // (not in the INI) and rewrites them on every settings save, so this
+  // always reflects the latest config
   char *profilePath = obs_frontend_get_current_profile_path();
   if (profilePath) {
     char jsonPath[512];
@@ -526,10 +492,6 @@ bool ReEncodeDialog::LoadEncoderConfigFromFile()
   return true;
 }
 
-// ============================================================================
-// ReEncodeDialog — UI construction
-// ============================================================================
-
 ReEncodeDialog::ReEncodeDialog(QWidget *Parent)
     : QDialog(Parent)
 {
@@ -539,7 +501,6 @@ ReEncodeDialog::ReEncodeDialog(QWidget *Parent)
 
   auto *mainLayout = new QVBoxLayout(this);
 
-  // Input file
   auto *inputLayout = new QHBoxLayout;
   InputPath = new QLineEdit(this);
   InputPath->setPlaceholderText(obs_module_text("ReEncoderInputPlaceholder"));
@@ -548,7 +509,6 @@ ReEncodeDialog::ReEncodeDialog(QWidget *Parent)
   inputLayout->addWidget(browseInputBtn);
   mainLayout->addLayout(inputLayout);
 
-  // Output file
   auto *outputLayout = new QHBoxLayout;
   OutputPath = new QLineEdit(this);
   OutputPath->setPlaceholderText(obs_module_text("ReEncoderOutputPlaceholder"));
@@ -557,8 +517,7 @@ ReEncodeDialog::ReEncodeDialog(QWidget *Parent)
   outputLayout->addWidget(browseOutputBtn);
   mainLayout->addLayout(outputLayout);
 
-  // Encoder config display — always reloaded when encoding starts, so no
-  // manual refresh button is needed.
+  // always reloaded when encoding starts — no manual refresh button
   ConfigGroup = new QGroupBox(obs_module_text("ReEncoderConfig"), this);
   auto *configLayout = new QVBoxLayout(ConfigGroup);
   ConfigLabel = new QLabel(this);
@@ -567,7 +526,6 @@ ReEncodeDialog::ReEncodeDialog(QWidget *Parent)
   configLayout->addWidget(ConfigLabel);
   mainLayout->addWidget(ConfigGroup);
 
-  // Start/Stop
   auto *ctrlLayout = new QHBoxLayout;
   StartStopBtn = new QPushButton(obs_module_text("ReEncoderStart"), this);
   StatusLabel = new QLabel(this);
@@ -577,24 +535,20 @@ ReEncodeDialog::ReEncodeDialog(QWidget *Parent)
   ctrlLayout->addStretch();
   mainLayout->addLayout(ctrlLayout);
 
-  // Progress
   ProgressBar = new QProgressBar(this);
   ProgressBar->setRange(0, 100);
   ProgressBar->setValue(0);
   mainLayout->addWidget(ProgressBar);
 
-  // Log
   LogOutput = new QTextEdit(this);
   LogOutput->setReadOnly(true);
   LogOutput->setMaximumHeight(150);
   mainLayout->addWidget(LogOutput);
 
-  // Connections
   connect(browseInputBtn, &QPushButton::clicked, this, &ReEncodeDialog::OnBrowseInput);
   connect(browseOutputBtn, &QPushButton::clicked, this, &ReEncodeDialog::OnBrowseOutput);
   connect(StartStopBtn, &QPushButton::clicked, this, &ReEncodeDialog::OnStartStop);
 
-  // Load config
   PopulateEncoderConfig();
 }
 
@@ -603,10 +557,6 @@ ReEncodeDialog::~ReEncodeDialog()
   StopEncoding();
   obs_data_release(m_EncoderSettings);
 }
-
-// ============================================================================
-// UI helpers
-// ============================================================================
 
 void ReEncodeDialog::SetUIEnabled(bool Enabled)
 {
@@ -624,8 +574,7 @@ void ReEncodeDialog::AppendLog(const QString &Msg)
 
 void ReEncodeDialog::UpdateProgress(int64_t Current, int64_t Total)
 {
-  // Throttle GUI updates.  Each call queues a lambda onto the UI thread;
-  // doing that per frame at high encode speeds is pure allocation overhead.
+  // throttle GUI updates: each call queues a lambda onto the UI thread
   static thread_local int64_t lastReported = -1;
   static thread_local int64_t lastCount = 0;
   static thread_local bool hasLast = false;
@@ -671,10 +620,6 @@ void ReEncodeDialog::closeEvent(QCloseEvent *Event)
   QDialog::closeEvent(Event);
 }
 
-// ============================================================================
-// Config loading
-// ============================================================================
-
 void ReEncodeDialog::PopulateEncoderConfig()
 {
   if (LoadEncoderConfigFromActive()) {
@@ -701,10 +646,6 @@ void ReEncodeDialog::PopulateEncoderConfig()
   }
 }
 
-// ============================================================================
-// Browse slots
-// ============================================================================
-
 void ReEncodeDialog::OnBrowseInput()
 {
   QString path = QFileDialog::getOpenFileName(this, obs_module_text("ReEncoderSelectInput"),
@@ -720,10 +661,6 @@ void ReEncodeDialog::OnBrowseOutput()
   if (!path.isEmpty())
     OutputPath->setText(path);
 }
-
-// ============================================================================
-// Start / Stop
-// ============================================================================
 
 void ReEncodeDialog::OnStartStop()
 {
@@ -754,10 +691,9 @@ bool ReEncodeDialog::StartEncoding()
     return false;
   }
 
-  // Reload the encoder config here instead of requiring a manual refresh:
-  // OBS persists encoder settings when they are saved, and the active-encoder
-  // lookup depends on whether an output has run in this session, so the copy
-  // loaded when the dialog was opened may be missing or stale.
+  // reload instead of reusing the copy from dialog-open: the active-encoder
+  // lookup depends on whether an output has run this session, so it may be
+  // missing or stale
   AppendLog("Refreshing encoder config...");
   PopulateEncoderConfig();
 
@@ -767,7 +703,6 @@ bool ReEncodeDialog::StartEncoding()
     return false;
   }
 
-  // 1. Load FFmpeg
   if (!LoadFFmpegAPI(m_FF)) {
     QMessageBox::warning(this, obs_module_text("ReEncoderError"),
                          "Failed to load FFmpeg");
@@ -776,7 +711,7 @@ bool ReEncodeDialog::StartEncoding()
   dbglog("[QSV VPL ReEncoder] DEBUG: LoadFFmpegAPI done, about to reset context");
   AppendLog("FFmpeg loaded");
 
-  // 2. Reset context (individual field reset to avoid std::mutex copy issue)
+  // field-by-field reset: m_Ctx holds a std::mutex and cannot be assigned
   m_Ctx.in_fmt_ctx = nullptr;
   m_Ctx.video_stream_idx = -1;
   m_Ctx.audio_stream_idx = -1;
@@ -801,7 +736,6 @@ bool ReEncodeDialog::StartEncoding()
   m_Ctx.feed_error = false;
   m_Ctx.error_msg.clear();
 
-  // 3. Open input file
   dbglog("[QSV VPL ReEncoder] DEBUG: opening input file: %s",
        inputPath.toUtf8().constData());
   int ret = m_FF.avformat_open_input(&m_Ctx.in_fmt_ctx, inputPath.toUtf8().constData(),
@@ -821,7 +755,6 @@ bool ReEncodeDialog::StartEncoding()
   }
   dbglog("[QSV VPL ReEncoder] DEBUG: stream info found OK");
 
-  // Find video stream
   dbglog("[QSV VPL ReEncoder] DEBUG: finding best video stream...");
   const AVCodec *videoDecoder = nullptr;
   m_Ctx.video_stream_idx = m_FF.av_find_best_stream(m_Ctx.in_fmt_ctx, AVMEDIA_TYPE_VIDEO,
@@ -848,7 +781,6 @@ bool ReEncodeDialog::StartEncoding()
       AppendLog(QString("10-bit source (%1): using P010 pipeline").arg(srcBits));
   }
 
-  // Get frame rate from input
   if (inVideoStream->avg_frame_rate.num > 0 && inVideoStream->avg_frame_rate.den > 0) {
     m_FpsNum = inVideoStream->avg_frame_rate.num;
     m_FpsDen = inVideoStream->avg_frame_rate.den;
@@ -856,26 +788,22 @@ bool ReEncodeDialog::StartEncoding()
 
   m_Ctx.total_frames = static_cast<int64_t>(inVideoStream->nb_frames);
   if (m_Ctx.total_frames <= 0 && m_Ctx.in_fmt_ctx->duration > 0) {
-    // estimate from duration
     m_Ctx.duration = m_Ctx.in_fmt_ctx->duration;
     double fps = static_cast<double>(m_FpsNum) / m_FpsDen;
     m_Ctx.total_frames = static_cast<int64_t>(m_Ctx.duration / AV_TIME_BASE * fps);
   }
 
-  // 4. Open video decoder — prefer hardware: Intel QSV first, then NVIDIA
-  //    (CUDA/NVDEC), then D3D11VA (AMD and any other GPU), falling back to
-  //    multithreaded software decoding on the CPU.  Hardware surfaces are
-  //    downloaded to system memory in processFrame() before entering the
-  //    OBS video pipeline.
+  // decoder preference: Intel QSV, then NVIDIA (CUDA/NVDEC), then D3D11VA
+  // (AMD and others), then multithreaded software.  HW surfaces are
+  // downloaded to system memory in processFrame().
   dbglog("[QSV VPL ReEncoder] DEBUG: opening video decoder...");
   {
     const bool hwAvailable = m_FF.av_hwdevice_ctx_create &&
                              m_FF.av_hwframe_transfer_data &&
                              m_FF.av_buffer_unref && m_FF.av_frame_unref;
 
-    // One attempt: alloc context, attach an optional hw device, open.
-    // On failure everything allocated here is released again, so the caller
-    // can simply try the next option in the chain.
+    // one attempt: alloc context, attach optional hw device, open; on
+    // failure everything is released so the next option can be tried
     auto tryOpen = [&](const AVCodec *codec, AVHWDeviceType hwType,
                        AVPixelFormat wantFmt) -> bool {
       AVBufferRef *device = nullptr;
@@ -907,10 +835,10 @@ bool ReEncodeDialog::StartEncoding()
           dec->get_format = ReEncodeGetHWFormat;
         }
       } else {
-        // FFmpeg API users default to thread_count=1 (single thread), which
-        // starves the encoder; auto-detect core count and enable frame+slice
-        // threading — decode latency is irrelevant for a file re-encode.
-        dec->thread_count = 0; // auto = CPU cores
+        // FFmpeg defaults to thread_count=1, which starves the encoder;
+        // frame+slice threading with auto core count — decode latency is
+        // irrelevant for a file re-encode
+        dec->thread_count = 0;
         dec->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
       }
 
@@ -982,11 +910,9 @@ bool ReEncodeDialog::StartEncoding()
   }
   dbglog("[QSV VPL ReEncoder] DEBUG: frames allocated OK");
 
-  // 7. swscale context is created lazily in FeedThreadMain after first frame
-  //    is decoded, using decoded_frame->format (100% accurate). This avoids
-  //    the AV_PIX_FMT_NONE issue when avcodec_open2 doesn't set pix_fmt.
+  // swscale context is created lazily in FeedThreadMain from the decoded
+  // frame's actual format — avcodec_open2 may leave pix_fmt unset
 
-  // 8. Create OBS video output
   {
     dbglog("[QSV VPL ReEncoder] DEBUG: creating video output...");
     video_output_info vi = {};
@@ -996,8 +922,8 @@ bool ReEncodeDialog::StartEncoding()
     vi.height = static_cast<uint32_t>(srcHeight);
     vi.fps_num = static_cast<uint32_t>(m_FpsNum);
     vi.fps_den = static_cast<uint32_t>(m_FpsDen);
-    // Deeper cache so the decoder can run ahead of the encoder without
-    // the feed thread stalling in video_output_lock_frame.
+    // deep cache: lets the decoder run ahead of the encoder without the
+    // feed thread stalling in video_output_lock_frame
     vi.cache_size = 32;
     vi.colorspace = VIDEO_CS_709;
     vi.range = VIDEO_RANGE_PARTIAL;
@@ -1010,7 +936,6 @@ bool ReEncodeDialog::StartEncoding()
     dbglog("[QSV VPL ReEncoder] DEBUG: video output created OK");
   }
 
-  // 9. Create OBS encoder
   {
     obs_data_t *encSettings = obs_data_create();
     if (m_EncoderSettings) {
@@ -1034,8 +959,6 @@ bool ReEncodeDialog::StartEncoding()
 
   obs_encoder_set_video(m_Encoder, m_Video);
 
-  // 10. Create output (dialog ptr is passed via g_PendingOutputDialog to
-  // reencode_output_create, since obs_output_t is opaque to plugins)
   g_PendingOutputDialog = this;
   m_Output = obs_output_create(REENCODE_OUTPUT_ID, "qsv-reencode-output", nullptr, nullptr);
   if (!m_Output) {
@@ -1047,7 +970,6 @@ bool ReEncodeDialog::StartEncoding()
   obs_output_set_video_encoder(m_Output, m_Encoder);
   blog(LOG_INFO, "[QSV VPL ReEncoder] Output created, encoder attached");
 
-  // 11. Create output file (FFmpeg muxer)
   {
     dbglog("[QSV VPL ReEncoder] DEBUG: creating FFmpeg output context...");
     m_OutputPathBytes = outputPath.toUtf8();
@@ -1060,7 +982,6 @@ bool ReEncodeDialog::StartEncoding()
     }
     dbglog("[QSV VPL ReEncoder] DEBUG: output context created OK");
 
-    // Video stream
     enum AVCodecID outCodecId = EncoderIDToAVCodecID(m_EncoderID);
     m_Ctx.out_video_stream = m_FF.avformat_new_stream(m_Ctx.out_fmt_ctx, nullptr);
     if (!m_Ctx.out_video_stream) {
@@ -1071,12 +992,10 @@ bool ReEncodeDialog::StartEncoding()
     m_Ctx.out_video_stream->codecpar->codec_id = outCodecId;
     m_Ctx.out_video_stream->codecpar->width = srcWidth;
     m_Ctx.out_video_stream->codecpar->height = srcHeight;
-    // timebase = 1/fps for simplicity; PTS will be rescaled from nanosec
+    // timebase 1/fps; packet PTS/DTS rescaled in muxVideoPacket
     m_Ctx.out_video_stream->time_base = {m_FpsDen, m_FpsNum};
-    // set avg_frame_rate for the stream
     m_Ctx.out_video_stream->avg_frame_rate = {m_FpsNum, m_FpsDen};
 
-    // Audio stream (copy from input)
     if (m_Ctx.audio_stream_idx >= 0) {
       AVStream *inAudioStream = m_Ctx.in_fmt_ctx->streams[m_Ctx.audio_stream_idx];
       m_Ctx.out_audio_stream = m_FF.avformat_new_stream(m_Ctx.out_fmt_ctx, nullptr);
@@ -1087,7 +1006,6 @@ bool ReEncodeDialog::StartEncoding()
       }
     }
 
-    // Open output file
     dbglog("[QSV VPL ReEncoder] DEBUG: opening output file...");
     if (!(m_Ctx.out_fmt_ctx->oformat->flags & AVFMT_NOFILE)) {
       ret = m_FF.avio_open(&m_Ctx.out_fmt_ctx->pb, outPath, AVIO_FLAG_WRITE);
@@ -1097,11 +1015,9 @@ bool ReEncodeDialog::StartEncoding()
       }
     }
 
-    // NOTE: the header is NOT written here.  The MP4 avcC/hvcC box must
-    // contain the SPS/PPS, which the QSV encoder only produces together
-    // with its first keyframe (well after obs_output_start()).  The feed
-    // thread writes the header lazily, right before muxing the first
-    // encoded packet, once obs_encoder_get_extra_data() becomes available.
+    // header NOT written here: the MP4 avcC/hvcC box needs the SPS/PPS,
+    // which the QSV encoder only exposes via obs_encoder_get_extra_data()
+    // after its first keyframe — the feed thread writes the header lazily
   }
 
   // 12. Start OBS output (this internally initializes encoder, starts encoding,
@@ -1127,8 +1043,6 @@ bool ReEncodeDialog::StartEncoding()
   return true;
 
 cleanup_failed:
-  // Release everything allocated so far — the per-step `return false` paths
-  // used to leak whichever resources were created before the failure.
   g_PendingOutputDialog = nullptr;
   if (m_Output) {
     obs_output_release(m_Output);
@@ -1170,7 +1084,7 @@ void ReEncodeDialog::StopEncoding()
   if (!m_Encoding)
     return;
 
-  // If called from UI (user clicked stop), signal feed thread to stop reading
+  // user stop: only signal the feed thread if it isn't already stopping
   bool wasUserStop = !m_Ctx.stop_requested;
   if (wasUserStop) {
     AppendLog("Stopping...");
@@ -1178,28 +1092,24 @@ void ReEncodeDialog::StopEncoding()
     m_Ctx.pkt_cv.notify_all();
   }
 
-  // Wait for feed thread to finish feeding all frames
   {
     std::unique_lock lock(m_Ctx.pkt_mutex);
     m_Ctx.pkt_cv.wait(lock, [this] { return m_Ctx.encoder_done; });
   }
 
-  // Flush encoder by stopping the output.  obs_output_stop() is async; the
-  // output's "stop" signal (see reencode_output_stopped) fires once the
-  // encoder has been shut down, and that is what releases the feed thread
-  // to write the tail packets and the trailer.
+  // obs_output_stop() is async; its "stop" signal (see reencode_output_stopped)
+  // fires once the encoder is shut down and releases the feed thread to write
+  // the tail packets and trailer
   if (m_Output) {
     obs_output_stop(m_Output);
     obs_output_release(m_Output);
     m_Output = nullptr;
   }
 
-  // Join feed thread (it will now collect remaining packets, write trailer, cleanup)
   if (m_FeedThread.joinable()) {
     m_FeedThread.join();
   }
 
-  // Release remaining resources
   if (m_Encoder) {
     obs_encoder_release(m_Encoder);
     m_Encoder = nullptr;
@@ -1219,9 +1129,7 @@ void ReEncodeDialog::StopEncoding()
   AppendLog("Encoding stopped");
 }
 
-// ============================================================================
-// Feed thread — reads input, feeds video, writes audio, muxes everything
-// ============================================================================
+// feed thread: decodes/feeds video, muxes encoded packets and audio
 
 void ReEncodeDialog::FeedThreadMain()
 {
@@ -1245,15 +1153,11 @@ void ReEncodeDialog::FeedThreadMain()
 
     int ret;
 
-    // Write the output header once, lazily.  The video parameter sets
-    // (SPS/PPS for H.264, VPS/SPS/PPS for HEVC) are stored in the MP4
-    // avcC/hvcC box, but the QSV encoder strips them from the bitstream
-    // and only exposes them via obs_encoder_get_extra_data() after the
-    // first keyframe has been encoded.  So the header must be written
-    // after the first encoded packet arrives, not in StartEncoding().
-    // Thread-safety: the encoder writes ExtraData before pushing packets
-    // into pkt_queue (both happen on the encoder thread, in order), so by
-    // the time we pop a packet under pkt_mutex the data is stable.
+    // header written lazily: the QSV encoder strips the parameter sets
+    // (SPS/PPS, VPS for HEVC; stored in the MP4 avcC/hvcC box) from the
+    // bitstream and only exposes them via obs_encoder_get_extra_data()
+    // after the first keyframe.  safe: the encoder writes ExtraData before
+    // pushing packets, in order, so data is stable once popped under pkt_mutex
     auto writeHeaderOnce = [&]() -> bool {
       if (ctx.header_written)
         return true;
@@ -1292,12 +1196,10 @@ void ReEncodeDialog::FeedThreadMain()
     // (non-monotonic DTS) instead of failing the whole encode.
     int64_t lastVideoDts = INT64_MIN;
 
-    // Mux one encoded video packet.  Encoder PTS/DTS arrive in {1/fps} ticks,
-    // but avformat_write_header() lets the MP4 muxer pick a finer stream
-    // time_base (typically 1/15360 for 30fps) — so every packet must be
-    // rescaled, otherwise all frames land 1 tick apart and the video flashes
-    // by in a fraction of a second.  Also flushes buffered audio packets
-    // whose PTS is due before this video frame's.
+    // mux one encoded video packet; encoder PTS/DTS arrive in {1/fps} ticks
+    // but the MP4 muxer picks a finer stream time_base (e.g. 1/15360), so
+    // every packet must be rescaled or the video plays far too fast.  also
+    // flushes buffered audio whose PTS is due before this frame's
     auto muxVideoPacket = [&](ReEncodeCtx::Packet &encPkt) -> bool {
       if (!writeHeaderOnce())
         return false;
@@ -1363,9 +1265,8 @@ void ReEncodeDialog::FeedThreadMain()
       return true;
     };
 
-    // Helper: process one decoded frame (convert/pass-through
-    // → feed OBS → mux).  Defined at loop scope because both the main loop
-    // and the EOF decoder-drain loop use it.
+    // process one decoded frame: convert/pass-through, feed OBS, mux.
+    // at loop scope: used by both the main loop and the EOF drain loop
     auto processFrame = [&]() -> bool {
           AVFrame *srcF = ctx.decoded_frame;
           // Hardware decoders output GPU surfaces — download to system
@@ -1420,7 +1321,6 @@ void ReEncodeDialog::FeedThreadMain()
             workF = ctx.nv12_frame;
           }
 
-          // 3. Feed frame to OBS video pipeline
           int64_t ptsNs = srcF->pts;
           AVRational decTb = ctx.in_fmt_ctx->streams[ctx.video_stream_idx]->time_base;
           if (ptsNs == AV_NOPTS_VALUE)
@@ -1431,13 +1331,10 @@ void ReEncodeDialog::FeedThreadMain()
             ptsNs = ff.av_rescale_q(ptsNs, decTb, {1, 1000000000});
 
           video_frame vf = {};
-          // Backpressure: keep in-flight frames (= fed - consumed) very low
-          // so the video cache always has a free slot.  lock_frame() failure
-          // is destructive (the encoder re-encodes the previous frame and
-          // the pacing counter is corrupted), so the decoder must be
-          // throttled to the encoder's pace — exactly what FFmpeg's bounded
-          // encoder queue does.  Speed is then bounded by the encoder, never
-          // by frame drops.
+          // backpressure: keep in-flight frames (fed - consumed) low so the
+          // video cache always has a free slot; lock_frame() failure is
+          // destructive (encoder re-encodes the previous frame, pacing counter
+          // corrupted), so the decoder is throttled to the encoder's pace
           {
             auto stallStart = std::chrono::steady_clock::now();
             bool timedOut = false;
@@ -1457,9 +1354,8 @@ void ReEncodeDialog::FeedThreadMain()
               dbglog("[QSV VPL ReEncoder] backpressure stall timeout at frame %lld, resuming feed",
                      (long long)ctx.frames_fed.load());
           }
-          // Normally succeeds on the first try (see pacing above).  If it
-          // still fails, wait for a slot rather than dropping the frame —
-          // a dropped frame in an offline re-encode is corruption.
+          // wait for a slot rather than dropping a frame — a dropped frame
+          // in an offline re-encode is corruption
           while (!video_output_lock_frame(m_Video, &vf, 1, ptsNs)) {
             if (ctx.stop_requested)
               return true;
@@ -1468,10 +1364,9 @@ void ReEncodeDialog::FeedThreadMain()
 
           for (int i = 0; i < MAX_AV_PLANES; i++) {
             if (vf.data[i] && workF->data[i]) {
-              // Copy row-wise but never read past the tightly-packed source:
-              // cvt_buf is allocated with align=1 (linesize == width) while
-              // OBS's vf.linesize may be larger (aligned) — the old memcpy by
-              // vf.linesize could over-read the source buffer.
+              // cvt_buf is packed (align=1) while vf.linesize may be aligned
+              // and larger — copy row-wise with the min linesize to avoid
+              // over-reading the source buffer
               const size_t srcLine = (size_t)workF->linesize[i];
               const size_t dstLine = (size_t)vf.linesize[i];
               const size_t rows =
@@ -1508,11 +1403,10 @@ void ReEncodeDialog::FeedThreadMain()
     };
 
     while (!ctx.stop_requested) {
-      // Read next packet from input
       ret = ff.av_read_frame(ctx.in_fmt_ctx, inPkt);
       if (ret < 0) {
         if (ret == AVERROR_EOF) {
-          break; // done
+          break;
         }
         AppendLog(QString("ERROR: av_read_frame failed: %1").arg(ret));
         success = false;
@@ -1520,13 +1414,9 @@ void ReEncodeDialog::FeedThreadMain()
       }
 
       if (inPkt->stream_index == ctx.video_stream_idx) {
-        // --- Video packet ---
-
-        // Send packet to decoder.
-        // EAGAIN means decoder output buffer is full — drain it first, then retry.
+        // EAGAIN: decoder output buffer full — drain it, then retry
         ret = ff.avcodec_send_packet(ctx.video_decoder, inPkt);
         if (ret == AVERROR(EAGAIN)) {
-          // drain decoder output
           while (true) {
             ret = ff.avcodec_receive_frame(ctx.video_decoder, ctx.decoded_frame);
             if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
@@ -1545,7 +1435,6 @@ void ReEncodeDialog::FeedThreadMain()
             ff.av_packet_unref(inPkt);
             break;
           }
-          // retry sending the same packet
           ret = ff.avcodec_send_packet(ctx.video_decoder, inPkt);
         }
         ff.av_packet_unref(inPkt);
@@ -1575,7 +1464,7 @@ void ReEncodeDialog::FeedThreadMain()
           break;
 
       } else if (inPkt->stream_index == ctx.audio_stream_idx) {
-        // --- Audio packet: buffer for later writing ---
+        // audio: buffer for later muxing
         if (ctx.out_audio_stream) {
           AVPacket *audioPkt = ff.av_packet_alloc();
           ff.av_packet_move_ref(audioPkt, inPkt);
@@ -1588,9 +1477,6 @@ void ReEncodeDialog::FeedThreadMain()
       }
     }
 
-    // --- Loop ended (EOF or stop_requested) ---
-
-    // Flush the decoder: send null packet, drain remaining frames
     ff.avcodec_send_packet(ctx.video_decoder, nullptr);
     while (true) {
       ret = ff.avcodec_receive_frame(ctx.video_decoder, ctx.decoded_frame);
@@ -1607,9 +1493,9 @@ void ReEncodeDialog::FeedThreadMain()
       }
     }
 
-    // Frames recovered by the direct drain below never pass through the OBS
-    // encoder callback, so obs_encoder_get_encoded_frames() will never count
-    // them — keep them separate to avoid a misleading "did not finish" count.
+    // drained frames never pass the encoder callback, so
+    // obs_encoder_get_encoded_frames() never counts them — tracked
+    // separately to keep the "did not finish" check honest
     int drainedFrames = 0;
 
     if (m_Encoder) {
@@ -1659,19 +1545,14 @@ void ReEncodeDialog::FeedThreadMain()
       }
     }
 
-    // Wait for the encoder to actually encode every fed frame before
-    // letting StopEncoding() tear the output down: obs_output_stop()
-    // disconnects receive_video immediately, and any frames still sitting
-    // in the video cache would be silently dropped.
-    //
-    // Stall detection: frames still buffered inside the driver's lookahead
-    // window may never surface as encoded output until shutdown, so waiting
-    // for full equality could block for the whole 30s timeout on every run.
-    // If encoded_frames stops advancing for 2s, accept the remainder.
+    // wait until the encoder has encoded every fed frame before letting
+    // StopEncoding() tear the output down: obs_output_stop() disconnects
+    // receive_video and silently drops frames still in the video cache.
+    // driver lookahead may hold frames until shutdown, so if encoded_frames
+    // stops advancing for 2s, accept the remainder (30s deadline overall)
     if (!ctx.stop_requested && m_Encoder) {
-      // Frames recovered by the drain above are already accounted for — only
-      // wait for (and warn about) the remainder, otherwise the 2s stall
-      // budget is always burned and the count is misleading.
+      // drained frames are already accounted for; only wait for the
+      // remainder or the 2s stall budget is always burned
       const int64_t fed = ctx.frames_fed.load();
       auto deadline = std::chrono::steady_clock::now() + 30s;
       auto lastProgress = std::chrono::steady_clock::now();
@@ -1699,14 +1580,13 @@ void ReEncodeDialog::FeedThreadMain()
       }
     }
 
-    // Signal that we've finished feeding all frames
     {
       std::lock_guard lock(ctx.pkt_mutex);
       ctx.encoder_done = true;
     }
     ctx.pkt_cv.notify_all();
 
-    // If EOF (not user-requested stop), trigger StopEncoding on main thread
+    // EOF (not user stop): trigger StopEncoding on the main thread
     if (!ctx.stop_requested) {
       QMetaObject::invokeMethod(this, [this]() {
         if (m_Encoding)
@@ -1714,9 +1594,9 @@ void ReEncodeDialog::FeedThreadMain()
       }, Qt::QueuedConnection);
     }
 
-    // Wait for the output's "stopped" signal (encoder fully drained).
-    // The timeout is a safety net against a lost signal deadlocking the
-    // feed thread (and thus the UI, which joins it).
+    // wait for the output's "stopped" signal (encoder fully drained); the
+    // timeout guards against a lost signal deadlocking the feed thread,
+    // which the UI joins
     {
       std::unique_lock lock(ctx.pkt_mutex);
       if (!ctx.pkt_cv.wait_for(lock, 10s,
@@ -1741,7 +1621,6 @@ void ReEncodeDialog::FeedThreadMain()
       }
     }
 
-    // Write remaining audio packets
     if (ctx.header_written && ctx.out_audio_stream && !ctx.audio_packets.empty()) {
       AppendLog(QString("Writing %1 remaining audio packets...").arg(ctx.audio_packets.size()));
       for (auto *audioPkt : ctx.audio_packets) {
@@ -1752,7 +1631,7 @@ void ReEncodeDialog::FeedThreadMain()
       ctx.audio_packets.clear();
     }
 
-    // Write trailer — only valid if the header was actually written
+    // trailer only valid if the header was written
     if (ctx.out_fmt_ctx && success && ctx.header_written) {
       ff.av_write_trailer(ctx.out_fmt_ctx);
       AppendLog("Trailer written");
@@ -1763,9 +1642,8 @@ void ReEncodeDialog::FeedThreadMain()
   } catch (const std::exception &e) {
     AppendLog(QString("EXCEPTION: %1").arg(e.what()));
     success = false;
-    // Signal completion on the exception path too — StopEncoding() waits on
-    // encoder_done and would otherwise deadlock (the normal signal below is
-    // skipped when an exception jumps straight to cleanup).
+    // signal completion here too — StopEncoding() waits on encoder_done and
+    // would deadlock otherwise
     {
       std::lock_guard lock(ctx.pkt_mutex);
       ctx.encoder_done = true;
@@ -1781,7 +1659,6 @@ void ReEncodeDialog::FeedThreadMain()
     ctx.pkt_cv.notify_all();
   }
 
-  // Cleanup FFmpeg resources
   if (ctx.out_fmt_ctx) {
     if (!(ctx.out_fmt_ctx->oformat->flags & AVFMT_NOFILE)) {
       ff.avio_closep(&ctx.out_fmt_ctx->pb);
@@ -1815,7 +1692,6 @@ void ReEncodeDialog::FeedThreadMain()
     ff.av_frame_free(&ctx.hw_frame);
   }
 
-  // cleanup buffered audio packets
   for (auto *p : ctx.audio_packets) {
     ff.av_packet_free(&p);
   }
@@ -1824,10 +1700,6 @@ void ReEncodeDialog::FeedThreadMain()
   AppendLog(success ? "Encoding completed" : "Encoding failed");
   UpdateProgress(ctx.total_frames, ctx.total_frames);
 }
-
-// ============================================================================
-// Toolbar registration
-// ============================================================================
 
 static ReEncodeDialog *g_ActiveReEncodeDialog = nullptr;
 

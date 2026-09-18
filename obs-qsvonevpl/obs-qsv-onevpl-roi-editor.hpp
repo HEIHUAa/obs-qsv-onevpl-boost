@@ -47,7 +47,6 @@ private:
   void SetUIFromGlobalConfig();
   void UpdatePreviewFromText();
 
-  // Preview
   bool CreatePreview();
   void DestroyPreview();
   void ResizePreview();
@@ -57,26 +56,20 @@ private:
 
   QLabel *InfoLabel;
 
-  // ROI enable toggle
   QCheckBox *ROIEnableCheck;
 
-  // Always on top toggle
   QCheckBox *AlwaysOnTopCheck;
 
-  // ROI mode
   QButtonGroup *ModeGroup;
   QRadioButton *QPDeltaRadio;
   QRadioButton *PriorityRadio;
 
-  // ROI text input
   QTextEdit *ROITextEdit;
   QLabel *FormatLabel;
 
-  // Buttons
   QPushButton *ApplyButton;
   QPushButton *CancelButton;
 
-  // Preview
   QWidget *PreviewWidget;
   obs_display_t *PreviewDisplay;
   QTimer *RefreshTimer;       // periodic preview refresh

@@ -18,23 +18,16 @@
 
 constexpr mfxU32 BRC_MAX_KBPS_LIMIT = 65535;
 
-// Fixed strength used when a Denoise2 AUTO/DEFAULT mode falls back to the
-// legacy 'DNIS' denoise filter, which has no automatic mode.
+// Fixed strength for the Denoise2 AUTO/DEFAULT fallback to the legacy 'DNIS'
+// denoise filter, which has no automatic mode.
 static constexpr mfxU16 kLegacyDenoiseAutoFactor = 50;
 
-// ---------------------------------------------------------------------------
-// H.264 quant matrix (scaling list) injection.
-//
-// QSV has no public "custom quant matrix" knob, but the driver consumes
-// user-supplied SPS/PPS attached via MFX_EXTBUFF_CODING_OPTION_SPSPPS at Init
-// time (ReadSpsPpsHeaders in mfx_h264_enc_common_hw.cpp parses the injected
-// headers into the internal param set, including the scaling lists). We take
-// the runtime SPS/PPS, rewrite them with our matrices inserted, and re-init.
-//
-// Presets (values verified against FFmpeg libavcodec/h264_ps.c defaults and
-// the JM reference configuration). Matrices are stored in zigzag order --
-// the H.264 defaults are diagonal-symmetric so zigzag == row-major here.
-// ---------------------------------------------------------------------------
+// H.264 quant matrix (scaling list) injection: QSV has no public "custom
+// quant matrix" knob, but the driver consumes user-supplied SPS/PPS attached
+// via MFX_EXTBUFF_CODING_OPTION_SPSPPS at Init time (ReadSpsPpsHeaders in
+// mfx_h264_enc_common_hw.cpp parses the injected headers into the internal
+// param set, including the scaling lists). preset values verified against
+// FFmpeg libavcodec/h264_ps.c defaults and the JM reference configuration.
 enum QMatrixPreset {
   QM_DEFAULT = 0,      // leave SPS/PPS untouched (native default matrices)
   QM_DRV_FLAT = 1,     // driver CQM matrix 0 -- recommended avg QP < 32
@@ -56,23 +49,16 @@ static const uint8_t kDefaultI8[64] = {
     13, 16, 18, 23, 25, 27, 29, 31, 16, 18, 23, 25, 27, 29, 31, 33,
     18, 23, 25, 27, 29, 31, 33, 36, 23, 25, 27, 29, 31, 33, 36, 38,
     25, 27, 29, 31, 33, 36, 38, 40, 27, 29, 31, 33, 36, 38, 40, 42};
-// kDefault* above are only used for the H.264 7.3.2.1.1.1 fallback rule A
-// (fill the leading luma list when the user supplies chroma/8x8 only); they
-// are not selectable presets.
+// kDefault* only serve the H.264 7.3.2.1.1.1 fallback rule A (fill the
+// leading luma list when the user supplies chroma/8x8 only); they are not
+// selectable presets.
 
-// ---------------------------------------------------------------------------
 // Driver "custom quant matrix" presets, copied verbatim from
 // FillCustomScalingLists() in vpl-gpu-rt
-// (mfx_lib/encode_hw/h264/src/mfx_h264_encode_hw_utils_new.cpp).  The driver
-// picks one of these per-frame by average QP (SetupAdaptiveCQM); we expose
-// them as fixed presets.  Stored in PLANE (row-major) order like the driver
-// and converted to zigzag before being written into the injected SPS/PPS.
-//   index 0 = FLAT    (avg QP < 32)
-//   index 1 = weak    (avg QP 32..38)
-//   index 2 = medium  (avg QP 38..44)
-//   index 3 = strong  (avg QP 44..50)
-//   index 4 = extreme (avg QP >= 50)
-// ---------------------------------------------------------------------------
+// (mfx_lib/encode_hw/h264/src/mfx_h264_encode_hw_utils_new.cpp). the driver
+// picks one of these per-frame by average QP (SetupAdaptiveCQM); stored in
+// PLANE (row-major) order like the driver and converted to zigzag before
+// being written into the injected SPS/PPS.
 static const uint8_t kDrvIntra4[5][16] = {
     {16, 34, 53, 74, 34, 53, 74, 85, 53, 74, 85, 98, 74, 85, 98, 112},
     {21, 21, 21, 24, 21, 21, 24, 26, 21, 24, 26, 29, 24, 26, 29, 32},
@@ -131,10 +117,9 @@ static const uint8_t kDrvFlat4[16] = {16, 16, 16, 16, 16, 16, 16, 16,
                                       16, 16, 16, 16, 16, 16, 16, 16};
 
 // Plane (row-major) -> zigzag. H.264 carries scaling lists in zigzag scan
-// order (7.3.2.1.1.1 / Table 6-14) while the driver CQM tables are planar,
-// so this is required before writing them into the injected SPS/PPS.  Tables
-// below are the standard scan: entry k of the list lives at row-major index
-// zz[k] (same as ffmpeg ff_zigzag_direct).
+// order (7.3.2.1.1.1 / Table 6-14) while the driver CQM tables are planar.
+// entry k of the list lives at row-major index zz[k] (same as ffmpeg
+// ff_zigzag_direct).
 template <size_t N>
 static void H264PlaneToZigZag(const uint8_t *plane, uint8_t *zigzag) {
   static const uint8_t zz4[16] = {
@@ -154,7 +139,7 @@ static void H264PlaneToZigZag(const uint8_t *plane, uint8_t *zigzag) {
 // rule: strong/extreme reuse the weak/medium luma tables, the rest stay flat.
 static std::optional<H264ScalingLists> MakeDriverPresetLists(int preset) {
   H264ScalingLists l;
-  const int idx = preset - QM_DRV_FLAT;  // 0..4 = driver matrix index
+  const int idx = preset - QM_DRV_FLAT;
   uint8_t z[64];
   auto arr16 = [](const uint8_t src[16]) {
     std::array<uint8_t, 16> a{};
@@ -260,11 +245,9 @@ struct H264ScalingSetPointers {
 };
 
 // preset -> pointers. DEFAULT returns empty (native matrices); driver presets
-// are expanded by MakeDriverPresetLists; texture presets by
-// MakeTexturePresetLists; CUSTOM reads the raw lists straight from params.
-// Unmatched groups stay null (driver default).
-//
-// `owned` is filled for the preset paths so the returned pointers stay valid:
+// are expanded by MakeDriverPresetLists, texture presets by
+// MakeTexturePresetLists, CUSTOM reads the raw lists straight from params.
+// `owned` is filled for the preset paths so the returned pointers stay valid;
 // the caller must keep `owned` alive until it stops using the returned set.
 static H264ScalingSetPointers GetH264ScalingSetPointers(
     int preset, const H264ScalingLists *custom,
@@ -414,7 +397,6 @@ static size_t H264SerializeNal(const H264BitWriter &w, uint8_t nal_hdr,
     dst[out++] = b;
     zero_run = (b == 0) ? zero_run + 1 : 0;
   };
-  // start code (3 or 4 bytes) + nal header
   if (sc_len == 4) { dst[out++] = 0; dst[out++] = 0; dst[out++] = 0; dst[out++] = 1; }
   else { dst[out++] = 0; dst[out++] = 0; dst[out++] = 1; }
   put_ep(nal_hdr);
@@ -524,7 +506,6 @@ static void H264WriteHrd(H264BitWriter &w, const H264SpsFields &s) {
   }
 }
 
-// pstart points at the NAL payload (after the NAL header byte).
 static bool H264ParseSps(const uint8_t *payload, size_t len, H264SpsFields &s) {
   H264BitReader r(payload, len);
   s.profile_idc = (uint8_t)r.u(8);
@@ -827,9 +808,9 @@ static mfxU16 H264RebuildPps(const H264PpsFields &p,
     w.u(write8x8 ? 1 : 0, 1);  // pic_scaling_matrix_present_flag
     if (write8x8) {
       w.u(sl.intra8 ? 1 : 0, 1);
-      if (sl.intra8) H264WriteScalingList(w, sl.intra8, 64);  // Intra8x8
+      if (sl.intra8) H264WriteScalingList(w, sl.intra8, 64);
       w.u(sl.inter8 ? 1 : 0, 1);
-      if (sl.inter8) H264WriteScalingList(w, sl.inter8, 64);  // Inter8x8
+      if (sl.inter8) H264WriteScalingList(w, sl.inter8, 64);
     }
     // second_chroma_qp_index_offset is MANDATORY once more_rbsp_data() is
     // true (H.264 7.3.2.2). Dropping it desyncs the driver's PPS parser and
@@ -991,9 +972,24 @@ static mfxU16 ExtractVP9QP(std::span<const uint8_t> data) {
 }
 
 QSVEncoder::~QSVEncoder() {
-  // Always clean up — even if QSVEncode is null (partial init failure),
-  // QSVSession may still be open and must be closed.
+  // ClearData covers partial init: QSVSession may still be open even if
+  // QSVEncode is null.
   ClearData();
+}
+
+// Derive lookahead state from the FINAL encode params. CO2.LookAheadDepth is
+// set whenever lookahead is enabled (also the CBR + EncTools LAGS trigger);
+// LA/LA_HRD/LA_ICQ rate control implies it too. must run before pool init so
+// all pool sizing can use it.
+void QSVEncoder::DeriveLookaheadState() {
+  const mfxExtCodingOption2 *CO2 =
+      QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
+  m_LookaheadDepth = CO2 ? CO2->LookAheadDepth : 0;
+  m_LookaheadActive =
+      m_LookaheadDepth > 0 ||
+      QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_LA ||
+      QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_LA_ICQ ||
+      QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_LA_HRD;
 }
 
 void QSVEncoder::InitSystemMemorySurfacePool() {
@@ -1017,12 +1013,17 @@ void QSVEncoder::InitSystemMemorySurfacePool() {
     }
   }
 
-  // Ensure enough surfaces for all async tasks.  Data.Locked provides
-  // accurate per-surface tracking so we don't need extra margin.
+  // Ensure enough surfaces for all async tasks; Data.Locked gives accurate
+  // per-surface tracking so no extra margin is needed.
   if (QSVSystemMemPoolSize < QSVEncodeParams.AsyncDepth) {
     warn("SystemMemPoolSize (%d) < AsyncDepth (%d), clamping",
          QSVSystemMemPoolSize, QSVEncodeParams.AsyncDepth);
     QSVSystemMemPoolSize = QSVEncodeParams.AsyncDepth;
+  }
+
+  if (m_LookaheadActive) {
+    info("\tLookahead active (depth=%d) on the system-memory path",
+         m_LookaheadDepth);
   }
 
   info("\tSystem memory surface pool size: %d", QSVSystemMemPoolSize);
@@ -1074,7 +1075,7 @@ void QSVEncoder::InitSystemMemorySurfacePool() {
     };
     break;
   case MFX_FOURCC_YUY2:
-    Layout.Pitch = align16(FI.Width * 2);
+    Layout.Pitch = align16(FI.Width * 4);
     Layout.Size = Layout.Pitch * FI.Height;
     Layout.SetPointers = [](mfxFrameData &data, mfxU8 *buf) {
       data.Y = buf;
@@ -1224,9 +1225,8 @@ mfxStatus QSVEncoder::CreateSession([[maybe_unused]] enum codec_enum Codec,
     makeConfig(3, MFX_ACCEL_MODE_VIA_D3D11, "mfxImplDescription.AccelerationMode");
 
     // D3D11 surface sharing mode — all 3 associated parameters must be
-    // set on a single mfxConfig (logical AND). This tells the runtime
-    // that the app will supply its own D3D11 device via SetHandle,
-    // preventing the runtime from creating an internal device handle.
+    // set on a single mfxConfig (logical AND); tells the runtime the app
+    // supplies its own D3D11 device via SetHandle.
     QSVLoaderConfig[4] = MFXCreateConfig(Loader);
     QSVLoaderVariant[4].Type = MFX_VARIANT_TYPE_U32;
 
@@ -1282,7 +1282,6 @@ void QSVEncoder::DisableVPP() {
   QSVProcessingEnable = false;
 }
 
-// Forward declaration — defined after CO_FIELDS tables
 static void LogDriverCorrections(
     const char *Prefix,
     MFXVideoParam &Params,
@@ -1305,8 +1304,8 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
   mfxStatus Status = SetEncoderParams(InputParams, Codec);
   info("\tSetEncoderParams%s status:  %d", log_prefix, Status);
 
-  // Keep a copy of the user-requested mfx params so we can detect
-  // driver-initiated profile/format downgrades after Init succeeds.
+  // Keep a copy of the user-requested mfx params to detect driver-initiated
+  // profile/format downgrades after Init succeeds.
   mfxInfoMFX MFXCopy = {};
 
   if (Status >= MFX_ERR_NONE) {
@@ -1314,8 +1313,8 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
       ParseCustomCodingOptions(InputParams->CustomCodingOptions);
     }
 
-    // Save before-copies for all extension buffers to diff against
-    // post-Query/Init driver corrections.
+    // Save before-copies of all ext buffers to diff against post-Query/Init
+    // driver corrections.
     mfxExtCodingOption COCopy = {};
     mfxExtCodingOption2 CO2Copy = {};
     mfxExtCodingOption3 CO3Copy = {};
@@ -1376,10 +1375,9 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
              "attempting Init directly", log_prefix);
       }
 
-      // QueryIOSurf must be called BEFORE Init per OneVPL API spec.
-      // For system-memory path, the driver tells us how many surfaces
-      // to allocate; for video-memory path the driver manages its own
-      // pool and QueryIOSurf is optional.
+      // QueryIOSurf must be called BEFORE Init per the OneVPL API spec; it
+      // sizes the system-memory surface pool (the video-memory path manages
+      // its own pool, so there it's optional).
       if (QSVUseSystemMemoryPath) {
         mfxFrameAllocRequest IOSurfRequest[2] = {};
         mfxStatus QISSts =
@@ -1437,8 +1435,8 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
     }
   }
 
-  // Retry: if EncTools BRC is enabled but driver doesn't support it,
-  // just disable BRC and keep other EncTools options (AdaptiveMBQP etc.)
+  // If EncTools BRC is enabled but unsupported, disable BRC and keep the
+  // other EncTools options (AdaptiveMBQP etc.)
   if (Status < MFX_ERR_NONE) {
     auto *EncToolsParams = QSVEncodeParams.GetExtBuffer<mfxExtEncToolsConfig>();
     if (EncToolsParams && EncToolsParams->BRC == MFX_CODINGOPTION_ON) {
@@ -1451,7 +1449,6 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
       info("\tMFXVideoENCODE_Init%s retry (BRC disabled) status: %d",
            log_prefix, Status);
     } else if (EncToolsParams) {
-      // Full EncTools removal as last resort (e.g. other EncTools fields)
       warn("MFXVideoENCODE_Init%s failed (err=%d), "
            "retrying without EncTools config",
            log_prefix, Status);
@@ -1596,7 +1593,6 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
          log_prefix, Status);
   }
 
-  // Retry without CodingOption3
   if (Status < MFX_ERR_NONE &&
       QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
     auto CO3 =
@@ -1633,16 +1629,14 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
 #endif
 
   // Retry chain Inits don't normalize MFX_WRN_INCOMPATIBLE_VIDEO_PARAM (=5)
-  // like the initial Init does at L406-410. status=5 means Init succeeded
-  // with adjusted params, so normalize to MFX_ERR_NONE to keep downstream
-  // code (GetSurface test, InitTexturePool, etc.) on the success path.
+  // like the initial Init does; status=5 means Init succeeded with adjusted
+  // params, so normalize to MFX_ERR_NONE for the downstream success path.
   if (Status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) {
     Status = MFX_ERR_NONE;
   }
 
   // HEVC only: warn if the driver silently downgraded the requested profile
-  // or color format. Helps users understand why e.g. RExt 4:4:4 ends up as
-  // 4:2:0 or SCC falls back to Main.
+  // or color format (e.g. RExt 4:4:4 -> 4:2:0, SCC -> Main).
   if (Status >= MFX_ERR_NONE &&
       QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
     const mfxU16 actual_profile = QSVEncodeParams.mfx.CodecProfile;
@@ -1664,16 +1658,13 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
   }
 
   // AVC only: chroma QP offset and/or custom quant matrices injected through
-  // SPS/PPS. The oneVPL driver has no public knobs for either, but it DOES
-  // consume user-supplied SPS/PPS attached via MFX_EXTBUFF_CODING_OPTION_SPSPPS
-  // at Init time (ReadSpsPpsHeaders in mfx_h264_enc_common_hw.cpp parses the
-  // injected headers into the internal param set, including
-  // chroma_qp_index_offset and the scaling lists). Those values are used both
-  // for the hardware encode quantization AND for the SPS/PPS emitted in the
-  // bitstream, so encoder and decoder sides stay consistent.
+  // SPS/PPS (see the quant matrix notes at the top of this file). The
+  // injected values are used both for the hardware encode quantization AND
+  // for the SPS/PPS emitted in the bitstream, so encoder and decoder sides
+  // stay consistent.
   //
-  // Flow: native Init -> grab runtime headers via GetVideoParam -> rewrite SPS
-  // (scaling lists) and/or PPS (chroma offset + 8x8 lists) -> close -> re-init
+  // Flow: native Init -> grab runtime headers via GetVideoParam -> rewrite
+  // SPS (scaling lists) and/or PPS (chroma offset + 8x8 lists) -> re-init
   // with the patched headers attached.
   if (Status >= MFX_ERR_NONE &&
       QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC) {
@@ -1691,9 +1682,8 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
            chromaOffset);
 
       // Patched headers only take effect through the sw BRC path; on other
-      // paths (CBR, no Lookahead, non-VBR/ICQ RC) the Intel driver skips the
-      // injected values and may even freeze frames, so bail out here and
-      // keep native headers instead of risking the freeze.
+      // paths the Intel driver skips the injected values and may even freeze
+      // frames, so bail out here and keep native headers instead.
       const bool swBrcPath = InputParams->Lookahead &&
                              (InputParams->RateControl == MFX_RATECONTROL_VBR ||
                               InputParams->RateControl == MFX_RATECONTROL_ICQ);
@@ -1714,7 +1704,6 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
       SPSPPSParams->SPSId = 0;
       SPSPPSParams->PPSId = 0;
 
-      // Grab the runtime-generated SPS/PPS (driver fills the buffers).
       mfxStatus GvpSts = QSVEncode->GetVideoParam(&QSVEncodeParams);
 
       bool Injected = false;
@@ -1722,7 +1711,6 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
       bool ppsOk = false;
       if (GvpSts >= MFX_ERR_NONE && SPSPPSParams->SPSBufSize > 0 &&
           SPSPPSParams->PPSBufSize > 0) {
-        // strip EP and locate start code + nal header of each NAL
         std::vector<uint8_t> spsRbsp, ppsRbsp;
         H264StripEP(QSVSPSBuffer, SPSPPSParams->SPSBufSize, spsRbsp);
         H264StripEP(QSVPPSBuffer, SPSPPSParams->PPSBufSize, ppsRbsp);
@@ -1742,10 +1730,8 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
 
         std::array<mfxU8, 2048> NewSps{};
         std::array<mfxU8, 2048> NewPps{};
-        // Resolve preset/custom into per-list pointers once; driver presets
-        // are expanded here, custom reads the raw lists from params.  The
-        // preset matrices are owned by `owned` below, kept alive for the whole
-        // injection block so the returned pointers never dangle.
+        // `EffectOwned` keeps the preset matrices alive for the whole
+        // injection block so the returned per-list pointers never dangle.
         std::optional<H264ScalingLists> EffectOwned;
         H264ScalingSetPointers Effects = GetH264ScalingSetPointers(
             qmPreset, InputParams->QMatrixCustom
@@ -1791,8 +1777,6 @@ mfxStatus QSVEncoder::InitEncoderInternal(encoder_params *InputParams,
         const bool needInject =
             ppsOk && (Effects.HasLists() || wantChroma);
         if (needInject) {
-          // Re-init with the patched headers. Init failure -> drop the SPSPPS
-          // extension and fall back to native headers (warned).
           mfxStatus ReSts = MFX_ERR_NONE;
           QSVEncode->Close();
           if (QSVUseSystemMemoryPath) {
@@ -1922,19 +1906,29 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
       }
     }
 
-// Non-texture encoder path selection:
-    //   - VPP enabled  → try VIDEO_MEMORY first (VPP needs GPU mem), fallback
-    //                     to system memory with VPP disabled
-    //   - VP9          → try VIDEO_MEMORY first (system memory has driver
-    //                     bug: EncodeFrameAsync returns sts=-2), fallback
-    //                     to system memory
-    //   - Other codecs → try system memory first (saves GPU VRAM), fallback
-    //                     to VIDEO_MEMORY
+    // Lookahead + EncTools on the system-memory path: the driver's LA window
+    // holds submitted frames well beyond the async task pool and the packets
+    // that surface carry dts gaps/regressions the muxer can't represent
+    // (recordings play but report a broken duration in players). force
+    // VIDEO_MEMORY when both are enabled (texture path is already video mem).
+    const bool ForceVideoMemory =
+        !QSVIsTextureEncoder && InputParams->Lookahead && InputParams->EncTools;
+    if (ForceVideoMemory) {
+      info("\tLookahead + EncTools enabled — forcing VIDEO_MEMORY "
+           "(lookahead over the system-memory path breaks packet timing)");
+    }
+
+    // Path selection: VPP and VP9 try VIDEO_MEMORY first (VP9 system memory
+    // has a driver bug: EncodeFrameAsync returns sts=-2); LA+EncTools forces
+    // VIDEO_MEMORY (see above); other codecs try system memory first to save
+    // VRAM. both paths fall back to the other on init failure.
     if (!QSVIsTextureEncoder) {
-      if (QSVProcessingEnable || Codec == QSV_CODEC_VP9) {
+      if (QSVProcessingEnable || Codec == QSV_CODEC_VP9 || ForceVideoMemory) {
         QSVUseSystemMemoryPath = false;
         Status = InitEncoderInternal(InputParams, Codec, "");
-        if (Status < MFX_ERR_NONE) {
+        if (Status < MFX_ERR_NONE && !ForceVideoMemory) {
+          // A forced VIDEO_MEMORY session must not fall back to sysmem —
+          // that would silently reintroduce the broken packet timing.
           info("\tVIDEO_MEMORY init failed (%d), falling back to sysmem",
                Status);
           QSVEncode->Close();
@@ -1944,6 +1938,8 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
             DisableVPP();
           }
           Status = InitEncoderInternal(InputParams, Codec, " (sysmem)");
+        } else if (Status < MFX_ERR_NONE) {
+          QSVEncode->Close();
         }
       } else {
         QSVUseSystemMemoryPath = true;
@@ -1962,7 +1958,6 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
       Status = InitEncoderInternal(InputParams, Codec, "");
     }
 
-    // log which memory path is active
     info("\tMemory path: %s",
          QSVIsTextureEncoder
              ? "VIDEO_MEMORY (texture sharing)"
@@ -1977,6 +1972,7 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
           "Init(): MFXVideoENCODE_Init error after parameter retries");
     }
 
+    DeriveLookaheadState();
     Status = InitTexturePool();
     info("\tInitTexturePool status:   %d", Status);
 
@@ -2037,9 +2033,8 @@ mfxStatus QSVEncoder::Init(encoder_params *InputParams, enum codec_enum Codec,
 
   HWManager::HWEncoderCounter++;
 
-  // Pre-warm the GPU encoder pipeline so the first real frame does not
-  // pay the driver-internal initialization cost (shader compilation,
-  // command-buffer allocation, etc.) which manifests as a visible stutter.
+  // Pre-warm the GPU encoder so the first real frame doesn't pay the
+  // driver-internal one-time init cost, which shows up as a visible stutter.
   try {
     WarmUpEncoder();
   } catch (const std::exception &e) {
@@ -2092,11 +2087,9 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
   QSVProcessingParams.vpp.Out.FrameRateExtD =
       static_cast<mfxU32>(InputParams->FpsDen);
 
-  // Propagate bit-depth and shift to VPP frame info (the encoder init already
-  // does this for the encode params, but VPP frame info was left zeroed).
-  // Without these fields the VPP Query may reject 10-bit+ FourCC values
-  // (e.g. P010) because the SDK sees an inconsistent format description:
-  // FourCC implies 10-bit but BitDepth/Shift still read 0 (8-bit, no shift).
+  // Propagate bit-depth and shift to VPP frame info; without these fields
+  // VPP Query may reject 10-bit FourCCs (e.g. P010) because FourCC implies
+  // 10-bit but BitDepth/Shift still read 0 (8-bit, no shift).
   if (InputParams->BitDepth > 0) {
     auto setBitDepth = [&](mfxFrameInfo &fi) {
       fi.BitDepthLuma   = InputParams->BitDepth;
@@ -2181,10 +2174,10 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
   }
 
   // Only apply the scaling mode ext buffer when the VPP output size actually
-  // differs from the input (i.e. a real resize is requested).  Without a real
-  // resize, setting the buffer triggers an access violation in the oneVPL
-  // runtime on certain non-primary-Intel-GPU configurations (frame import
-  // path) because the hardware scaling pipeline (VEBOX / SFC) isn't wired up.
+  // differs from the input. without a real resize, setting the buffer triggers
+  // an access violation in the oneVPL runtime on certain non-primary-Intel-GPU
+  // configurations (frame import path) because the hardware scaling pipeline
+  // (VEBOX / SFC) isn't wired up.
   if (InputParams->VPPScalingMode.has_value() &&
       (vppOutWidth != InputParams->Width ||
        vppOutHeight != InputParams->Height)) {
@@ -2254,7 +2247,6 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
   }
 #endif
 
-  // ProcAmp (color adjustment)
   if (InputParams->VPPProcAmpMode.has_value() && InputParams->VPPProcAmpMode.value() == 1) {
     auto ProcAmpParams = QSVProcessingParams.AddExtBuffer<mfxExtVPPProcAmp>();
     ProcAmpParams->Header.BufferId = MFX_EXTBUFF_VPP_PROCAMP;
@@ -2265,7 +2257,6 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
     ProcAmpParams->Saturation = InputParams->VPPProcAmpSaturation;
   }
 
-  // Rotation
   if (InputParams->VPPRotation.has_value()) {
     auto RotationParams = QSVProcessingParams.AddExtBuffer<mfxExtVPPRotation>();
     RotationParams->Header.BufferId = MFX_EXTBUFF_VPP_ROTATION;
@@ -2273,7 +2264,6 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
     RotationParams->Angle = static_cast<mfxU16>(InputParams->VPPRotation.value());
   }
 
-  // Mirroring (per-platform VPP filter, same stale-value guard)
   if (InputParams->VPPMirroring.has_value() && PlatformSupportsMirrorVPP()) {
     auto MirroringParams = QSVProcessingParams.AddExtBuffer<mfxExtVPPMirroring>();
     MirroringParams->Header.BufferId = MFX_EXTBUFF_VPP_MIRRORING;
@@ -2283,7 +2273,6 @@ QSVEncoder::SetProcessingParams(struct encoder_params *InputParams,
     info("\tMirroring skipped: not supported by this platform");
   }
 
-  // Frame Rate Conversion (per-platform VPP filter, same stale-value guard)
   if (InputParams->VPPFRCMode.has_value() && PlatformSupportsFRCVPP()) {
     auto FRCParams = QSVProcessingParams.AddExtBuffer<mfxExtVPPFrameRateConversion>();
     FRCParams->Header.BufferId = MFX_EXTBUFF_VPP_FRAME_RATE_CONVERSION;
@@ -2339,7 +2328,6 @@ static std::string FormatFieldValue([[maybe_unused]] std::string_view Field,
     return std::to_string(Value);
 }
 
-// Trim whitespace from both ends of a string
 static void TrimWhitespace(std::string &s) {
   while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r'))
     s.pop_back();
@@ -2360,7 +2348,6 @@ struct FieldEntry {
   FieldType type;
 };
 
-// Read a field value from a struct at the given offset, returned as mfxU64
 static mfxU64 ReadFieldValue(const void *base, const FieldEntry &entry) {
   const void *ptr = reinterpret_cast<const char *>(base) + entry.offset;
   switch (entry.type) {
@@ -2536,7 +2523,6 @@ static constexpr std::array<FieldEntry, 17> CODDI_FIELDS{
   FieldEntry{"TMVP", offsetof(mfxExtCodingOptionDDI, TMVP), FT_U16},
 };
 
-// ─ EncTools field table ─
 static constexpr std::array<FieldEntry, 13> ENCTOOLS_FIELDS{
   FieldEntry{"AdaptiveI", offsetof(mfxExtEncToolsConfig, AdaptiveI), FT_U16},
   FieldEntry{"AdaptiveB", offsetof(mfxExtEncToolsConfig, AdaptiveB), FT_U16},
@@ -2553,7 +2539,6 @@ static constexpr std::array<FieldEntry, 13> ENCTOOLS_FIELDS{
   FieldEntry{"SaliencyMapHint", offsetof(mfxExtEncToolsConfig, SaliencyMapHint), FT_U16},
 };
 
-// ─ AV1AuxData basic field table (flat fields only) ─
 static constexpr std::array<FieldEntry, 11> AV1AUX_FIELDS{
   FieldEntry{"EnableCdef", offsetof(mfxExtAV1AuxData, EnableCdef), FT_U16},
   FieldEntry{"EnableRestoration", offsetof(mfxExtAV1AuxData, EnableRestoration), FT_U16},
@@ -2568,7 +2553,6 @@ static constexpr std::array<FieldEntry, 11> AV1AUX_FIELDS{
   FieldEntry{"DisableFrameEndUpdateCdf", offsetof(mfxExtAV1AuxData, DisableFrameEndUpdateCdf), FT_U16},
 };
 
-// ─ HEVCParam field table ─
 #ifdef QSV_UHD600_SUPPORT
 static constexpr std::array<FieldEntry, 0> HEVC_FIELDS{
 };
@@ -2579,7 +2563,6 @@ static constexpr std::array<FieldEntry, 1> HEVC_FIELDS{
 #endif
 
 // Log driver-corrected fields by diffing before/after state using field tables.
-// Only emits output when the driver actually changed something.
 static void LogDriverCorrections(
     const char *Prefix,
     MFXVideoParam &Params,
@@ -2601,10 +2584,8 @@ static void LogDriverCorrections(
   auto AV1AuxAfter = Params.GetExtBuffer<mfxExtAV1AuxData>();
   auto HEVCAfter = Params.GetExtBuffer<mfxExtHEVCParam>();
 
-  // Collect diffs first; skip the header if nothing changed
   std::vector<std::string> diffs;
 
-  // diff base mfx struct fields
   if (MFXBefore) {
     auto &mfxAfter = Params.mfx;
     if (MFXBefore->CodecProfile != mfxAfter.CodecProfile) {
@@ -2648,7 +2629,6 @@ static void LogDriverCorrections(
 
   if (diffs.empty()) return;
 
-  // Sort alphabetically by field name
   std::sort(diffs.begin(), diffs.end());
 
   info("\tDriver auto-corrected parameters%s:", Prefix);
@@ -2677,8 +2657,8 @@ static std::optional<mfxU64> ApplyField(void *base, std::span<const FieldEntry> 
       *reinterpret_cast<mfxU32 *>(ptr) = static_cast<mfxU32>(std::stoul(val));
       break;
     }
-    // Read back the actual value stored in the struct (may differ from parsed
-    // due to type truncation, e.g. mfxU16 truncating mfxU64 > 65535)
+    // Read back the actual value stored in the struct: type truncation may
+    // make it differ from the parsed value (e.g. mfxU16 truncating > 65535)
     return ReadFieldValue(base, e);
   }
   return std::nullopt;
@@ -2963,16 +2943,13 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
   QSVEncodeParams.mfx.RateControlMethod =
       static_cast<mfxU16>(InputParams->RateControl);
 
-  // When lookahead is enabled, promote plain VBR/ICQ to the actual
-  // lookahead-aware rate control algorithms. oneVPL ignores LookAheadDepth
-  // unless the rate control method itself is an LA variant.
+  // Lookahead: promote plain VBR/ICQ to the LA variants — oneVPL ignores
+  // LookAheadDepth unless the rate control method itself is an LA variant.
   // Verified in vpl-gpu-rt-intel-onevpl-26.1.5: LA/LA_ICQ/LA_HRD are only
   // implemented for AVC; HEVC and AV1 return MFX_ERR_UNSUPPORTED for them.
-  //   LA     = VBR + Lookahead (SW BRC)
-  //   LA_HRD = VBR + Lookahead + HRD buffer constraints (SW BRC)
-  //   LA_ICQ = ICQ + Lookahead (SW BRC)
-  // CBR is NOT promoted here – it keeps CBR and sets LookAheadDepth, which
-  // triggers EncTools LAGS hardware lookahead (IsEnctoolsLAGS in mfx_enc_common).
+  // CBR is NOT promoted here — it keeps CBR and sets LookAheadDepth, which
+  // triggers EncTools LAGS hardware lookahead (IsEnctoolsLAGS in
+  // mfx_enc_common).
   if (InputParams->Lookahead &&
       QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC) {
     if (QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_VBR) {
@@ -3010,7 +2987,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     return v > limit ? limit : v;
   };
 
-  // Common buffer/init-delay boilerplate for all RC modes
   auto ApplyBufferSettings = [&]() {
     if (InputParams->BufferSize > 0) {
       QSVEncodeParams.mfx.BufferSizeInKB =
@@ -3143,7 +3119,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
     // AVC-only CO1 fields (driver resets them to 0 for HEVC/AV1/VP9)
     if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC) {
-      /*Don't touch it!*/
       COParams->CAVLC = MFX_CODINGOPTION_OFF;
       if (!IsUHD600HEVC) {
         // These reference-list flags help quality on newer GPU RT, but the
@@ -3160,7 +3135,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       COParams->VuiVclHrdParameters = GetCodingOpt(InputParams->HRDConformance);
     }
 
-    // PicTimingSEI is shared across codecs
     if (!IsUHD600HEVC) {
       COParams->PicTimingSEI = MFX_CODINGOPTION_ON;
     }
@@ -3174,7 +3148,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
 
     COParams->RateDistortionOpt = GetCodingOpt(InputParams->RDO);
 
-    // VuiNalHrdParameters and NalHrdConformance are shared (HEVC uses them too)
     COParams->VuiNalHrdParameters = GetCodingOpt(InputParams->HRDConformance);
     COParams->NalHrdConformance = GetCodingOpt(InputParams->HRDConformance);
   }
@@ -3195,10 +3168,8 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       // handling; leave it UNKNOWN for that path.
       CO2Params->FixedFrameRate = MFX_CODINGOPTION_ON;
     }
-    // Enable MAD computation when Frame Statistics is requested
     if (InputParams->FrameStatistics) {
       CO2Params->EnableMAD = MFX_CODINGOPTION_ON;
-      // Also request per-frame MSE/PSNR via QualityInfo
       auto *QI = QSVEncodeParams.AddExtBuffer<mfxExtQualityInfoMode>();
       QI->Header.BufferId = MFX_EXTBUFF_ENCODED_QUALITY_INFO_MODE;
       QI->Header.BufferSz = sizeof(mfxExtQualityInfoMode);
@@ -3351,12 +3322,10 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CO3Params->TargetChromaFormatPlus1 =
         static_cast<mfxU16>(QSVEncodeParams.mfx.FrameInfo.ChromaFormat + 1);
     CO3Params->TransformSkip = GetCodingOpt(InputParams->TransformSkip);
-    // Auto-enable FadeDetection when weighted prediction is explicitly active
     if (InputParams->WeightedPred.has_value() &&
         InputParams->WeightedPred.value() > MFX_WEIGHTED_PRED_UNKNOWN) {
       CO3Params->FadeDetection = MFX_CODINGOPTION_ON;
     }
-    // AUTO/OFF: leave FadeDetection at driver default (not set)
 
     if (QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_QVBR &&
         InputParams->QVBRQuality > 0 && InputParams->QVBRQuality <= 51) {
@@ -3499,8 +3468,8 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
         GetCodingOpt(InputParams->DirectBiasAdjustment);
 #endif
 
-    // Per-frame-type max frame size (CO3) takes priority over CO2 MaxFrameSize
-    // for their respective frame types. Only active in per_type mode.
+    // CO3 per-frame-type max frame size takes priority over CO2 MaxFrameSize
+    // for their respective frame types. only active in per_type mode.
     if (InputParams->MaxFrameSizeMode == 2) {
       CO3Params->MaxFrameSizeI = InputParams->MaxFrameSizeI;
       CO3Params->MaxFrameSizeP = InputParams->MaxFrameSizeP;
@@ -3510,7 +3479,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       }
     }
 
-    // BRCPanicMode
     if (InputParams->BRCPanicMode.has_value()) {
       CO3Params->BRCPanicMode = GetCodingOpt(InputParams->BRCPanicMode.value());
     }
@@ -3547,8 +3515,6 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     EncToolsParams->SaliencyMapHint = GetCodingOpt(InputParams->EncToolsSaliencyMapHint);
   }
 
-  /*Don't touch it! Magic beyond the control of mere mortals takes place
-   * here*/
   // CODDI is full of low-level DDI knobs. The UHD600 legacy runtime accepts
   // the buffer but reference-frame-related flags inside it misbehave on HEVC,
   // so skip it entirely for that path.
@@ -3558,15 +3524,14 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CODDIParams->Header.BufferId = MFX_EXTBUFF_DDI;
     CODDIParams->Header.BufferSz = sizeof(mfxExtCodingOptionDDI);
 
-    // AVC & HEVC (non-UHD600) DDI options
-    // driver ignores fields not applicable to the codec
+    // AVC & HEVC (non-UHD600) DDI options; driver ignores fields not
+    // applicable to the codec
     CODDIParams->DirectSpatialMvPredFlag = MFX_CODINGOPTION_ON;
     CODDIParams->WeightedBiPredIdc = 2;
     CODDIParams->RefRaw = GetCodingOpt(InputParams->RawRef);
     CODDIParams->TMVP = MFX_CODINGOPTION_ON;
     CODDIParams->QpAdjust = MFX_CODINGOPTION_ON;
 
-    // AVC-only DDI fields used by the driver
     if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC) {
       CODDIParams->DisablePSubMBPartition = MFX_CODINGOPTION_OFF;
       CODDIParams->Transform8x8Mode = MFX_CODINGOPTION_ON;
@@ -3995,7 +3960,13 @@ bool QSVEncoder::UpdateParams(struct encoder_params *InputParams) {
 
 mfxStatus QSVEncoder::ReconfigureEncoder() {
   if (QSVResetParamsChanged) {
-    return QSVEncode->Reset(&QSVResetParams);
+    mfxStatus sts = QSVEncode->Reset(&QSVResetParams);
+    if (sts >= MFX_ERR_NONE) {
+      // driver-side lookahead state is rebuilt — stale flush bookkeeping
+      // would make the re-encoder drain stop at the first MORE_DATA
+      ResetFlushState();
+    }
+    return sts;
   } else {
     return MFX_ERR_NONE;
   }
@@ -4012,10 +3983,10 @@ mfxStatus QSVEncoder::InitTexturePool() {
   mfxStatus Status = MFX_ERR_NONE;
 
   if (QSVIsTextureEncoder) {
-    // Ask the encoder how many surfaces it actually needs instead of
-    // using a hardcoded overshoot formula.  NumFrameSuggested is derived
-    // from AsyncDepth + GOP ref frames + safety margin and is typically
-    // 8-16, vs the old (fps + AsyncDepth) * 2 which gave 128 at 60 fps.
+    // Ask the encoder how many surfaces it actually needs instead of a
+    // hardcoded overshoot formula. NumFrameSuggested is derived from
+    // AsyncDepth + GOP ref frames + safety margin (typically 8-16, vs the
+    // old (fps + AsyncDepth) * 2 which gave 128 at 60 fps).
     mfxFrameAllocRequest Request[2] = {};
     mfxU16 NumSurfaces = 0;
     Status = QSVEncode->QueryIOSurf(&QSVEncodeParams, Request);
@@ -4081,11 +4052,10 @@ mfxStatus QSVEncoder::InitTaskPool([[maybe_unused]] enum codec_enum Codec) {
   Task NewTask = {};
   QSVTaskPool.reserve(QSVEncodeParams.AsyncDepth);
 
-  // Allocate one mfxExtEncodedFrameInfo per task to retrieve per-frame QP
   QSVTaskEncodedInfo.resize(QSVEncodeParams.AsyncDepth);
   QSVTaskEncodedExtPtr.resize(QSVEncodeParams.AsyncDepth);
   QSVTaskQualityInfo.resize(QSVEncodeParams.AsyncDepth);
-  // Flat storage: each task gets 2 consecutive ExtParam slots
+  // flat storage: each task gets 2 consecutive ExtParam slots
   QSVTaskExtParamBuf.resize(
       QSVEncodeParams.AsyncDepth * 2);
 
@@ -4112,20 +4082,15 @@ mfxStatus QSVEncoder::InitTaskPool([[maybe_unused]] enum codec_enum Codec) {
       throw std::runtime_error(
           "InitTaskPool(): Task memory allocation error");
     }
-    // Attach mfxExtEncodedFrameInfo to each task's bitstream so the
-    // encoder reports back the frame-level QP after EncodeFrameAsync.
     auto &encInfo = QSVTaskEncodedInfo[i];
     memset(&encInfo, 0, sizeof(encInfo));
     encInfo.Header.BufferId = MFX_EXTBUFF_ENCODED_FRAME_INFO;
     encInfo.Header.BufferSz = sizeof(encInfo);
 
-    // Build persistent ExtParam array for this task
     mfxExtBuffer **base = QSVTaskExtParamBuf.data() + i * 2;
     int numExt = 0;
     base[numExt++] = reinterpret_cast<mfxExtBuffer *>(&encInfo);
 
-    // Also attach mfxExtQualityInfoOutput when FrameStats is enabled
-    // so the driver fills in per-frame MSE for PSNR computation.
     if (FrameStatsEnabled) {
       auto &qi = QSVTaskQualityInfo[i];
       memset(&qi, 0, sizeof(qi));
@@ -4171,11 +4136,9 @@ void QSVEncoder::ReleaseTaskPool() {
   }
 }
 
-// Forward declaration — defined later in this file
 static void SyncBackoff(unsigned &BusyCount);
 
 mfxStatus QSVEncoder::ChangeBitstreamSize(mfxU32 NewSize) {
-  // Reallocate the main bitstream buffer (allocate new first, then swap)
   mfxU8 *Data = static_cast<mfxU8 *>(AlignedMalloc(NewSize, 32));
   if (Data == nullptr) {
     throw std::runtime_error(
@@ -4184,8 +4147,7 @@ mfxStatus QSVEncoder::ChangeBitstreamSize(mfxU32 NewSize) {
 
   mfxU32 DataLen = QSVBitstream.DataLength;
   if (QSVBitstream.DataLength) {
-    // If NewSize is smaller than existing data length, it is a caller error;
-    // report it rather than silently truncating
+    // a smaller NewSize is a caller error; don't silently truncate
     if (NewSize < DataLen) {
       AlignedFree(Data);
       throw std::runtime_error(
@@ -4200,7 +4162,6 @@ mfxStatus QSVEncoder::ChangeBitstreamSize(mfxU32 NewSize) {
   QSVBitstream.DataLength = static_cast<mfxU32>(DataLen);
   QSVBitstream.MaxLength = NewSize;
 
-  // Sync all pending tasks before reallocating task buffers
   for (int i = 0; i < QSVTaskPool.size(); i++) {
     if (QSVTaskPool[i].SyncPoint != nullptr) {
       mfxStatus SyncSts;
@@ -4209,7 +4170,7 @@ mfxStatus QSVEncoder::ChangeBitstreamSize(mfxU32 NewSize) {
         SyncSts = MFXVideoCORE_SyncOperation(
             QSVSession, QSVTaskPool[i].SyncPoint, 100);
         if (SyncSts == MFX_WRN_IN_EXECUTION)
-          SyncBackoff(busyCount); // still running — back off instead of spinning
+          SyncBackoff(busyCount);
       } while (SyncSts == MFX_WRN_IN_EXECUTION);
       if (SyncSts < MFX_ERR_NONE) {
         throw std::runtime_error(
@@ -4234,15 +4195,12 @@ mfxStatus QSVEncoder::ChangeBitstreamSize(mfxU32 NewSize) {
       newTaskData.push_back(TaskData);
     }
   } catch (...) {
-    // Allocation failed: free newly allocated buffers, keep old ones intact,
-    // QSVTaskPool remains usable
     for (auto *p : newTaskData) {
       AlignedFree(p);
     }
     throw;
   }
 
-  // All allocations succeeded, copy data and switch to new buffers
   for (size_t i = 0; i < QSVTaskPool.size(); i++) {
     mfxU32 TaskDataLen = QSVTaskPool[i].Bitstream.DataLength;
     if (TaskDataLen) {
@@ -4455,7 +4413,6 @@ void QSVEncoder::LogActualParams() {
     }
   };
 
-  // ─ Basic encode params (driver-corrected values) ─
   info("\tLowpower set: %s",
        GetCodingOptStatus(QSVEncodeParams.mfx.LowPower).c_str());
   info("\tNumRefFrame set to: %d",
@@ -4476,7 +4433,6 @@ void QSVEncoder::LogActualParams() {
     }
   }
 
-  // ─ CO (mfxExtCodingOption) ─
   auto *CO = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption>();
   if (CO) {
     info("\tRDO set: %s",
@@ -4485,7 +4441,6 @@ void QSVEncoder::LogActualParams() {
          GetCodingOptStatus(CO->VuiVclHrdParameters).c_str());
   }
 
-  // ─ CO2 (mfxExtCodingOption2) ─
   auto *CO2 = QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
   if (CO2) {
     info("\tMBBRC set: %s",
@@ -4523,7 +4478,6 @@ void QSVEncoder::LogActualParams() {
            CO2->IntRefType, CO2->IntRefCycleSize, CO2->IntRefQPDelta);
     }
 
-    // Min/Max QP constraints
     if (CO2->MinQPI > 0 || CO2->MinQPP > 0 || CO2->MinQPB > 0 ||
         CO2->MaxQPI > 0 || CO2->MaxQPP > 0 || CO2->MaxQPB > 0) {
       info("\tQP limits ─ Min: I=%d, P=%d, B=%d │ Max: I=%d, P=%d, B=%d",
@@ -4541,7 +4495,6 @@ void QSVEncoder::LogActualParams() {
     info("\tLowDelayBRC set: %s",
          GetCodingOptStatus(CO3->LowDelayBRC).c_str());
 
-    // RepartitionCheckEnable (UI: RepartitionCheck)
     info("\tRepartitionCheck set: %s",
          GetCodingOptStatus(CO3->RepartitionCheckEnable).c_str());
 
@@ -4724,7 +4677,7 @@ void QSVEncoder::LogActualParams() {
     }
   }
 
-  // ─ Pre-processing / VPP filters ─
+  // VPP filter status
   {
     auto *MCTF = QSVProcessingParams.GetExtBuffer<mfxExtVppMctf>();
     if (MCTF) {
@@ -4826,7 +4779,6 @@ void QSVEncoder::LogActualParams() {
     }
   }
 
-  // ─ VideoSignalInfo / HDR ─
   {
     auto *VSI = QSVEncodeParams.GetExtBuffer<mfxExtVideoSignalInfo>();
     if (VSI) {
@@ -4859,7 +4811,7 @@ void QSVEncoder::LogActualParams() {
     }
   }
 
-  // ─ Custom Coding Options (deferred from ParseCustomCodingOptions) ─
+  // custom coding options deferred from ParseCustomCodingOptions
   if (!m_CustomCodingOptions.empty()) {
     info("\tCustom Coding Options:");
     auto *CODDI = QSVEncodeParams.GetExtBuffer<mfxExtCodingOptionDDI>();
@@ -5092,8 +5044,8 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
   mfxStatus Status = MFX_ERR_NONE, SyncStatus = MFX_ERR_NONE;
   *Bitstream = nullptr;
 
-  // Match official obs-qsv11 pattern: independent task pool + surface pool.
-  // Data.Locked is set by the driver while the surface is in use, giving us
+  // official obs-qsv11 pattern: independent task pool + surface pool.
+  // Data.Locked is set by the driver while the surface is in use, giving
   // accurate tracking of when it's safe to overwrite.
   auto GetFreeSurface = [this]() -> int {
     for (mfxU16 i = 0; i < QSVSystemMemPoolSize; i++) {
@@ -5146,7 +5098,7 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
         continue;
       }
       if (SyncStatus == MFX_WRN_IN_EXECUTION) {
-        SyncBackoff(busyCount); // still running — back off instead of spinning
+        SyncBackoff(busyCount);
         continue;
       }
       if (SyncStatus < MFX_ERR_NONE) {
@@ -5155,7 +5107,6 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
         // skips drain and avoids a double-crash on the dead device.
         if (SyncStatus == MFX_ERR_DEVICE_FAILED) {
           m_DeviceFailed = true;
-          // Clear the sync point — the driver won't complete it.
           QSVTaskPool[QSVSyncTaskID].SyncPoint = nullptr;
         }
         throw std::runtime_error(
@@ -5180,7 +5131,6 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
       RecordQPFromBitstream(QSVTaskPool[QSVSyncTaskID].Bitstream);
     }
 
-    // Swap bitstreams — get encoded output from the synced task
     mfxU8 *DataTemp = QSVBitstream.Data;
     QSVBitstream = QSVTaskPool[QSVSyncTaskID].Bitstream;
     QSVTaskPool[QSVSyncTaskID].Bitstream.Data = DataTemp;
@@ -5188,7 +5138,7 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
     QSVTaskPool[QSVSyncTaskID].Bitstream.DataOffset = 0;
     QSVTaskPool[QSVSyncTaskID].SyncPoint = nullptr;
     TaskID = QSVSyncTaskID;
-    // Advance to next sync candidate (same as m_nFirstSyncTask in official)
+    // same as m_nFirstSyncTask in official obs-qsv11
     QSVSyncTaskID =
         (QSVSyncTaskID + 1) % static_cast<int>(QSVTaskPool.size());
     *Bitstream = &QSVBitstream;
@@ -5256,9 +5206,8 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
   mfxSyncPoint syncPoint = nullptr;
   Task taskCopy;
 
-  // Step 1: find pending task, grab its data under lock.
-  // Don't do the actual sync here — that can wait and we want to release the
-  // lock quickly so GetFreeTaskIndex doesn't block on other threads.
+  // Step 1: find the pending task and grab its data under lock; don't sync
+  // here — release the lock quickly so GetFreeTaskIndex doesn't block others.
   {
     std::lock_guard<std::mutex> lock(QSVTaskPoolMutex);
     poolSize = static_cast<int>(QSVTaskPool.size());
@@ -5267,10 +5216,9 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
       return MFX_ERR_MORE_DATA;
     }
 
-    // Walk forward to the oldest task that still has a pending sync point.
-    // The normal OBS path keeps QSVSyncTaskID at the oldest pending task, but
-    // the offline re-encoder calls this repeatedly without submitting new
-    // frames, so we advance the index ourselves when we drain.
+    // walk forward to the oldest pending task. the normal OBS path keeps
+    // QSVSyncTaskID at the oldest pending task, but the offline re-encoder
+    // drains repeatedly without submitting frames, so advance the index here.
     int FoundIdx = -1;
     for (int i = 0; i < poolSize; i++) {
       int Idx = (QSVSyncTaskID + i) % poolSize;
@@ -5290,16 +5238,13 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
     syncPoint = QSVTaskPool[taskIdx].SyncPoint;
     taskCopy = QSVTaskPool[taskIdx];
 
-    // We found the task, mark it as null in the pool so GetFreeTaskIndex can
-    // reuse the slot immediately.  This also lets us release the lock before
-    // doing the (potentially slow) sync operation.
+    // mark the slot free immediately so GetFreeTaskIndex can reuse it, and
+    // so the lock can be released before the (potentially slow) sync.
     QSVTaskPool[taskIdx].SyncPoint = nullptr;
-    // Advance to the next candidate for the next call.
     QSVSyncTaskID = (QSVSyncTaskID + 1) % poolSize;
   }
 
-  // Step 2: do the sync operation *outside* the lock.
-  // This allows other threads to get free tasks while we wait for GPU.
+  // Step 2: sync outside the lock so other threads can get free tasks while we wait
   mfxStatus SyncStatus = MFX_ERR_NONE;
   while (syncPoint != nullptr) {
     SyncStatus = MFXVideoCORE_SyncOperation(QSVSession, syncPoint, 100);
@@ -5335,15 +5280,15 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
     RecordQPFromBitstream(taskCopy.Bitstream);
   }
 
-  // Step 4: swap bitstream buffer back into pool (re-lock for write).
-  // Re-read the slot's descriptor AFTER the sync instead of using the pre-sync
+  // Step 4: swap bitstream back into the pool (re-lock for write). re-read
+  // the slot's descriptor AFTER the sync instead of using the pre-sync
   // taskCopy: the driver writes the encoded output (DataLength, FrameType)
-  // into the slot's mfxBitstream during SyncOperation, so the pre-sync copy is
-  // stale exactly for frames whose output lands inside the wait — swapping it
-  // in returned a DataLength==0 bitstream, the real output was then reset away
-  // and the frame was silently lost (missing-reference corruption from that
-  // frame until the next IDR).  EncodeFrameSystemMemory's own sync loop reads
-  // the slot after sync for the same reason.
+  // into the slot's mfxBitstream during SyncOperation, so the pre-sync copy
+  // is stale exactly for frames whose output lands inside the wait —
+  // swapping it in returned a DataLength==0 bitstream, the real output was
+  // reset away and the frame was silently lost (missing-reference corruption
+  // until the next IDR). EncodeFrameSystemMemory's sync loop reads the slot
+  // after sync for the same reason.
   {
     std::lock_guard<std::mutex> lock(QSVTaskPoolMutex);
     mfxU8 *DataTemp = QSVBitstream.Data;
@@ -5382,61 +5327,163 @@ mfxStatus QSVEncoder::DrainAndRetrieveBitstream(mfxBitstream **Bitstream) {
     return MFX_ERR_DEVICE_FAILED;
   }
 
-  // Step 1: pull frames already sitting in the async task pool — these are
-  // the last AsyncDepth frames submitted during normal feed whose sync
-  // points have completed.
-  mfxStatus sts = SyncAndSwapPendingTask(Bitstream);
-  if (sts == MFX_ERR_NONE && *Bitstream && (*Bitstream)->DataLength > 0) {
-    return MFX_ERR_NONE;
-  }
-  if (sts < MFX_ERR_NONE && sts != MFX_ERR_MORE_DATA) {
-    return sts;
+  // Flush requests pull the frames the driver still holds (LA / EncTools HW
+  // lookahead). a flush submit while pool ops are still in flight is either
+  // accepted (healthy LA) or rejected with DEVICE_FAILED (EncTools HW
+  // lookahead) — both harmless. a flush submit with the pool DRAINED
+  // (encoder quiesced at EOS) is accepted and then NEVER completes, wedging
+  // the session so Close() hangs afterwards. so flushes are only submitted
+  // while pool tasks are pending once the driver has refused once, and an
+  // in-flight flush that refuses to land in 2s gets abandoned instead of
+  // waited out.
+  constexpr size_t MAX_INFLIGHT_FLUSHES = 8;
+  if (m_FlushRing.empty()) {
+    m_FlushRing.resize(MAX_INFLIGHT_FLUSHES);
+    // start smaller than the (possibly huge) HRD buffer and grow on demand;
+    // drained frames go straight to the caller, no ext buffers needed here
+    const mfxU32 FlushBsSize =
+        std::min<mfxU32>(QSVBitstream.MaxLength, 8u << 20);
+    for (auto &Slot : m_FlushRing) {
+      Slot.Storage.resize(FlushBsSize);
+      Slot.Bs.Data = Slot.Storage.data();
+      Slot.Bs.MaxLength = FlushBsSize;
+    }
   }
 
-  // Step 2: the pool is empty — submit flush requests.  With LA-lookahead
-  // the driver holds the last ~LookAheadDepth frames in its own buffer
-  // (they never enter the task pool).  Each null EncodeFrameAsync call makes
-  // the driver emit one of those frames asynchronously: the call returns a
-  // sync point (or WRN_IN_EXECUTION while the GPU is still working), and the
-  // bitstream data only materializes after SyncOperation.  Keep requesting
-  // until the driver actually hands over one frame or reports MORE_DATA
-  // (buffer drained).  This mirrors FFmpeg's qsvenc submit loop.
-  for (int attempt = 0; attempt < 200; attempt++) {
-    mfxSyncPoint sp = nullptr;
-    QSVBitstream.DataLength = 0;
-    QSVBitstream.DataOffset = 0;
-    sts = QSVEncode->EncodeFrameAsync(nullptr, nullptr, &QSVBitstream, &sp);
-    if (sts == MFX_ERR_MORE_DATA) {
-      return MFX_ERR_MORE_DATA;
+  auto CountPendingTasks = [this]() -> size_t {
+    std::lock_guard<std::mutex> lock(QSVTaskPoolMutex);
+    size_t Pending = 0;
+    for (const auto &Task : QSVTaskPool) {
+      if (Task.SyncPoint != nullptr)
+        Pending++;
     }
-    if (sts == MFX_WRN_DEVICE_BUSY) {
-      Sleep(1);
-      continue;
-    }
-    if (sts < MFX_ERR_NONE && sts != MFX_ERR_NULL_PTR) {
-      warn("DrainAndRetrieve: EncodeFrameAsync flush error: %d", sts);
-      return sts;
-    }
-    if (sp) {
-      mfxStatus syncSts = MFXVideoCORE_SyncOperation(QSVSession, sp, 5000);
-      if (syncSts < MFX_ERR_NONE && syncSts != MFX_ERR_NULL_PTR) {
-        warn("DrainAndRetrieve: flush sync warning: %d", syncSts);
+    return Pending;
+  };
+
+  mfxStatus sts = MFX_ERR_NONE;
+  for (int Pass = 0; Pass < 250; Pass++) {
+    // top the pipeline up — but only while pool tasks are pending once the
+    // driver has shown the -5-at-EOS behavior (m_FlushRefusedOnce)
+    if (!m_FlushExhausted && !m_FlushBroken &&
+        m_FlushInFlight.size() < MAX_INFLIGHT_FLUSHES &&
+        (!m_FlushRefusedOnce || CountPendingTasks() > 0)) {
+      auto &Slot = m_FlushRing[m_FlushRingHead];
+      Slot.Bs.DataLength = 0;
+      Slot.Bs.DataOffset = 0;
+      mfxSyncPoint sp = nullptr;
+      sts = QSVEncode->EncodeFrameAsync(nullptr, nullptr, &Slot.Bs, &sp);
+      if (sts == MFX_ERR_NOT_ENOUGH_BUFFER ||
+          sts == MFX_ERR_MORE_BITSTREAM) {
+        // one frame didn't fit — double this slot and retry the same submit
+        Slot.Storage.resize(Slot.Bs.MaxLength * 2);
+        Slot.Bs.Data = Slot.Storage.data();
+        Slot.Bs.MaxLength *= 2;
+        sts = QSVEncode->EncodeFrameAsync(nullptr, nullptr, &Slot.Bs, &sp);
+      }
+      if (sts == MFX_ERR_MORE_DATA) {
+        m_FlushExhausted = true;
+      } else if (sts == MFX_ERR_DEVICE_FAILED) {
+        // EncTools HW lookahead drivers refuse flushes at EOS.  Harmless —
+        // but never probe them again once the pool is drained, or the
+        // accepted-forever-stuck flush above happens.
+        m_FlushRefusedOnce = true;
+      } else if (sts == MFX_WRN_DEVICE_BUSY) {
+        // retry the same slot on a later pass
+      } else if (sts < MFX_ERR_NONE && sts != MFX_ERR_NULL_PTR) {
+        warn("DrainAndRetrieve: EncodeFrameAsync flush error: %d", sts);
+        return sts;
+      } else if (sts == MFX_ERR_NONE && sp == nullptr) {
+        // accepted but no pending output — nothing more to flush
+        m_FlushExhausted = true;
+      } else if (sts == MFX_ERR_NONE && sp != nullptr) {
+        m_FlushInFlight.emplace_back(sp, m_FlushRingHead);
+        m_FlushRingHead = (m_FlushRingHead + 1) % MAX_INFLIGHT_FLUSHES;
       }
     }
-    if (QSVBitstream.DataLength > 0) {
-      *Bitstream = &QSVBitstream;
+
+    // Step 1: pull frames already sitting in the async task pool — these are
+    // the last AsyncDepth frames submitted during normal feed.  Loop back
+    // here after each one: lookahead-held tasks sync with FrameInfo but no
+    // bitstream output, and the frames still behind them must keep flowing.
+    sts = SyncAndSwapPendingTask(Bitstream);
+    if (sts == MFX_ERR_NONE && *Bitstream && (*Bitstream)->DataLength > 0) {
       return MFX_ERR_NONE;
     }
-    // WRN_IN_EXECUTION or the frame is not ready yet — loop and request again.
+    if (sts < MFX_ERR_NONE && sts != MFX_ERR_MORE_DATA) {
+      return sts;
+    }
+
+    // Step 2: retire in-flight flushes FIFO until one actually carries a
+    // frame.  Bound the wait — a flush op that hasn't landed in 2s is the
+    // accepted-forever-stuck kind, and waiting longer just freezes the
+    // caller (the whole dialog, when the re-encoder drains on the UI thread).
+    while (!m_FlushInFlight.empty()) {
+      auto [SyncPoint, SlotIdx] = m_FlushInFlight.front();
+      mfxStatus SyncSts = MFX_ERR_NONE;
+      for (int Wait = 0; Wait < 2; Wait++) { // 2 x 1s, then give up
+        SyncSts = MFXVideoCORE_SyncOperation(QSVSession, SyncPoint, 1000);
+        if (SyncSts != MFX_WRN_IN_EXECUTION)
+          break;
+      }
+      if (SyncSts == MFX_WRN_IN_EXECUTION) {
+        warn("DrainAndRetrieve: flush op did not complete in 2s — abandoning "
+             "%zu in-flight flush op(s) and disabling flush for this session",
+             m_FlushInFlight.size());
+        m_FlushAbandonedOps += m_FlushInFlight.size();
+        m_FlushInFlight.clear();
+        m_FlushBroken = true;
+        break;
+      }
+      m_FlushInFlight.erase(m_FlushInFlight.begin());
+      if (SyncSts == MFX_ERR_DEVICE_FAILED) {
+        m_DeviceFailed = true;
+        return SyncSts;
+      }
+      // SyncOperation may return MFX_ERR_NULL_PTR on some drivers when the
+      // sync point is a no-op during drain. This is benign.
+      if (SyncSts < MFX_ERR_NONE && SyncSts != MFX_ERR_NULL_PTR) {
+        warn("DrainAndRetrieve: flush sync warning: %d", SyncSts);
+      }
+      if (m_FlushRing[SlotIdx].Bs.DataLength > 0) {
+        *Bitstream = &m_FlushRing[SlotIdx].Bs;
+        return MFX_ERR_NONE;
+      }
+    }
+
+    // done when the flush is exhausted, or when this driver refuses flushes
+    // and nothing is pending anymore — the lookahead-held tail frames stay
+    // unrecoverable there (driver limitation; recording stop is stats-only
+    // anyway, re-encode output just ends ~LookAheadDepth frames early)
+    if (m_FlushExhausted || m_FlushBroken ||
+        (m_FlushRefusedOnce && CountPendingTasks() == 0)) {
+      if (m_FlushRefusedOnce && !m_FlushExhausted) {
+        info("\tDrainAndRetrieve: driver refuses flush at EOS (EncTools HW "
+             "lookahead) — LookAheadDepth-held tail frames cannot be "
+             "recovered");
+      }
+      return MFX_ERR_MORE_DATA;
+    }
   }
 
+  warn("DrainAndRetrieve: gave up after 250 passes");
   return MFX_ERR_MORE_DATA;
+}
+
+void QSVEncoder::ResetFlushState() {
+  m_FlushInFlight.clear();
+  m_FlushRingHead = 0;
+  m_FlushExhausted = false;
+  // the Reset rebuilt the pipeline — flush may work again even if it was
+  // wedged before
+  m_FlushBroken = false;
+  // m_FlushRefusedOnce stays: it's a driver trait, not session state
+  // m_FlushAbandonedOps stays: abandoned ops are still outstanding driver-side
+  // keep m_FlushRing allocated — it's just scratch buffers, reused next time
 }
 
 mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
                                             mfxEncodeCtrl *Ctrl, int TaskID,
                                             mfxU32 MaxRetries) {
-  // Backoff constants when device is busy
   constexpr mfxU32 YIELD_THRESHOLD = 10;       // yield timeslice for first 10 attempts
   constexpr mfxU32 MAX_BACKOFF_MS = 64;        // max backoff 64ms
   constexpr mfxU32 BITSTREAM_GROW_FACTOR = 2;  // bitstream buffer growth factor
@@ -5466,7 +5513,6 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
     // and later cause MFX_ERR_NULL_PTR in SyncAndSwapPendingTask.
     if (MFX_WRN_DEVICE_BUSY == Status) [[unlikely]] {
       QSVTaskPool[TaskID].SyncPoint = nullptr;
-      // Exponential backoff: yield first, then sleep 1,2,4,8,...ms to avoid busy-waiting
       if (EncodeRetryCount <= YIELD_THRESHOLD) {
         Sleep(0);
       } else {
@@ -5479,7 +5525,6 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
       continue;
     }
 
-    // Warnings other than DEVICE_BUSY with SyncPoint → accept as async submit
     if (MFX_ERR_NONE < Status && QSVTaskPool[TaskID].SyncPoint) [[likely]] {
       debug("EncodeFrameAsync[%d] sync=0x%p warning=0x%x (async submit)", TaskID,
             (void *)QSVTaskPool[TaskID].SyncPoint, Status);
@@ -5494,7 +5539,6 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
       continue;
     }
 
-    // Buffer too small → grow and retry
     if (MFX_ERR_NOT_ENOUGH_BUFFER == Status ||
         MFX_ERR_MORE_BITSTREAM == Status) [[unlikely]] {
       // ChangeBitstreamSize touches shared QSVBitstream — lock to avoid racing with SyncAndSwapPendingTask
@@ -5515,9 +5559,22 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
       // flooding it during the lookahead fill period.
       m_SubmitSkipCount++;
       if (m_SubmitSkipCount == 1 || (m_SubmitSkipCount % 300) == 0) {
+        mfxU16 PendingTasks = 0, LockedSurfaces = 0;
+        {
+          std::lock_guard<std::mutex> lock(QSVTaskPoolMutex);
+          for (const auto &T : QSVTaskPool)
+            if (T.SyncPoint)
+              PendingTasks++;
+        }
+        for (const auto &S : QSVSystemMemPool)
+          if (S.Surface.Data.Locked)
+            LockedSurfaces++;
         warn("EncodeFrameAsync returned MORE_DATA on submit — frame buffered "
-             "in driver lookahead, not lost (total: %u)",
-             m_SubmitSkipCount);
+             "in driver lookahead, not lost (total: %u, pending tasks: "
+             "%d/%d, locked surfaces: %d/%d)",
+             m_SubmitSkipCount, PendingTasks,
+             static_cast<int>(QSVTaskPool.size()), LockedSurfaces,
+             static_cast<int>(QSVSystemMemPool.size()));
       }
       break;
     } else [[unlikely]] {
@@ -5584,7 +5641,7 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
         continue;
       }
       if (SyncStatus == MFX_WRN_IN_EXECUTION) {
-        SyncBackoff(busyCount); // still running — back off instead of spinning
+        SyncBackoff(busyCount);
         continue;
       }
       if (SyncStatus < MFX_ERR_NONE) {
@@ -5618,8 +5675,8 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
   }
 
 #if defined(_WIN32) || defined(_WIN64)
-  // Use pre-registered surface instead of per-frame ImportFrameSurface.
-  // The surface was imported once at init and lives for the encoder lifetime.
+  // use the pre-registered surface: imported once at init, lives for the
+  // encoder lifetime (no per-frame ImportFrameSurface).
   size_t texIdx = HWManager->GetLastTextureIndex();
   if (texIdx >= QSVPreRegisteredSurfaces.size() ||
       !QSVPreRegisteredSurfaces[texIdx]) {
@@ -5696,7 +5753,7 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
         SyncSts = MFXVideoCORE_SyncOperation(
             QSVSession, QSVProcessingSyncPoint, 100);
         if (SyncSts == MFX_WRN_IN_EXECUTION)
-          SyncBackoff(busyCount); // still running — back off instead of spinning
+          SyncBackoff(busyCount);
       } while (SyncSts == MFX_WRN_IN_EXECUTION);
       if (SyncSts < MFX_ERR_NONE) {
         error("VPP sync error: %d", SyncSts);
@@ -5717,8 +5774,7 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
       QSVProcessingSurface = nullptr;
     }
 #if defined(_WIN32) || defined(_WIN64)
-    // Don't release QSVEncodeSurface — pre-registered surfaces are
-    // cleaned up in ClearData.
+    // Don't release QSVEncodeSurface — pre-registered surfaces are cleaned up in ClearData.
 #else
     if (QSVEncodeSurface) {
       QSVEncodeSurface->FrameInterface->Release(QSVEncodeSurface);
@@ -5744,9 +5800,9 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
   int TaskID = 0;
 
   if (QSVProcessingEnable) {
-    // VPP input surface matches the source resolution (e.g. 1920x1080),
-    // while the encoder surface is at the VPP output resolution (e.g. 1280x720).
-    // Using GetSurfaceIn ensures the surface dimensions match the VPP input config.
+    // VPP input is at source resolution (e.g. 1920x1080) while the encoder
+    // surface is at the VPP output resolution; GetSurfaceIn matches the
+    // VPP input config.
     Status = QSVProcessing->GetSurfaceIn(&QSVEncodeSurface);
     if (Status < MFX_ERR_NONE) {
       error("Error code: %d", Status);
@@ -5785,7 +5841,7 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
         continue;
       }
       if (SyncStatus == MFX_WRN_IN_EXECUTION) {
-        SyncBackoff(busyCount); // still running — back off instead of spinning
+        SyncBackoff(busyCount);
         continue;
       }
       if (SyncStatus < MFX_ERR_NONE) {
@@ -5876,7 +5932,6 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
     QSVEncodeSurface = nullptr;
   }
 
-  /*Encode a frame asynchronously (returns immediately)*/
   bool roiActive = !CachedROIRegions.empty();
   if (roiActive)
     SetupROIEncodeCtrl();
@@ -5894,7 +5949,7 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
         SyncStatus = MFXVideoCORE_SyncOperation(
             QSVSession, QSVProcessingSyncPoint, 100);
         if (SyncStatus == MFX_WRN_IN_EXECUTION)
-          SyncBackoff(busyCount); // still running — back off instead of spinning
+          SyncBackoff(busyCount);
       } while (SyncStatus == MFX_WRN_IN_EXECUTION);
       if (SyncStatus < MFX_ERR_NONE) {
         error("VPP sync error: %d", SyncStatus);
@@ -5944,7 +5999,6 @@ void QSVEncoder::SetupROIEncodeCtrl() {
   auto *existing = QSVEncodeCtrlParams.GetExtBuffer<mfxExtEncoderROI>();
   if (existing) {
     if (existing->Header.BufferSz >= requiredSize) {
-      // Reuse existing buffer: zero and reset header fields
       memset(existing, 0, existing->Header.BufferSz);
       existing->Header.BufferId = MFX_EXTBUFF_ENCODER_ROI;
       existing->Header.BufferSz = requiredSize;
@@ -6001,7 +6055,6 @@ void QSVEncoder::SetupROIEncodeCtrl() {
 // Per-frame QP tracking
 
 void QSVEncoder::RecordQPFromBitstream(const mfxBitstream &bs) {
-  // Extract frame-level data for both QP stats and FrameStats
   mfxU16 qp = 0;
   mfxU32 mad = 0;
   mfxU16 brcPanic = 0;
@@ -6077,7 +6130,6 @@ void QSVEncoder::UpdateFrameQPStats(mfxU16 frameType, mfxU16 qp) {
   } else if (frameType & MFX_FRAMETYPE_B || frameType & MFX_FRAMETYPE_xB) {
     bucket = &FrameQPStats.b;
   } else {
-    // Unknown frame type
     return;
   }
 
@@ -6128,7 +6180,6 @@ void QSVEncoder::LogQPStats() {
       return;
     }
     double avg = static_cast<double>(s.sumQP) / static_cast<double>(s.count);
-    // Compute median from histogram
     mfxU16 median = 0;
     {
       uint64_t target = (s.count + 1) / 2;
@@ -6166,7 +6217,6 @@ void QSVEncoder::LogFrameStats() {
     }
     double avgBytes = static_cast<double>(s.totalBytes) /
                       static_cast<double>(s.count) / 1024.0;
-    // Build PSNR string
     std::string psnrStr;
     if (Stats.hasPSNR) {
       char buf[64];
@@ -6256,7 +6306,6 @@ void QSVEncoder::AppendQpSeiToBitstream(mfxBitstream &bs) {
       return;
     double avg = static_cast<double>(s.sumQP) /
                  static_cast<double>(s.count);
-    // Compute median from histogram (O(QP_HISTOGRAM_SIZE) = O(1))
     mfxU16 median = 0;
     {
       uint64_t target = (s.count + 1) / 2;
@@ -6287,11 +6336,9 @@ void QSVEncoder::AppendQpSeiToBitstream(mfxBitstream &bs) {
   fmtType(FrameQPStats.i, 'I', payload);
   fmtType(FrameQPStats.p, 'P', payload);
   fmtType(FrameQPStats.b, 'B', payload);
-  // Remove trailing '|' if any
   if (!payload.empty() && payload.back() == '|')
     payload.pop_back();
 
-  // Determine codec and build the SEI NAL
   mfxU32 codecId = QSVEncodeParams.mfx.CodecId;
   bool isHEVC = (codecId == MFX_CODEC_HEVC);
   if (codecId == MFX_CODEC_AV1 || codecId == MFX_CODEC_VP9)
@@ -6328,18 +6375,15 @@ void QSVEncoder::AppendQpSeiToBitstream(mfxBitstream &bs) {
   }
   buf[pos++] = static_cast<uint8_t>(remaining & 0xFF);
 
-  // UUID
   memcpy(buf + pos, QP_SEI_UUID, 16);
   pos += 16;
 
-  // User data (the stats string)
   memcpy(buf + pos, payload.data(), payload.size());
   pos += payload.size();
 
   // RBSP trailing bits
   buf[pos++] = 0x80;
 
-  // Append to the bitstream buffer
   uint8_t *dst = bs.Data + bs.DataOffset + bs.DataLength;
   memcpy(dst, buf, pos);
   bs.DataLength += static_cast<mfxU32>(pos);
@@ -6400,7 +6444,7 @@ mfxStatus QSVEncoder::Drain() {
 
   int iter = 0;
   int drainedFrames = 0;
-  size_t RingHead = 0; // next slot to submit into
+  size_t RingHead = 0;
   std::vector<std::pair<mfxSyncPoint, size_t>> InFlight; // FIFO of pending ops
   while (Status >= MFX_ERR_NONE && iter++ < MAX_DRAIN_ITERS &&
          !m_DrainStalled) {
@@ -6488,7 +6532,6 @@ mfxStatus QSVEncoder::Drain() {
       if (m_DrainStalled)
         break;
       if (SyncSts >= MFX_ERR_NONE) {
-        // Extract QP and frame stats from this task's bitstream
         if (QPStatsEnabled || FrameStatsEnabled) {
           mfxU16 qp = 0;
           mfxU32 mad = 0;
@@ -6571,7 +6614,6 @@ mfxStatus QSVEncoder::Drain() {
     LogFrameStats();
   }
 
-  // Rebuild the SEI buffer with the final cumulative stats
   AppendQpSeiToBitstream(QSVBitstream);
 
   return Status;
@@ -6580,13 +6622,25 @@ mfxStatus QSVEncoder::Drain() {
 // System-memory warm-up: push a few gray frames through the REAL encode path
 // and sync them all, so the driver pays its one-time init costs (context
 // setup, first DMA maps, B-frame path allocation) before the real stream
-// starts.  Without this the encode thread stalls on the first syncs and OBS
-// drops a burst of frames right after recording starts; the content jump
-// then shows as wrong-reference ghosting for the rest of the first GOP.
-// Reset afterwards clears the dummy sequence so frame 1 is a clean IDR.
+// starts. without this the encode thread stalls on the first syncs and OBS
+// drops a burst of frames right after recording starts (wrong-reference
+// ghosting for the rest of the first GOP).
 void QSVEncoder::WarmUpSystemMemoryPipeline() {
   if (QSVSystemMemPool.empty() || QSVTaskPool.empty())
     return;
+
+  // Warm-up + Reset is only safe without driver-side lookahead (see
+  // m_LookaheadActive in InitSystemMemorySurfacePool): with lookahead the
+  // driver keeps frames buffered beyond what the drain can surface, so
+  // Reset fails (MFX_ERR_NOT_FOUND) and the half-reset session then swallows
+  // every submitted frame silently — zero output and zero GPU usage until
+  // the stop-time flush trips the MFX_ERR_GPU_HANG watchdog. a brief
+  // first-frames stall is far cheaper than a wedged session.
+  if (m_LookaheadActive) {
+    info("\tLookahead active — skipping system-memory warm-up "
+         "(Reset after warm-up can wedge the session)");
+    return;
+  }
 
   // one gray frame laid out exactly like OBS feeds LoadFrameData
   const mfxU32 W = QSVEncodeParams.mfx.FrameInfo.Width;
@@ -6606,7 +6660,6 @@ void QSVEncoder::WarmUpSystemMemoryPipeline() {
   QPStatsEnabled = false;
   FrameStatsEnabled = false;
 
-  // submit a few frames through the REAL encode path
   constexpr int WARMUP_FRAMES = 5;
   for (int i = 0; i < WARMUP_FRAMES; i++) {
     mfxBitstream *bs = nullptr;
@@ -6624,9 +6677,9 @@ void QSVEncoder::WarmUpSystemMemoryPipeline() {
 
   // Drain the pipeline: with lookahead the driver buffers every submitted
   // frame (MORE_DATA on submit means "consumed, no output yet"), so syncing
-  // pending tasks alone never surfaces them.  Sync pending tasks first, then
+  // pending tasks alone never surfaces them. sync pending tasks first, then
   // flush the lookahead-held frames with null submits until the driver
-  // reports MORE_DATA.  This both pays the one-time driver init costs and
+  // reports MORE_DATA. this both pays the one-time driver init costs and
   // leaves the encoder quiesced — Reset with frames still in flight is
   // rejected (MFX_ERR_NOT_FOUND) and the dummy frames then leak into the
   // real stream as its first packets, with timestamps that make every
@@ -6653,14 +6706,16 @@ void QSVEncoder::WarmUpSystemMemoryPipeline() {
   QPStatsEnabled = qpSaved;
   FrameStatsEnabled = fsSaved;
 
-  // Reset the sequence: dummy frames never enter the stream, the first real
-  // frame starts a clean IDR from a warm pipeline
+  // Reset the sequence so the first real frame starts a clean IDR
   mfxVideoParam Tmp{};
   if (QSVEncode->GetVideoParam(&Tmp) >= MFX_ERR_NONE) {
     Tmp.NumExtParam = 0;
     Tmp.ExtParam = nullptr;
     mfxStatus rst = QSVEncode->Reset(&Tmp);
     if (rst == MFX_ERR_NONE) {
+      // the warm-up drain set m_FlushExhausted and the Reset rebuilt the
+      // driver-side lookahead — re-arm the flush for the real stream
+      ResetFlushState();
       info("\tWarm-up done (%d frames, %d drained), reset OK", WARMUP_FRAMES,
            synced);
     } else {
@@ -6680,7 +6735,6 @@ void QSVEncoder::WarmUpEncoder() {
     return;
   }
 
-  // Frame-encoder path (video / system memory)
   if (!QSVEncode)
     return;
   if (QSVUseSystemMemoryPath) {
@@ -6748,9 +6802,16 @@ mfxStatus QSVEncoder::ClearData() {
     } else {
       warn("ClearData: skipping drain — device already failed");
     }
-    if (m_DrainStalled) {
-      warn("ClearData: drain never completed — skipping Close/MFXClose and "
-           "freeing (session leaked, GPU may need a driver reset)");
+    // With a wedged pipeline (drain sync points never completed, or flush
+    // ops abandoned mid-flight) Close() inside the driver never returns:
+    // OBS freezes on stop, GPU media engine usage stays pinned and nothing
+    // works afterwards.  Better to leak the session and the driver-attached
+    // buffers than take the whole process down with us.
+    if (m_DrainStalled || m_FlushAbandonedOps > 0) {
+      warn("ClearData: %s — skipping Close/MFXClose and freeing (session "
+           "leaked, GPU may need a driver reset)",
+           m_DrainStalled ? "drain never completed"
+                          : "abandoned flush ops still outstanding");
       QSVEncode = nullptr;
       QSVProcessing = nullptr;
       QSVSession = nullptr;
@@ -6769,10 +6830,12 @@ mfxStatus QSVEncoder::ClearData() {
   ReleaseTaskPool();
   ReleaseBitstream();
 
+  ResetFlushState();
+  m_FlushRing.clear();
+
   ReleaseSystemMemorySurfacePool();
 
 #if defined(_WIN32) || defined(_WIN64)
-  // Release pre-registered VPL texture surfaces.
   for (auto *Surf : QSVPreRegisteredSurfaces) {
     if (Surf) {
       Surf->FrameInterface->Release(Surf);

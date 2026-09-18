@@ -212,9 +212,8 @@ template <> struct MFXExtBufferID<mfxExtTuneEncodeQuality> {
 #endif
 
 constexpr uint16_t MaxNumExtBuffers =
-    63 * 2; // '*2' is for max estimation if all extBuffer were 'paired'
+    63 * 2; // '*2' allows for all ext buffers being 'paired'
 
-// helper function to initialize mfx ext Bufferfer structure
 template <class T> void InitExtBuffer(T &ExtBuffer) {
   memset(&ExtBuffer, 0, sizeof(ExtBuffer));
   reinterpret_cast<mfxExtBuffer *>(&ExtBuffer)->BufferId =
@@ -253,12 +252,13 @@ public:
         ExtParam(const_cast<MFXExtBufferDoublePTR &>(Buffer.Data.ExtParam)) {}
 };
 
-// Manages mfxExtBuffer objects attached to any mfx structure (e.g. mfxVideoParam)
+// owns mfxExtBuffer objects attached to a wrapped mfx structure (e.g. mfxVideoParam)
 template <typename T> class ExtBufManager : public T {
 public:
   ExtBufManager() : T() { MFXExtBufferPool.reserve(MaxNumExtBuffers); }
 
-  ~ExtBufManager() // only Bufferfers allocated by wrapper can be released
+  // only releases buffers allocated by this wrapper
+  ~ExtBufManager()
   {
     for (auto it = MFXExtBufferPool.begin(); it != MFXExtBufferPool.end(); it++) {
       delete[] reinterpret_cast<mfxU8 *>((*it));
@@ -267,7 +267,7 @@ public:
 
   ExtBufManager(const ExtBufManager &Ref) {
     MFXExtBufferPool.reserve(MaxNumExtBuffers);
-    *this = Ref; // call to operator=
+    *this = Ref;
   }
 
   ExtBufManager &operator=(const ExtBufManager &Ref) {
@@ -277,21 +277,18 @@ public:
   }
 
   ExtBufManager(const T &Ref) {
-    *this = Ref; // call to operator=
+    *this = Ref;
   }
 
   ExtBufManager &operator=(const T &Ref) {
-    // copy content of main structure type T
     T *DSTBase = this;
     const T *SRCBase = &Ref;
     *DSTBase = *SRCBase;
 
-    // remove all existing extension Bufferfers
     ClearBuffers();
 
     const auto Ref_ = ExtParamAccessor<T>(Ref);
 
-    // reproduce list of extension Bufferfers and copy its content
     for (size_t i = 0; i < Ref_.NumExtParam; ++i) {
       const auto SRCBuffer = Ref_.ExtParam[i];
       if (!SRCBuffer)
@@ -301,9 +298,9 @@ public:
                                  "' extBuffer is not allowed");
       }
 
-      // Pass 'false' for AddExtBuffer: we copy ext buffers one by one
+      // 'false': the source list already holds both buffers of a paired type,
+      // copying one by one
       auto DSTBuffer = AddExtBuffer(SRCBuffer->BufferId, SRCBuffer->BufferSz, false);
-      // copy buffer content without restoring its type
       memcpy(static_cast<void *>(DSTBuffer), static_cast<void *>(SRCBuffer),
              SRCBuffer->BufferSz);
     }
@@ -376,7 +373,7 @@ private:
       Buffer->BufferSz = Size;
 
       if (IsPairedExtBuffer) {
-        // Allocate the other mfxExtBuffer _right_after_ the first one ...
+        // allocate the second buffer of the pair right after the first one
         Buffer = reinterpret_cast<mfxExtBuffer *>(new mfxU8[Size]);
         memset(Buffer, 0, Size);
         MFXExtBufferPool.push_back(Buffer);
@@ -386,7 +383,7 @@ private:
 
         RefreshBuffers();
         return MFXExtBufferPool[MFXExtBufferPool.size() -
-                         2]; // ... and return a pointer to the first one
+                         2]; // return a pointer to the first one
       }
 
       RefreshBuffers();

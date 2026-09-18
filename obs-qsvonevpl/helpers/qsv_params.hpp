@@ -4,10 +4,9 @@
 #include <optional>
 
 // Fully-expanded H.264 scaling lists for the custom quant matrix path
-// (QMatrixPreset == QM_CUSTOM). Each list is in zigzag scan order, values
-// 1..255. An unset list means "keep the driver default" for that group; the
-// injector fills luma placeholders automatically when only chroma/groups are
-// given, because H.264 forces the 4x4 luma list in front of Cb/Cr.
+// (QMatrixPreset == QM_CUSTOM), in zigzag scan order, values 1..255. An unset
+// list keeps the driver default; the injector fills luma placeholders when
+// only chroma/groups are given (H.264 forces the 4x4 luma list ahead of Cb/Cr).
 struct H264ScalingLists {
   std::optional<std::array<uint8_t, 16>> Intra4x4Y;
   std::optional<std::array<uint8_t, 16>> Intra4x4Cb;
@@ -82,9 +81,9 @@ struct encoder_params {
   std::optional<bool> GPB;
   std::optional<bool> GopOptFlag;
   std::optional<mfxU16> WeightedPred;
-  // HME (hierarchical motion estimation) tuning is H.264-only and the UHD600
-  // GPU family does not expose it at all (QSVEncC on UHD620: all x).
-  // Keep them out of the UHD600 variant build entirely.
+  // HME (hierarchical motion estimation) tuning is H.264-only and not exposed
+  // at all on the UHD600 GPU family (QSVEncC on UHD620: all x), so keep these
+  // out of the UHD600 variant build entirely.
 #ifndef QSV_UHD600_SUPPORT
   std::optional<bool> DirectBiasAdjustment;
   std::optional<bool> GlobalMotionBiasAdjustment;
@@ -215,7 +214,7 @@ struct encoder_params {
     mfxI16 GradTop    = 0;
     mfxI16 GradRight  = 0;
     mfxI16 GradBottom = 0;
-    int GradientSteps = 3;  // subdivision count per side (default 3 → 7×7 grid)
+    int GradientSteps = 3;  // subdivision count per side (default 3 -> 7x7 grid)
   };
   struct normalized_roi_region {
     double Left = 0.0;    // 0.0 ~ 1.0 (fraction of output width)

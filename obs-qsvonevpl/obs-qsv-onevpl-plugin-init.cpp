@@ -7,17 +7,18 @@
 #include <thread>
 #include <unordered_map>
 
+#include "helpers/encoder_option_rules.hpp"
 #include "helpers/encoder_params_parser.hpp"
 #include "obs-qsv-onevpl-encoder.hpp"
 
-// Extern array definitions (declared in obs-qsv-onevpl-plugin-init.hpp)
-const char *const qsv_profile_names_av1[] = {"main", "high", "pro", 0};
-// VP9 profiles: 0=8bit420, 1=8bit444, 2=10bit420, 3=10bit444
+const char *const qsv_profile_names_av1[] = {"main", "high", 0};
 const char *const qsv_profile_names_vp9[] = {
     "0 (8-bit 4:2:0)", "1 (8-bit 4:4:4)",
     "2 (10-bit 4:2:0)", "3 (10-bit 4:4:4)", 0};
+// "high10" removed: no Intel GPU/driver exposes 10-bit AVC encode (P010 is
+// outside the driver's AVC FourCC whitelist -> MFX_ERR_UNSUPPORTED at Init).
 const char *const qsv_profile_names_h264[] = {
-    "high10", "high", "main", "baseline", "extended",
+    "high", "main", "baseline", "extended",
     "constrained_baseline", "constrained_high", 0};
 const char *const qsv_profile_names_hevc[] = {"main", "main10", "rext", "scc", 0};
 const char *const qsv_profile_tiers_hevc[] = {"main", "high", 0};
@@ -119,29 +120,74 @@ struct qsv_feature_info {
 static const struct qsv_feature_info qsv_feature_info_list[] = {
     {"enc_tools", MFX_PLATFORM_TIGERLAKE},
     {"transform_skip", MFX_PLATFORM_ICELAKE},
+    {"trellis", MFX_PLATFORM_HASWELL},
     {nullptr, 0}};
 
 mfxU16 QueryPlatformCodeName();
 
+// The four VPP probes are defined with external linkage here (declared in
+// common_utils.hpp, called from other TUs); these forward declarations must
+// NOT be static or the definitions would lose external linkage and break.
+bool PlatformSupportsImageStabVPP();
+bool PlatformSupportsFRCVPP();
+bool PlatformSupportsMirrorVPP();
+bool PlatformSupportsPercEncVPP();
+static bool PlatformSupportsMCTFVPP();
+static bool PlatformSupportsLowPowerBFrames();
+
 static bool IsFeatureSupported(const char *PropertyName) {
-    mfxU16 platformCode = QueryPlatformCodeName();
-    if (platformCode == 0) {
-        return true;
-    }
-    const std::string_view prop{PropertyName};
-    const auto it = std::ranges::find_if(
-        qsv_feature_info_list,
-        [prop](const qsv_feature_info &info) {
-            return info.property_name && prop == info.property_name;
-        });
-    if (it != std::end(qsv_feature_info_list)) {
-        return platformCode >= it->min_platform;
-    }
+  const std::string_view prop{PropertyName};
+  // probed / OS-scoped features; names come from the Feat() conds in
+  // helpers/encoder_option_rules.hpp
+  if (prop == "vpp_image_stab")
+    return PlatformSupportsImageStabVPP();
+  if (prop == "vpp_frc")
+    return PlatformSupportsFRCVPP();
+  if (prop == "vpp_mirror")
+    return PlatformSupportsMirrorVPP();
+  if (prop == "vpp_percenc")
+    return PlatformSupportsPercEncVPP();
+  if (prop == "vpp_mctf")
+    return PlatformSupportsMCTFVPP();
+  if (prop == "lp_b_frames")
+    return PlatformSupportsLowPowerBFrames();
+  if (prop == "enc_tools_config") {
+#if !defined(_WIN32)
+    // mfxExtEncToolsConfig is only attached on Windows (SetEncoderParams);
+    // on Linux these toggles are inert, while HEVC/AV1 lookahead still works
+    // via the forced GAME_STREAMING scenario.
+    return false;
+#else
+    return IsFeatureSupported("enc_tools");
+#endif
+  }
+  if (prop == "vpp_rotation") {
+#if defined(_WIN32)
     return true;
+#else
+    // oneVPL GPU RT only fills caps.uRotation from the VAAPI pipeline caps
+    // (rotation_flags) and iHD never reports them, so on Linux the rotation
+    // filter is always silently skipped (GPUFeatures logs: Rotate x on every
+    // Linux generation).
+    return false;
+#endif
+  }
+
+  mfxU16 platformCode = QueryPlatformCodeName();
+  if (platformCode == 0) {
+    return true;
+  }
+  const auto it = std::ranges::find_if(
+      qsv_feature_info_list,
+      [prop](const qsv_feature_info &info) {
+        return info.property_name && prop == info.property_name;
+      });
+  if (it != std::end(qsv_feature_info_list)) {
+    return platformCode >= it->min_platform;
+  }
+  return true;
 }
 
-// Platform capability cache — filled once by the background probe thread,
-// read-only from the UI / encoder threads.
 static std::atomic<mfxU16> CachedQSVPlatformCode{0};
 static std::atomic<bool> QSVPlatformProbed{false};
 static std::mutex QSVPlatformProbeMutex;
@@ -179,14 +225,12 @@ static bool TryQueryPlatformCodeName(mfxLoader Loader, mfxU16 &OutCodeName) {
     return false;
 }
 
-// UI / encoder threads only read this cache; before the probe finishes it
-// returns 0 (callers fall back to "unknown platform" defaults). The probe
-// itself runs once on the background thread — UI never triggers VPL probing.
+// Returns 0 until the background probe finishes (callers fall back to
+// "unknown platform" defaults); UI never triggers VPL probing itself.
 mfxU16 QueryPlatformCodeName() {
     return CachedQSVPlatformCode.load(std::memory_order_acquire);
 }
 
-// Background probe entry: runs once and fills the cache; no-op if already done.
 static bool ProbePlatformCodeName() {
     std::lock_guard<std::mutex> Lock(QSVPlatformProbeMutex);
     if (QSVPlatformProbed.load(std::memory_order_acquire))
@@ -310,7 +354,6 @@ static bool ProbeVPPFilterOnce(VPPFilterId Id) {
   const mfxU32 BufferId = kVPPFilterBuffers[static_cast<unsigned>(Id)];
   const uint8_t Bit = VPPFilterBit(Id);
   if (BufferId == 0) {
-    // Filters not enabled above are recorded as unsupported.
     VPPFilterKnownMask.fetch_or(Bit, std::memory_order_release);
     return false;
   }
@@ -418,6 +461,86 @@ bool PlatformSupportsPercEncVPP() {
   return GetVPPFilterCache(VPPFilterId::PercEnc);
 }
 
+// MCTF CM kernels ship for Gen12-LP only: oneVPL GPU RT gates the filter with
+// TGL_LP <= hw < DG2 (mfx_platform_caps.h); outside that range (ICL,
+// MTL/ARL/DG2/LNL/BMG) it is silently dropped (WRN_FILTER_SKIPPED). ADL-N is
+// Gen12-LP too but its CodeName (55) sorts above every Arc platform.
+static bool PlatformSupportsMCTFVPP() {
+#ifdef QSV_UHD600_SUPPORT
+  return false; // legacy libmfx 1.x build has no MCTF option at all
+#else
+  const mfxU16 code = QueryPlatformCodeName();
+  return code == 0 ||
+         (code != MFX_PLATFORM_ICELAKE &&
+          (code < MFX_PLATFORM_DG2 || code == MFX_PLATFORM_ALDERLAKE_N));
+#endif
+}
+
+// VDEnc B-frames (AVC) — probed in background, read-only from UI.  The VDEnc
+// pipeline has no B-frame support before DG2 and the runtime silently
+// downgrades GopRefDist to 1 there (mfx_h264_enc_common_hw.cpp:2280-2290);
+// ask the driver instead of hardcoding a platform cutoff.
+static std::atomic<bool> LowPowerBFramesKnown{false};
+static std::atomic<bool> LowPowerBFramesSupported{true};
+
+static bool ProbeLowPowerBFramesOnce() {
+  bool ok = false;
+  mfxLoader Loader = nullptr;
+  {
+    std::lock_guard<std::mutex> LoaderLock(GlobalLoaderMutex);
+    Loader = GlobalQSVLoader;
+  }
+  if (Loader != nullptr) {
+    mfxSession Session = nullptr;
+    if (MFXCreateSession(Loader, 0, &Session) >= MFX_ERR_NONE) {
+      try {
+        MFXVideoENCODE Encode(Session);
+        mfxVideoParam Params = {};
+        Params.mfx.CodecId = MFX_CODEC_AVC;
+        Params.mfx.CodecProfile = MFX_PROFILE_AVC_HIGH;
+        Params.mfx.TargetUsage = MFX_TARGETUSAGE_4;
+        Params.mfx.TargetKbps = 6000;
+        Params.mfx.RateControlMethod = MFX_RATECONTROL_CBR;
+        Params.mfx.FrameInfo.FourCC = MFX_FOURCC_NV12;
+        Params.mfx.FrameInfo.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
+        Params.mfx.FrameInfo.Width = 1280;
+        Params.mfx.FrameInfo.Height = 720;
+        Params.mfx.FrameInfo.CropW = 1280;
+        Params.mfx.FrameInfo.CropH = 720;
+        Params.mfx.FrameInfo.FrameRateExtN = 30;
+        Params.mfx.FrameInfo.FrameRateExtD = 1;
+        Params.mfx.FrameInfo.PicStruct = MFX_PICSTRUCT_PROGRESSIVE;
+        Params.mfx.GopPicSize = 60;
+        Params.mfx.GopRefDist = 2; // exactly one B-frame: the whole question
+        Params.mfx.LowPower = MFX_CODINGOPTION_ON;
+        Params.AsyncDepth = 4;
+        Params.mfx.BRCParamMultiplier = 1;
+
+        mfxVideoParam Out = Params;
+        mfxStatus Sts = Encode.Query(&Params, &Out);
+        // GopRefDist reset to 1 (or a hard error) = no VDEnc B-frames
+        ok = (Sts == MFX_ERR_NONE ||
+              Sts == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) &&
+             Out.mfx.GopRefDist == 2;
+        Encode.Close();
+      } catch (...) {
+        ok = false;
+      }
+      MFXClose(Session);
+    }
+  }
+
+  LowPowerBFramesSupported.store(ok, std::memory_order_release);
+  LowPowerBFramesKnown.store(true, std::memory_order_release);
+  return ok;
+}
+
+static bool PlatformSupportsLowPowerBFrames() {
+  if (LowPowerBFramesKnown.load(std::memory_order_acquire))
+    return LowPowerBFramesSupported.load(std::memory_order_acquire);
+  return true; // unknown yet — assume capable
+}
+
 // IntraRefresh encode support — probed in background, read-only from UI.
 static std::atomic<bool> IntraRefreshKnown[2]{false, false};   // 0 = AVC, 1 = HEVC
 static std::atomic<bool> IntraRefreshSupported[2]{false, false};
@@ -500,10 +623,6 @@ bool PlatformSupportsIntraRefreshEncode(codec_enum Codec) {
   return true; // unknown yet — driver falls back at runtime
 }
 
-// Startup capability probe — kicked off from obs_module_load, all probing
-// runs on a background thread (platform name, VPP filters, Denoise2,
-// IntraRefresh) and fills the caches; UI / encoder threads only read them.
-
 const char *DescribePlatformCodeName(mfxU16 CodeName) {
   // Note: DG2==ATS-M and XeHP SDV==Arctic Sound share enum values; keep one case each.
   switch (CodeName) {
@@ -544,7 +663,6 @@ static void RunCapabilityProbeWorker() {
   using namespace std::chrono;
   const steady_clock::time_point t0 = steady_clock::now();
 
-  // Platform name
   {
     const auto st = steady_clock::now();
     const bool ok = ProbePlatformCodeName();
@@ -556,7 +674,6 @@ static void RunCapabilityProbeWorker() {
 
   const mfxU16 code = QueryPlatformCodeName();
 
-  // VPP Denoise2
   bool DenoiseOK = false;
   {
     const auto st = steady_clock::now();
@@ -567,7 +684,6 @@ static void RunCapabilityProbeWorker() {
          DenoiseOK ? "supported" : "unsupported", ms);
   }
 
-  // VPP filters
   struct VPPItem {
     VPPFilterId Id;
     const char *Name;
@@ -588,7 +704,6 @@ static void RunCapabilityProbeWorker() {
          VPPStatus[i] ? "supported" : "unsupported", ms);
   }
 
-  // IntraRefresh (AVC + HEVC)
   bool IntraAVC = false, IntraHEVC = false;
   {
     const auto st = steady_clock::now();
@@ -601,10 +716,18 @@ static void RunCapabilityProbeWorker() {
          IntraHEVC ? "supported" : "unsupported", ms);
   }
 
+  {
+    const auto st = steady_clock::now();
+    const bool ok = ProbeLowPowerBFramesOnce();
+    const double ms =
+        duration<double, std::milli>(steady_clock::now() - st).count();
+    info("\tCapability probe: %-20s %s (%.1f ms)", "VDEnc B-frames",
+         ok ? "supported" : "unsupported", ms);
+  }
+
   const double TotalMs =
       duration<double, std::milli>(steady_clock::now() - t0).count();
 
-  // Platform probe failed -> whole probe failed: log an error with elapsed time.
   if (code == 0) {
     error("QSV capability probe FAILED after %.1f ms (platform not "
           "queried); UI options fall back to generic defaults",
@@ -612,7 +735,6 @@ static void RunCapabilityProbeWorker() {
     return;
   }
 
-  // Success: log elapsed time and the hardware capability summary.
   info("QSV capability probe finished in %.1f ms", TotalMs);
   info("\tPlatform: %s (CodeName %u)", DescribePlatformCodeName(code), code);
   for (size_t i = 0; i < AdaptersCount; ++i) {
@@ -684,7 +806,7 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
     obs_data_set_default_string(Settings, "target_usage", "TU4 (Balanced)");
   }
   obs_data_set_default_int(Settings, "bitrate", 6000);
-  obs_data_set_default_bool(Settings, "use_advanced", false);
+  obs_data_set_default_string(Settings, "encoder_preset", "custom");
   obs_data_set_default_int(Settings, "max_bitrate", 6000);
   obs_data_set_default_int(Settings, "buffer_size", 0);
   obs_data_set_default_string(
@@ -787,7 +909,6 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_int(Settings, "vpp_out_height", 0);
   obs_data_set_default_string(Settings, "perc_enc_prefilter", "OFF");
 
-  // New VPP filters defaults
   obs_data_set_default_string(Settings, "vpp_procamp", "OFF");
   obs_data_set_default_double(Settings, "vpp_procamp_brightness", 0.0);
   obs_data_set_default_double(Settings, "vpp_procamp_contrast", 1.0);
@@ -819,7 +940,6 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(Settings, "av1_segmentation", "OFF");
   obs_data_set_default_string(Settings, "av1_interp_filter", "DEFAULT");
 
-  // Debug group defaults
   obs_data_set_default_bool(Settings, "qp_statistics", true);
   obs_data_set_default_bool(Settings, "video_header_hex_dump", false);
   obs_data_set_default_bool(Settings, "frame_statistics", false);
@@ -851,365 +971,191 @@ static inline void AddStrings(obs_property_t *List,
 }
 
 static bool ParamsVisibilityModifier(obs_properties_t *Properties,
-                                     obs_property_t *Prop,
+                                     [[maybe_unused]] obs_property_t *Prop,
                                      obs_data_t *Settings) {
-  // quick helper to set a property's visibility (null-safe)
-  auto SetVisible = [&](const char *name, bool visible) {
-    if (auto *p = obs_properties_get(Properties, name))
-      obs_property_set_visible(p, visible);
-  };
-
-  auto sv = [](const char *s) { return std::string_view(s); };
-  const char *rate_control = obs_data_get_string(Settings, "rate_control");
-
-  bool bIsCBR  = sv(rate_control) == "CBR";
-  bool bIsVBR  = sv(rate_control) == "VBR";
-  bool bIsAVBR = sv(rate_control) == "AVBR";
-  bool bIsCQP  = sv(rate_control) == "CQP";
-  bool bIsICQ  = sv(rate_control) == "ICQ";
-  bool bIsVCM  = sv(rate_control) == "VCM";
-  bool bIsQVBR = sv(rate_control) == "QVBR";
-
-  // Retrieve codec stored by GetParamProps (needed early for VCM codec gates)
-  auto codec = static_cast<codec_enum>(
-      reinterpret_cast<intptr_t>(obs_properties_get_param(Properties)));
-
-  SetVisible("max_bitrate", bIsVBR || bIsVCM);
-  SetVisible("bitrate", !(bIsCQP || bIsICQ));
-  SetVisible("accuracy", bIsAVBR);
-  SetVisible("convergence", bIsAVBR);
-  // VCM is IPPP-only, no B-frames (H264 GopRefDist forced to 1;
-  // HEVC uses VA_RC_VCM without MB BRC, conceptually IPPP)
-  SetVisible("b_frames", !bIsVCM && codec != QSV_CODEC_VP9);
-#ifdef QSV_UHD600_SUPPORT
-  // UHD600 family: adaptive I/B is HEVC-rejected, keep it for H.264 only.
-  SetVisible("adaptive_b", !bIsVCM && codec != QSV_CODEC_VP9 &&
-                           codec != QSV_CODEC_HEVC);
-#else
-  SetVisible("adaptive_b", !bIsVCM && codec != QSV_CODEC_VP9);
+  // value migrations and cross-option coercion not covered by the rule table
+#if defined(_WIN32)
+  // Migrate profiles saved before the OFF entry was removed: OFF trips the
+  // driver's "unsupported" path on Windows and hard-fails Init.
+  if (std::string_view(obs_data_get_string(Settings, "brc_panic_mode")) ==
+      "OFF")
+    obs_data_set_string(Settings, "brc_panic_mode", "AUTO");
 #endif
-  SetVisible("cqp_separate_ipb", bIsCQP);
 
-  bool separateIPB = obs_data_get_bool(Settings, "cqp_separate_ipb");
-  SetVisible("qpi", bIsCQP && separateIPB);
-  SetVisible("qpb", bIsCQP && separateIPB);
-  SetVisible("qpp", bIsCQP && separateIPB);
-  SetVisible("cqp", bIsCQP && !separateIPB);
-
-  SetVisible("icq_quality", bIsICQ && codec != QSV_CODEC_VP9);
-
-  const char *low_power = obs_data_get_string(Settings, "low_power");
-  const bool lowPowerOn = sv(low_power) == "ON";
-  SetVisible("adaptive_cqm", codec == QSV_CODEC_AVC && lowPowerOn);
-
-  // EncTools visibility: VP9 has no EncTools; other codecs share the same
-  // rate-control visibility + platform gate.  Even though EncTools BRC
-  // features (BRC, BRCBufferHints, AdaptiveMBQP) only work with CBR/VBR in
-  // the oneVPL driver's SetDefaultConfig, the non-BRC features (SceneChange,
-  // AdaptiveI, AdaptiveRef, PyramidQuant, etc.) are rate-control agnostic, so
-  // we keep the existing broad RC visibility.
-  bool bEncToolsVisible = (bIsCBR || bIsVBR || bIsAVBR || bIsQVBR)
-                         && !bIsVCM
-                         && codec != QSV_CODEC_VP9;
-  bool bVisible = bEncToolsVisible;
-  if (bVisible) bVisible = IsFeatureSupported("enc_tools");
-  SetVisible("enctools", bVisible);
-
-  const char *enctools = obs_data_get_string(Settings, "enctools");
-  bool bVisibleEnctools = (sv(enctools) == "ON") && bVisible;
-
-  // EncTools sub-options visibility (only when enc_tools is ON)
-  for (const char *opt : {
-    "enc_tools_scene_change", "enc_tools_adaptive_ref_p", "enc_tools_adaptive_ref_b",
-    "enc_tools_adaptive_ltr",
-    "enc_tools_adaptive_pyramid_quant_p", "enc_tools_adaptive_pyramid_quant_b",
-    "enc_tools_adaptive_mbqp", "enc_tools_brc_buffer_hints", "enc_tools_brc",
-    "enc_tools_saliency_map_hint"
-  }) SetVisible(opt, bVisibleEnctools);
-
-  SetVisible("qvbr_quality", bIsQVBR);
-
-  const char *lookahead = obs_data_get_string(Settings, "lookahead");
-
-  // Lookahead support per codec (verified against oneVPL vpl-gpu-rt 26.1.5):
-  //   AVC: CBR/VBR/ICQ. VBR/ICQ are promoted to LA/LA_ICQ/LA_HRD (SW BRC).
-  //        CBR keeps its RC mode but sets LookAheadDepth, which triggers
-  //        EncTools LAGS hardware lookahead (IsEnctoolsLAGS in mfx_enc_common).
-  //   HEVC/AV1: CBR/VBR only – lookahead works via GAME_STREAMING hardware
-  //        EncTools, which requires EncTools platform support (TigerLake+).
-  //   VP9: no lookahead mechanism at all.
-  switch (codec) {
-  case QSV_CODEC_AVC:
-    bVisible = bIsCBR || bIsVBR || bIsICQ;
-    break;
-  case QSV_CODEC_HEVC:
-  case QSV_CODEC_AV1:
-    bVisible = (bIsCBR || bIsVBR) && IsFeatureSupported("enc_tools");
-    break;
-  case QSV_CODEC_VP9:
-  default:
-    bVisible = false;
-    break;
-  }
-  SetVisible("lookahead", bVisible);
-  // Force OFF when not visible so obsolete values don't linger
-  if (!bVisible) obs_data_set_string(Settings, "lookahead", "OFF");
-
-  bool bVisible_lookahead_hq = sv(lookahead) == "HQ";
-  bool bVisible_lookahead_lp = sv(lookahead) == "LP";
-
-  SetVisible("lookahead_ds", bVisible && bVisible_lookahead_hq);
-  SetVisible("la_depth", bVisible && bVisible_lookahead_hq);
-
-  if (bVisible_lookahead_lp) {
-    obs_data_set_string(Settings, "enctools", "OFF");
-  }
-
-  bVisible = bIsCBR || bIsVBR || bIsAVBR || bIsQVBR || bIsICQ;
-  // "mbbrc" control is not created for VP9 (codec disables MBBRC), so guard
-  // against nullptr here.
-  if (auto *mbbrc = obs_properties_get(Properties, "mbbrc")) {
-    obs_property_set_visible(mbbrc, bVisible);
-    if (!bVisible)
-      obs_data_set_string(Settings, "mbbrc", "OFF");
-  }
-
-  bool bRateControlVisible = !bIsICQ && !bIsCQP;
-  SetVisible("buffer_size", bRateControlVisible);
-
-  const char *hrd_conformance =
-      obs_data_get_string(Settings, "hrd_conformance");
-  SetVisible("hrd_conformance", bRateControlVisible);
-  if (!bRateControlVisible)
-    obs_data_set_string(Settings, "hrd_conformance", "OFF");
-
-  bVisible = bRateControlVisible && (sv(hrd_conformance) == "ON" ||
-             sv(hrd_conformance) == "AUTO");
-  SetVisible("low_delay_hrd", bVisible);
-
-  bVisible = bIsVBR || bIsVCM || bIsQVBR;
-  SetVisible("low_delay_brc", bVisible);
-  if (!bVisible)
-    obs_data_set_string(Settings, "low_delay_brc", "OFF");
-
-  bool bMaxFrameSizeVisible = !(bIsCQP || bIsICQ);
-  SetVisible("max_frame_size_mode", bMaxFrameSizeVisible);
-  const char *MaxFrameSizeMode = obs_data_get_string(Settings, "max_frame_size_mode");
-  // Backward compat: migrate old adaptive_max_frame_size to new mode
-  if (MaxFrameSizeMode[0] == '\0' && bMaxFrameSizeVisible) {
-    int64_t oldVal = obs_data_get_int(Settings, "adaptive_max_frame_size");
+  // Backward compat: migrate the old adaptive_max_frame_size toggle to the
+  // max_frame_size_mode keys before the table reads them.
+  if (obs_data_get_string(Settings, "max_frame_size_mode")[0] == '\0') {
+    const int64_t oldVal =
+        obs_data_get_int(Settings, "adaptive_max_frame_size");
     if (oldVal > 0) {
       obs_data_set_string(Settings, "max_frame_size_mode", "all");
       obs_data_set_int(Settings, "max_frame_size_all", oldVal);
-      MaxFrameSizeMode = "all";
     } else {
       obs_data_set_string(Settings, "max_frame_size_mode", "auto");
-      MaxFrameSizeMode = "auto";
     }
   }
-  bool bMaxFrameSizeAll = bMaxFrameSizeVisible && strcmp(MaxFrameSizeMode, "all") == 0;
-  bool bMaxFrameSizePerType = bMaxFrameSizeVisible && strcmp(MaxFrameSizeMode, "per_type") == 0;
-  SetVisible("max_frame_size_all", bMaxFrameSizeAll);
-  SetVisible("max_frame_size_i", bMaxFrameSizePerType);
-  SetVisible("max_frame_size_p", bMaxFrameSizePerType);
-  if (!bMaxFrameSizeVisible) {
-    obs_data_set_string(Settings, "max_frame_size_mode", "auto");
-    obs_data_set_int(Settings, "max_frame_size_all", 0);
-    obs_data_set_int(Settings, "max_frame_size_i", 0);
-    obs_data_set_int(Settings, "max_frame_size_p", 0);
-  }
 
-  bVisible = !(bIsCQP || bIsICQ);
-  SetVisible("min_qp", bVisible);
-  SetVisible("max_qp", bVisible);
+  // LP lookahead rides the driver-managed hardware path; an explicit
+  // EncTools config next to it just gets rejected, keep the two exclusive.
+  if (std::string_view(obs_data_get_string(Settings, "lookahead")) == "LP")
+    obs_data_set_string(Settings, "enctools", "OFF");
 
-  #ifndef QSV_UHD600_SUPPORT
-  const char *global_motion_bias_adjustment_enable =
-      obs_data_get_string(Settings, "global_motion_bias_adjustment");
-  bVisible = sv(global_motion_bias_adjustment_enable) == "ON";
-  SetVisible("mv_cost_scaling_factor", bVisible);
-  // Keep the stored value even when hidden: MVCostScalingFactor is only applied
-  // when GlobalMotionBiasAdjustment is ON (see internal.cpp), and erasing it
-  // here would permanently delete the user's configured choice from the profile.
-#endif
-
-  const char *vpp = obs_data_get_string(Settings, "vpp");
-  bool bVisibleVPP = sv(vpp) == "ON";
-  SetVisible("detail", bVisibleVPP);
-  // ImageStab / FRC / Mirror / PercEnc are HW-dependent — probe the driver.
-  SetVisible("image_stab_mode", bVisibleVPP && PlatformSupportsImageStabVPP());
-  SetVisible("perc_enc_prefilter",
-             bVisibleVPP && PlatformSupportsPercEncVPP());
-  SetVisible("denoise_mode", bVisibleVPP);
-  SetVisible("scaling_mode", bVisibleVPP);
-  SetVisible("vpp_procamp", bVisibleVPP);
-  SetVisible("vpp_rotation", bVisibleVPP);
-  SetVisible("vpp_mirroring", bVisibleVPP && PlatformSupportsMirrorVPP());
-  SetVisible("vpp_frc", bVisibleVPP && PlatformSupportsFRCVPP());
-  const char *scaling_mode = obs_data_get_string(Settings, "scaling_mode");
-  bool bScalingModeActive = sv(scaling_mode) != "OFF";
-  SetVisible("vpp_out_width", bVisibleVPP && bScalingModeActive);
-  SetVisible("vpp_out_height", bVisibleVPP && bScalingModeActive);
-#ifndef QSV_UHD600_SUPPORT
-  SetVisible("vpp_mctf", bVisibleVPP);
-
-  const char *vpp_mctf_val = obs_data_get_string(Settings, "vpp_mctf");
-  bool vpp_mctf_strength_visible = bVisibleVPP && sv(vpp_mctf_val) == "ON";
-  SetVisible("vpp_mctf_strength", vpp_mctf_strength_visible);
-#endif
-
-  const char *denoise_mode = obs_data_get_string(Settings, "denoise_mode");
-  if (PlatformSupportsDenoise2VPP()) {
-    bVisible = sv(denoise_mode) == "MANUAL | PRE ENCODE" ||
-               sv(denoise_mode) == "MANUAL | POST ENCODE";
-    SetVisible("denoise_strength", bVisible && bVisibleVPP);
-  } else {
-    if (sv(denoise_mode) != "OFF" &&
-        sv(denoise_mode) != "MANUAL | PRE ENCODE") {
+  // Legacy denoise dropdown (no Denoise2): fold the richer modes onto the
+  // one value the old pipeline understands.
+  if (!PlatformSupportsDenoise2VPP()) {
+    const auto mode =
+        std::string_view(obs_data_get_string(Settings, "denoise_mode"));
+    if (mode != "OFF" && mode != "MANUAL | PRE ENCODE")
       obs_data_set_string(Settings, "denoise_mode", "MANUAL | PRE ENCODE");
-      denoise_mode = "MANUAL | PRE ENCODE";
-    }
-    SetVisible("denoise_strength", bVisibleVPP && sv(denoise_mode) != "OFF");
   }
 
-  const char *detail = obs_data_get_string(Settings, "detail");
-  bVisible = sv(detail) == "ON";
-  SetVisible("detail_factor", bVisible && bVisibleVPP);
-
-  // ProcAmp sub-controls: show when ProcAmp is ON
-  const char *vpp_procamp = obs_data_get_string(Settings, "vpp_procamp");
-  bool bProcAmpActive = bVisibleVPP && sv(vpp_procamp) == "ON";
-  SetVisible("vpp_procamp_brightness", bProcAmpActive);
-  SetVisible("vpp_procamp_contrast", bProcAmpActive);
-  SetVisible("vpp_procamp_hue", bProcAmpActive);
-  SetVisible("vpp_procamp_saturation", bProcAmpActive);
-
-  const char *vpp_frc = obs_data_get_string(Settings, "vpp_frc");
-  bool bFRCActive = bVisibleVPP && PlatformSupportsFRCVPP() &&
-                    sv(vpp_frc) != "OFF";
-  SetVisible("vpp_frc_out_fps", bFRCActive);
-
-  const char *intra_ref_encoding =
-      obs_data_get_string(Settings, "intra_ref_encoding");
-  bVisible = sv(intra_ref_encoding) == "ON";
-  SetVisible("intra_ref_type", bVisible);
-  SetVisible("intra_ref_cycle_size", bVisible);
-  SetVisible("intra_ref_qp_delta", bVisible);
-
-  mfxU16 platformCode = QueryPlatformCodeName();
-  // HEVC High Tier is supported on SKL+ (subject to level >= 4 spec constraint)
-  bool hasHighTier = platformCode == 0 ||
-                     platformCode >= MFX_PLATFORM_SKYLAKE;
-  bool showTierList = hasHighTier;
-  if (auto *tier = obs_properties_get(Properties, "hevc_tier")) {
-    obs_property_set_visible(tier, showTierList);
-    if (!showTierList)
+  // HEVC High Tier only exists on SKL+; snap stale values back to main.
+  const mfxU16 platformCode = QueryPlatformCodeName();
+  if (platformCode != 0 && platformCode < MFX_PLATFORM_SKYLAKE) {
+    if (auto *tier = obs_properties_get(Properties, "hevc_tier")) {
+      obs_property_set_visible(tier, false);
       obs_data_set_string(Settings, "hevc_tier", "main");
-  }
-
-  const bool bQMVisible = codec == QSV_CODEC_AVC && (bIsVBR || bIsICQ);
-  SetVisible("quant_matrix", bQMVisible);
-  SetVisible("chroma_qp_offset", bQMVisible);
-
-  // Custom quant matrix cascade: quant_matrix == "custom" -> granularity ->
-  // the matching per-list input boxes (all H.264 only, boxes hidden by
-  // default in GetParamProps).
-  const char *qmSel = obs_data_get_string(Settings, "quant_matrix");
-  const bool qmCustom = bQMVisible && sv(qmSel) == "custom";
-  SetVisible("qm_granularity", qmCustom);
-  const int qmGran = static_cast<int>(obs_data_get_int(Settings, "qm_granularity"));
-  const char *boxes2[2] = {"qm_4x4", "qm_8x8"};
-  const char *boxes4[4] = {"qm_i4", "qm_p4", "qm_i8", "qm_p8"};
-  const char *boxesFull[6] = {"qm_i4y", "qm_p4y", "qm_i8y",
-                              "qm_p8y", "qm_ci4", "qm_cp4"};
-  for (const char *b : boxes2) SetVisible(b, qmCustom && qmGran <= 0);
-  for (const char *b : boxes4) SetVisible(b, qmCustom && qmGran == 1);
-  for (const char *b : boxesFull) SetVisible(b, qmCustom && qmGran >= 2);
-
-  static const char *const HiddenGroups[] = {
-      "group_enc_tools",     "group_ref_motion",
-      "group_intra_refresh", "group_misc",
-      "group_debug",
-  };
-
-  if (!obs_data_get_bool(Settings, "use_advanced")) {
-    for (auto *g : HiddenGroups)
-      SetVisible(g, false);
-
-    static const char *const BasicOptions[] = {
-        "target_usage",  "rate_control", "bitrate",
-        "max_bitrate",   "buffer_size",  "cqp",
-        "cqp_separate_ipb", "qpi",       "qpp",
-        "qpb",           "icq_quality",  "qvbr_quality",
-        "accuracy",      "convergence",  "profile",
-        "keyint_sec",    "b_frames",
-    };
-    auto IsBasic = [](const char *n) {
-      for (auto *b : BasicOptions)
-        if (n && strcmp(n, b) == 0)
-          return true;
-      return false;
-    };
-    static const char *const KeptGroups[] = {
-        "group_rate_control", "group_codec_specific", "group_inter_frame",
-    };
-    for (auto *g : KeptGroups) {
-      auto *grp = obs_properties_get(Properties, g);
-      if (!grp || obs_property_get_type(grp) != OBS_PROPERTY_GROUP)
-        continue;
-      obs_properties_t *Sub = obs_property_group_content(grp);
-      if (!Sub)
-        continue;
-      obs_property_t *c = obs_properties_first(Sub);
-      while (c) {
-        if (!IsBasic(obs_property_name(c)))
-          obs_property_set_visible(c, false);
-        obs_property_next(&c);
-      }
     }
-
-    return true;
   }
 
-  for (auto *g : HiddenGroups)
-    SetVisible(g, true);
+  // Groups are always visible since the use_advanced toggle was removed.
+  for (const char *g : {"group_enc_tools", "group_ref_motion",
+                        "group_intra_refresh", "group_misc", "group_debug"}) {
+    if (auto *p = obs_properties_get(Properties, g))
+      obs_property_set_visible(p, true);
+  }
 
-  SetVisible("brc_panic_mode", codec == QSV_CODEC_AVC);
-  SetVisible("skip_frame",
-             codec == QSV_CODEC_AVC || codec == QSV_CODEC_HEVC);
-  SetVisible("num_ref_frame", true);
-  SetVisible("p_pyramid",
-             codec == QSV_CODEC_AVC || codec == QSV_CODEC_HEVC);
-  SetVisible("use_raw_ref",
-             codec == QSV_CODEC_AVC || codec == QSV_CODEC_HEVC);
-  SetVisible("hevc_level", codec == QSV_CODEC_HEVC);
-  SetVisible("avc_level", codec == QSV_CODEC_AVC);
-  SetVisible("av1_level", codec == QSV_CODEC_AV1);
-  SetVisible("hevc_gpb", codec == QSV_CODEC_HEVC);
-  SetVisible("hevc_sao", codec == QSV_CODEC_HEVC);
-  SetVisible("screen_content_tools", codec == QSV_CODEC_AV1);
-  SetVisible("av1_cdef", codec == QSV_CODEC_AV1);
-  SetVisible("av1_restoration", codec == QSV_CODEC_AV1);
-  SetVisible("av1_loop_filter", codec == QSV_CODEC_AV1);
-  SetVisible("av1_super_res", codec == QSV_CODEC_AV1);
-  SetVisible("av1_interp_filter", codec == QSV_CODEC_AV1);
-  SetVisible("av1_error_resilient", codec == QSV_CODEC_AV1);
-  SetVisible("av1_segmentation", codec == QSV_CODEC_AV1);
-  SetVisible("transform_skip", codec == QSV_CODEC_HEVC &&
-                               IsFeatureSupported("transform_skip"));
-  SetVisible("tune_quality", codec == QSV_CODEC_AV1);
-  SetVisible("gop_opt_flag", codec != QSV_CODEC_VP9);
-  SetVisible("adaptive_i", codec != QSV_CODEC_VP9
-#ifdef QSV_UHD600_SUPPORT
-                               && codec != QSV_CODEC_HEVC
-#endif
-  );
-  SetVisible("trellis", codec == QSV_CODEC_AVC);
-  SetVisible("repartition_check", codec == QSV_CODEC_AVC);
-  SetVisible("rdo", codec != QSV_CODEC_VP9);
-  SetVisible("deblocking",
-             codec == QSV_CODEC_AVC || codec == QSV_CODEC_HEVC);
+  // Everything else is table-driven: docs/option-dependency-matrix.md is the
+  // human-readable twin of kRules (helpers/encoder_option_rules.hpp).  Hide
+  // rows handle parent/child dependencies (with value snap-back via their
+  // neutral), Gray rows handle driver-level conflicts by disabling the
+  // control while keeping the user value.
+  auto codec = static_cast<codec_enum>(
+      reinterpret_cast<intptr_t>(obs_properties_get_param(Properties)));
+  const std::string sig = qsv_rules::ApplyToProperties(
+      Properties, Settings, codec, IsFeatureSupported);
 
+  // OBS rebuilds the WHOLE properties page whenever a modified callback
+  // returns true.  Only ask for that when the computed visual state actually
+  // differs from the last applied one -- spinning a spinner that nothing
+  // depends on then skips the rebuild entirely instead of lagging per step.
+  static std::unordered_map<const obs_properties_t *, std::string>
+      s_lastAppliedState;
+  auto it = s_lastAppliedState.find(Properties);
+  if (it != s_lastAppliedState.end() && it->second == sig)
+    return false;
+  s_lastAppliedState[Properties] = sig;
+
+  return true;
+}
+
+// QVBR high quality preset: full option set tuned for HEVC QVBR encoding.
+// Deliberately does NOT touch rate-control magnitudes (bitrate, VBV buffer,
+// min/max QP, QVBR quality) nor target_usage/profile/tier/level/keyframe
+// interval/async depth, so the user's bandwidth and compatibility settings
+// survive a preset switch.
+static void ApplyQVBRHighQualityPreset(obs_data_t *Settings) {
+  static const char *const StringValues[] = {
+      "rate_control",           "QVBR",
+      "max_frame_size_mode",    "auto",
+      "hrd_conformance",        "OFF",
+      "low_delay_hrd",          "OFF",
+      "low_delay_brc",          "OFF",
+      "skip_frame",             "NO_SKIP",
+      "mbbrc",                  "ON",
+      "adaptive_b",             "OFF",
+      "lookahead",              "OFF",
+      "p_pyramid",              "ON",
+      "use_raw_ref",            "ON",
+      "enctools",               "ON",
+      "enc_tools_scene_change", "ON",
+      "enc_tools_adaptive_ref_p", "ON",
+      "enc_tools_adaptive_ref_b", "ON",
+      "enc_tools_adaptive_ltr", "ON",
+      "enc_tools_adaptive_pyramid_quant_p", "ON",
+      "enc_tools_adaptive_pyramid_quant_b", "ON",
+      "enc_tools_adaptive_mbqp", "ON",
+      "enc_tools_brc_buffer_hints", "ON",
+      "enc_tools_brc",          "ON",
+      "enc_tools_saliency_map_hint", "OFF",
+      "gop_opt_flag",           "OPEN",
+      "adaptive_i",             "ON",
+      "rdo",                    "ON",
+      "transform_skip",         "ON",
+      "deblocking",             "OFF",
+      "mv_cost_scaling_factor", "AGGRESSIVE_0",
+      "weighted_pred",          "EXPLICIT",
+      "hevc_gpb",               "ON",
+      "hevc_sao",               "DISABLE",
+      "low_power",              "OFF",
+      "scenario_info",          "GAME_STREAMING",
+      "content_info",           "FULL_SCREEN_VIDEO",
+  };
+  for (size_t i = 0; i < sizeof(StringValues) / sizeof(*StringValues); i += 2)
+    obs_data_set_string(Settings, StringValues[i], StringValues[i + 1]);
+
+  obs_data_set_int(Settings, "num_ref_frame", 15);
+  obs_data_set_int(Settings, "b_frames", 4);
+  // Rate-control magnitudes this preset does pin down (user request):
+  // peak bitrate cap and the QVBR (ICQ-style) quality factor.
+  obs_data_set_int(Settings, "max_bitrate", 10000);
+  obs_data_set_int(Settings, "qvbr_quality", 18);
+}
+
+// ICQ visually lossless high quality preset: HEVC ICQ configuration per the
+// user's reference screenshot; unlike the QVBR preset this one pins the ICQ
+// quality factor (12). Target usage/profile/tier/level/keyframe interval/
+// async depth/VBV remain untouched, same exclusion rules as the QVBR preset.
+static void ApplyICQLosslessHighQualityPreset(obs_data_t *Settings) {
+  static const char *const StringValues[] = {
+      "rate_control",           "ICQ",
+      "max_frame_size_mode",    "auto",
+      "skip_frame",             "NO_SKIP",
+      "mbbrc",                  "ON",
+      "adaptive_b",             "ON",
+      "lookahead",              "OFF",
+      "enctools",               "OFF",
+      "p_pyramid",              "ON",
+      "use_raw_ref",            "ON",
+      "gop_opt_flag",           "OPEN",
+      "adaptive_i",             "ON",
+      "rdo",                    "ON",
+      "transform_skip",         "ON",
+      "deblocking",             "OFF",
+      "weighted_pred",          "EXPLICIT",
+      "hevc_gpb",               "ON",
+      "hevc_sao",               "DISABLE",
+      "low_power",              "OFF",
+      "scenario_info",          "GAME_STREAMING",
+      "content_info",           "FULL_SCREEN_VIDEO",
+  };
+  for (size_t i = 0; i < sizeof(StringValues) / sizeof(*StringValues); i += 2)
+    obs_data_set_string(Settings, StringValues[i], StringValues[i + 1]);
+
+  obs_data_set_int(Settings, "num_ref_frame", 4);
+  obs_data_set_int(Settings, "b_frames", 4);
+  obs_data_set_int(Settings, "icq_quality", 12);
+}
+
+// Applies the selected preset, then snaps the dropdown back to "custom" so
+// the same preset can be re-applied after manual tweaks.
+static bool EncoderPresetModified(obs_properties_t *Properties,
+                                  obs_property_t *Prop, obs_data_t *Settings) {
+  auto codec = static_cast<codec_enum>(
+      reinterpret_cast<intptr_t>(obs_properties_get_param(Properties)));
+  const char *preset = obs_data_get_string(Settings, "encoder_preset");
+  if (codec == QSV_CODEC_HEVC) {
+    if (strcmp(preset, "qvbr_high_quality") == 0)
+      ApplyQVBRHighQualityPreset(Settings);
+    else if (strcmp(preset, "icq_lossless_high_quality") == 0)
+      ApplyICQLosslessHighQualityPreset(Settings);
+  }
+
+  obs_data_set_string(Settings, "encoder_preset", "custom");
+  ParamsVisibilityModifier(Properties, Prop, Settings);
+  // Presets rewrite many option VALUES (b_frames, num_ref_frame, ...) whose
+  // widgets only pick up new values on a full page rebuild -- so always
+  // return true here; the signature gate inside the modifier would skip it.
   return true;
 }
 
@@ -1222,9 +1168,19 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_t *Prop;
   mfxU16 platformCode = QueryPlatformCodeName();
 
-  Prop = obs_properties_add_bool(Props, "use_advanced", TEXT_USE_ADVANCED);
-  obs_property_set_long_description(Prop, TEXT_USE_ADVANCED_DESC);
-  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
+  Prop = obs_properties_add_list(Props, "encoder_preset", TEXT_ENCODER_PRESET,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  obs_property_set_long_description(Prop, TEXT_ENCODER_PRESET_DESC);
+  obs_property_list_add_string(Prop, TEXT_PRESET_CUSTOM, "custom");
+  // presets are codec-specific: the QVBR high quality preset is HEVC-only
+  // until per-codec presets exist
+  if (Codec == QSV_CODEC_HEVC) {
+    obs_property_list_add_string(Prop, TEXT_PRESET_QVBR_HIGH_QUALITY,
+                                 "qvbr_high_quality");
+    obs_property_list_add_string(Prop, TEXT_PRESET_ICQ_LOSSLESS_HIGH_QUALITY,
+                                 "icq_lossless_high_quality");
+  }
+  obs_property_set_modified_callback(Prop, EncoderPresetModified);
 
   obs_properties_t *RCGroup = obs_properties_create();
 
@@ -1241,12 +1197,35 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
     AddStrings(Prop, qsv_usage_names);
   }
   obs_property_set_long_description(Prop, TEXT_TARGET_USAGE_DESC);
+  // condition option for the HEVC enc_tools_adaptive_ref_p/b TU7 gray
+  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
   Prop = obs_properties_add_list(RCGroup, "rate_control", TEXT_RATE_CONTROL,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   obs_property_set_long_description(Prop, TEXT_RATE_CONTROL_DESC);
   {
     const struct qsv_rate_control_info *rcInfo = qsv_rate_control_info_list;
+#if defined(_WIN32)
+    // DG2 (Arc A3xx/A7xx), BMG (Arc B5xx) and ARL dGPU/desktop: the runtime's
+    // HEVC RC whitelist carries no VCMBitRateControl -> hard MFX_ERR_UNSUPPORTED.
+    // Verified on QSVEncC GPUFeatures logs for ARL 245K / DG2 A380 / B580; the
+    // Linux iHD driver still exposes VA_RC_VCM there, hence the OS scope.
+    const bool bArcFamilyWin =
+        platformCode != 0 &&
+        (platformCode == MFX_PLATFORM_DG2 ||
+         platformCode == MFX_PLATFORM_BATTLEMAGE ||
+         platformCode == MFX_PLATFORM_ARROWLAKE);
+    // Gen9/9.5 (SKL..CFL) on Windows: the runtime RC whitelist has no HEVC
+    // QVBR (QSVEncC on UHD 620/630: x). Linux iHD and ICL+ accept it, hence
+    // the OS+platform scope. Note ALDERLAKE_N (55) sorts above every Arc
+    // platform and is Gen12-LP, so it is intentionally excluded.
+    const bool bGen95Win =
+        platformCode != 0 && platformCode >= MFX_PLATFORM_SKYLAKE &&
+        platformCode <= MFX_PLATFORM_COFFEELAKE;
+#else
+    [[maybe_unused]] constexpr bool bArcFamilyWin = false;
+    [[maybe_unused]] constexpr bool bGen95Win = false;
+#endif
     while (rcInfo->name) {
       if (platformCode == 0 || platformCode >= rcInfo->min_platform) {
       // AV1 only supports CBR/VBR/CQP/ICQ (AVBR silently falls back to VBR,
@@ -1262,7 +1241,10 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 #ifdef QSV_UHD600_SUPPORT
                           // UHD620 HEVC rejects QVBR (QSVEncC: x); 730 accepts.
                           || sv(rcInfo->name) == "QVBR"
+#else
+                          || (sv(rcInfo->name) == "QVBR" && bGen95Win)
 #endif
+                          || (sv(rcInfo->name) == "VCM" && bArcFamilyWin)
                          );
       bool skipForVP9 = Codec == QSV_CODEC_VP9 &&
                         (sv(rcInfo->name) == "AVBR" ||
@@ -1378,7 +1360,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(Prop, TEXT_MAX_FRAME_SIZE_P_DESC);
   obs_property_int_set_suffix(Prop, " bytes");
 
-  // VBV settings at bottom of Rate Control group
   Prop = obs_properties_add_list(RCGroup, "hrd_conformance",
                                  TEXT_HRD_CONFORMANCE,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -1402,7 +1383,15 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 
   Prop = obs_properties_add_list(RCGroup, "brc_panic_mode", TEXT_BRC_PANIC_MODE,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+#if defined(_WIN32)
+  // Windows has no BRC panic disable: the driver marks BRCPanicMode=OFF
+  // unsupported for non-VA paths (CheckCodingOptions -> MFX_ERR_UNSUPPORTED),
+  // so only AUTO/ON are offered here.
+  static const char *const qsv_brc_panic_mode_win[] = {"AUTO", "ON", 0};
+  AddStrings(Prop, qsv_brc_panic_mode_win);
+#else
   AddStrings(Prop, qsv_params_condition_tristate);
+#endif
   obs_property_set_long_description(Prop, TEXT_BRC_PANIC_MODE_DESC);
   obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC);
 
@@ -1439,6 +1428,8 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                 0, ref_max, 1);
   obs_property_set_long_description(Prop,
                                     obs_module_text("NumRefFrame.Tooltip"));
+  // condition option for the intra_ref_encoding gray
+  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
   // AdaptiveB sits directly above the B-frame input: when ON the encoder
   // forces GAME_STREAMING (see SetEncoderParams), which keeps CO2.AdaptiveB
@@ -1459,6 +1450,10 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                 65534, 1);
   obs_property_set_long_description(Prop, TEXT_B_FRAMES_DESC);
   obs_property_set_visible(Prop, Codec != QSV_CODEC_VP9);
+  // dependency-table condition option: without the callback, grays that
+  // depend on b_frames (p_pyramid, low_delay_brc, enc_tools_adaptive_ref_b,
+  // enc_tools_brc_buffer_hints/adaptive_mbqp) never re-evaluate
+  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
   Prop = obs_properties_add_list(IFGroup, "lookahead", TEXT_LA,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -1475,6 +1470,8 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                        1, 100, 1);
   obs_property_set_long_description(Prop,
                                     obs_module_text("LookaheadDepth.Tooltip"));
+  // condition option for enc_tools_brc_buffer_hints / enc_tools_adaptive_mbqp
+  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
   Prop = obs_properties_add_list(IFGroup, "p_pyramid", TEXT_PYRAMID,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -1504,7 +1501,11 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   obs_property_set_long_description(Prop, TEXT_ENC_TOOLS_DESC);
   AddStrings(Prop, qsv_params_condition);
+#if defined(_WIN32)
   obs_property_set_visible(Prop, IsFeatureSupported("enc_tools"));
+#else
+  obs_property_set_visible(Prop, false); // EncTools config buffer is Windows-only
+#endif
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
   Prop = obs_properties_add_list(ETGroup, "enc_tools_scene_change",
@@ -1572,6 +1573,8 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   AddStrings(Prop, qsv_params_gop_opt_flag);
   obs_property_set_long_description(Prop, TEXT_GOP_OPT_FLAG_DESC);
   obs_property_set_visible(Prop, Codec != QSV_CODEC_VP9);
+  // condition option for the adaptive_i/adaptive_b GOP_STRICT gray
+  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
   Prop = obs_properties_add_list(ETGroup, "adaptive_i", TEXT_ADAPTIVE_I,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -1673,6 +1676,8 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   AddStrings(Prop, qsv_params_weighted_pred_options);
   obs_property_set_long_description(Prop, TEXT_WEIGHTED_PRED_DESC);
   obs_property_set_visible(Prop, bIsAVCOrHEVC);
+  // condition option for the HEVC hevc_sao x weighted-pred gray
+  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
   obs_properties_t *VFGroup = obs_properties_create();
 
@@ -1751,7 +1756,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(Prop, TEXT_VPP_MCTF_STRENGTH_DESC);
 #endif
 
-  // ProcAmp (color adjustment)
   Prop = obs_properties_add_list(VFGroup, "vpp_procamp", TEXT_VPP_PROCAMP,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_procamp);
@@ -1778,19 +1782,16 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_long_description(Prop, TEXT_VPP_PROCAMP_SATURATION_DESC);
   obs_property_set_visible(Prop, false);
 
-  // Rotation
   Prop = obs_properties_add_list(VFGroup, "vpp_rotation", TEXT_VPP_ROTATION,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_rotation);
   obs_property_set_long_description(Prop, TEXT_VPP_ROTATION_DESC);
 
-  // Mirroring
   Prop = obs_properties_add_list(VFGroup, "vpp_mirroring", TEXT_VPP_MIRRORING,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_mirroring);
   obs_property_set_long_description(Prop, TEXT_VPP_MIRRORING_DESC);
 
-  // Frame Rate Conversion
   Prop = obs_properties_add_list(VFGroup, "vpp_frc", TEXT_VPP_FRC,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_frc);
@@ -1958,8 +1959,10 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 
   // IntraRefresh is a rolling HW capability (RollingIntraRefresh).  Skip the
   // whole group when the driver would zero it out / fail Init over it.
-  if (Codec != QSV_CODEC_AV1 && Codec != QSV_CODEC_VP9 &&
-      PlatformSupportsIntraRefreshEncode(Codec)) {
+  const bool bIntraRefreshUI =
+      Codec != QSV_CODEC_AV1 && Codec != QSV_CODEC_VP9 &&
+      PlatformSupportsIntraRefreshEncode(Codec);
+  if (bIntraRefreshUI) {
     Prop = obs_properties_add_list(IRGroup, "intra_ref_encoding",
                                    TEXT_INTRA_REF_ENCODING,
                                    OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -2000,6 +2003,8 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   AddStrings(Prop, qsv_params_condition_scenario_info);
   obs_property_set_long_description(Prop, TEXT_SCENARIO_INFO_DESC);
+  // condition option for the max-frame-size GAME_STREAMING gray
+  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 #ifdef QSV_UHD600_SUPPORT
   // UHD620 rejects CO3 ScenarioInfo on HEVC (all x); H.264 still accepts it.
   obs_property_set_visible(Prop, Codec == QSV_CODEC_AVC ||
@@ -2011,6 +2016,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   AddStrings(Prop, qsv_params_condition_content_info);
   obs_property_set_long_description(Prop, TEXT_CONTENT_INFO_DESC);
   obs_property_set_visible(Prop, Codec != QSV_CODEC_VP9);
+  obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
   Prop = obs_properties_add_int(MXGroup, "gpu_number", TEXT_GPU_NUMBER,
                                 0, 4, 1);
@@ -2047,7 +2053,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_list_add_string(Prop, TEXT_QUANT_MATRIX_CUSTOM, "custom");
 
   // Custom granularity selector + per-list input boxes. Only shown when
-  // quant_matrix == "custom" (visibility handled in ParamsVisibilityModifier).
+  // quant_matrix == "custom" (Hide rows in the dependency table manage this).
   Prop = obs_properties_add_list(MXGroup, "qm_granularity",
                                  TEXT_QM_GRANULARITY,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
@@ -2104,14 +2110,14 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_properties_add_group(Props, "group_vpp_filters",
                            TEXT_GROUP_VPP_FILTERS,
                            OBS_GROUP_NORMAL, VFGroup);
-  obs_properties_add_group(Props, "group_intra_refresh",
-                           TEXT_GROUP_INTRA_REFRESH,
-                           OBS_GROUP_NORMAL, IRGroup);
+  if (bIntraRefreshUI)
+    obs_properties_add_group(Props, "group_intra_refresh",
+                             TEXT_GROUP_INTRA_REFRESH,
+                             OBS_GROUP_NORMAL, IRGroup);
   obs_properties_add_group(Props, "group_misc",
                            TEXT_GROUP_MISC,
                            OBS_GROUP_NORMAL, MXGroup);
 
-  // Debug group (bottom)
   obs_properties_t *DBGGroup = obs_properties_create();
   Prop = obs_properties_add_bool(DBGGroup, "qp_statistics", TEXT_QP_STATS);
   obs_property_set_long_description(Prop, TEXT_QP_STATS_DESC);
@@ -2153,9 +2159,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     break;
   }
 
-  // All UI-configurable fields are parsed by the shared parser in
-  // helpers/encoder_params_parser.hpp — the single source of truth.
-  // This function only adds the OBS video-output derived fields below.
   ParseEncoderParamsFromObsData(Settings, Context->Codec,
                                 Context->EncoderParams);
 
@@ -2236,12 +2239,26 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
         static_cast<mfxU16>(HRDNominalPeakLevel);
   }
 
-  switch (VOI->format) {
-  default:
-  case VIDEO_FORMAT_NV12:
-    Context->EncoderParams.FourCC = MFX_FOURCC_NV12;
-    Context->EncoderParams.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
-    break;
+  // Surface format must match the frames the encoder actually receives.
+  // Frame encoders: GetVideoInfo() requests a profile-based format from
+  // libobs (e.g. HEVC main10 -> P010, libobs converts), so derive the FourCC
+  // from that same resolved format, not VOI->format — an 8-bit video output
+  // plus main10 profile used to feed P010 data into NV12 (green/garbled).
+  // Texture encoders get the core video mix textures directly (the
+  // profile-based request is not applied there), so follow VOI->format.
+  const video_format EncInputFmt =
+      Context->IsTextureEncoder
+          ? VOI->format
+          : ResolveEncoderInputFormat(
+                Context->Codec, obs_data_get_string(Settings, "profile"),
+                VOI->format);
+  if (!Context->IsTextureEncoder && EncInputFmt != VOI->format) {
+    warn("\tVideo output format (%d) differs from the format implied by the "
+         "encoder profile (%d); libobs will convert frames before encoding",
+         (int)VOI->format, (int)EncInputFmt);
+  }
+
+  switch (EncInputFmt) {
   case VIDEO_FORMAT_P010:
     Context->EncoderParams.FourCC = MFX_FOURCC_P010;
     Context->EncoderParams.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
@@ -2253,10 +2270,12 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     // keeps I444 and LoadFrameData packs the three planes into VUYA.
     Context->EncoderParams.FourCC = MFX_FOURCC_AYUV;
     Context->EncoderParams.ChromaFormat = MFX_CHROMAFORMAT_YUV444;
+    Context->EncoderParams.BitDepth = 0;
     break;
   case VIDEO_FORMAT_YUY2:
     Context->EncoderParams.FourCC = MFX_FOURCC_YUY2;
     Context->EncoderParams.ChromaFormat = MFX_CHROMAFORMAT_YUV422;
+    Context->EncoderParams.BitDepth = 0;
     break;
   case VIDEO_FORMAT_P216:
     // OBS P216 is two-plane 4:2:2 10-bit (stored as 16-bit samples);
@@ -2273,12 +2292,18 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
     Context->EncoderParams.ChromaFormat = MFX_CHROMAFORMAT_YUV444;
     Context->EncoderParams.BitDepth = 12;
     break;
+  default:
+    Context->EncoderParams.FourCC = MFX_FOURCC_NV12;
+    Context->EncoderParams.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
+    // explicitly zero to avoid a stale 10/12/16-bit BitDepth preset from
+    // the create stage when VOI is high bit depth
+    Context->EncoderParams.BitDepth = 0;
+    break;
   }
 
-  // VP9 profile is tightly bound to input bit depth + chroma subsampling.
-  // A mismatch (e.g. Profile 3 selected but input is 8-bit 4:2:0) makes the
-  // encoder produce garbled bitstream with wrong chroma layout. Auto-correct
-  // the profile to match the actual input format.
+  // VP9 profile is bound to input bit depth + chroma subsampling; a mismatch
+  // (e.g. profile 3 with 8-bit 4:2:0 input) yields garbled chroma layout,
+  // so auto-correct the profile to the actual input format.
   if (Context->Codec == QSV_CODEC_VP9) {
     const bool vp9Is10bit = (Context->EncoderParams.BitDepth >= 10);
     const bool vp9Is444 =
@@ -2315,13 +2340,15 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
 #endif
       ) &&
       std::string_view(VideoProcessingStatusData) == "ON") {
-    if (VOI->format == VIDEO_FORMAT_NV12) {
+    // VPP operates on the encoder input surfaces — use the resolved input
+    // format, not the video output format, for the capability check.
+    if (EncInputFmt == VIDEO_FORMAT_NV12) {
       Context->EncoderParams.ProcessingEnable = true;
-    } else if (VOI->format == VIDEO_FORMAT_P010 ||
-               VOI->format == VIDEO_FORMAT_AYUV) {
+    } else if (EncInputFmt == VIDEO_FORMAT_P010 ||
+               EncInputFmt == VIDEO_FORMAT_AYUV) {
       // P010 and AYUV (8-bit 4:4:4) are supported on all platforms
       Context->EncoderParams.ProcessingEnable = true;
-    } else if (VOI->format == VIDEO_FORMAT_P416) {
+    } else if (EncInputFmt == VIDEO_FORMAT_P416) {
       // 12/16-bit 4:4:4 (Y416) requires TGL_LP (Gen12)+
       mfxU16 platformCode = QueryPlatformCodeName();
       bool highBitDepth444Supported = platformCode == 0 ||
@@ -2373,10 +2400,6 @@ static void GetEncoderParams(plugin_context *Context, obs_data_t *Settings) {
   info("\tOutput width: %d", Context->EncoderParams.Width);
   info("\tOutput height: %d", Context->EncoderParams.Height);
 }
-
-// Forwarding function macros
-// Reduce boilerplate for encoder-info function pointers that forward a codec enum
-// to the shared implementation.
 
 #define FORWARD_PARAM_PROPS(name, codec)                                        \
   static obs_properties_t *Get##name##ParamProps([[maybe_unused]] void *) {     \
@@ -2438,6 +2461,7 @@ plugin_context *InitPluginContext(enum codec_enum Codec, obs_data_t *Settings,
 
   Context->EncoderData = EncoderData;
   Context->Codec = Codec;
+  Context->IsTextureEncoder = IsTextureEncoder;
 
   // The encoder can be created before a video output is attached (reroute /
   // non-video output scenarios) — match GetVideoInfo()'s null-safe pattern.
@@ -2476,11 +2500,10 @@ plugin_context *InitPluginContext(enum codec_enum Codec, obs_data_t *Settings,
   GetEncoderParams(Context, Settings);
 
   try {
-    // No global init mutex here: loader pointer reads are already guarded by
-    // GlobalLoaderMutex (see GetVPLSession/CreateSession in
-    // obs-qsv-onevpl-encoder-internal.cpp) and MFXLoad/MFXCreateSession are
-    // thread-safe in oneVPL.  A per-init serialization mutex used to make
-    // dual-output setups (stream + record) start sequentially for no reason.
+    // No global init mutex: loader reads are guarded by GlobalLoaderMutex
+    // (see GetVPLSession/CreateSession in obs-qsv-onevpl-encoder-internal.cpp)
+    // and MFXLoad/MFXCreateSession are thread-safe in oneVPL; a per-init
+    // mutex only made dual-output setups (stream + record) start serially.
     if (!OpenEncoder(Context->EncoderPTR, &Context->EncoderParams,
                      Context->Codec, IsTextureEncoder)) {
       blog(LOG_WARNING, "QSV failed to init encoder.");
@@ -2494,10 +2517,9 @@ plugin_context *InitPluginContext(enum codec_enum Codec, obs_data_t *Settings,
 
     info("\tLibVPL version: %d.%d", VPLVersionMajor, VPLVersionMinor);
 
-    // Register encoder AFTER params are initialized, so ROI global config
-    // can be applied with the correct output resolution (Width/Height).
-    // Must also be after OpenEncoder to avoid SetEncoderParams inside Init()
-    // from clearing CachedROIRegions (which happens when ROIEnabled is false).
+    // Register after params are initialized so ROI global config sees the
+    // correct output resolution, and after OpenEncoder so SetEncoderParams
+    // inside Init() can't clear CachedROIRegions (when ROIEnabled is false).
     RegisterEncoderData(Context->EncoderData, Context);
 
     Context->PerformanceToken = os_request_high_performance("qsv encoding");

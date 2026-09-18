@@ -79,6 +79,32 @@ void InitSystemMemorySurfacePool();
 
   mfxStatus Drain();
 
+  // Pipelined flush state for DrainAndRetrieveBitstream (offline re-encoder /
+  // sysmem warm-up).  Flush submits must happen WHILE pool ops are still in
+  // flight: the driver either accepts them (healthy LA) or rejects them with
+  // DEVICE_FAILED (EncTools HW lookahead).  A flush submitted with the pool
+  // drained (encoder quiesced at EOS) is accepted and then NEVER completes,
+  // wedging Close() — so once the driver refuses once, never probe it when
+  // quiesced.
+  struct FlushSlot {
+    mfxBitstream Bs{};
+    std::vector<mfxU8> Storage;
+  };
+  std::vector<FlushSlot> m_FlushRing;
+  std::vector<std::pair<mfxSyncPoint, size_t>> m_FlushInFlight;
+  size_t m_FlushRingHead{0};
+  bool m_FlushExhausted{false};
+  // driver trait, sticky across Reset: it answered -5 on a flush submit
+  bool m_FlushRefusedOnce{false};
+  // set when a flush op was accepted but never completed — stop flushing
+  bool m_FlushBroken{false};
+  // accepted-but-stuck ops we walked away from; their session must not be
+  // Close()d (it would hang) — ClearData leaks it instead
+  size_t m_FlushAbandonedOps{0};
+  // Drop all in-flight flush ops and re-arm the flush — call after a
+  // successful encoder Reset (warm-up, reconfigure) and in ClearData.
+  void ResetFlushState();
+
   void DisableVPP();
 
   void WarmUpEncoder();
@@ -167,6 +193,12 @@ private:
   std::vector<SystemMemSurface> QSVSystemMemPool;
   mfxU16 QSVSystemMemPoolSize{};
 
+  // Lookahead state derived from the final encode params at init.
+  // Drives the warm-up skip and the Lookahead+EncTools VIDEO_MEMORY force.
+  bool m_LookaheadActive{false};
+  mfxU16 m_LookaheadDepth{0};
+  void DeriveLookaheadState();
+
   bool QSVIsTextureEncoder{};
   // Tracks whether a drain marker has been submitted for offline re-encoder.
   bool m_DrainSubmitted{false};
@@ -235,7 +267,7 @@ private:
   QPFrameStats FrameQPStats;
   bool QPStatsEnabled = true; // cached from InputParams for Drain path
 
-  // ─ Frame-level statistics (MAD, PSNR, bitrate, BRC Panic) ─
+  // frame-level statistics (MAD, PSNR, bitrate, BRC panic)
   struct StatsFrameType {
     uint64_t count = 0;
     uint64_t totalBytes = 0;
@@ -267,10 +299,10 @@ private:
   // Each task gets 2 consecutive slots: [encInfo, qualityInfo].
   mutable std::vector<mfxExtBuffer *> QSVTaskExtParamBuf;
 
-  // ─ Per-frame QP tracking ─
+  // per-frame QP tracking
   static constexpr size_t QSV_SEI_EXTRA = 1024; // extra bytes per task for SEI injection
 
-  // ─ Custom Coding Options deferred logging ─
+  // custom coding options, deferred logging
   struct CustomCodingOptionEntry {
     int LineNo;
     std::string Scope;

@@ -54,7 +54,6 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 #include "helpers/common_utils.hpp"
-//#include "obs-qsv-onevpl-encoder.hpp"
 #include "obs-qsv-onevpl-plugin-init.hpp"
 
 #include <obs-module.h>
@@ -119,11 +118,12 @@ void ReleaseGlobalLoader() {
   }
 }
 
-// Deep VPL warm-up: trigger GPU shader JIT per codec so the first recording doesn't pay the ~250ms cost.
-// Surface-level warm-up is done by per-recording WarmUpEncoder().
+// Deep VPL warm-up: trigger GPU shader JIT per codec so the first recording
+// doesn't pay the ~250ms cost. Surface-level warm-up is done by per-recording
+// WarmUpEncoder().
 
-// Probe VP9 via VPL Query. obs-qsv-test.exe doesn't check VP9 on Windows,
-// so SupportVP9 is always false. We query directly and patch AdaptersInfo.
+// Probe VP9 via VPL Query. obs-qsv-test.exe doesn't check VP9 on Windows, so
+// SupportVP9 is always false there. We query directly and patch AdaptersInfo.
 static bool ProbeVP9Support() {
   mfxLoader Loader = nullptr;
   {
@@ -157,7 +157,6 @@ static bool ProbeVP9Support() {
       continue;
 
     anySupportsVP9 = true;
-    // Mark the impl-th Intel adapter in AdaptersInfo.
     mfxU32 intelIdx = 0;
     for (size_t i = 0; i < AdaptersCount; i++) {
       if (AdaptersInfo[i].IsIntel) {
@@ -292,27 +291,24 @@ bool obs_module_load([[maybe_unused]] void) {
   }
 
   if (SupportAVC || SupportAV1 || SupportHEVC || SupportVP9) {
-    // Deep warm-up: create MFXVideoENCODE pipeline for each supported
-    // codec to trigger GPU shader JIT compilation ahead of time.
     DeepWarmUpVPL();
-    // Background thread runs the full hardware capability probe (platform
+    // background thread runs the full hardware capability probe (platform
     // name / VPP filters / Denoise2 / IntraRefresh) once at startup; UI and
     // encoder threads only read the cached results, so opening the settings
-    // page never blocks. Success/failure and timing go to the log.
+    // page never blocks
     StartCapabilityProbeThread();
   }
 
-  // Register ROI editor in Tools menu (only when frontend API is available)
+  // Tools menu, only when the frontend API is available
   RegisterROIEditor();
 
-  // Register video re-encoder in Tools menu
   RegisterReEncoder();
 
   return true;
 }
 
 void obs_module_unload(void) {
-  // Wait for the background probe thread to finish before unloading the DLL
+  // join the probe thread before the DLL is unloaded
   JoinCapabilityProbeThread();
   ReleaseGlobalLoader();
 }

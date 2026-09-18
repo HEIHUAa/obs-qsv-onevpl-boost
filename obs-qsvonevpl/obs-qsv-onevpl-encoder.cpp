@@ -1,5 +1,3 @@
-// #define MFXDEPRECATED_OFF
-
 #include "obs-qsv-onevpl-encoder.hpp"
 #include <cstring>
 #include <initializer_list>
@@ -28,7 +26,8 @@ bool OpenEncoder(std::unique_ptr<QSVEncoder> &EncoderPTR,
       if (AdapterID >= MAX_ADAPTERS)
         AdapterID = 0;
       mfxU32 AdapterIDAdjustment = 0;
-      // Select current adapter; handle adapter reordering
+      // select a capable adapter; adjustment maps the table index back to
+      // the DXGI index order
       if (Codec == QSV_CODEC_AV1 && !AdaptersInfo[AdapterID].SupportAV1) {
         for (mfxU32 i = 0; i < MAX_ADAPTERS; i++) {
           if (!AdaptersInfo[i].IsIntel) {
@@ -68,9 +67,8 @@ bool OpenEncoder(std::unique_ptr<QSVEncoder> &EncoderPTR,
     }
 
     if (Codec == QSV_CODEC_VP9) {
-      // VP9: try texture mode first, fall back to non-texture path
-      // (VIDEO_MEMORY, or system memory if VIDEO_MEMORY fails)
-      // for multi-GPU setups where SetHandle fails with -16
+      // VP9: try texture mode first, fall back to non-texture for multi-GPU
+      // setups where SetHandle fails with -16
       bool VP9InitSuccess = false;
       try {
         IsTextureEncoder = true;
@@ -125,9 +123,9 @@ void DestroyPluginContext(void *Data) {
     UnregisterEncoderData(Context->EncoderData);
 
     // EncodeTexture/EncodeFrame hold EncoderMutex for the whole encode call,
-    // so once we hold the lock no encode is in flight.  Keep a bounded wait as
-    // a safety net; do not ignore its result (a 10ms timeout here used to
-    // ClearData()+delete while the encode thread was still touching the encoder).
+    // so once we hold the lock no encode is in flight. Keep the bounded wait:
+    // a 10ms timeout used to ClearData()+delete while the encode thread was
+    // still touching the encoder.
     os_performance_token_t *PerformanceToken = Context->PerformanceToken;
 
     {
@@ -258,7 +256,6 @@ void UpdateEncoderROI(void *Data,
   if (Enabled) {
     Context->EncoderPTR->UpdateROIRegions(Regions, Mode);
   } else {
-    // Disabled: clear cached regions so no ROI is applied
     Context->EncoderPTR->UpdateROIRegions({}, Mode);
   }
 
@@ -294,151 +291,124 @@ bool GetSEIData(void *Data, uint8_t **SEI, size_t *Size) {
   return true;
 }
 
-void GetVideoInfo(void *Data, video_scale_info *Info) {
-  plugin_context *Context = static_cast<plugin_context *>(Data);
-
-  obs_data_t *settings = obs_encoder_get_settings(Context->EncoderData);
-  const char *profile = obs_data_get_string(settings, "profile");
-  auto svProf = std::string_view(profile);
-
-  // Ask OBS what the current video output format is so we can avoid
-  // unnecessary conversions when the encoder can eat it directly.
-  video_t *video = obs_encoder_video(Context->EncoderData);
-  const video_output_info *voi = video ? video_output_get_info(video) : nullptr;
-  video_format current = voi ? voi->format : VIDEO_FORMAT_NV12;
-
+// Format the encoder actually consumes; MUST be shared by GetVideoInfo()
+// (what libobs converts to) and GetEncoderParams() (surface FourCC/bit depth)
+// or they desync (8-bit output + HEVC main10 -> green/garbled output).
+enum video_format ResolveEncoderInputFormat(enum codec_enum Codec,
+                                            std::string_view Profile,
+                                            video_format Current) {
   auto pick_format = [&](std::initializer_list<video_format> preferred,
                          video_format fallback) {
     for (video_format f : preferred) {
-      if (current == f)
+      if (Current == f)
         return f;
     }
     return fallback;
   };
 
-  switch (Context->Codec) {
+  switch (Codec) {
   case QSV_CODEC_HEVC: {
-    if (svProf == "main10") {
-      Info->format = VIDEO_FORMAT_P010;
-    } else if (svProf == "rext") {
-      // HEVC RExt: 4:2:0 (NV12/P010), 4:2:2 (YUY2/P216),
-      // 4:4:4 (AYUV/I444/P416).  Only request a format when the current OBS
-      // format is in the same family; cross bit-depth or planar->packed
-      // conversions often fail with "Bad scale conversion type".
-      // AYUV has no OBS scaler mapping at all, so keep planar I444 and
-      // convert to AYUV inside LoadFrameData.
-      switch (current) {
+    if (Profile == "main10") {
+      return VIDEO_FORMAT_P010;
+    } else if (Profile == "rext") {
+      // Only request a format in the same family as the current OBS format
+      // (4:2:0 NV12/P010, 4:2:2 YUY2/P216, 4:4:4 AYUV/I444/P416); cross
+      // conversions fail with "Bad scale conversion type". AYUV has no OBS
+      // scaler mapping, so keep planar I444 and convert to AYUV inside
+      // LoadFrameData.
+      switch (Current) {
       case VIDEO_FORMAT_AYUV:
-        Info->format = VIDEO_FORMAT_AYUV;
-        break;
+        return VIDEO_FORMAT_AYUV;
       case VIDEO_FORMAT_I444:
-        Info->format = VIDEO_FORMAT_I444;
-        break;
+        return VIDEO_FORMAT_I444;
       case VIDEO_FORMAT_YUY2:
       case VIDEO_FORMAT_I422:
-        Info->format = VIDEO_FORMAT_YUY2;
-        break;
+        return VIDEO_FORMAT_YUY2;
       case VIDEO_FORMAT_P010:
       case VIDEO_FORMAT_I010:
-        Info->format = VIDEO_FORMAT_P010;
-        break;
+        return VIDEO_FORMAT_P010;
       case VIDEO_FORMAT_P216:
-        // Keep packed 4:2:2 10-bit only if OBS is already in that form.
-        Info->format = VIDEO_FORMAT_P216;
-        break;
+        return VIDEO_FORMAT_P216;
       case VIDEO_FORMAT_P416:
       case VIDEO_FORMAT_I412:
-        // Keep packed 4:4:4 12-bit only if OBS is already in that form.
-        Info->format = VIDEO_FORMAT_P416;
-        break;
+        return VIDEO_FORMAT_P416;
       default:
-        Info->format = VIDEO_FORMAT_NV12;
-        break;
+        return VIDEO_FORMAT_NV12;
       }
-    } else if (svProf == "scc") {
-      // HEVC SCC: 4:2:0 8/10-bit and 4:4:4 8-bit.  Avoid cross-family
-      // conversions that OBS scaler can't handle.
-      switch (current) {
+    } else if (Profile == "scc") {
+      // SCC: 4:2:0 8/10-bit and 4:4:4 8-bit only
+      switch (Current) {
       case VIDEO_FORMAT_AYUV:
-        Info->format = VIDEO_FORMAT_AYUV;
-        break;
+        return VIDEO_FORMAT_AYUV;
       case VIDEO_FORMAT_I444:
-        Info->format = VIDEO_FORMAT_I444;
-        break;
+        return VIDEO_FORMAT_I444;
       case VIDEO_FORMAT_P010:
       case VIDEO_FORMAT_I010:
-        Info->format = VIDEO_FORMAT_P010;
-        break;
+        return VIDEO_FORMAT_P010;
       default:
-        Info->format = VIDEO_FORMAT_NV12;
-        break;
+        return VIDEO_FORMAT_NV12;
       }
-    } else {
-      // main / default
-      Info->format = VIDEO_FORMAT_NV12;
     }
-    break;
+    return VIDEO_FORMAT_NV12;
   }
   case QSV_CODEC_AV1: {
-    if (svProf == "high") {
-      // AV1 High: 4:4:4 8-bit (AYUV) and 10-bit (Y410).  OBS has no Y410,
-      // and AYUV has no OBS scaler mapping, so keep the 4:4:4 format OBS
-      // already feeds us and convert internally; otherwise fall back to NV12.
-      switch (current) {
+    if (Profile == "high") {
+      // 4:4:4 8-bit (AYUV) and 10-bit (Y410). OBS has no Y410 and AYUV has
+      // no OBS scaler mapping, so keep the 4:4:4 format OBS feeds us and
+      // convert internally; otherwise fall back to NV12.
+      switch (Current) {
       case VIDEO_FORMAT_AYUV:
-        Info->format = VIDEO_FORMAT_AYUV;
-        break;
+        return VIDEO_FORMAT_AYUV;
       case VIDEO_FORMAT_I444:
-        Info->format = VIDEO_FORMAT_I444;
-        break;
+        return VIDEO_FORMAT_I444;
       default:
-        Info->format = VIDEO_FORMAT_NV12;
-        break;
+        return VIDEO_FORMAT_NV12;
       }
-    } else {
-      Info->format = pick_format({VIDEO_FORMAT_P010, VIDEO_FORMAT_NV12},
-                                 VIDEO_FORMAT_NV12);
     }
-    break;
+    return pick_format({VIDEO_FORMAT_P010, VIDEO_FORMAT_NV12},
+                       VIDEO_FORMAT_NV12);
   }
   case QSV_CODEC_VP9: {
-    // VP9 profiles: "0 (8-bit 4:2:0)", "1 (8-bit 4:4:4)",
-    //               "2 (10-bit 4:2:0)", "3 (10-bit 4:4:4)"
-    const char vp9p = profile[0];
+    // VP9 profiles: 0=8-bit 4:2:0, 1=8-bit 4:4:4, 2=10-bit 4:2:0, 3=10-bit 4:4:4
+    const char vp9p = Profile.empty() ? '0' : Profile[0];
     bool vp9_10bit = (vp9p == '2' || vp9p == '3');
     bool vp9_444 = (vp9p == '1' || vp9p == '3');
     if (vp9_444) {
       // AYUV has no OBS scaler mapping, so keep planar I444 and convert to
       // packed AYUV internally.  For anything else fall back to 4:2:0.
-      switch (current) {
+      switch (Current) {
       case VIDEO_FORMAT_AYUV:
-        Info->format = VIDEO_FORMAT_AYUV;
-        break;
+        return VIDEO_FORMAT_AYUV;
       case VIDEO_FORMAT_I444:
-        Info->format = VIDEO_FORMAT_I444;
-        break;
+        return VIDEO_FORMAT_I444;
       default:
-        Info->format = vp9_10bit ? VIDEO_FORMAT_P010 : VIDEO_FORMAT_NV12;
-        break;
+        return vp9_10bit ? VIDEO_FORMAT_P010 : VIDEO_FORMAT_NV12;
       }
-    } else {
-      Info->format = vp9_10bit ? VIDEO_FORMAT_P010 : VIDEO_FORMAT_NV12;
     }
-    break;
+    return vp9_10bit ? VIDEO_FORMAT_P010 : VIDEO_FORMAT_NV12;
   }
-  case QSV_CODEC_AVC: {
-    if (svProf == "high10") {
-      Info->format = VIDEO_FORMAT_P010;
-    } else {
-      Info->format = VIDEO_FORMAT_NV12;
-    }
-    break;
+  case QSV_CODEC_AVC:
+    // no AVC "high10": P010 is not in the driver's AVC FourCC whitelist
+    // (hard MFX_ERR_UNSUPPORTED), so AVC always takes NV12 input.
+    return VIDEO_FORMAT_NV12;
   }
-  }
+  return VIDEO_FORMAT_NV12;
+}
 
-  // VP9 encoder hardcodes colorRange=0 (limited range) in the bitstream and
-  // doesn't accept mfxExtVideoSignalInfo. Force OBS to convert input to
-  // limited range so the YUV values match the colorRange bit written by VPL.
+void GetVideoInfo(void *Data, video_scale_info *Info) {
+  plugin_context *Context = static_cast<plugin_context *>(Data);
+
+  obs_data_t *settings = obs_encoder_get_settings(Context->EncoderData);
+  const char *profile = obs_data_get_string(settings, "profile");
+
+  video_t *video = obs_encoder_video(Context->EncoderData);
+  const video_output_info *voi = video ? video_output_get_info(video) : nullptr;
+  video_format current = voi ? voi->format : VIDEO_FORMAT_NV12;
+
+  Info->format = ResolveEncoderInputFormat(Context->Codec, profile, current);
+
+  // VP9 hardcodes colorRange=0 (limited range) in the bitstream and doesn't
+  // accept mfxExtVideoSignalInfo; force limited-range input to match.
   if (Context->Codec == QSV_CODEC_VP9)
     Info->range = VIDEO_RANGE_PARTIAL;
 
@@ -512,11 +482,9 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
                               &NewPacketSize, &Context->ExtraData.first,
                               &Context->ExtraData.second);
     }
-    // VP9 has no parameter sets; the bitstream is already raw frames and
-    // needs no extradata (mkv/webm containers don't require VP9 codec
-    // private data).  NewPacket stays null there, so copy straight from
-    // the bitstream into the reusable PacketData buffer — no per-frame
-    // intermediate bmemdup/bfree.
+    // VP9 has no parameter sets and mkv/webm containers don't need codec
+    // private data; NewPacket stays null, so copy straight from the bitstream
+    // into the reusable PacketData buffer (no per-frame bmemdup/bfree).
     if (Context->Codec == QSV_CODEC_VP9) {
       NewPacketSize = Bitstream->DataLength;
     }
@@ -574,10 +542,10 @@ void ParseEncodedPacket(plugin_context *Context, encoder_packet *Packet,
     Packet->drop_priority = static_cast<int>(OBS_NAL_PRIORITY_HIGH);
   }
 
-  // VP9 encoder hardcodes colorSpace=UNKNOWN (0) in the bitstream (see
-  // InitVp9SeqLevelParam in mfx_vp9_encode_hw_utils.cpp). Patch the colorSpace
-  // bits in keyframe headers so decoders apply the correct YUV->RGB matrix.
-  // colorRange=0 is correct because GetVideoInfo forces limited-range input.
+  // VP9 hardcodes colorSpace=UNKNOWN (0) in the bitstream (see
+  // InitVp9SeqLevelParam in mfx_vp9_encode_hw_utils.cpp); patch keyframe
+  // headers so decoders apply the correct YUV->RGB matrix. colorRange=0 is
+  // correct because GetVideoInfo forces limited-range input.
   if (Context->Codec == QSV_CODEC_VP9 && Packet->keyframe &&
       Context->PacketData.size() >= 5) {
     uint8_t *data = Context->PacketData.data();
@@ -659,10 +627,10 @@ bool EncodeTexture(void *Data, encoder_texture *Texture, int64_t PTS,
   if (!Packet || !ReceivedPacketStatus)
     return false;
 
-  // Hold the mutex for the whole encode call.  MFXVideoENCODE_Reset
-  // (parameter updates) and plugin destruction are serialized against
-  // in-flight encoding; a Reset racing EncodeFrameAsync is undefined
-  // behavior in the driver.
+  // Hold the mutex for the whole encode call: MFXVideoENCODE_Reset (parameter
+  // updates) and plugin destruction must be serialized against in-flight
+  // encoding; a Reset racing EncodeFrameAsync is undefined behavior in the
+  // driver.
   std::lock_guard<std::mutex> lock(Context->EncoderMutex);
   if (!Context->EncoderPTR)
     return false;

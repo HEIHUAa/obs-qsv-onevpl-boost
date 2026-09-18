@@ -32,14 +32,13 @@
 #undef LOG_DEBUG
 #endif
 
-// OBS types — needed for opaque pointer members (video_t, obs_encoder_t, etc.)
-// Included before FFmpeg so the decltype() in ffmpeg_api doesn't see OBS macros.
+// OBS types for opaque pointer members (video_t, obs_encoder_t, ...);
+// included before FFmpeg so decltype() in ffmpeg_api doesn't see OBS macros
 #include <obs.h>
 #include <obs-data.h>
 #include <media-io/video-frame.h>
 
-// OBS defines LOG_* as integer constants; Qt/FFmpeg may define them too, so
-// undef to avoid conflicts downstream.
+// undef again in case Qt/FFmpeg headers re-defined them
 #ifdef LOG_ERROR
 #undef LOG_ERROR
 #endif
@@ -169,19 +168,15 @@ public:
     };
     std::mutex pkt_mutex;
     std::condition_variable pkt_cv;
-    // deque: pop_front() is O(1); the old vector + erase(begin()) shifted the
-    // whole queue on every encoded frame.
     std::deque<Packet> pkt_queue;
     bool encoder_done = false;
-    // MP4 header is written lazily from the feed thread, after the encoder
-    // has produced its first keyframe (parameter sets only become available
-    // then).  Guarded by happening entirely on the feed thread.
+    // MP4 header written lazily from the feed thread after the first
+    // keyframe (only then are the parameter sets available); feed-thread only
     bool header_written = false;
 
     // Audio packets from input (stream copy, re-timestamped for output)
     std::vector<AVPacket *> audio_packets;
 
-    // Progress tracking
     int64_t duration = 0;
     int64_t total_frames = 0;
     std::atomic<int64_t> frames_encoded{0};
@@ -221,7 +216,6 @@ private:
   // keep the QByteArray alive so the const char* from toUtf8() stays valid
   QByteArray m_OutputPathBytes;
 
-  // UI
   QLineEdit *InputPath = nullptr;
   QLineEdit *OutputPath = nullptr;
   QPushButton *StartStopBtn = nullptr;

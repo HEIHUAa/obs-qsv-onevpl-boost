@@ -2,7 +2,6 @@
 
 #include "hw_d3d11.hpp"
 
-// DirectX functionality required to manage DX11 device and surfaces
 HWManager::HWManager()
     : HWTextureCounter(), HWTexturePool(), HWHandledTexturePool() {}
 
@@ -30,7 +29,6 @@ IDXGIAdapter *HWManager::GetIntelDeviceAdapterHandle(int dxgiAdapterIndex) {
   return Adapter;
 }
 
-// Create HW device context
 mfxStatus HWManager::CreateDevice(int dxgiAdapterIndex) {
   try {
 
@@ -79,7 +77,6 @@ mfxStatus HWManager::CreateDevice(int dxgiAdapterIndex) {
   }
 }
 
-// Free HW device context
 void HWManager::ReleaseDevice() {
   if (HWEncoderCounter <= 0) {
     if (HWAdapter) {
@@ -107,10 +104,8 @@ mfxStatus HWManager::AllocateTexturePool(MFXVideoParam &EncodeParams,
                                        mfxU16 NumSurfaces) {
   mfxStatus Status = MFX_ERR_NONE;
   HRESULT HR = S_OK;
-  // warn("Res: %d x %d", Request->Info.Width, Request->Info.Height);
-  //  Clear any existing textures before reallocating — prevents leaks on retries
+  // clear any existing textures first to prevent leaks on retries
   FreeTexturePool();
-  //  Determine texture Format
   DXGI_FORMAT Format;
   if (MFX_FOURCC_NV12 == EncodeParams.mfx.FrameInfo.FourCC) {
     Format = DXGI_FORMAT_NV12;
@@ -119,8 +114,7 @@ mfxStatus HWManager::AllocateTexturePool(MFXVideoParam &EncodeParams,
   } else if (MFX_FOURCC_YUY2 == EncodeParams.mfx.FrameInfo.FourCC) {
     Format = DXGI_FORMAT_YUY2;
   } else if (MFX_FOURCC_P8 == EncodeParams.mfx.FrameInfo
-                                  .FourCC) //|| MFX_FOURCC_P8_TEXTURE ==
-                                           // EncodeParams->mfx.FrameInfo.FourCC
+                                  .FourCC)
   {
     Format = DXGI_FORMAT_P8;
   } else if (MFX_FOURCC_P010 == EncodeParams.mfx.FrameInfo.FourCC) {
@@ -166,7 +160,6 @@ mfxStatus HWManager::AllocateTexturePool(MFXVideoParam &EncodeParams,
         EncodeParams.AsyncDepth) * 2);
   }
 
-  // Create textures
   HWTexturePool.reserve(Texture2DPoolSize);
 
   for (size_t i = 0; i < Texture2DPoolSize; i++) {
@@ -181,8 +174,8 @@ mfxStatus HWManager::AllocateTexturePool(MFXVideoParam &EncodeParams,
     HWTexturePool.push_back(Texture2D);
   }
 
-  // Pre-warm: touch every pool texture so the GPU driver allocates
-  // physical backing memory now instead of on the first real frame.
+  // pre-warm: touch every pool texture so the driver allocates physical
+  // backing memory now instead of on the first real frame
   {
     D3D11_TEXTURE2D_DESC tinyDesc = Desc;
     tinyDesc.Width = 4;
@@ -201,10 +194,9 @@ mfxStatus HWManager::AllocateTexturePool(MFXVideoParam &EncodeParams,
       }
       tinyTex->Release();
     }
-    // Don't Flush here — the pre-warm copies are async and the GPU
-    // driver will complete them in the background. An explicit Flush
-    // would block the calling thread for no benefit since the first
-    // real frame naturally waits for the GPU pipeline to drain.
+    // no Flush here: the pre-warm copies are async and the driver completes
+    // them in the background; an explicit Flush would block the caller for no
+    // benefit since the first real frame naturally drains the GPU pipeline
   }
 
   return Status;
@@ -251,16 +243,16 @@ mfxStatus HWManager::CopyTexture(mfxSurfaceD3D11Tex2D &OuterTexture,
 
   HR = KeyedMutex->AcquireSync(LockKey, 100);
   if (FAILED(HR)) {
-    // Don't deadlock the render thread — if the source texture isn't
-    // ready within 100 ms the GPU pipeline is already saturated.
+    // a timeout means the GPU pipeline is already saturated; fail fast
+    // instead of deadlocking the render thread
     if (HR == WAIT_TIMEOUT) {
       throw std::runtime_error("CopyTexture(): AcquireSync timed out");
     }
     throw std::runtime_error("CopyTexture(): AcquireSync error");
   }
 
-  // Source and dest textures are the same size → NULL SrcBox copies
-  // the full subresource (faster than GetDesc + manual SrcBox every frame).
+  // textures are the same size, so NULL SrcBox copies the full subresource
+  // (faster than GetDesc + manual SrcBox every frame)
   HWContext->CopySubresourceRegion(HWTexturePool[HWTextureCounter], 0, 0, 0, 0,
                                    InputTexture, 0, nullptr);
   KeyedMutex->ReleaseSync(*NextKey);

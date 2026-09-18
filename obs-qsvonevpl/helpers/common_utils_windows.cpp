@@ -4,7 +4,6 @@
 
 void Release() {
 #if defined(_WIN32) || defined(_WIN64)
-  //CleanupHWDevice();
 #endif
 }
 
