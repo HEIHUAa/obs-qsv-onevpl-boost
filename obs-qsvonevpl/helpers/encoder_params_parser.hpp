@@ -546,8 +546,16 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
     auto sv = std::string_view(BRCPanicModeData);
     if (sv == "ON")
       Params.BRCPanicMode = true;
-    else if (sv == "OFF")
+    else if (sv == "OFF") {
+#if defined(_WIN32)
+      // Windows DDI marks BRCPanicMode=OFF unsupported
+      // (mfx_h264_enc_common_hw.cpp:4737-4745); the UI only offers AUTO/ON
+      // and migrates stale OFF to AUTO -- treat OFF as AUTO here too instead
+      // of passing the panic-disable path through.
+#else
       Params.BRCPanicMode = false;
+#endif
+    }
     // else AUTO: leave as std::nullopt (driver default)
   }
 

@@ -32,6 +32,7 @@ enum class Op : uint8_t {
   IntGt,    // int value of opt >  num
   IntLt,    // int value of opt <  num
   FieldGt,  // int value of opt >  int value of rhs (cross-option compare)
+  BoolIs,   // opt is an obs bool item; holds when get_bool == (num != 0)
   Feature,  // opt names a platform feature, resolved via the callback
   FeatureNot, // holds when the feature is NOT available
   Never,    // always false -- for "this option never applies to this codec"
@@ -72,6 +73,9 @@ constexpr Cond IntUnder(const char *opt, int n) {
 }
 constexpr Cond IntFieldOver(const char *opt, const char *rhs) {
   return Cond{.op = Op::FieldGt, .opt = opt, .rhs = rhs};
+}
+constexpr Cond BoolIs(const char *opt, bool v) {
+  return Cond{.op = Op::BoolIs, .opt = opt, .num = v ? 1 : 0};
 }
 constexpr Cond Feat(const char *feature) {
   return Cond{.op = Op::Feature, .opt = feature};
@@ -149,8 +153,11 @@ inline constexpr Rule kRules[] = {
     // rate control magnitudes (RC-driven -> Hide)
     MakeRule("bitrate", kCodecsAll, Action::Hide, nullptr,
              NoneOf("rate_control", "CQP", "ICQ")),
+    // MaxKbps is consumed by VBR/VCM/QVBR (defaults + level calc,
+    // h264_enc_common_hw.cpp:6032-6044,430-441); AVC AVBR drops it on
+    // write-back and CBR only defaults it to target when unset.
     MakeRule("max_bitrate", kCodecsAll, Action::Hide, nullptr,
-             OneOf("rate_control", "VBR", "VCM")),
+             OneOf("rate_control", "VBR", "VCM", "QVBR")),
     MakeRule("accuracy", kCodecsAll, Action::Hide, nullptr,
              Is("rate_control", "AVBR")),
     MakeRule("convergence", kCodecsAll, Action::Hide, nullptr,
@@ -168,20 +175,26 @@ inline constexpr Rule kRules[] = {
 
     MakeRule("cqp_separate_ipb", kCodecsAll, Action::Hide, nullptr,
              Is("rate_control", "CQP")),
-    // qpi/qpp/qpb are sub-options of the separate-IPB toggle -> Hide (cascade)
+    // qpi/qpp/qpb are sub-options of the separate-IPB toggle -> Hide (cascade).
+    // cqp_separate_ipb is an obs bool checkbox, hence BoolIs (string compares
+    // can never match a bool item).
     MakeRule("qpi", kCodecsAll, Action::Hide, nullptr,
-             Is("rate_control", "CQP"), Is("cqp_separate_ipb", "ON")),
+             Is("rate_control", "CQP"), BoolIs("cqp_separate_ipb", true)),
     MakeRule("qpp", kCodecsAll, Action::Hide, nullptr,
-             Is("rate_control", "CQP"), Is("cqp_separate_ipb", "ON")),
+             Is("rate_control", "CQP"), BoolIs("cqp_separate_ipb", true)),
     MakeRule("qpb", kCodecsAll, Action::Hide, nullptr,
-             Is("rate_control", "CQP"), Is("cqp_separate_ipb", "ON")),
+             Is("rate_control", "CQP"), BoolIs("cqp_separate_ipb", true)),
     MakeRule("cqp", kCodecsAll, Action::Hide, nullptr,
-             Is("rate_control", "CQP"), IsNot("cqp_separate_ipb", "ON")),
+             Is("rate_control", "CQP"), BoolIs("cqp_separate_ipb", false)),
 
-    // HRD conformance only exists on HRD-capable BRC modes; LowDelayHrd also
-    // needs an HRD switch ON (runtime forces both off). h264_enc_common_hw.cpp:3339-3383
+    // HRD conformance only exists on HRD-capable BRC modes; AVC additionally
+    // force-offs NalHrd under AVBR (h264_enc_common_hw.cpp:3339-3351, only
+    // CBR/VBR/QVBR/LA_HRD/VCM allowed).  LowDelayHrd also needs an HRD switch
+    // ON (runtime forces both off).  HEVC only blocks CQP/ICQ
+    // (hevcehw_base_legacy.cpp:3746-3763); AVBR doesn't exist there, so the
+    // shared row can include it safely.
     MakeRule("hrd_conformance", kCodecsAll, Action::Hide, "OFF",
-             NoneOf("rate_control", "CQP", "ICQ")),
+             NoneOf("rate_control", "CQP", "ICQ", "AVBR")),
     MakeRule("low_delay_hrd", kCodecsAll, Action::Hide, "OFF",
              NoneOf("rate_control", "CQP", "ICQ"),
              OneOf("hrd_conformance", "ON", "AUTO")),
@@ -203,36 +216,67 @@ inline constexpr Rule kRules[] = {
                         NoneOf("rate_control", "ICQ", "QVBR")),
                "RuleReason_MBBRC"),
 
-    // MaxFrameSize dropped by the runtime under CQP/ICQ (all codecs); the
-    // GAME_STREAMING wipe is AVC-only (h264_enc_common_hw.cpp:796-804).
-    MakeRule("max_frame_size_mode", kCodecsAll, Action::Hide, nullptr,
-             NoneOf("rate_control", "CQP", "ICQ")),
+    // MaxFrameSize survival matrices differ per codec (driver-side
+    // UserMaxFrameSizeSupport/SW-BRC gating is left to the driver):
+    // AVC clears it unconditionally under CBR/CQP (h264_enc_common_hw.cpp:752-760),
+    // HEVC keeps it only for VBR/QVBR (hevcehw_base_max_frame_size.cpp:57-85),
+    // AV1 keeps it for every RC except VBR -- TCBRC owns frame-size control
+    // there (av1ehw_base_max_frame_size.cpp:53-54) -- and the VP9 runtime
+    // ignores it entirely.  The GAME_STREAMING wipe is AVC-only (:796-804).
+    MakeRule("max_frame_size_mode", kAVC, Action::Hide, nullptr,
+             NoneOf("rate_control", "CQP", "CBR")),
+    MakeRule("max_frame_size_mode", kHEVC, Action::Hide, nullptr,
+             OneOf("rate_control", "VBR", "QVBR")),
+    MakeRule("max_frame_size_mode", kAV1, Action::Hide, nullptr,
+             IsNot("rate_control", "VBR")),
+    MakeRule("max_frame_size_mode", kVP9, Action::Hide, nullptr, Never()),
     WithReason(MakeRule("max_frame_size_mode", kAVC, Action::Gray, nullptr,
                         IsNot("scenario_info", "GAME_STREAMING")),
                "RuleReason_GSMaxFrame"),
-    MakeRule("max_frame_size_all", kCodecsAll, Action::Hide, nullptr,
-             NoneOf("rate_control", "CQP", "ICQ"),
+    MakeRule("max_frame_size_all", kAVC, Action::Hide, nullptr,
+             NoneOf("rate_control", "CQP", "CBR"),
              Is("max_frame_size_mode", "all")),
+    MakeRule("max_frame_size_all", kHEVC, Action::Hide, nullptr,
+             OneOf("rate_control", "VBR", "QVBR"),
+             Is("max_frame_size_mode", "all")),
+    MakeRule("max_frame_size_all", kAV1, Action::Hide, nullptr,
+             IsNot("rate_control", "VBR"),
+             Is("max_frame_size_mode", "all")),
+    MakeRule("max_frame_size_all", kVP9, Action::Hide, nullptr, Never()),
     WithReason(MakeRule("max_frame_size_all", kAVC, Action::Gray, nullptr,
                         IsNot("scenario_info", "GAME_STREAMING")),
                "RuleReason_GSMaxFrame"),
-    MakeRule("max_frame_size_i", kCodecsAll, Action::Hide, nullptr,
-             NoneOf("rate_control", "CQP", "ICQ"),
+    MakeRule("max_frame_size_i", kAVC, Action::Hide, nullptr,
+             NoneOf("rate_control", "CQP", "CBR"),
              Is("max_frame_size_mode", "per_type")),
+    MakeRule("max_frame_size_i", kHEVC, Action::Hide, nullptr,
+             OneOf("rate_control", "VBR", "QVBR"),
+             Is("max_frame_size_mode", "per_type")),
+    MakeRule("max_frame_size_i", kAV1, Action::Hide, nullptr,
+             IsNot("rate_control", "VBR"),
+             Is("max_frame_size_mode", "per_type")),
+    MakeRule("max_frame_size_i", kVP9, Action::Hide, nullptr, Never()),
     WithReason(MakeRule("max_frame_size_i", kAVC, Action::Gray, nullptr,
                         IsNot("scenario_info", "GAME_STREAMING")),
                "RuleReason_GSMaxFrame"),
-    MakeRule("max_frame_size_p", kCodecsAll, Action::Hide, nullptr,
-             NoneOf("rate_control", "CQP", "ICQ"),
+    MakeRule("max_frame_size_p", kAVC, Action::Hide, nullptr,
+             NoneOf("rate_control", "CQP", "CBR"),
              Is("max_frame_size_mode", "per_type")),
+    MakeRule("max_frame_size_p", kHEVC, Action::Hide, nullptr,
+             OneOf("rate_control", "VBR", "QVBR"),
+             Is("max_frame_size_mode", "per_type")),
+    MakeRule("max_frame_size_p", kAV1, Action::Hide, nullptr,
+             IsNot("rate_control", "VBR"),
+             Is("max_frame_size_mode", "per_type")),
+    MakeRule("max_frame_size_p", kVP9, Action::Hide, nullptr, Never()),
     WithReason(MakeRule("max_frame_size_p", kAVC, Action::Gray, nullptr,
                         IsNot("scenario_info", "GAME_STREAMING")),
                "RuleReason_GSMaxFrame"),
 
-    // SkipFrame is zeroed by the runtime under CQP.  h264_enc_common_hw.cpp:4586
-    WithReason(MakeRule("skip_frame", kCodecsAll, Action::Gray, nullptr,
-                        IsNot("rate_control", "CQP")),
-               "RuleReason_SkipFrame"),
+    // SkipFrame needs no RC rule: the runtime only drops it when the DDI
+    // lacks support AND RC != CQP (h264_enc_common_hw.cpp:4588 -- CQP is the
+    // EXEMPTED case), and HEVC validates the value domain only
+    // (hevcehw_base_legacy.cpp CheckSkipFrame).
 
     // B-frames are meaningless under VCM (IPPP only) -> Hide.  AdaptiveI/B
     // only work through EncTools and are suppressed by GOP_STRICT -> Gray.
@@ -256,15 +300,17 @@ inline constexpr Rule kRules[] = {
                             "RuleReason_BPyramid")),
 
     // lookahead: AVC on CBR/VBR/ICQ (VBR/ICQ promoted to LA variants, CBR uses
-    // EncTools LAGS).  HEVC/AV1 hardware EncTools lookahead needs LowPower=ON
-    // (GAME_STREAMING LPLA path) -> page-option dependency, gray not hide.
+    // EncTools LAGS).  HEVC/AV1 hardware EncTools lookahead is gated in the
+    // EncTools layer -- GS scenario (LPLA) or, without it, GopRefDist in
+    // {2,4,8,16} + ExtBRC + scenario UNKNOWN (SW LA,
+    // hevcehw_base_enctools.cpp:272-285).  There is deliberately NO low-power
+    // gray row: the runtime silently forces LowPower=ON for HEVC
+    // (hevcehw_base_caps.cpp:51) and AV1 (av1ehw_base_general.cpp:493), so
+    // "low_power must be ON" can never fail.
     MakeRule("lookahead", kAVC, Action::Hide, "OFF",
              OneOf("rate_control", "CBR", "VBR", "ICQ")),
     MakeRule("lookahead", static_cast<uint8_t>(kHEVC | kAV1), Action::Hide,
              "OFF", OneOf("rate_control", "CBR", "VBR"), Feat("enc_tools")),
-    WithReason(MakeRule("lookahead", static_cast<uint8_t>(kHEVC | kAV1),
-                        Action::Gray, nullptr, Is("low_power", "ON")),
-               "RuleReason_LALowPower"),
     // LookAheadDS is AVC-only (mfxExtCodingOptionDDI); HEVC/AV1 pick the LA
     // scale internally, VP9 has none.  Sub-option of the lookahead switch -> Hide.
     MakeRule("lookahead_ds", kAVC, Action::Hide, nullptr,
@@ -306,8 +352,10 @@ inline constexpr Rule kRules[] = {
              Is("enctools", "ON"), Feat("enc_tools_config")),
     // runtime supported-config whitelist: BRC only fires for CBR/VBR,
     // BRCBufferHints/AdaptiveMBQP need LookAheadDepth > GopRefDist (MBQP also
-    // MBBRC), AdaptiveRefB needs B-frames, HEVC blocks adaptive-ref at TU7.
-    // enctools/src/mfx_enctools_common.cpp:253-277, hevcehw_base_enctools.cpp:186
+    // MBBRC; both ride the BRC flag, so CBR/VBR too); HEVC additionally
+    // blocks adaptive-ref at TU7 or GOP_STRICT.  The b_frames>0 cond on
+    // adaptive_ref_b is a semantic proxy -- no B frames, nothing to adapt.
+    // enctools/src/mfx_enctools_common.cpp:253-277, hevcehw_base_enctools.cpp:186-196
     WithReason(MakeRule("enc_tools_brc", kNoVP9, Action::Gray, nullptr,
                         OneOf("rate_control", "CBR", "VBR")),
                "RuleReason_ETBRC"),
@@ -323,21 +371,27 @@ inline constexpr Rule kRules[] = {
     WithReason(MakeRule("enc_tools_adaptive_ref_b", kNoVP9, Action::Gray,
                         nullptr, IntOver("b_frames", 0)),
                "RuleReason_ETRefB"),
-    // AV1: adaptive reference is force-disabled outside the game-streaming
-    // scenario ("not supported for now", av1ehw_base_enctools.cpp:344-347).
+    // AV1: adaptive reference is disabled in EVERY scenario -- the SW path
+    // force-offs it ("not supported for now",
+    // av1ehw_base_enctools.cpp:344-347) and CorrectVideoParams gates it with a
+    // hardwired `bAdaptiveRef = false` (av1ehw_base_enctools.cpp:391).
     WithReason(MakeRule("enc_tools_adaptive_ref_p", kAV1, Action::Gray,
-                        nullptr, Is("scenario_info", "GAME_STREAMING")),
+                        nullptr, Never()),
                "RuleReason_AV1Ref"),
     WithReason(MakeRule("enc_tools_adaptive_ref_b", kAV1, Action::Gray,
-                        nullptr, Is("scenario_info", "GAME_STREAMING")),
+                        nullptr, Never()),
                "RuleReason_AV1Ref"),
+    // HEVC IsAdaptiveRefAllowed: TargetUsage != 7 AND not GOP_STRICT
+    // (hevcehw_base_enctools.cpp:186-196).
     WithReason(MakeRule("enc_tools_adaptive_ref_p", kHEVC, Action::Gray,
                         nullptr, IsNot("target_usage", "TU7 (Veryfast)"),
-                        IsNot("target_usage", "Fastest (TU6-TU7)")),
+                        IsNot("target_usage", "Fastest (TU6-TU7)"),
+                        IsNot("gop_opt_flag", "STRICT")),
                "RuleReason_ETTU7"),
     WithReason(MakeRule("enc_tools_adaptive_ref_b", kHEVC, Action::Gray,
                         nullptr, IsNot("target_usage", "TU7 (Veryfast)"),
-                        IsNot("target_usage", "Fastest (TU6-TU7)")),
+                        IsNot("target_usage", "Fastest (TU6-TU7)"),
+                        IsNot("gop_opt_flag", "STRICT")),
                "RuleReason_ETTU7"),
 
     // intra refresh x B-frames is a hard mutex (runtime zeroes IntRefType); AVC
@@ -352,7 +406,11 @@ inline constexpr Rule kRules[] = {
     // type/cycle_size/qp_delta are sub-options of the intra-ref switch -> Hide
     MakeRule("intra_ref_type", kNoVP9, Action::Hide, nullptr,
              Is("intra_ref_encoding", "ON")),
-    WithReason(MakeRule("intra_ref_type", kNoVP9, Action::Gray, nullptr,
+    // VDEnc AVC only does HORIZONTAL refresh (h264_enc_common_hw.cpp:4283
+    // clips SLICE down to it); HEVC passes VERTICAL through with a full code
+    // path (hevcehw_base_legacy.cpp:3853-3855,2151-2153), so the restriction
+    // is AVC-only.  AV1 has no intra refresh at all (group not created).
+    WithReason(MakeRule("intra_ref_type", kAVC, Action::Gray, nullptr,
                         IsNot("low_power", "ON")),
                "RuleReason_IntRefType"),
     MakeRule("intra_ref_cycle_size", kNoVP9, Action::Hide, nullptr,
@@ -407,15 +465,19 @@ inline constexpr Rule kRules[] = {
     // AVC extras: mv_cost_scaling_factor is the parameter panel of the GMBA switch -> Hide
     MakeRule("mv_cost_scaling_factor", kAVC, Action::Hide, nullptr,
              Is("global_motion_bias_adjustment", "ON")),
-    // Trellis is a VME-pipeline feature, ignored by VDEnc; SNB lacks it
-    // entirely (feature resolver).  h264_enc_common_hw.cpp:1439 (VME gate)
-    WithReason(MakeRule("trellis", kAVC, Action::Gray, nullptr,
-                        IsNot("low_power", "ON"), Feat("trellis")),
-               "RuleReason_Trellis"),
-    // AdaptiveCQM is only supported for GAME_STREAMING-ish VDEnc use; runtime
-    // force-disables it otherwise.  h264_enc_common_hw.cpp:4179
+    // Trellis has NO LowPower coupling in the runtime (the old "VDEnc ignores
+    // it" citation traced to SetLowPowerDefault, h264_enc_common_hw.cpp:1439,
+    // and the EnhancedEncInput gate is commented out at :4394-4398) -- keep
+    // only the platform floor: Sandy Bridge lacks trellis entirely
+    // (feature resolver).
+    MakeRule("trellis", kAVC, Action::Hide, nullptr, FeatNot("trellis")),
+    // AdaptiveCQM is only supported for GAME_STREAMING/REMOTE_GAMING on VDEnc;
+    // the runtime force-disables it otherwise.
+    // h264_enc_common_hw.cpp:5500-5503,6181-6187
     WithReason(MakeRule("adaptive_cqm", kAVC, Action::Gray, nullptr,
-                        Is("low_power", "ON")),
+                        Is("low_power", "ON"),
+                        OneOf("scenario_info", "GAME_STREAMING",
+                              "REMOTE_GAMING")),
                "RuleReason_AdaptiveCQM"),
     // quant matrix rewrite only applies on VBR/ICQ today (RC-driven -> Hide;
     // the runtime itself does not gate it per RC).  Custom cascade -> Gray.
@@ -503,6 +565,10 @@ inline bool CondHolds(const Cond &C, obs_data_t *Settings,
     return obs_data_get_int(Settings, C.opt) < C.num;
   case Op::FieldGt:
     return obs_data_get_int(Settings, C.opt) > obs_data_get_int(Settings, C.rhs);
+  case Op::BoolIs:
+    // obs bool items store true/false and obs_data_get_string returns "" for
+    // them, so string comparisons can never match a checkbox
+    return obs_data_get_bool(Settings, C.opt) == (C.num != 0);
   case Op::Feature:
     // without a resolver (parse-side sanitization) assume features exist;
     // the driver corrects anything we got wrong at Init time.

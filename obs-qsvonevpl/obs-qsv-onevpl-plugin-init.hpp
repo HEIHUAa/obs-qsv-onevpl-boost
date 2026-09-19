@@ -15,6 +15,8 @@ struct plugin_context {
 
   enum codec_enum Codec;
 
+  // texture encoders receive the core video mix textures directly, so the
+  // input format must follow VOI; frame encoders can pick the input format
   // from the profile instead (libobs does the conversion)
   bool IsTextureEncoder = false;
 

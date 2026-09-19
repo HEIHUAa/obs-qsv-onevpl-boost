@@ -46,7 +46,9 @@ const char *const qsv_params_condition[] = {"ON", "OFF", 0};
 const char *const qsv_params_condition_tristate[] = {"ON", "OFF", "AUTO", 0};
 const char *const qsv_params_gop_opt_flag[] = {"AUTO", "OPEN", "CLOSED", "STRICT", 0};
 const char *const qsv_params_weighted_pred_options[] = {"AUTO", "OFF",
-    "DEFAULT", "EXPLICIT", "IMPLICIT", 0};
+    "DEFAULT", "EXPLICIT", 0};
+const char *const qsv_params_weighted_pred_options_avc[] = {"AUTO", "OFF",
+    "DEFAULT", 0};
 const char *const qsv_params_condition_scaling_mode[] = {
     "OFF", "QUALITY | ADVANCED", "VEBOX | ADVANCED",
     "LOWPOWER | NEAREST NEIGHBOR", "LOWPOWER | ADVANCED", "AUTO", 0};
@@ -974,6 +976,9 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
                                      [[maybe_unused]] obs_property_t *Prop,
                                      obs_data_t *Settings) {
   // value migrations and cross-option coercion not covered by the rule table
+  const auto codec = static_cast<codec_enum>(
+      reinterpret_cast<intptr_t>(obs_properties_get_param(Properties)));
+
 #if defined(_WIN32)
   // Migrate profiles saved before the OFF entry was removed: OFF trips the
   // driver's "unsupported" path on Windows and hard-fails Init.
@@ -981,6 +986,10 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
       "OFF")
     obs_data_set_string(Settings, "brc_panic_mode", "AUTO");
 #endif
+
+  const auto wp = std::string_view(obs_data_get_string(Settings, "weighted_pred"));
+  if (wp == "IMPLICIT" || (wp == "EXPLICIT" && codec == QSV_CODEC_AVC))
+    obs_data_set_string(Settings, "weighted_pred", "DEFAULT");
 
   // Backward compat: migrate the old adaptive_max_frame_size toggle to the
   // max_frame_size_mode keys before the table reads them.
@@ -1030,8 +1039,6 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   // rows handle parent/child dependencies (with value snap-back via their
   // neutral), Gray rows handle driver-level conflicts by disabling the
   // control while keeping the user value.
-  auto codec = static_cast<codec_enum>(
-      reinterpret_cast<intptr_t>(obs_properties_get_param(Properties)));
   const std::string sig = qsv_rules::ApplyToProperties(
       Properties, Settings, codec, IsFeatureSupported);
 
@@ -1673,7 +1680,9 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   Prop = obs_properties_add_list(RMGroup, "weighted_pred",
                                  TEXT_WEIGHTED_PRED,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_weighted_pred_options);
+  AddStrings(Prop, Codec == QSV_CODEC_AVC
+                       ? qsv_params_weighted_pred_options_avc
+                       : qsv_params_weighted_pred_options);
   obs_property_set_long_description(Prop, TEXT_WEIGHTED_PRED_DESC);
   obs_property_set_visible(Prop, bIsAVCOrHEVC);
   // condition option for the HEVC hevc_sao x weighted-pred gray
