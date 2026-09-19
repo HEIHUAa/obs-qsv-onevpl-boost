@@ -524,6 +524,13 @@ ReEncodeDialog::ReEncodeDialog(QWidget *Parent)
   ConfigLabel->setWordWrap(true);
   ConfigLabel->setText(obs_module_text("ReEncoderNoConfig"));
   configLayout->addWidget(ConfigLabel);
+
+  auto *configHint = new QLabel(obs_module_text("ReEncoderConfigHint"), this);
+  configHint->setWordWrap(true);
+  QFont hintFont = configHint->font();
+  hintFont.setPointSizeF(hintFont.pointSizeF() * 0.9);
+  configHint->setFont(hintFont);
+  configLayout->addWidget(configHint);
   mainLayout->addWidget(ConfigGroup);
 
   auto *ctrlLayout = new QHBoxLayout;
