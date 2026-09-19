@@ -131,6 +131,7 @@ struct plugin_context {
 #define TEXT_INTRA_REF_QP_DELTA obs_module_text("IntraRefQPDelta")
 
 #define TEXT_GPU_NUMBER obs_module_text("Select_GPU")
+#define TEXT_GPU_AUTO obs_module_text("GPUAuto")
 
 #define TEXT_SCREEN_CONTENT_TOOLS obs_module_text("ScreenContentTools")
 

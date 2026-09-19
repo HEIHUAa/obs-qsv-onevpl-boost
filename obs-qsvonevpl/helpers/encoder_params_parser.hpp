@@ -474,7 +474,9 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
   const char *VPPFRCData =
       obs_data_get_string(Settings, "vpp_frc");
 
-  int GPUNumData = static_cast<int>(obs_data_get_int(Settings, "gpu_number"));
+  // "AUTO" -> 0 (auto path), else the Intel implementation index selected in
+  // the "Select GPU" dropdown (legacy numeric profiles handled inside)
+  int GPUNumData = GPUNumFromSettings(Settings);
 
   // 1. TargetUsage
   if (auto v = MapString(TargetUsageData, kTargetUsageMap))

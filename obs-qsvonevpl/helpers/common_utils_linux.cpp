@@ -414,3 +414,31 @@ void GetAdaptersInfo(struct adapter_info *adapters, size_t *adapter_count) {
   gs_enum_adapters(check_adapter, adapters);
   obs_leave_graphics();
 }
+
+// Best-effort fallback: enumerate DRM render nodes without vendor filtering
+// (identifying the vendor would need libdrm).  The entry order matches the
+// order oneVPL GPU RT exposes implementations on Linux.
+const std::vector<qsv_gpu_info> &GetIntelGpuList() {
+  static std::vector<qsv_gpu_info> GpuList;
+  static std::once_flag Once;
+
+  std::call_once(Once, [] {
+    DIR *Dir = opendir("/dev/dri");
+    if (!Dir)
+      return;
+
+    int ImplIndex = 0;
+    while (dirent *Entry = readdir(Dir)) {
+      if (strncmp(Entry->d_name, "renderD", 7) != 0)
+        continue;
+      char Name[64];
+      snprintf(Name, sizeof(Name), "GPU #%d (/dev/dri/%s)", ImplIndex,
+               Entry->d_name);
+      GpuList.push_back({ImplIndex, Name});
+      ImplIndex++;
+    }
+    closedir(Dir);
+  });
+
+  return GpuList;
+}

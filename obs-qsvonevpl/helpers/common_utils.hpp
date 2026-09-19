@@ -89,6 +89,20 @@ struct adapter_info {
 extern struct adapter_info AdaptersInfo[MAX_ADAPTERS];
 extern size_t AdaptersCount;
 
+// One entry per encoding-capable Intel adapter, in the same order as the
+// implementation indices MFXCreateSession accepts (i-th Intel adapter).
+struct qsv_gpu_info {
+  int ImplIndex;    // value stored in the "Select GPU" dropdown / impl index
+  std::string Name; // human-readable adapter name for the dropdown label
+};
+
+// Cached at first call; the adapter set cannot change while OBS runs.
+const std::vector<qsv_gpu_info> &GetIntelGpuList();
+
+// "gpu_number" setting -> MFXCreateSession implementation index.
+// "AUTO" (or empty) -> 0 = auto path; legacy numeric profiles are honored.
+int GPUNumFromSettings(struct obs_data *Settings);
+
 enum codec_enum { QSV_CODEC_AVC, QSV_CODEC_AV1, QSV_CODEC_HEVC, QSV_CODEC_VP9 };
 
 void ReleaseSessionData(void *);

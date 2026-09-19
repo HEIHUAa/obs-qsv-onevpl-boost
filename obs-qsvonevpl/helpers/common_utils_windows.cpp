@@ -1,6 +1,14 @@
 #include "common_utils.hpp"
 #include <util/dstr.h>
 
+#include <dxgi.h>
+#include <mutex>
+#include <vector>
+
+#if defined(_WIN32) || defined(_WIN64)
+#pragma comment(lib, "dxgi.lib")
+#endif
+
 
 void Release() {
 #if defined(_WIN32) || defined(_WIN64)
@@ -8,6 +16,44 @@ void Release() {
 }
 
 void ReleaseSessionData(void *) {}
+
+// Enumerate encoding-capable Intel adapters with their display names.  The
+// loop index among Intel adapters is exactly the implementation index
+// MFXCreateSession expects -- the same mapping the auto path already relies
+// on (obs-qsv-onevpl-encoder.cpp maps DXGI index -> Intel ordinal).
+const std::vector<qsv_gpu_info> &GetIntelGpuList() {
+  static std::vector<qsv_gpu_info> GpuList;
+  static std::once_flag Once;
+
+  std::call_once(Once, [] {
+    IDXGIFactory1 *Factory = nullptr;
+    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1),
+                                  reinterpret_cast<void **>(&Factory))) ||
+        !Factory) {
+      warn("GetIntelGpuList: CreateDXGIFactory1 failed, GPU dropdown will "
+           "only offer the auto entry");
+      return;
+    }
+
+    IDXGIAdapter1 *Adapter = nullptr;
+    int ImplIndex = 0;
+    for (UINT i = 0;
+         Factory->EnumAdapters1(i, &Adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+      DXGI_ADAPTER_DESC1 Desc = {};
+      if (SUCCEEDED(Adapter->GetDesc1(&Desc)) && Desc.VendorId == 0x8086) {
+        char Name[256] = {};
+        WideCharToMultiByte(CP_UTF8, 0, Desc.Description, -1, Name,
+                            static_cast<int>(sizeof(Name)), nullptr, nullptr);
+        GpuList.push_back({ImplIndex, Name});
+        ImplIndex++;
+      }
+      Adapter->Release();
+    }
+    Factory->Release();
+  });
+
+  return GpuList;
+}
 
 static bool enum_luids(void *param, uint32_t idx, uint64_t luid) {
   dstr *cmd = static_cast<dstr *>(param);

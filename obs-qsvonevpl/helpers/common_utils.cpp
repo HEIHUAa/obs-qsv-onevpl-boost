@@ -3,6 +3,7 @@
 
 #include <sstream>
 #include <algorithm>
+#include <string_view>
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 #include <util/dstr.h>
@@ -19,6 +20,38 @@
 
 struct adapter_info AdaptersInfo[MAX_ADAPTERS] = {};
 size_t AdaptersCount = 0;
+
+int GPUNumFromSettings(struct obs_data *Settings) {
+  if (!Settings)
+    return 0;
+
+  // legacy profiles stored gpu_number as an int (0=auto, N=Nth Intel GPU);
+  // the dropdown now stores "AUTO" / decimal strings, keep both readable
+  obs_data_item_t *Item = obs_data_item_byname(Settings, "gpu_number");
+  const enum obs_data_type Type =
+      Item ? obs_data_item_gettype(Item) : OBS_DATA_STRING;
+  obs_data_item_release(&Item);
+
+  int GpuNum = 0;
+  if (Type == OBS_DATA_NUMBER) {
+    GpuNum = static_cast<int>(obs_data_get_int(Settings, "gpu_number"));
+  } else {
+    const std::string_view V = obs_data_get_string(Settings, "gpu_number");
+    if (V != "AUTO" && !V.empty())
+      GpuNum = std::atoi(std::string(V).c_str());
+  }
+
+  if (GpuNum < 0)
+    GpuNum = 0;
+  const size_t Count = GetIntelGpuList().size();
+  if (GpuNum > 0 && (Count == 0 || static_cast<size_t>(GpuNum) >= Count)) {
+    warn("gpu_number %d out of range (%zu known Intel GPU(s)), "
+         "falling back to auto",
+         GpuNum, Count);
+    GpuNum = 0;
+  }
+  return GpuNum;
+}
 
 std::unordered_map<obs_encoder_t *, plugin_context *> EncoderDataMap;
 std::mutex EncoderDataMapMutex;

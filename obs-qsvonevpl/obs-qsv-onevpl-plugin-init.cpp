@@ -140,19 +140,20 @@ static bool PlatformSupportsLowPowerBFrames();
 static bool IsFeatureSupported(const char *PropertyName) {
   const std::string_view prop{PropertyName};
   // probed / OS-scoped features; names come from the Feat() conds in
-  // helpers/encoder_option_rules.hpp
+  // helpers/encoder_option_rules.hpp -- all resolved against the adapter
+  // picked in the "Select GPU" dropdown (UIProbeSlot)
   if (prop == "vpp_image_stab")
-    return PlatformSupportsImageStabVPP();
+    return GetVPPFilterCacheUI(VPPFilterId::ImageStab);
   if (prop == "vpp_frc")
-    return PlatformSupportsFRCVPP();
+    return GetVPPFilterCacheUI(VPPFilterId::FRC);
   if (prop == "vpp_mirror")
-    return PlatformSupportsMirrorVPP();
+    return GetVPPFilterCacheUI(VPPFilterId::Mirror);
   if (prop == "vpp_percenc")
-    return PlatformSupportsPercEncVPP();
+    return GetVPPFilterCacheUI(VPPFilterId::PercEnc);
   if (prop == "vpp_mctf")
     return PlatformSupportsMCTFVPP();
   if (prop == "lp_b_frames")
-    return PlatformSupportsLowPowerBFrames();
+    return PlatformSupportsLowPowerBFramesUI();
   if (prop == "enc_tools_config") {
 #if !defined(_WIN32)
     // mfxExtEncToolsConfig is only attached on Windows (SetEncoderParams);
@@ -175,7 +176,7 @@ static bool IsFeatureSupported(const char *PropertyName) {
 #endif
   }
 
-  mfxU16 platformCode = QueryPlatformCodeName();
+  mfxU16 platformCode = QueryUIPlatformCodeName();
   if (platformCode == 0) {
     return true;
   }
@@ -190,11 +191,22 @@ static bool IsFeatureSupported(const char *PropertyName) {
   return true;
 }
 
-static std::atomic<mfxU16> CachedQSVPlatformCode{0};
-static std::atomic<bool> QSVPlatformProbed{false};
+// Capability caches are PER-ADAPTER: the "Select GPU" dropdown picks an Intel
+// implementation index and every UI-side probe resolves against that slot.
+// Slot == the index MFXCreateSession(loader, i, ...) accepts; the default
+// (runtime/auto) path historically probed implementation #0 -> slot 0.
+constexpr int kProbeSlots = MAX_ADAPTERS;
+
+static inline int ProbeSlot(int ImplIdx) {
+  return (ImplIdx < 0) ? 0 : std::min(ImplIdx, kProbeSlots - 1);
+}
+
+static std::atomic<mfxU16> CachedQSVPlatformCode[kProbeSlots]{};
+static std::atomic<bool> QSVPlatformProbed[kProbeSlots]{};
 static std::mutex QSVPlatformProbeMutex;
 
-static bool TryQueryPlatformCodeName(mfxLoader Loader, mfxU16 &OutCodeName) {
+static bool TryQueryPlatformCodeName(mfxLoader Loader, int ImplIdx,
+                                     mfxU16 &OutCodeName) {
     mfxConfig Config = MFXCreateConfig(Loader);
     mfxVariant Variant{};
     Variant.Type = MFX_VARIANT_TYPE_U32;
@@ -213,7 +225,8 @@ static bool TryQueryPlatformCodeName(mfxLoader Loader, mfxU16 &OutCodeName) {
         Variant);
 
     mfxSession Session{};
-    mfxStatus Status = MFXCreateSession(Loader, 0, &Session);
+    mfxStatus Status = MFXCreateSession(
+        Loader, static_cast<mfxU16>(ProbeSlot(ImplIdx)), &Session);
     if (Status >= MFX_ERR_NONE) {
         mfxPlatform platform{};
         mfxStatus qStatus = MFXVideoCORE_QueryPlatform(Session, &platform);
@@ -229,13 +242,15 @@ static bool TryQueryPlatformCodeName(mfxLoader Loader, mfxU16 &OutCodeName) {
 
 // Returns 0 until the background probe finishes (callers fall back to
 // "unknown platform" defaults); UI never triggers VPL probing itself.
+// Runtime (auto/default) callers read implementation #0.
 mfxU16 QueryPlatformCodeName() {
-    return CachedQSVPlatformCode.load(std::memory_order_acquire);
+    return CachedQSVPlatformCode[0].load(std::memory_order_acquire);
 }
 
-static bool ProbePlatformCodeName() {
+static bool ProbePlatformCodeName(int ImplIdx = 0) {
+    const int Slot = ProbeSlot(ImplIdx);
     std::lock_guard<std::mutex> Lock(QSVPlatformProbeMutex);
-    if (QSVPlatformProbed.load(std::memory_order_acquire))
+    if (QSVPlatformProbed[Slot].load(std::memory_order_acquire))
         return true;
 
     bool ok = false;
@@ -247,29 +262,95 @@ static bool ProbePlatformCodeName() {
     }
 
     if (GlobalLoader != nullptr) {
-        ok = TryQueryPlatformCodeName(GlobalLoader, code);
+        ok = TryQueryPlatformCodeName(GlobalLoader, ImplIdx, code);
     } else {
         mfxLoader Loader = MFXLoad();
         if (Loader != nullptr) {
-            ok = TryQueryPlatformCodeName(Loader, code);
+            ok = TryQueryPlatformCodeName(Loader, ImplIdx, code);
             MFXUnload(Loader);
         }
     }
 
     if (ok) {
-        CachedQSVPlatformCode.store(code, std::memory_order_release);
-        QSVPlatformProbed.store(true, std::memory_order_release);
+        CachedQSVPlatformCode[Slot].store(code, std::memory_order_release);
+        QSVPlatformProbed[Slot].store(true, std::memory_order_release);
         return true;
     }
     return false;
 }
 
+// UI-side adapter selection: -1 = AUTO (follow the OBS render adapter),
+// >= 0 = the Intel implementation index picked in the "Select GPU" dropdown.
+// Only touched from the properties thread (defaults + modified callback).
+static std::atomic<int> UISelectedGpuImpl{-1};
+
+// AUTO resolves exactly like the runtime auto path (obs-qsv-onevpl-encoder.cpp
+// OpenEncoder): use the OBS render adapter when it is an Intel card that
+// supports the current codec; otherwise pick the first Intel card that does.
+// Without the codec check, a "old iGPU renders + Arc encodes AV1" machine
+// would get gray states computed from the wrong card.
+static int IntelOrdinalOf(size_t DxgiIndex) {
+    int Impl = 0;
+    for (size_t i = 0; i < DxgiIndex && i < MAX_ADAPTERS; ++i)
+        if (AdaptersInfo[i].IsIntel)
+            ++Impl;
+    return Impl;
+}
+
+static int ResolveAutoProbeSlot(enum codec_enum Codec) {
+    const auto CodecOK = [&](size_t i) {
+        // AVC/HEVC only need any Intel card, mirroring the runtime's
+        // plain IsIntel fallback; AV1/VP9 additionally check codec support
+        return (Codec != QSV_CODEC_AV1 || AdaptersInfo[i].SupportAV1) &&
+               (Codec != QSV_CODEC_VP9 || AdaptersInfo[i].SupportVP9);
+    };
+
+    size_t Chosen = SIZE_MAX; // DXGI index auto mode would encode on
+    if (AdaptersCount > 0) {
+        size_t Render = 0;
+        obs_video_info OVI;
+        if (obs_get_video_info(&OVI) && OVI.adapter < MAX_ADAPTERS)
+            Render = OVI.adapter;
+        if (Render < AdaptersCount && AdaptersInfo[Render].IsIntel &&
+            CodecOK(Render))
+            Chosen = Render;
+        if (Chosen == SIZE_MAX) {
+            for (size_t i = 0; i < AdaptersCount && i < MAX_ADAPTERS; ++i) {
+                if (AdaptersInfo[i].IsIntel && CodecOK(i)) {
+                    Chosen = i;
+                    break;
+                }
+            }
+        }
+    }
+    if (Chosen == SIZE_MAX)
+        return 0; // no known capable Intel adapter -> default slot
+    return std::min(IntelOrdinalOf(Chosen), kProbeSlots - 1);
+}
+
+// Resolved auto slot is cached per dialog refresh (defaults + modified
+// callback know the codec); UIProbeSlot() itself has no codec context.
+static std::atomic<int> UIAutoProbeSlotCache{0};
+
+static int UIProbeSlot() {
+    const int Sel = UISelectedGpuImpl.load(std::memory_order_acquire);
+    if (Sel >= 0)
+        return ProbeSlot(Sel);
+    return UIAutoProbeSlotCache.load(std::memory_order_acquire);
+}
+
+// UI variant of QueryPlatformCodeName(): reflects the selected GPU
+static mfxU16 QueryUIPlatformCodeName() {
+    return CachedQSVPlatformCode[UIProbeSlot()].load(std::memory_order_acquire);
+}
+
 // Denoise2 support — probed in background, read-only from UI; defaults to
 // enabled until known (driver rejects at runtime if unsupported).
-static std::atomic<bool> Denoise2Known{false};
-static std::atomic<bool> Denoise2Supported{true};
+static std::atomic<bool> Denoise2Known[kProbeSlots]{};
+static std::atomic<bool> Denoise2Supported[kProbeSlots]{};
 
-static bool ProbeDenoise2VPPOnce() {
+static bool ProbeDenoise2VPPOnce(int ImplIdx = 0) {
+  const int Slot = ProbeSlot(ImplIdx);
   bool ok = false;
   mfxLoader Loader = nullptr;
   {
@@ -278,7 +359,8 @@ static bool ProbeDenoise2VPPOnce() {
   }
   if (Loader != nullptr) {
     mfxSession Session{};
-    if (MFXCreateSession(Loader, 0, &Session) >= MFX_ERR_NONE) {
+    if (MFXCreateSession(Loader, static_cast<mfxU16>(Slot), &Session) >=
+        MFX_ERR_NONE) {
       try {
         MFXVideoVPP VPP(Session);
         mfxVideoParam Params = {};
@@ -318,15 +400,24 @@ static bool ProbeDenoise2VPPOnce() {
     }
   }
 
-  Denoise2Supported.store(ok, std::memory_order_release);
-  Denoise2Known.store(true, std::memory_order_release);
+  Denoise2Supported[Slot].store(ok, std::memory_order_release);
+  Denoise2Known[Slot].store(true, std::memory_order_release);
   return ok;
 }
 
+// runtime (auto/default = implementation #0) accessor
 static bool PlatformSupportsDenoise2VPP() {
-  if (Denoise2Known.load(std::memory_order_acquire))
-    return Denoise2Supported.load(std::memory_order_acquire);
+  if (Denoise2Known[0].load(std::memory_order_acquire))
+    return Denoise2Supported[0].load(std::memory_order_acquire);
   return true; // unknown yet — assume capable
+}
+
+// UI accessor: follows the adapter picked in the "Select GPU" dropdown
+static bool PlatformSupportsDenoise2VPPUI() {
+  const int Slot = UIProbeSlot();
+  if (Denoise2Known[Slot].load(std::memory_order_acquire))
+    return Denoise2Supported[Slot].load(std::memory_order_acquire);
+  return true;
 }
 
 // VPP filter support — probed in background, read-only from UI; defaults to
@@ -345,18 +436,19 @@ static constexpr mfxU32 kVPPFilterBuffers[] = {
 static_assert(std::size(kVPPFilterBuffers) ==
               static_cast<size_t>(VPPFilterId::Count));
 
-static std::atomic<uint8_t> VPPFilterKnownMask{0};
-static std::atomic<uint8_t> VPPFilterSupportedMask{0};
+static std::atomic<uint8_t> VPPFilterKnownMask[kProbeSlots]{};
+static std::atomic<uint8_t> VPPFilterSupportedMask[kProbeSlots]{};
 
 static uint8_t VPPFilterBit(VPPFilterId Id) {
   return static_cast<uint8_t>(1u << static_cast<unsigned>(Id));
 }
 
-static bool ProbeVPPFilterOnce(VPPFilterId Id) {
+static bool ProbeVPPFilterOnce(VPPFilterId Id, int ImplIdx = 0) {
+  const int Slot = ProbeSlot(ImplIdx);
   const mfxU32 BufferId = kVPPFilterBuffers[static_cast<unsigned>(Id)];
   const uint8_t Bit = VPPFilterBit(Id);
   if (BufferId == 0) {
-    VPPFilterKnownMask.fetch_or(Bit, std::memory_order_release);
+    VPPFilterKnownMask[Slot].fetch_or(Bit, std::memory_order_release);
     return false;
   }
 
@@ -368,7 +460,8 @@ static bool ProbeVPPFilterOnce(VPPFilterId Id) {
   }
   if (Loader != nullptr) {
     mfxSession Session{};
-    if (MFXCreateSession(Loader, 0, &Session) >= MFX_ERR_NONE) {
+    if (MFXCreateSession(Loader, static_cast<mfxU16>(Slot), &Session) >=
+        MFX_ERR_NONE) {
       try {
         MFXVideoVPP VPP(Session);
         mfxVideoParam Params = {};
@@ -435,32 +528,38 @@ static bool ProbeVPPFilterOnce(VPPFilterId Id) {
   }
 
   if (ok)
-    VPPFilterSupportedMask.fetch_or(Bit, std::memory_order_release);
-  VPPFilterKnownMask.fetch_or(Bit, std::memory_order_release);
+    VPPFilterSupportedMask[Slot].fetch_or(Bit, std::memory_order_release);
+  VPPFilterKnownMask[Slot].fetch_or(Bit, std::memory_order_release);
   return ok;
 }
 
-static bool GetVPPFilterCache(VPPFilterId Id) {
+static bool GetVPPFilterCacheSlot(VPPFilterId Id, int Slot) {
   const uint8_t Bit = VPPFilterBit(Id);
-  if (VPPFilterKnownMask.load(std::memory_order_acquire) & Bit)
-    return (VPPFilterSupportedMask.load(std::memory_order_acquire) & Bit) != 0;
+  if (VPPFilterKnownMask[Slot].load(std::memory_order_acquire) & Bit)
+    return (VPPFilterSupportedMask[Slot].load(std::memory_order_acquire) &
+            Bit) != 0;
   return true; // unknown yet — assume capable
 }
 
 bool PlatformSupportsImageStabVPP() {
-  return GetVPPFilterCache(VPPFilterId::ImageStab);
+  return GetVPPFilterCacheSlot(VPPFilterId::ImageStab, 0);
 }
 
 bool PlatformSupportsFRCVPP() {
-  return GetVPPFilterCache(VPPFilterId::FRC);
+  return GetVPPFilterCacheSlot(VPPFilterId::FRC, 0);
 }
 
 bool PlatformSupportsMirrorVPP() {
-  return GetVPPFilterCache(VPPFilterId::Mirror);
+  return GetVPPFilterCacheSlot(VPPFilterId::Mirror, 0);
 }
 
 bool PlatformSupportsPercEncVPP() {
-  return GetVPPFilterCache(VPPFilterId::PercEnc);
+  return GetVPPFilterCacheSlot(VPPFilterId::PercEnc, 0);
+}
+
+// UI accessors: follow the adapter picked in the "Select GPU" dropdown
+static bool GetVPPFilterCacheUI(VPPFilterId Id) {
+  return GetVPPFilterCacheSlot(Id, UIProbeSlot());
 }
 
 // MCTF CM kernels ship for Gen12-LP only: oneVPL GPU RT gates the filter with
@@ -471,7 +570,7 @@ static bool PlatformSupportsMCTFVPP() {
 #ifdef QSV_UHD600_SUPPORT
   return false; // legacy libmfx 1.x build has no MCTF option at all
 #else
-  const mfxU16 code = QueryPlatformCodeName();
+  const mfxU16 code = QueryUIPlatformCodeName();
   return code == 0 ||
          (code != MFX_PLATFORM_ICELAKE &&
           (code < MFX_PLATFORM_DG2 || code == MFX_PLATFORM_ALDERLAKE_N));
@@ -482,10 +581,11 @@ static bool PlatformSupportsMCTFVPP() {
 // pipeline has no B-frame support before DG2 and the runtime silently
 // downgrades GopRefDist to 1 there (mfx_h264_enc_common_hw.cpp:2280-2290);
 // ask the driver instead of hardcoding a platform cutoff.
-static std::atomic<bool> LowPowerBFramesKnown{false};
-static std::atomic<bool> LowPowerBFramesSupported{true};
+static std::atomic<bool> LowPowerBFramesKnown[kProbeSlots]{};
+static std::atomic<bool> LowPowerBFramesSupported[kProbeSlots]{};
 
-static bool ProbeLowPowerBFramesOnce() {
+static bool ProbeLowPowerBFramesOnce(int ImplIdx = 0) {
+  const int Slot = ProbeSlot(ImplIdx);
   bool ok = false;
   mfxLoader Loader = nullptr;
   {
@@ -494,7 +594,8 @@ static bool ProbeLowPowerBFramesOnce() {
   }
   if (Loader != nullptr) {
     mfxSession Session = nullptr;
-    if (MFXCreateSession(Loader, 0, &Session) >= MFX_ERR_NONE) {
+    if (MFXCreateSession(Loader, static_cast<mfxU16>(Slot), &Session) >=
+        MFX_ERR_NONE) {
       try {
         MFXVideoENCODE Encode(Session);
         mfxVideoParam Params = {};
@@ -532,23 +633,34 @@ static bool ProbeLowPowerBFramesOnce() {
     }
   }
 
-  LowPowerBFramesSupported.store(ok, std::memory_order_release);
-  LowPowerBFramesKnown.store(true, std::memory_order_release);
+  LowPowerBFramesSupported[Slot].store(ok, std::memory_order_release);
+  LowPowerBFramesKnown[Slot].store(true, std::memory_order_release);
   return ok;
 }
 
+// runtime (auto/default = implementation #0) accessor
 static bool PlatformSupportsLowPowerBFrames() {
-  if (LowPowerBFramesKnown.load(std::memory_order_acquire))
-    return LowPowerBFramesSupported.load(std::memory_order_acquire);
+  if (LowPowerBFramesKnown[0].load(std::memory_order_acquire))
+    return LowPowerBFramesSupported[0].load(std::memory_order_acquire);
   return true; // unknown yet — assume capable
 }
 
-// IntraRefresh encode support — probed in background, read-only from UI.
-static std::atomic<bool> IntraRefreshKnown[2]{false, false};   // 0 = AVC, 1 = HEVC
-static std::atomic<bool> IntraRefreshSupported[2]{false, false};
+// UI accessor: follows the adapter picked in the "Select GPU" dropdown
+static bool PlatformSupportsLowPowerBFramesUI() {
+  const int Slot = UIProbeSlot();
+  if (LowPowerBFramesKnown[Slot].load(std::memory_order_acquire))
+    return LowPowerBFramesSupported[Slot].load(std::memory_order_acquire);
+  return true;
+}
 
-static bool ProbeIntraRefreshOnce(codec_enum Codec) {
-  const int idx = (Codec == QSV_CODEC_HEVC) ? 1 : 0;
+// IntraRefresh encode support — probed in background, read-only from UI.
+// [codec][slot]: 0 = AVC, 1 = HEVC; slot = Intel implementation index
+static std::atomic<bool> IntraRefreshKnown[2][kProbeSlots]{};
+static std::atomic<bool> IntraRefreshSupported[2][kProbeSlots]{};
+
+static bool ProbeIntraRefreshOnce(codec_enum Codec, int ImplIdx = 0) {
+  const int Idx = (Codec == QSV_CODEC_HEVC) ? 1 : 0;
+  const int Slot = ProbeSlot(ImplIdx);
   bool ok = false;
   mfxLoader Loader = nullptr;
   {
@@ -557,7 +669,8 @@ static bool ProbeIntraRefreshOnce(codec_enum Codec) {
   }
   if (Loader != nullptr) {
     mfxSession Session = nullptr;
-    if (MFXCreateSession(Loader, 0, &Session) >= MFX_ERR_NONE) {
+    if (MFXCreateSession(Loader, static_cast<mfxU16>(Slot), &Session) >=
+        MFX_ERR_NONE) {
       try {
         MFXVideoENCODE Encode(Session);
         mfxVideoParam Params = {};
@@ -613,16 +726,26 @@ static bool ProbeIntraRefreshOnce(codec_enum Codec) {
     }
   }
 
-  IntraRefreshSupported[idx].store(ok, std::memory_order_release);
-  IntraRefreshKnown[idx].store(true, std::memory_order_release);
+  IntraRefreshSupported[Idx][Slot].store(ok, std::memory_order_release);
+  IntraRefreshKnown[Idx][Slot].store(true, std::memory_order_release);
   return ok;
 }
 
+// runtime (auto/default = implementation #0) accessor
 bool PlatformSupportsIntraRefreshEncode(codec_enum Codec) {
-  const int idx = (Codec == QSV_CODEC_HEVC) ? 1 : 0;
-  if (IntraRefreshKnown[idx].load(std::memory_order_acquire))
-    return IntraRefreshSupported[idx].load(std::memory_order_acquire);
-  return true; // unknown yet — driver falls back at runtime
+  const int Idx = (Codec == QSV_CODEC_HEVC) ? 1 : 0;
+  if (IntraRefreshKnown[Idx][0].load(std::memory_order_acquire))
+    return IntraRefreshSupported[Idx][0].load(std::memory_order_acquire);
+  return true; // unknown yet; driver falls back at runtime
+}
+
+// UI accessor: follows the adapter picked in the "Select GPU" dropdown
+static bool PlatformSupportsIntraRefreshEncodeUI(codec_enum Codec) {
+  const int Idx = (Codec == QSV_CODEC_HEVC) ? 1 : 0;
+  const int Slot = UIProbeSlot();
+  if (IntraRefreshKnown[Idx][Slot].load(std::memory_order_acquire))
+    return IntraRefreshSupported[Idx][Slot].load(std::memory_order_acquire);
+  return true;
 }
 
 const char *DescribePlatformCodeName(mfxU16 CodeName) {
@@ -727,6 +850,30 @@ static void RunCapabilityProbeWorker() {
          ok ? "supported" : "unsupported", ms);
   }
 
+  // Multi-GPU: probe every Intel adapter so the "Select GPU" dropdown can
+  // show correct gray states for any selection the moment it is changed.
+  // Slot 0 was just probed above; cover the remaining implementation indices.
+  for (const auto &Gpu : GetIntelGpuList()) {
+    if (Gpu.ImplIndex <= 0 || Gpu.ImplIndex >= kProbeSlots)
+      continue;
+
+    const auto st = steady_clock::now();
+    ProbePlatformCodeName(Gpu.ImplIndex);
+    ProbeDenoise2VPPOnce(Gpu.ImplIndex);
+    ProbeVPPFilterOnce(VPPFilterId::ImageStab, Gpu.ImplIndex);
+    ProbeVPPFilterOnce(VPPFilterId::FRC, Gpu.ImplIndex);
+    ProbeVPPFilterOnce(VPPFilterId::Mirror, Gpu.ImplIndex);
+    ProbeVPPFilterOnce(VPPFilterId::PercEnc, Gpu.ImplIndex);
+    ProbeIntraRefreshOnce(QSV_CODEC_AVC, Gpu.ImplIndex);
+    ProbeIntraRefreshOnce(QSV_CODEC_HEVC, Gpu.ImplIndex);
+    ProbeLowPowerBFramesOnce(Gpu.ImplIndex);
+    const mfxU16 code = CachedQSVPlatformCode[Gpu.ImplIndex].load(
+        std::memory_order_acquire);
+    info("\tCapability probe: adapter #%d (%s) platform=%s done (%.1f ms)",
+         Gpu.ImplIndex, Gpu.Name.c_str(), DescribePlatformCodeName(code),
+         duration<double, std::milli>(steady_clock::now() - st).count());
+  }
+
   const double TotalMs =
       duration<double, std::milli>(steady_clock::now() - t0).count();
 
@@ -774,7 +921,7 @@ enum class TargetUsageUIMode {
 // Decide how many TargetUsage choices the UI should expose so that every
 // visible option maps to a distinct internal quality level.
 static TargetUsageUIMode GetTargetUsageUIMode(enum codec_enum Codec) {
-    mfxU16 platformCode = QueryPlatformCodeName();
+    mfxU16 platformCode = QueryUIPlatformCodeName();
     if (platformCode == 0)
         return TargetUsageUIMode::Full;
 
@@ -800,6 +947,17 @@ static TargetUsageUIMode GetTargetUsageUIMode(enum codec_enum Codec) {
 
 static void SetDefaultEncoderParams(obs_data_t *Settings,
                                     enum codec_enum Codec) {
+  // UI-side capability checks (rules, platform gates) must reflect the GPU
+  // this dialog is going to show; sync before any platform-dependent default.
+  // GPUNumFromSettings returns 0 for AUTO -> store the -1 (auto) sentinel.
+  {
+    const int GpuSel = GPUNumFromSettings(Settings);
+    UISelectedGpuImpl.store(GpuSel > 0 ? GpuSel : -1,
+                            std::memory_order_release);
+    UIAutoProbeSlotCache.store(ResolveAutoProbeSlot(Codec),
+                               std::memory_order_release);
+  }
+
   auto mode = GetTargetUsageUIMode(Codec);
   if (mode == TargetUsageUIMode::Three) {
     obs_data_set_default_string(Settings, "target_usage",
@@ -926,7 +1084,24 @@ static void SetDefaultEncoderParams(obs_data_t *Settings,
   obs_data_set_default_string(Settings, "transform_skip", "AUTO");
   obs_data_set_default_string(Settings, "screen_content_tools", "AUTO");
 
-  obs_data_set_default_int(Settings, "gpu_number", 0);
+  // "Select GPU": legacy profiles stored an int (0=auto, N=Nth Intel GPU);
+  // migrate to the dropdown's string values before the default is applied.
+  {
+    obs_data_item_t *Item = obs_data_item_byname(Settings, "gpu_number");
+    const bool WasNumber = Item && obs_data_item_gettype(Item) == OBS_DATA_NUMBER;
+    obs_data_item_release(&Item);
+    if (WasNumber) {
+      const int Legacy = static_cast<int>(obs_data_get_int(Settings, "gpu_number"));
+      if (Legacy > 0) {
+        char Buf[16];
+        snprintf(Buf, sizeof(Buf), "%d", Legacy);
+        obs_data_set_string(Settings, "gpu_number", Buf);
+      } else {
+        obs_data_set_string(Settings, "gpu_number", "AUTO");
+      }
+    }
+  }
+  obs_data_set_default_string(Settings, "gpu_number", "AUTO");
 
   obs_data_set_default_string(Settings, "min_qp", "-1");
   obs_data_set_default_string(Settings, "max_qp", "-1");
@@ -979,6 +1154,15 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   const auto codec = static_cast<codec_enum>(
       reinterpret_cast<intptr_t>(obs_properties_get_param(Properties)));
 
+  // re-point every UI-side capability check at the GPU the dialog now shows
+  {
+    const int GpuSel = GPUNumFromSettings(Settings);
+    UISelectedGpuImpl.store(GpuSel > 0 ? GpuSel : -1,
+                            std::memory_order_release);
+    UIAutoProbeSlotCache.store(ResolveAutoProbeSlot(codec),
+                               std::memory_order_release);
+  }
+
 #if defined(_WIN32)
   // Migrate profiles saved before the OFF entry was removed: OFF trips the
   // driver's "unsupported" path on Windows and hard-fails Init.
@@ -1011,7 +1195,7 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
 
   // Legacy denoise dropdown (no Denoise2): fold the richer modes onto the
   // one value the old pipeline understands.
-  if (!PlatformSupportsDenoise2VPP()) {
+  if (!PlatformSupportsDenoise2VPPUI()) {
     const auto mode =
         std::string_view(obs_data_get_string(Settings, "denoise_mode"));
     if (mode != "OFF" && mode != "MANUAL | PRE ENCODE")
@@ -1019,7 +1203,7 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   }
 
   // HEVC High Tier only exists on SKL+; snap stale values back to main.
-  const mfxU16 platformCode = QueryPlatformCodeName();
+  const mfxU16 platformCode = QueryUIPlatformCodeName();
   if (platformCode != 0 && platformCode < MFX_PLATFORM_SKYLAKE) {
     if (auto *tier = obs_properties_get(Properties, "hevc_tier")) {
       obs_property_set_visible(tier, false);
@@ -1173,7 +1357,9 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_properties_set_param(
       Props, reinterpret_cast<void *>(static_cast<intptr_t>(Codec)), nullptr);
   obs_property_t *Prop;
-  mfxU16 platformCode = QueryPlatformCodeName();
+  // resolve platform gates against the adapter the profile has selected
+  // (SetDefaultEncoderParams already synced the UI slot global)
+  mfxU16 platformCode = QueryUIPlatformCodeName();
 
   Prop = obs_properties_add_list(Props, "encoder_preset", TEXT_ENCODER_PRESET,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -1698,7 +1884,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 
   Prop = obs_properties_add_list(VFGroup, "denoise_mode", TEXT_DENOISE_MODE,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  if (PlatformSupportsDenoise2VPP()) {
+  if (PlatformSupportsDenoise2VPPUI()) {
     AddStrings(Prop, qsv_params_condition_denoise_mode);
     obs_property_set_long_description(Prop, TEXT_DENOISE_MODE_DESC);
   } else {
@@ -1710,8 +1896,8 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   Prop = obs_properties_add_int_slider(VFGroup, "denoise_strength",
                                 TEXT_DENOISE_STRENGTH, 1, 100, 1);
   obs_property_set_long_description(
-      Prop, PlatformSupportsDenoise2VPP() ? TEXT_DENOISE_STRENGTH_DESC
-                                          : TEXT_DENOISE_STRENGTH_LEGACY_DESC);
+      Prop, PlatformSupportsDenoise2VPPUI() ? TEXT_DENOISE_STRENGTH_DESC
+                                            : TEXT_DENOISE_STRENGTH_LEGACY_DESC);
 
   Prop = obs_properties_add_list(VFGroup, "scaling_mode", TEXT_SCALING_MODE,
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -1970,7 +2156,7 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   // whole group when the driver would zero it out / fail Init over it.
   const bool bIntraRefreshUI =
       Codec != QSV_CODEC_AV1 && Codec != QSV_CODEC_VP9 &&
-      PlatformSupportsIntraRefreshEncode(Codec);
+      PlatformSupportsIntraRefreshEncodeUI(Codec);
   if (bIntraRefreshUI) {
     Prop = obs_properties_add_list(IRGroup, "intra_ref_encoding",
                                    TEXT_INTRA_REF_ENCODING,
@@ -2027,8 +2213,24 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_visible(Prop, Codec != QSV_CODEC_VP9);
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
-  Prop = obs_properties_add_int(MXGroup, "gpu_number", TEXT_GPU_NUMBER,
-                                0, 4, 1);
+  // "Select GPU": a dropdown of every encoding-capable Intel adapter with its
+  // display name.  Values are the Intel implementation indices the runtime
+  // passes to MFXCreateSession; picking one also re-points all capability
+  // checks (gray/hide rules) at that adapter via ParamsVisibilityModifier.
+  Prop = obs_properties_add_list(MXGroup, "gpu_number", TEXT_GPU_NUMBER,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  obs_property_list_add_string(Prop, TEXT_GPU_AUTO, "AUTO");
+  for (const auto &Gpu : GetIntelGpuList()) {
+    if (Gpu.ImplIndex < 0 || Gpu.ImplIndex >= MAX_ADAPTERS)
+      continue;
+    char Val[16];
+    snprintf(Val, sizeof(Val), "%d", Gpu.ImplIndex);
+    std::string Label = Gpu.Name;
+    if (Label.empty())
+      Label = "Intel GPU";
+    Label += " (#" + std::to_string(Gpu.ImplIndex) + ")";
+    obs_property_list_add_string(Prop, Label.c_str(), Val);
+  }
   obs_property_set_long_description(Prop, TEXT_GPU_NUMBER_DESC);
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
 
@@ -2564,7 +2766,7 @@ static void *InitTextureEncoder(enum codec_enum Codec, obs_data_t *Settings,
                                        FallbackID);
   }
 
-  if (static_cast<int>(obs_data_get_int(Settings, "gpu_number")) > 0) {
+  if (GPUNumFromSettings(Settings) > 0) {
     info(">>> custom GPU is selected. OBS Studio does not support "
          "transferring textures to third-party adapters, fall back to "
          "non-texture encoder");
