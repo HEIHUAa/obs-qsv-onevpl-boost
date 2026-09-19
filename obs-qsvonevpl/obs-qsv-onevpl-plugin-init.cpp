@@ -137,19 +137,29 @@ bool PlatformSupportsPercEncVPP();
 static bool PlatformSupportsMCTFVPP();
 static bool PlatformSupportsLowPowerBFrames();
 
+// UI-side per-GPU accessors, defined below this TU's probe infrastructure;
+// IsFeatureSupported (the rule table's FeatureFn) resolves everything against
+// the adapter picked in the "Select GPU" dropdown.
+static mfxU16 QueryUIPlatformCodeName();
+static bool PlatformSupportsImageStabVPPUI();
+static bool PlatformSupportsFRCVPPUI();
+static bool PlatformSupportsMirrorVPPUI();
+static bool PlatformSupportsPercEncVPPUI();
+static bool PlatformSupportsLowPowerBFramesUI();
+
 static bool IsFeatureSupported(const char *PropertyName) {
   const std::string_view prop{PropertyName};
   // probed / OS-scoped features; names come from the Feat() conds in
   // helpers/encoder_option_rules.hpp -- all resolved against the adapter
   // picked in the "Select GPU" dropdown (UIProbeSlot)
   if (prop == "vpp_image_stab")
-    return GetVPPFilterCacheUI(VPPFilterId::ImageStab);
+    return PlatformSupportsImageStabVPPUI();
   if (prop == "vpp_frc")
-    return GetVPPFilterCacheUI(VPPFilterId::FRC);
+    return PlatformSupportsFRCVPPUI();
   if (prop == "vpp_mirror")
-    return GetVPPFilterCacheUI(VPPFilterId::Mirror);
+    return PlatformSupportsMirrorVPPUI();
   if (prop == "vpp_percenc")
-    return GetVPPFilterCacheUI(VPPFilterId::PercEnc);
+    return PlatformSupportsPercEncVPPUI();
   if (prop == "vpp_mctf")
     return PlatformSupportsMCTFVPP();
   if (prop == "lp_b_frames")
@@ -560,6 +570,24 @@ bool PlatformSupportsPercEncVPP() {
 // UI accessors: follow the adapter picked in the "Select GPU" dropdown
 static bool GetVPPFilterCacheUI(VPPFilterId Id) {
   return GetVPPFilterCacheSlot(Id, UIProbeSlot());
+}
+
+// thin wrappers for the forward declarations above (IsFeatureSupported is
+// defined before the VPPFilterId enum, so it cannot name scoped members)
+static bool PlatformSupportsImageStabVPPUI() {
+  return GetVPPFilterCacheUI(VPPFilterId::ImageStab);
+}
+
+static bool PlatformSupportsFRCVPPUI() {
+  return GetVPPFilterCacheUI(VPPFilterId::FRC);
+}
+
+static bool PlatformSupportsMirrorVPPUI() {
+  return GetVPPFilterCacheUI(VPPFilterId::Mirror);
+}
+
+static bool PlatformSupportsPercEncVPPUI() {
+  return GetVPPFilterCacheUI(VPPFilterId::PercEnc);
 }
 
 // MCTF CM kernels ship for Gen12-LP only: oneVPL GPU RT gates the filter with
