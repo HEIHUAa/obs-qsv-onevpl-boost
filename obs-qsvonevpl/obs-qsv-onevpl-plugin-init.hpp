@@ -51,9 +51,11 @@ struct plugin_context {
 #define TEXT_ENCODER_PRESET obs_module_text("EncoderPreset")
 #define TEXT_ENCODER_PRESET_DESC obs_module_text("EncoderPreset.Tooltip")
 #define TEXT_PRESET_CUSTOM obs_module_text("PresetCustom")
-#define TEXT_PRESET_QVBR_HIGH_QUALITY obs_module_text("PresetQVBRHighQuality")
-#define TEXT_PRESET_ICQ_LOSSLESS_HIGH_QUALITY \
-  obs_module_text("PresetICQLosslessHighQuality")
+// Preset entry labels are resolved from kRCPresets (plugin-init.cpp) via
+// obs_module_text(LocaleKey) at dropdown-build time; locale keys follow the
+// pattern Preset<CBR|VBR|CQP|AVBR|ICQ|VCM|QVBR><HQ|LL|ULL><Off|On> and exist
+// for every row of the preset matrix (32 rows; per-codec availability is
+// filtered by RCPresetSupportedForCodec).
 #define TEXT_TARGET_BITRATE obs_module_text("Bitrate")
 #define TEXT_BUFFER_SIZE obs_module_text("BufferSize")
 #define TEXT_MAX_BITRATE obs_module_text("MaxBitrate")

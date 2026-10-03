@@ -5,7 +5,6 @@
 #include <optional>
 #include <string_view>
 #include <thread>
-#include <unordered_map>
 
 #include "helpers/encoder_option_rules.hpp"
 #include "helpers/encoder_params_parser.hpp"
@@ -136,6 +135,9 @@ bool PlatformSupportsMirrorVPP();
 bool PlatformSupportsPercEncVPP();
 static bool PlatformSupportsMCTFVPP();
 static bool PlatformSupportsLowPowerBFrames();
+// defined after ResolveAutoProbeSlot/UIProbeSlot; consumed by
+// IsFeatureSupported("texture_encode") below.
+static bool TextureEncodeAvailable();
 
 // UI-side per-GPU accessors, defined below this TU's probe infrastructure;
 // IsFeatureSupported (the rule table's FeatureFn) resolves everything against
@@ -152,6 +154,13 @@ static bool IsFeatureSupported(const char *PropertyName) {
   // probed / OS-scoped features; names come from the Feat() conds in
   // helpers/encoder_option_rules.hpp -- all resolved against the adapter
   // picked in the "Select GPU" dropdown (UIProbeSlot)
+  if (prop == "texture_encode") {
+    // Which encoder kind will this configuration produce?  Mirrors the checks
+    // of InitTextureEncoder below (adapter/GPU/codec gates plus the OBS
+    // texture-sharing switches).  False == the frame-import encoder, whose
+    // session has no D3D11 device (see the AVC EncTools rows in kRules).
+    return TextureEncodeAvailable();
+  }
   if (prop == "vpp_image_stab")
     return PlatformSupportsImageStabVPPUI();
   if (prop == "vpp_frc")
@@ -281,9 +290,12 @@ static bool ProbePlatformCodeName(int ImplIdx = 0) {
         }
     }
 
+    // mark the slot probed even on failure: the UI sync fallback keys off
+    // this flag and a persistently failing driver must not turn every
+    // modified callback into a session re-probe (UI stutter)
+    QSVPlatformProbed[Slot].store(true, std::memory_order_release);
     if (ok) {
         CachedQSVPlatformCode[Slot].store(code, std::memory_order_release);
-        QSVPlatformProbed[Slot].store(true, std::memory_order_release);
         return true;
     }
     return false;
@@ -349,9 +361,57 @@ static int UIProbeSlot() {
     return UIAutoProbeSlotCache.load(std::memory_order_acquire);
 }
 
+// Last codec the settings dialog built its controls for; set by
+// ParamsVisibilityModifier, read by TextureEncodeAvailable() below.
+static std::atomic<int> UISelectedCodec{-1};
+
+// Will this output run the texture (zero-copy) encoder instead of the
+// frame-import one?  Mirrors InitTextureEncoder's gates in order
+// (obs-qsv-onevpl-plugin-init.cpp, InitTextureEncoder), so a rule that depends
+// on the session kind can never disagree with the encoder OBS actually creates:
+//   (1) render adapter outside the probe table  -> frame import
+//   (2) render adapter is not Intel             -> frame import
+//   (3) a non-automatic "Select GPU"            -> frame import
+//   (4) OBS texture sharing off for this codec  -> frame import
+// (1)+(2) are the "app not on intel GPU" branch, (3) is the custom-GPU branch.
+// The codec-support branch there (AV1/VP9 pinned to a card that lacks it) is
+// already folded into AdaptersInfo/ResolveAutoProbeSlot, not repeated here.
+static bool TextureEncodeAvailable() {
+#if !defined(_WIN32) && !defined(_WIN64)
+    // InitTextureEncoder bails out on non-Windows ("unsupported platform for
+    // texture encode"), so every session there is a frame-import session.
+    return false;
+#else
+    obs_video_info OVI{};
+    if (!obs_get_video_info(&OVI) || OVI.adapter >= MAX_ADAPTERS)
+        return false; // (1)
+    if (!AdaptersInfo[OVI.adapter].IsIntel)
+        return false; // (2)
+
+    // "Select GPU": AUTO/absent resolves to 0, a pinned index is > 0 and
+    // always forces the frame-import path.
+    if (UISelectedGpuImpl.load(std::memory_order_acquire) > 0)
+        return false; // (3)
+
+    const int Codec = UISelectedCodec.load(std::memory_order_acquire);
+    if (Codec == QSV_CODEC_AVC)
+        return obs_nv12_tex_active(); // (4) AVC: NV12 sharing only
+    return obs_nv12_tex_active() || obs_p010_tex_active(); // (4)
+#endif
+}
+
 // UI variant of QueryPlatformCodeName(): reflects the selected GPU
 static mfxU16 QueryUIPlatformCodeName() {
-    return CachedQSVPlatformCode[UIProbeSlot()].load(std::memory_order_acquire);
+    const int Slot = UIProbeSlot();
+    // sync fallback: the properties dialog can open before the background
+    // probe thread finishes, and platformCode==0 then evaluates platform
+    // gates as "supported" -- the gray state only corrects itself after the
+    // user edits some unrelated control, which re-runs this cascade.
+    // ProbePlatformCodeName is mutex-guarded and memoized per slot, so this
+    // blocks at most once per adapter.
+    if (!QSVPlatformProbed[Slot].load(std::memory_order_acquire))
+        ProbePlatformCodeName(Slot);
+    return CachedQSVPlatformCode[Slot].load(std::memory_order_acquire);
 }
 
 // Denoise2 support — probed in background, read-only from UI; defaults to
@@ -612,8 +672,15 @@ static bool PlatformSupportsMCTFVPP() {
 static std::atomic<bool> LowPowerBFramesKnown[kProbeSlots]{};
 static std::atomic<bool> LowPowerBFramesSupported[kProbeSlots]{};
 
+// UI sync fallback can race the background probe thread; serialize and skip
+// already-known slots so a dialog open never duplicates a session probe
+static std::mutex LowPowerBFramesProbeMutex;
+
 static bool ProbeLowPowerBFramesOnce(int ImplIdx = 0) {
   const int Slot = ProbeSlot(ImplIdx);
+  std::lock_guard<std::mutex> Lock(LowPowerBFramesProbeMutex);
+  if (LowPowerBFramesKnown[Slot].load(std::memory_order_acquire))
+    return LowPowerBFramesSupported[Slot].load(std::memory_order_acquire);
   bool ok = false;
   mfxLoader Loader = nullptr;
   {
@@ -676,6 +743,11 @@ static bool PlatformSupportsLowPowerBFrames() {
 // UI accessor: follows the adapter picked in the "Select GPU" dropdown
 static bool PlatformSupportsLowPowerBFramesUI() {
   const int Slot = UIProbeSlot();
+  // same probe race as QueryUIPlatformCodeName(): the b_frames gray rule
+  // depends on this result and the optimistic default hides the conflict
+  // until the user edits some unrelated control
+  if (!LowPowerBFramesKnown[Slot].load(std::memory_order_acquire))
+    ProbeLowPowerBFramesOnce(Slot);
   if (LowPowerBFramesKnown[Slot].load(std::memory_order_acquire))
     return LowPowerBFramesSupported[Slot].load(std::memory_order_acquire);
   return true;
@@ -1178,7 +1250,11 @@ static inline void AddStrings(obs_property_t *List,
 static bool ParamsVisibilityModifier(obs_properties_t *Properties,
                                      [[maybe_unused]] obs_property_t *Prop,
                                      obs_data_t *Settings) {
-  // value migrations and cross-option coercion not covered by the rule table
+  // value migrations and cross-option coercion not covered by the rule table.
+  // Coerced tracks whether this pass actually rewrote a stored value: the
+  // widget of a coerced option still shows the user's original value, so the
+  // caller must request a rebuild to resync it.
+  bool Coerced = false;
   const auto codec = static_cast<codec_enum>(
       reinterpret_cast<intptr_t>(obs_properties_get_param(Properties)));
 
@@ -1189,19 +1265,26 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
                             std::memory_order_release);
     UIAutoProbeSlotCache.store(ResolveAutoProbeSlot(codec),
                                std::memory_order_release);
+    // TextureEncodeAvailable() (IsFeatureSupported) needs the codec; the
+    // FeatureFn signature carries no context, so stash it here.
+    UISelectedCodec.store(static_cast<int>(codec), std::memory_order_release);
   }
 
 #if defined(_WIN32)
   // Migrate profiles saved before the OFF entry was removed: OFF trips the
   // driver's "unsupported" path on Windows and hard-fails Init.
   if (std::string_view(obs_data_get_string(Settings, "brc_panic_mode")) ==
-      "OFF")
+      "OFF") {
     obs_data_set_string(Settings, "brc_panic_mode", "AUTO");
+    Coerced = true;
+  }
 #endif
 
   const auto wp = std::string_view(obs_data_get_string(Settings, "weighted_pred"));
-  if (wp == "IMPLICIT" || (wp == "EXPLICIT" && codec == QSV_CODEC_AVC))
+  if (wp == "IMPLICIT" || (wp == "EXPLICIT" && codec == QSV_CODEC_AVC)) {
     obs_data_set_string(Settings, "weighted_pred", "DEFAULT");
+    Coerced = true;
+  }
 
   // Backward compat: migrate the old adaptive_max_frame_size toggle to the
   // max_frame_size_mode keys before the table reads them.
@@ -1214,20 +1297,26 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
     } else {
       obs_data_set_string(Settings, "max_frame_size_mode", "auto");
     }
+    Coerced = true;
   }
 
   // LP lookahead rides the driver-managed hardware path; an explicit
   // EncTools config next to it just gets rejected, keep the two exclusive.
-  if (std::string_view(obs_data_get_string(Settings, "lookahead")) == "LP")
+  if (std::string_view(obs_data_get_string(Settings, "lookahead")) == "LP" &&
+      std::string_view(obs_data_get_string(Settings, "enctools")) != "OFF") {
     obs_data_set_string(Settings, "enctools", "OFF");
+    Coerced = true;
+  }
 
   // Legacy denoise dropdown (no Denoise2): fold the richer modes onto the
   // one value the old pipeline understands.
   if (!PlatformSupportsDenoise2VPPUI()) {
     const auto mode =
         std::string_view(obs_data_get_string(Settings, "denoise_mode"));
-    if (mode != "OFF" && mode != "MANUAL | PRE ENCODE")
+    if (mode != "OFF" && mode != "MANUAL | PRE ENCODE") {
       obs_data_set_string(Settings, "denoise_mode", "MANUAL | PRE ENCODE");
+      Coerced = true;
+    }
   }
 
   // HEVC High Tier only exists on SKL+; snap stale values back to main.
@@ -1235,7 +1324,11 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   if (platformCode != 0 && platformCode < MFX_PLATFORM_SKYLAKE) {
     if (auto *tier = obs_properties_get(Properties, "hevc_tier")) {
       obs_property_set_visible(tier, false);
-      obs_data_set_string(Settings, "hevc_tier", "main");
+      if (std::string_view(obs_data_get_string(Settings, "hevc_tier")) !=
+          "main") {
+        obs_data_set_string(Settings, "hevc_tier", "main");
+        Coerced = true;
+      }
     }
   }
 
@@ -1251,109 +1344,398 @@ static bool ParamsVisibilityModifier(obs_properties_t *Properties,
   // rows handle parent/child dependencies (with value snap-back via their
   // neutral), Gray rows handle driver-level conflicts by disabling the
   // control while keeping the user value.
+  bool VisibleGray = false;
   const std::string sig = qsv_rules::ApplyToProperties(
-      Properties, Settings, codec, IsFeatureSupported);
+      Properties, Settings, codec, IsFeatureSupported, &VisibleGray);
 
   // OBS rebuilds the WHOLE properties page whenever a modified callback
-  // returns true.  Only ask for that when the computed visual state actually
-  // differs from the last applied one -- spinning a spinner that nothing
-  // depends on then skips the rebuild entirely instead of lagging per step.
+  // returns true, and that rebuild is the per-edit UI stutter -- skip it when
+  // nothing needs it.  Three conditions force it:
+  //  1. the computed visual state actually changed (signature differs), or
+  //  2. this pass rewrote a stored value (Coerced): the coerced widget still
+  //     shows the user's original value until a rebuild resyncs it, or
+  //  3. any visible control is currently disabled (VisibleGray): the frontend
+  //     reacts to every control edit (properties-view.cpp: SignalChanged ->
+  //     OBSBasicSettings OutputsChanged -> UpdateMultitrackVideo) and its
+  //     streamEncoderProps->SetDisabled(disable_video) call force-enables
+  //     every child widget via Qt setDisabled(false), wiping the gray state
+  //     applied above.  obs_property_modified runs AFTER that wipe, so while
+  //     visible gray state exists the rebuild is the only way to restore it.
+  //     When nothing is grayed the wipe lands on already-enabled widgets and
+  //     the rebuild can be skipped (smooth value edits).
   static std::unordered_map<const obs_properties_t *, std::string>
       s_lastAppliedState;
   auto it = s_lastAppliedState.find(Properties);
-  if (it != s_lastAppliedState.end() && it->second == sig)
-    return false;
+  const bool stateChanged = it == s_lastAppliedState.end() || it->second != sig;
   s_lastAppliedState[Properties] = sig;
-
-  return true;
+  return stateChanged || Coerced || VisibleGray;
 }
 
-// QVBR high quality preset: full option set tuned for HEVC QVBR encoding.
-// Deliberately does NOT touch rate-control magnitudes (bitrate, VBV buffer,
-// min/max QP, QVBR quality) nor target_usage/profile/tier/level/keyframe
-// interval/async depth, so the user's bandwidth and compatibility settings
-// survive a preset switch.
-static void ApplyQVBRHighQualityPreset(obs_data_t *Settings) {
-  static const char *const StringValues[] = {
-      "rate_control",           "QVBR",
-      "max_frame_size_mode",    "auto",
-      "hrd_conformance",        "OFF",
-      "low_delay_hrd",          "OFF",
-      "low_delay_brc",          "OFF",
-      "skip_frame",             "NO_SKIP",
-      "mbbrc",                  "ON",
-      "adaptive_b",             "OFF",
-      "lookahead",              "OFF",
-      "p_pyramid",              "ON",
-      "use_raw_ref",            "ON",
-      "enctools",               "ON",
-      "enc_tools_scene_change", "ON",
-      "enc_tools_adaptive_ref_p", "ON",
-      "enc_tools_adaptive_ref_b", "ON",
-      "enc_tools_adaptive_ltr", "ON",
-      "enc_tools_adaptive_pyramid_quant_p", "ON",
-      "enc_tools_adaptive_pyramid_quant_b", "ON",
-      "enc_tools_adaptive_mbqp", "ON",
-      "enc_tools_brc_buffer_hints", "ON",
-      "enc_tools_brc",          "ON",
-      "enc_tools_saliency_map_hint", "OFF",
-      "gop_opt_flag",           "OPEN",
-      "adaptive_i",             "ON",
-      "rdo",                    "ON",
-      "transform_skip",         "ON",
-      "deblocking",             "OFF",
-      "mv_cost_scaling_factor", "AGGRESSIVE_0",
-      "weighted_pred",          "EXPLICIT",
-      "hevc_gpb",               "ON",
-      "hevc_sao",               "DISABLE",
-      "low_power",              "OFF",
-      "scenario_info",          "GAME_STREAMING",
-      "content_info",           "FULL_SCREEN_VIDEO",
-  };
-  for (size_t i = 0; i < sizeof(StringValues) / sizeof(*StringValues); i += 2)
-    obs_data_set_string(Settings, StringValues[i], StringValues[i + 1]);
+// ---- Tool-space presets ----------------------------------------------------
+//
+// The preset list is the explicit cross product
+//     速率模式 x {高质量, 低延迟, 超低延迟} x LowPower ON/OFF
+// (see EncoderPreset.Tooltip); every preset pins the rate control mode named
+// in its label and adapts every other tool option to the codec it runs under
+// (AVC / HEVC / AV1 -- codec-specific options included).  Rule citations
+// refer to docs/option-dependency-matrix.md.
+//
+// A preset NEVER touches: bitrate magnitudes (bitrate / max_bitrate /
+// buffer_size), quality factors (cqp / qpi / qpp / qpb / icq_quality /
+// qvbr_quality / min_qp / max_qp / accuracy / convergence), target usage,
+// profile / tier / level, keyframe interval, async depth, VPP, GPU selection,
+// quant matrices, chroma QP offset, ROI, custom coding options, intra
+// refresh, HME family, max frame size, HRD switches, lookahead DS, AV1
+// screen content / super-res / error-resilient / segmentation.
+//
+// 低延迟 / 超低延迟 mean STREAMING latency, not quality: only the
+// latency-bearing structure changes (B frames, lookahead, Enctools, GOP
+// adaptivity, scenario hint).  In-loop tools (SAO / GPB / CDEF / trellis /
+// RDO / CQM / transform skip / deblocking) add zero frame delay and stay ON
+// in every preset -- occupancy is the user's business, regulated via target
+// usage.  LowPower is an independent axis: the OFF (full-quality) and ON
+// (VDEnc) paths sit in different compression tiers, hence the explicit
+// ON/OFF variants of every preset.
+enum class PresetTier { HighQuality, LowLatency, UltraLowLatency };
 
-  obs_data_set_int(Settings, "num_ref_frame", 15);
-  obs_data_set_int(Settings, "b_frames", 4);
-  // Rate-control magnitudes this preset does pin down (user request):
-  // peak bitrate cap and the QVBR (ICQ-style) quality factor.
-  obs_data_set_int(Settings, "max_bitrate", 10000);
-  obs_data_set_int(Settings, "qvbr_quality", 18);
+struct RCPresetEntry {
+  const char *Id;         // dropdown value
+  const char *LocaleKey;  // dropdown label
+  const char *RC;         // rate_control pinned by the preset
+  PresetTier Tier;
+  bool LowPower;
+};
+
+// The full matrix: every rate control mode x {高质量, 低延迟, 超低延迟} x
+// LowPower ON/OFF, in the user-approved composition -- CQP and ICQ are
+// quality-factor modes with no BRC machinery to trade, so they only carry
+// the High Quality tier; VCM is latency-native, so it only carries the two
+// latency tiers.  Rows are filtered per codec by
+// RCPresetSupportedForCodec() (AVBR is AVC-only, VCM not on Arc Windows,
+// QVBR not on Gen9.5 Windows / UHD600, none of them on AV1).
+static const RCPresetEntry kRCPresets[] = {
+    {"cbr_hq_off", "PresetCBRHQOff", "CBR", PresetTier::HighQuality, false},
+    {"cbr_ll_off", "PresetCBRLLOff", "CBR", PresetTier::LowLatency, false},
+    {"cbr_ull_off", "PresetCBRULLOff", "CBR", PresetTier::UltraLowLatency,
+     false},
+    {"cbr_hq_on", "PresetCBRHQOn", "CBR", PresetTier::HighQuality, true},
+    {"cbr_ll_on", "PresetCBRLLOn", "CBR", PresetTier::LowLatency, true},
+    {"cbr_ull_on", "PresetCBRULLOn", "CBR", PresetTier::UltraLowLatency, true},
+
+    {"vbr_hq_off", "PresetVBRHQOff", "VBR", PresetTier::HighQuality, false},
+    {"vbr_ll_off", "PresetVBRLLOff", "VBR", PresetTier::LowLatency, false},
+    {"vbr_ull_off", "PresetVBRULLOff", "VBR", PresetTier::UltraLowLatency,
+     false},
+    {"vbr_hq_on", "PresetVBRHQOn", "VBR", PresetTier::HighQuality, true},
+    {"vbr_ll_on", "PresetVBRLLOn", "VBR", PresetTier::LowLatency, true},
+    {"vbr_ull_on", "PresetVBRULLOn", "VBR", PresetTier::UltraLowLatency, true},
+
+    {"cqp_hq_off", "PresetCQPHQOff", "CQP", PresetTier::HighQuality, false},
+    {"cqp_hq_on", "PresetCQPHQOn", "CQP", PresetTier::HighQuality, true},
+
+    {"avbr_hq_off", "PresetAVBRHQOff", "AVBR", PresetTier::HighQuality, false},
+    {"avbr_ll_off", "PresetAVBRLLOff", "AVBR", PresetTier::LowLatency, false},
+    {"avbr_ull_off", "PresetAVBRULLOff", "AVBR", PresetTier::UltraLowLatency,
+     false},
+    {"avbr_hq_on", "PresetAVBRHQOn", "AVBR", PresetTier::HighQuality, true},
+    {"avbr_ll_on", "PresetAVBRLLOn", "AVBR", PresetTier::LowLatency, true},
+    {"avbr_ull_on", "PresetAVBRULLOn", "AVBR", PresetTier::UltraLowLatency,
+     true},
+
+    {"icq_hq_off", "PresetICQHQOff", "ICQ", PresetTier::HighQuality, false},
+    {"icq_hq_on", "PresetICQHQOn", "ICQ", PresetTier::HighQuality, true},
+
+    {"vcm_ll_off", "PresetVCMLLOff", "VCM", PresetTier::LowLatency, false},
+    {"vcm_ull_off", "PresetVCMULLOff", "VCM", PresetTier::UltraLowLatency,
+     false},
+    {"vcm_ll_on", "PresetVCMLLOn", "VCM", PresetTier::LowLatency, true},
+    {"vcm_ull_on", "PresetVCMULLOn", "VCM", PresetTier::UltraLowLatency, true},
+
+    {"qvbr_hq_off", "PresetQVBRHQOff", "QVBR", PresetTier::HighQuality, false},
+    {"qvbr_ll_off", "PresetQVBRLLOff", "QVBR", PresetTier::LowLatency, false},
+    {"qvbr_ull_off", "PresetQVBRULLOff", "QVBR", PresetTier::UltraLowLatency,
+     false},
+    {"qvbr_hq_on", "PresetQVBRHQOn", "QVBR", PresetTier::HighQuality, true},
+    {"qvbr_ll_on", "PresetQVBRLLOn", "QVBR", PresetTier::LowLatency, true},
+    {"qvbr_ull_on", "PresetQVBRULLOn", "QVBR", PresetTier::UltraLowLatency,
+     true},
+};
+
+// Mirrors the RC dropdown's availability logic so a preset row is only
+// offered when its rate control mode is actually selectable for the codec
+// (matters once AVBR/VCM/QVBR rows land; CBR is universal).
+static bool RCPresetSupportedForCodec(const char *RC, enum codec_enum Codec
+#ifdef _WIN32
+                                      ,
+                                      mfxU16 platformCode
+#endif
+) {
+  if (strcmp(RC, "CBR") == 0 || strcmp(RC, "VBR") == 0 ||
+      strcmp(RC, "CQP") == 0 || strcmp(RC, "ICQ") == 0)
+    return true;
+#if defined(_WIN32)
+  const bool bArcFamilyWin =
+      platformCode == MFX_PLATFORM_DG2 ||
+      platformCode == MFX_PLATFORM_BATTLEMAGE ||
+      platformCode == MFX_PLATFORM_ARROWLAKE;
+  const bool bGen95Win = platformCode >= MFX_PLATFORM_SKYLAKE &&
+                         platformCode <= MFX_PLATFORM_COFFEELAKE;
+#else
+  const bool bArcFamilyWin = false, bGen95Win = false;
+#endif
+  if (strcmp(RC, "AVBR") == 0)
+    return Codec == QSV_CODEC_AVC;
+  if (strcmp(RC, "VCM") == 0)
+    return Codec != QSV_CODEC_AV1 &&
+           !(Codec == QSV_CODEC_HEVC && bArcFamilyWin);
+  if (strcmp(RC, "QVBR") == 0)
+    return Codec != QSV_CODEC_AV1 &&
+           !(Codec == QSV_CODEC_HEVC &&
+             (bGen95Win
+#ifdef QSV_UHD600_SUPPORT
+              || true // UHD620 HEVC rejects QVBR
+#endif
+              ));
+  return false;
 }
 
-// ICQ visually lossless high quality preset: HEVC ICQ configuration per the
-// user's reference screenshot; unlike the QVBR preset this one pins the ICQ
-// quality factor (12). Target usage/profile/tier/level/keyframe interval/
-// async depth/VBV remain untouched, same exclusion rules as the QVBR preset.
-static void ApplyICQLosslessHighQualityPreset(obs_data_t *Settings) {
-  static const char *const StringValues[] = {
-      "rate_control",           "ICQ",
-      "max_frame_size_mode",    "auto",
-      "skip_frame",             "NO_SKIP",
-      "mbbrc",                  "ON",
-      "adaptive_b",             "ON",
-      "lookahead",              "OFF",
-      "enctools",               "OFF",
-      "p_pyramid",              "ON",
-      "use_raw_ref",            "ON",
-      "gop_opt_flag",           "OPEN",
-      "adaptive_i",             "ON",
-      "rdo",                    "ON",
-      "transform_skip",         "ON",
-      "deblocking",             "OFF",
-      "weighted_pred",          "EXPLICIT",
-      "hevc_gpb",               "ON",
-      "hevc_sao",               "DISABLE",
-      "low_power",              "OFF",
-      "scenario_info",          "GAME_STREAMING",
-      "content_info",           "FULL_SCREEN_VIDEO",
-  };
-  for (size_t i = 0; i < sizeof(StringValues) / sizeof(*StringValues); i += 2)
-    obs_data_set_string(Settings, StringValues[i], StringValues[i + 1]);
+static void ApplyRCPreset(obs_data_t *Settings, enum codec_enum Codec,
+                          const char *RC, PresetTier Tier, bool LowPower) {
+  const bool IsAVC = Codec == QSV_CODEC_AVC;
+  const bool IsHEVC = Codec == QSV_CODEC_HEVC;
+  const bool IsAV1 = Codec == QSV_CODEC_AV1;
+  const bool HQ = Tier == PresetTier::HighQuality;
+  const bool ULL = Tier == PresetTier::UltraLowLatency;
 
-  obs_data_set_int(Settings, "num_ref_frame", 4);
-  obs_data_set_int(Settings, "b_frames", 4);
-  obs_data_set_int(Settings, "icq_quality", 12);
+  // Rule-gated RC families (docs/option-dependency-matrix.md):
+  //   Enctools    -- G25 whitelist CBR/VBR (+AVBR AVC-only, +QVBR where the
+  //                  codec offers it; VCM and CQP/ICQ excluded)
+  //   LowDelayBRC -- G12 VBR family only (the AV1 TCBRC flavor is VBR-only);
+  //                  CBR is deliberately excluded
+  //   MBBRC       -- G17 hidden for CQP/VCM, so only set where it is visible
+  const bool EnctoolsRC =
+      !strcmp(RC, "CBR") || !strcmp(RC, "VBR") ||
+      (!IsAV1 && !strcmp(RC, "QVBR")) || (IsAVC && !strcmp(RC, "AVBR"));
+  const bool LowDelayBRCRC =
+      !strcmp(RC, "VBR") || !strcmp(RC, "QVBR") || !strcmp(RC, "VCM");
+  const bool MbbrcRC =
+      !strcmp(RC, "CBR") || !strcmp(RC, "VBR") || !strcmp(RC, "AVBR") ||
+      !strcmp(RC, "QVBR") || !strcmp(RC, "ICQ");
+
+  auto Set = [Settings](
+                 std::initializer_list<std::pair<const char *, const char *>>
+                     KV) {
+    for (const auto &Entry : KV)
+      obs_data_set_string(Settings, Entry.first, Entry.second);
+  };
+
+  // The preset pins its own rate control mode (it is part of the label).
+  obs_data_set_string(Settings, "rate_control", RC);
+
+  // ---- common tool space (AVC / HEVC / AV1) ---------------------------------
+  Set({
+      // Own the GOP: OPEN keeps adaptive I/B meaningful (G20 STRICT gate).
+      {"gop_opt_flag", "OPEN"},
+      // AdaptiveI is only consumed through Enctools in this plugin (ExtBRC
+      // stays OFF, encoder-internal.cpp:3161) and G20 grays the control
+      // without the master switch -- ON exactly where the HQ tier enables
+      // Enctools, OFF everywhere else.
+      {"adaptive_i", (HQ && EnctoolsRC) ? "ON" : "OFF"},
+      // AdaptiveB=ON makes the plugin force GAME_STREAMING
+      // (encoder-internal.cpp "AdaptiveB (any codec)") -- never hijack the
+      // user's scenario; Enctools adaptive_ref_b covers B adaptation instead.
+      {"adaptive_b", "OFF"},
+      {"low_power", LowPower ? "ON" : "OFF"},
+      // Lookahead is re-enabled below for the tier/platform/RC combos that
+      // pass the L1/L2 gates.
+      {"lookahead", "OFF"},
+      // G12: only the VBR family consumes LowDelayBRC at all.  For AVC/HEVC
+      // it is dead weight in these presets either way: G13 sanitizes it to
+      // OFF once b_frames=0 && lookahead=OFF (our latency tiers), and on the
+      // high quality tier it would force GopRefDist=1 and kill the B frames.
+      // Exception: the AV1 TCBRC flavor never touches GopRefDist -- it
+      // bounds the per-frame size, a genuine streaming-latency lever for
+      // AV1 VBR (LowDelayBRCRC reduces to VBR for AV1).
+      {"low_delay_brc",
+       !HQ && IsAV1 && LowDelayBRCRC ? "ON" : "OFF"},
+      {"enctools", "OFF"},
+      {"enc_tools_scene_change", "OFF"},
+      {"enc_tools_adaptive_ref_p", "OFF"},
+      {"enc_tools_adaptive_ref_b", "OFF"},
+      {"enc_tools_adaptive_ltr", "OFF"},
+      {"enc_tools_adaptive_pyramid_quant_p", "OFF"},
+      {"enc_tools_adaptive_pyramid_quant_b", "OFF"},
+      {"enc_tools_adaptive_mbqp", "OFF"},
+      {"enc_tools_brc_buffer_hints", "OFF"},
+      {"enc_tools_brc", "OFF"},
+      {"enc_tools_saliency_map_hint", "OFF"},
+  });
+  if (MbbrcRC)
+    obs_data_set_string(Settings, "mbbrc", "ON");
+
+  // ---- GOP structure: the actual latency lever --------------------------------
+  // High quality maxes out everything that can be maxed: reference frames at
+  // the codec cap (16 AVC/HEVC, 8 AV1 -- the runtime silently truncates the
+  // active-ref tables by TU/LowPower, doc "驱动侧自动纠正") and la_depth at
+  // the slider max.  B frames: the TESTED quality optimum is 4 -- more B
+  // frames raise compression (the encoder reuses motion data instead of
+  // coding new data) but also raise residual, and 4 is the measured balance
+  // point.  GRD=5, however, falls outside the Enctools GOP whitelist
+  // {1,2,4,8,16} (G44), and the whitelist wins that trade-off: High quality
+  // takes 3 (GRD=4), the largest whitelist value below the optimum; users
+  // chasing the 4-frame optimum can raise it manually after applying.
+  // Exception: AVC with LowPower=ON runs VDEnc, and pre-DG2 VDEnc has no B
+  // frames (L4 probe gate), so B frames stay 0 there; DG2+ users can raise
+  // it manually.  VCM (latency tiers only) has its B frames forced away by
+  // the runtime anyway (GRD=1, h264_enc_common_hw.cpp:4211).  Low latency
+  // tiers cut exactly the latency-bearing parts.
+  const bool HQBframes = HQ && !(IsAVC && LowPower);
+  obs_data_set_int(Settings, "b_frames", HQBframes ? 3 : 0);
+  obs_data_set_int(
+      Settings, "num_ref_frame",
+      HQ ? (IsAV1 ? 8 : 16) : Tier == PresetTier::LowLatency ? 2 : 1);
+
+  if (IsAVC || IsHEVC) {
+    Set({
+        {"p_pyramid", HQBframes ? "ON" : "OFF"},
+        // Raw references add zero frame delay; occupancy is a TU concern.
+        {"use_raw_ref", "ON"},
+        {"skip_frame", "NO_SKIP"},
+        // In-loop, no frame delay -- stays on in every tier.
+        {"deblocking", "ON"},
+    });
+  }
+
+  // ---- codec in-loop quality tools: identical in every tier -------------------
+  if (IsAVC) {
+    Set({
+        {"trellis", "IPB"},
+        {"rdo", "ON"},
+        // A2 / runtime isAdaptiveCQMSupported: CQM survives only with
+        // LowPower=ON AND scenario GAME/REMOTE_GAMING; every other combo is
+        // force-disabled in SetDefaults (h264_enc_common_hw.cpp:5500-5503,
+        // 6181-6187).  No preset pins GS/RG (HQ leaves the scenario
+        // unpinned for the lookahead promotion, LL pins LIVE_STREAMING), so
+        // ON would be a dead value in every row -- 2026-09-29 audit fix,
+        // the old LP=OFF->ON mapping was inverted.  ULL+LowPower=ON users
+        // can raise the (enabled) control manually; enabling it promotes
+        // the scenario to GAME_STREAMING (encoder-internal.cpp:3397).
+        {"adaptive_cqm", "OFF"},
+        {"repartition_check", "ON"},
+        // Latency-neutral motion-estimation / prediction refinements: every
+        // AVC preset pins the same values regardless of tier.
+        //   GMBA=AUTO  -- driver default; the runtime maps nullopt to OFF
+        //                 today (encoder-internal.cpp:3533), but pinning the
+        //                 neutral string keeps the UI honest and follows any
+        //                 future AUTO pass-through.
+        //   DirectBiasAdjustment biases mode decisions toward fewer B
+        //                 Direct/Skip blocks -- a quality lever with a
+        //                 bitrate cost, no latency bearing; OFF keeps
+        //                 B-frame mode decisions un-skewed (and is moot in
+        //                 the latency tiers where B frames are gone anyway).
+        //   MVOverPicBoundaries=ON lets MVs reference samples outside the
+        //                 picture -- in-loop, no frame delay, better edge
+        //                 compression.
+        //   WeightedPred=DEFAULT is the AVC "on" (EXPLICIT is coerced to
+        //                 DEFAULT for AVC, plugin-init.cpp:1232); improves
+        //                 fade/flash prediction, WeightedBiPred is synced to
+        //                 it and FadeDetection turns ON with it.
+#ifndef QSV_UHD600_SUPPORT
+        {"global_motion_bias_adjustment", "AUTO"},
+        {"direct_bias_adjustment", "OFF"},
+#endif
+        {"mv_overpic_boundaries", "ON"},
+        {"weighted_pred", "DEFAULT"},
+    });
+  } else if (IsHEVC) {
+    Set({
+        {"rdo", "ON"},
+        {"transform_skip", "ON"},
+        {"hevc_sao", "ALL"},
+        {"hevc_gpb", "ON"},
+        // AUTO (driver default) keeps the SAO x explicit-WP conflict (G36)
+        // unreachable no matter what was pinned before the preset.
+        {"weighted_pred", "AUTO"},
+    });
+  } else if (IsAV1) {
+    Set({
+        {"rdo", "ON"},
+        {"av1_cdef", "ON"},
+        {"av1_restoration", "ON"},
+        {"av1_loop_filter", "ON"},
+        {"av1_interp_filter", "SWITCHABLE"},
+    });
+  }
+
+  // ---- lookahead: only where the L1/L2 gates allow it -------------------------
+  //   RC gate: the AVC LA promotion exists for CBR/VBR/ICQ only (L1) --
+  //   CQP/AVBR/VCM/QVBR have no promotion path, the LAD would be cleared;
+  //   HEVC/AV1 Enctools lookahead runs on CBR/VBR only (L2).
+  //   Platform gate: AVC needs the VME path (LowPower=OFF; DG2+ downgrades
+  //   LA_HRD/LA_ICQ back with a warning, only CBR LAGS survives there);
+  //   HEVC/AV1 need LowPower=ON (internal.cpp drops it otherwise).  The
+  //   HEVC/AV1 case then auto-promotes GAME_STREAMING for LPLA -- the
+  //   HQ-tier scenario stays unpinned so that promotion can fire.
+  const bool LookaheadRC = !strcmp(RC, "CBR") || !strcmp(RC, "VBR") ||
+                           (IsAVC && !strcmp(RC, "ICQ"));
+  bool LookaheadOn = false;
+  if (HQ && LookaheadRC &&
+      ((IsAVC && !LowPower) || ((IsHEVC || IsAV1) && LowPower))) {
+    Set({{"lookahead", "HQ"}});
+    obs_data_set_int(Settings, "la_depth", 100);
+    LookaheadOn = true;
+  }
+
+  // ---- high quality: Enctools (G25: CBR/VBR/AVBR/QVBR only) -------------------
+  if (HQ && EnctoolsRC) {
+    Set({
+        {"enctools", "ON"},
+        {"enc_tools_scene_change", "ON"},
+        // AV1 force-offs adaptive reference in every scenario
+        // (av1ehw_base_enctools.cpp:344-347,391; kRules Never-gray) --
+        // writing ON would only ever produce a dimmed control,
+        // 2026-09-29 audit fix.
+        {"enc_tools_adaptive_ref_p", IsAV1 ? "OFF" : "ON"},
+        // G30: adaptive_ref_b needs B frames; AVC+LowPower has none.  AV1:
+        // never supported, see above.
+        {"enc_tools_adaptive_ref_b",
+         (HQBframes && !IsAV1) ? "ON" : "OFF"},
+        {"enc_tools_adaptive_ltr", "ON"},
+        {"enc_tools_adaptive_pyramid_quant_p", "ON"},
+        // G40: AV1 pyramid quant B additionally needs B frames.
+        {"enc_tools_adaptive_pyramid_quant_b",
+         (IsAV1 && !HQBframes) ? "OFF" : "ON"},
+        {"enc_tools_saliency_map_hint", "OFF"},
+    });
+    if (!strcmp(RC, "CBR") || !strcmp(RC, "VBR")) {
+      // G27-G29: BRC / BRC buffer hints / adaptive MBQP are CBR/VBR-only.
+      // BRCBufferHints additionally rides LookAheadDepth at the runtime
+      // (MaxDelayInFrames > GopRefDist, mfx_enctools_common.cpp:275-276)
+      // and the depth is only submitted with lookahead active
+      // (encoder-internal.cpp:3219) -- dead weight without it,
+      // 2026-09-29 audit fix.
+      Set({
+          {"enc_tools_brc", "ON"},
+          {"enc_tools_brc_buffer_hints", LookaheadOn ? "ON" : "OFF"},
+          {"enc_tools_adaptive_mbqp", "ON"},
+      });
+    }
+  }
+
+#ifndef QSV_UHD600_SUPPORT
+  // Scenario/content hints steer driver-side tuning without touching the
+  // bitstream tools: neutral for high quality (lets the lookahead GS
+  // promotion above fire), streaming / remote-gaming profiles for the
+  // latency tiers (AV1 TCBRC defaults to REMOTE_GAMING itself,
+  // av1ehw_base_general.cpp:3358).  The legacy UHD600 HEVC path rejects CO3
+  // ScenarioInfo, so that build leaves them alone.
+  Set({
+      {"scenario_info", HQ ? "OFF"
+                        : ULL ? "REMOTE_GAMING"
+                              : "LIVE_STREAMING"},
+      {"content_info", HQ ? "OFF" : "AUTO"},
+  });
+#endif
 }
 
 // Applies the selected preset, then snaps the dropdown back to "custom" so
@@ -1363,18 +1745,18 @@ static bool EncoderPresetModified(obs_properties_t *Properties,
   auto codec = static_cast<codec_enum>(
       reinterpret_cast<intptr_t>(obs_properties_get_param(Properties)));
   const char *preset = obs_data_get_string(Settings, "encoder_preset");
-  if (codec == QSV_CODEC_HEVC) {
-    if (strcmp(preset, "qvbr_high_quality") == 0)
-      ApplyQVBRHighQualityPreset(Settings);
-    else if (strcmp(preset, "icq_lossless_high_quality") == 0)
-      ApplyICQLosslessHighQualityPreset(Settings);
+  for (const RCPresetEntry &Entry : kRCPresets) {
+    if (strcmp(preset, Entry.Id) == 0) {
+      ApplyRCPreset(Settings, codec, Entry.RC, Entry.Tier, Entry.LowPower);
+      break;
+    }
   }
 
   obs_data_set_string(Settings, "encoder_preset", "custom");
   ParamsVisibilityModifier(Properties, Prop, Settings);
   // Presets rewrite many option VALUES (b_frames, num_ref_frame, ...) whose
-  // widgets only pick up new values on a full page rebuild -- so always
-  // return true here; the signature gate inside the modifier would skip it.
+  // widgets only pick up new values on a full page rebuild -- always ask for
+  // one regardless of what the visibility gate decided.
   return true;
 }
 
@@ -1393,13 +1775,21 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
                                  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
   obs_property_set_long_description(Prop, TEXT_ENCODER_PRESET_DESC);
   obs_property_list_add_string(Prop, TEXT_PRESET_CUSTOM, "custom");
-  // presets are codec-specific: the QVBR high quality preset is HEVC-only
-  // until per-codec presets exist
-  if (Codec == QSV_CODEC_HEVC) {
-    obs_property_list_add_string(Prop, TEXT_PRESET_QVBR_HIGH_QUALITY,
-                                 "qvbr_high_quality");
-    obs_property_list_add_string(Prop, TEXT_PRESET_ICQ_LOSSLESS_HIGH_QUALITY,
-                                 "icq_lossless_high_quality");
+  // Tool-space presets: rate mode x quality tier x LowPower (see the block
+  // comment above ApplyRCPreset).  VP9 is excluded: every option the presets
+  // own is hidden or a no-op for it, so a "preset" would be an empty gesture.
+  if (Codec != QSV_CODEC_VP9) {
+    for (const RCPresetEntry &Preset : kRCPresets) {
+      if (!RCPresetSupportedForCodec(Preset.RC, Codec
+#ifdef _WIN32
+                                     ,
+                                     platformCode
+#endif
+                                     ))
+        continue;
+      obs_property_list_add_string(Prop, obs_module_text(Preset.LocaleKey),
+                                   Preset.Id);
+    }
   }
   obs_property_set_modified_callback(Prop, EncoderPresetModified);
 
@@ -1637,6 +2027,22 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
 
   obs_properties_t *IFGroup = obs_properties_create();
 
+  // Adaptive I-Frames sits directly above the keyframe interval input so
+  // users see the I-frame related controls together.
+  Prop = obs_properties_add_list(IFGroup, "adaptive_i", TEXT_ADAPTIVE_I,
+                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+  AddStrings(Prop, qsv_params_condition_tristate);
+  obs_property_set_long_description(Prop, TEXT_ADAPTIVE_I_DESC);
+  // UHD600 GPU family: adaptive I/B only exists on H.264 (FF CBR/VBR);
+  // HEVC rejects them (QSVEncC on UHD620: all x).
+  obs_property_set_visible(Prop, Codec != QSV_CODEC_VP9 &&
+#ifdef QSV_UHD600_SUPPORT
+                                 Codec != QSV_CODEC_HEVC
+#else
+                                 true
+#endif
+  );
+
   Prop = obs_properties_add_int(IFGroup, "keyint_sec", TEXT_KEYINT_SEC, 0,
                                 65535, 1);
   obs_property_int_set_suffix(Prop, " s");
@@ -1796,20 +2202,6 @@ static obs_properties_t *GetParamProps(enum codec_enum Codec) {
   obs_property_set_visible(Prop, Codec != QSV_CODEC_VP9);
   // condition option for the adaptive_i/adaptive_b GOP_STRICT gray
   obs_property_set_modified_callback(Prop, ParamsVisibilityModifier);
-
-  Prop = obs_properties_add_list(ETGroup, "adaptive_i", TEXT_ADAPTIVE_I,
-                                 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-  AddStrings(Prop, qsv_params_condition_tristate);
-  obs_property_set_long_description(Prop, TEXT_ADAPTIVE_I_DESC);
-  // UHD600 GPU family: adaptive I/B only exists on H.264 (FF CBR/VBR);
-  // HEVC rejects them (QSVEncC on UHD620: all x).
-  obs_property_set_visible(Prop, Codec != QSV_CODEC_VP9 &&
-#ifdef QSV_UHD600_SUPPORT
-                                 Codec != QSV_CODEC_HEVC
-#else
-                                 true
-#endif
-  );
 
 #ifndef QSV_UHD600_SUPPORT
   Prop = obs_properties_add_list(ETGroup, "adaptive_cqm", TEXT_ADAPTIVE_CQM,

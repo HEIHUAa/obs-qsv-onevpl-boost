@@ -77,6 +77,15 @@ mfxStatus HWManager::CreateDevice(int dxgiAdapterIndex) {
   }
 }
 
+void HWManager::AbandonDevice() {
+  // intentional COM leak — Release could block on the wedged GPU
+  HWAdapter = nullptr;
+  HWDevice = nullptr;
+  HWContext = nullptr;
+  HWFactory = nullptr;
+  HWDeviceHandle = nullptr;
+}
+
 void HWManager::ReleaseDevice() {
   if (HWEncoderCounter <= 0) {
     if (HWAdapter) {

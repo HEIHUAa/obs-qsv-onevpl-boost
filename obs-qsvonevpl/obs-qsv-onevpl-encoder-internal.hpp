@@ -96,6 +96,10 @@ void InitSystemMemorySurfacePool();
   bool m_FlushExhausted{false};
   // driver trait, sticky across Reset: it answered -5 on a flush submit
   bool m_FlushRefusedOnce{false};
+  // flush probe gate: probe only while accepted > retrieved.  the probe at
+  // an empty pipeline never completes and wedges the session — never send it
+  mfxU32 m_AcceptedSubmits{0};
+  mfxU32 m_OutputsRetrieved{0};
   // set when a flush op was accepted but never completed — stop flushing
   bool m_FlushBroken{false};
   // accepted-but-stuck ops we walked away from; their session must not be
@@ -104,6 +108,7 @@ void InitSystemMemorySurfacePool();
   // Drop all in-flight flush ops and re-arm the flush — call after a
   // successful encoder Reset (warm-up, reconfigure) and in ClearData.
   void ResetFlushState();
+  size_t CountPendingTasks();
 
   void DisableVPP();
 
@@ -210,6 +215,9 @@ private:
   // then hangs the whole process (seen with EncTools + HW lookahead), so
   // ClearData skips Close/MFXClose and leaks the session instead.
   bool m_DrainStalled{false};
+  // ClearData took the leak path — ~QSVEncoder's second ClearData must not
+  // run the normal teardown (device release froze OBS on the wedged GPU)
+  bool m_SessionLeaked{false};
   // Count of MFX_ERR_MORE_DATA returns on EncodeFrameAsync submit. With
   // lookahead enabled this is normal back-pressure: the driver has buffered
   // the frame and will encode it later — the frame is NOT lost.

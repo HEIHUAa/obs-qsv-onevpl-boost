@@ -703,8 +703,12 @@ static inline void ParseEncoderParamsFromObsData(obs_data_t *Settings,
     Params.Lookahead = false;
   }
 
-  if (auto v = MapString(LookaheadDSData, kLookaheadDSMap))
-    Params.LookAheadDS = *v;
+  // LookAheadDS is AVC-only (mfxExtCodingOptionDDI); drop stale non-AVC
+  // config values so they never reach CO2.LookAheadDS.
+  if (Codec == QSV_CODEC_AVC) {
+    if (auto v = MapString(LookaheadDSData, kLookaheadDSMap))
+      Params.LookAheadDS = *v;
+  }
 
   static constexpr std::pair<std::string_view, bool> kIntraRefEncodingMap[] = {
       {"ON", true},

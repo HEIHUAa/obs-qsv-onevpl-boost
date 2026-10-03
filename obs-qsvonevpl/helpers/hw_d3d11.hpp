@@ -23,6 +23,9 @@ public:
   ~HWManager();
 
   void ReleaseDevice();
+  // leak path only: forget the static device without Release (the leaked
+  // session still references it; Release would block on the wedged GPU)
+  void AbandonDevice();
   void ReleaseTexturePool();
 
   mfxStatus CreateDevice(int dxgiAdapterIndex);

@@ -3273,14 +3273,20 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
     CO2Params->AdaptiveB = GetCodingOpt(InputParams->AdaptiveB);
 #endif
 
-    if (InputParams->RateControl == MFX_RATECONTROL_CBR ||
-        InputParams->RateControl == MFX_RATECONTROL_VBR ||
-        InputParams->RateControl == MFX_RATECONTROL_AVBR ||
-        InputParams->RateControl == MFX_RATECONTROL_ICQ ||
-        InputParams->RateControl == MFX_RATECONTROL_QVBR ||
-        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_LA ||
-        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_LA_ICQ ||
-        QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_LA_HRD) {
+    // LookAheadDS is AVC-only and only meaningful while lookahead is actually
+    // active -- submitting it for other codecs or with lookahead disabled just
+    // makes the driver auto-correct it back to 0 (WRN noise, user-log
+    // verified: HEVC + LowPower=OFF + stale LookAheadDS=1 -> "1 -> 0").
+    if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC &&
+        InputParams->Lookahead &&
+        (InputParams->RateControl == MFX_RATECONTROL_CBR ||
+         InputParams->RateControl == MFX_RATECONTROL_VBR ||
+         InputParams->RateControl == MFX_RATECONTROL_AVBR ||
+         InputParams->RateControl == MFX_RATECONTROL_ICQ ||
+         InputParams->RateControl == MFX_RATECONTROL_QVBR ||
+         QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_LA ||
+         QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_LA_ICQ ||
+         QSVEncodeParams.mfx.RateControlMethod == MFX_RATECONTROL_LA_HRD)) {
       CO2Params->LookAheadDS = MFX_LOOKAHEAD_DS_OFF;
       if (InputParams->LookAheadDS) {
         switch (*InputParams->LookAheadDS) {
@@ -3421,14 +3427,19 @@ mfxStatus QSVEncoder::SetEncoderParams(struct encoder_params *InputParams,
       CO3Params->GPB = GetCodingOpt(InputParams->GPB);
     }
 
-    auto *CO2Pyramid =
-        QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
-    if (InputParams->PPyramid == true) {
-      CO3Params->PRefType = MFX_P_REF_PYRAMID;
-      if (CO2Pyramid) CO2Pyramid->BRefType = MFX_B_REF_PYRAMID;
-    } else {
-      CO3Params->PRefType = MFX_P_REF_SIMPLE;
-      if (CO2Pyramid) CO2Pyramid->BRefType = MFX_B_REF_UNKNOWN;
+    // PRefType/BRefType are user-visible only for AVC/HEVC; AV1/VP9 stay at
+    // driver defaults (UNKNOWN) even when a stale config carries p_pyramid.
+    if (QSVEncodeParams.mfx.CodecId == MFX_CODEC_AVC ||
+        QSVEncodeParams.mfx.CodecId == MFX_CODEC_HEVC) {
+      auto *CO2Pyramid =
+          QSVEncodeParams.GetExtBuffer<mfxExtCodingOption2>();
+      if (InputParams->PPyramid == true) {
+        CO3Params->PRefType = MFX_P_REF_PYRAMID;
+        if (CO2Pyramid) CO2Pyramid->BRefType = MFX_B_REF_PYRAMID;
+      } else {
+        CO3Params->PRefType = MFX_P_REF_SIMPLE;
+        if (CO2Pyramid) CO2Pyramid->BRefType = MFX_B_REF_UNKNOWN;
+      }
     }
 
 #ifndef QSV_UHD600_SUPPORT
@@ -5142,6 +5153,8 @@ mfxStatus QSVEncoder::EncodeFrameSystemMemory(mfxU64 TS, uint8_t **FrameData,
     QSVSyncTaskID =
         (QSVSyncTaskID + 1) % static_cast<int>(QSVTaskPool.size());
     *Bitstream = &QSVBitstream;
+    if (QSVBitstream.DataLength > 0)
+      m_OutputsRetrieved++;
 
     SurfID = GetFreeSurface();
   }
@@ -5246,6 +5259,9 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
 
   // Step 2: sync outside the lock so other threads can get free tasks while we wait
   mfxStatus SyncStatus = MFX_ERR_NONE;
+  // bounded: an endless IN_EXECUTION here means a wedged pipeline — hang guard
+  constexpr mfxU32 MAX_SYNC_RETRIES = 50;
+  mfxU32 syncRetries = 0;
   while (syncPoint != nullptr) {
     SyncStatus = MFXVideoCORE_SyncOperation(QSVSession, syncPoint, 100);
     debug("SyncAndSwap: task=%d SyncOperation sts=%d", taskIdx, SyncStatus);
@@ -5272,6 +5288,14 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
     }
     if (SyncStatus != MFX_WRN_IN_EXECUTION) {
       break;
+    }
+    if (++syncRetries > MAX_SYNC_RETRIES) {
+      error("SyncAndSwap: task %d still in execution after %ds — driver "
+            "pipeline wedged, aborting drain",
+            taskIdx, MAX_SYNC_RETRIES / 10);
+      m_DrainStalled = true;
+      profile_end("qsv_sync_task");
+      return MFX_ERR_DEVICE_FAILED;
     }
   }
 
@@ -5311,9 +5335,20 @@ mfxStatus QSVEncoder::SyncAndSwapPendingTask(mfxBitstream **Bitstream) {
   }
 
   *Bitstream = &QSVBitstream;
+  m_OutputsRetrieved++;
 
   profile_end("qsv_sync_task");
   return MFX_ERR_NONE;
+}
+
+size_t QSVEncoder::CountPendingTasks() {
+  std::lock_guard<std::mutex> lock(QSVTaskPoolMutex);
+  size_t Pending = 0;
+  for (const auto &Task : QSVTaskPool) {
+    if (Task.SyncPoint != nullptr)
+      Pending++;
+  }
+  return Pending;
 }
 
 mfxStatus QSVEncoder::DrainAndRetrieveBitstream(mfxBitstream **Bitstream) {
@@ -5327,15 +5362,11 @@ mfxStatus QSVEncoder::DrainAndRetrieveBitstream(mfxBitstream **Bitstream) {
     return MFX_ERR_DEVICE_FAILED;
   }
 
-  // Flush requests pull the frames the driver still holds (LA / EncTools HW
-  // lookahead). a flush submit while pool ops are still in flight is either
-  // accepted (healthy LA) or rejected with DEVICE_FAILED (EncTools HW
-  // lookahead) — both harmless. a flush submit with the pool DRAINED
-  // (encoder quiesced at EOS) is accepted and then NEVER completes, wedging
-  // the session so Close() hangs afterwards. so flushes are only submitted
-  // while pool tasks are pending once the driver has refused once, and an
-  // in-flight flush that refuses to land in 2s gets abandoned instead of
-  // waited out.
+  // Flush probes pull the frames the driver still holds (LA / EncTools HW
+  // lookahead). probes with pending work always complete; the one at a truly
+  // empty pipeline is accepted and never completes, wedging the session —
+  // the output-count gate exists to never send it. a flush that refuses to
+  // land in 2s gets abandoned instead of waited out.
   constexpr size_t MAX_INFLIGHT_FLUSHES = 8;
   if (m_FlushRing.empty()) {
     m_FlushRing.resize(MAX_INFLIGHT_FLUSHES);
@@ -5350,22 +5381,13 @@ mfxStatus QSVEncoder::DrainAndRetrieveBitstream(mfxBitstream **Bitstream) {
     }
   }
 
-  auto CountPendingTasks = [this]() -> size_t {
-    std::lock_guard<std::mutex> lock(QSVTaskPoolMutex);
-    size_t Pending = 0;
-    for (const auto &Task : QSVTaskPool) {
-      if (Task.SyncPoint != nullptr)
-        Pending++;
-    }
-    return Pending;
-  };
-
   mfxStatus sts = MFX_ERR_NONE;
   for (int Pass = 0; Pass < 250; Pass++) {
-    // top the pipeline up — but only while pool tasks are pending once the
-    // driver has shown the -5-at-EOS behavior (m_FlushRefusedOnce)
+    // top the pipeline up — only while outputs are pending (and, once the
+    // driver refused with -5, only while pool tasks are pending)
     if (!m_FlushExhausted && !m_FlushBroken &&
         m_FlushInFlight.size() < MAX_INFLIGHT_FLUSHES &&
+        m_OutputsRetrieved < m_AcceptedSubmits &&
         (!m_FlushRefusedOnce || CountPendingTasks() > 0)) {
       auto &Slot = m_FlushRing[m_FlushRingHead];
       Slot.Bs.DataLength = 0;
@@ -5446,15 +5468,15 @@ mfxStatus QSVEncoder::DrainAndRetrieveBitstream(mfxBitstream **Bitstream) {
       }
       if (m_FlushRing[SlotIdx].Bs.DataLength > 0) {
         *Bitstream = &m_FlushRing[SlotIdx].Bs;
+        m_OutputsRetrieved++;
         return MFX_ERR_NONE;
       }
     }
 
-    // done when the flush is exhausted, or when this driver refuses flushes
-    // and nothing is pending anymore — the lookahead-held tail frames stay
-    // unrecoverable there (driver limitation; recording stop is stats-only
-    // anyway, re-encode output just ends ~LookAheadDepth frames early)
+    // done: flush exhausted, everything submitted retrieved, or the -5
+    // driver with nothing pending (its held tail frames are unrecoverable)
     if (m_FlushExhausted || m_FlushBroken ||
+        m_OutputsRetrieved >= m_AcceptedSubmits ||
         (m_FlushRefusedOnce && CountPendingTasks() == 0)) {
       if (m_FlushRefusedOnce && !m_FlushExhausted) {
         info("\tDrainAndRetrieve: driver refuses flush at EOS (EncTools HW "
@@ -5597,6 +5619,8 @@ mfxStatus QSVEncoder::EncodeFrameRetryLoop(mfxFrameSurface1 *Surface,
       throw std::runtime_error("Encode(): EncodeFrameAsync fatal error");
     }
   }
+  // accepted = sync-point task or MORE_DATA-buffered; both emit one output
+  m_AcceptedSubmits++;
   return MFX_ERR_NONE;
 }
 
@@ -5664,6 +5688,8 @@ mfxStatus QSVEncoder::EncodeTexture(mfxU64 TS, void *TextureHandle,
     QSVTaskPool[QSVSyncTaskID].SyncPoint = nullptr;
     TaskID = QSVSyncTaskID;
     *Bitstream = &QSVBitstream;
+    if (QSVBitstream.DataLength > 0)
+      m_OutputsRetrieved++;
   }
 
   try {
@@ -5870,6 +5896,8 @@ mfxStatus QSVEncoder::EncodeFrame(mfxU64 TS, uint8_t **FrameData,
     QSVTaskPool[QSVSyncTaskID].SyncPoint = nullptr;
     TaskID = QSVSyncTaskID;
     *Bitstream = &QSVBitstream;
+    if (QSVBitstream.DataLength > 0)
+      m_OutputsRetrieved++;
   }
 
   Status =
@@ -6426,28 +6454,54 @@ mfxStatus QSVEncoder::Drain() {
   };
 
   auto SyncUntilDone = [this](mfxSyncPoint SyncPoint) -> mfxStatus {
-    constexpr int MAX_WAITS = 4; // 4 x 5s per frame is way beyond sane already
+    constexpr int MAX_WAITS = 2; // 2 x 2s — healthy ops land in ms, so 4s
+                                 // already means the op is never coming back
     mfxStatus SyncSts = MFX_ERR_NONE;
     for (int Wait = 0; Wait < MAX_WAITS; Wait++) {
-      SyncSts = MFXVideoCORE_SyncOperation(QSVSession, SyncPoint, 5000);
+      SyncSts = MFXVideoCORE_SyncOperation(QSVSession, SyncPoint, 2000);
       if (SyncSts != MFX_WRN_IN_EXECUTION)
         return SyncSts;
       warn("Drain: frame still in execution after %ds, retrying sync (%d/%d)",
-           5 * (Wait + 1), Wait + 1, MAX_WAITS);
+           2 * (Wait + 1), Wait + 1, MAX_WAITS);
     }
     error("Drain: sync point did not complete after %ds — driver pipeline "
           "is stuck, aborting drain",
-          5 * MAX_WAITS);
+          2 * MAX_WAITS);
     m_DrainStalled = true;
     return SyncSts;
   };
 
   int iter = 0;
   int drainedFrames = 0;
+  int BusyRun = 0;
   size_t RingHead = 0;
   std::vector<std::pair<mfxSyncPoint, size_t>> InFlight; // FIFO of pending ops
   while (Status >= MFX_ERR_NONE && iter++ < MAX_DRAIN_ITERS &&
          !m_DrainStalled) {
+    // same probe gate as DrainAndRetrieveBitstream — never probe an empty
+    const bool FlushAllowed =
+        !m_FlushBroken && m_OutputsRetrieved < m_AcceptedSubmits &&
+        (!m_FlushRefusedOnce || CountPendingTasks() > 0);
+    if (!FlushAllowed) {
+      // retire whatever is already outstanding, then stop probing
+      for (auto &[SyncPoint, SlotIdx] : InFlight) {
+        if (m_DrainStalled)
+          break;
+        mfxStatus SyncSts = SyncUntilDone(SyncPoint);
+        if (SyncSts == MFX_ERR_DEVICE_FAILED) {
+          m_DeviceFailed = true;
+          break;
+        }
+        if (SyncSts < MFX_ERR_NONE) {
+          warn("Drain sync warning: %d", SyncSts);
+        }
+        if (Ring[SlotIdx].Bs.DataLength > 0) {
+          drainedFrames++;
+          m_OutputsRetrieved++;
+        }
+      }
+      break;
+    }
     if (InFlight.size() >= MAX_INFLIGHT_FLUSHES) {
       auto [SyncPoint, SlotIdx] = InFlight.front();
       InFlight.erase(InFlight.begin());
@@ -6463,8 +6517,10 @@ mfxStatus QSVEncoder::Drain() {
       if (SyncSts < MFX_ERR_NONE) {
         warn("Drain sync warning: %d", SyncSts);
       }
-      if (Ring[SlotIdx].Bs.DataLength > 0)
+      if (Ring[SlotIdx].Bs.DataLength > 0) {
         drainedFrames++;
+        m_OutputsRetrieved++;
+      }
     }
 
     mfxSyncPoint SyncPoint = nullptr;
@@ -6483,6 +6539,19 @@ mfxStatus QSVEncoder::Drain() {
     if (Status == MFX_ERR_NONE && SyncPoint != nullptr) {
       InFlight.emplace_back(SyncPoint, RingHead);
       RingHead = (RingHead + 1) % MAX_INFLIGHT_FLUSHES;
+      BusyRun = 0;
+    } else if (Status == MFX_WRN_DEVICE_BUSY) {
+      // a driver that stays BUSY forever won't accept flushes — stop
+      // probing and let Close() finish the session (that path is safe)
+      if (++BusyRun > 250) {
+        warn("Drain: driver BUSY on %d consecutive flush submits — "
+             "giving up on flush",
+             BusyRun);
+        break;
+      }
+      Sleep(1);
+    } else {
+      BusyRun = 0;
     }
   }
 
@@ -6493,8 +6562,10 @@ mfxStatus QSVEncoder::Drain() {
     if (SyncSts < MFX_ERR_NONE) {
       warn("Drain sync warning: %d", SyncSts);
     }
-    if (Ring[SlotIdx].Bs.DataLength > 0)
+    if (Ring[SlotIdx].Bs.DataLength > 0) {
       drainedFrames++;
+      m_OutputsRetrieved++;
+    }
   }
 
   if (iter >= MAX_DRAIN_ITERS) {
@@ -6509,8 +6580,8 @@ mfxStatus QSVEncoder::Drain() {
          drainedFrames);
   }
 
-  if (!m_DrainStalled && Status != MFX_ERR_MORE_DATA &&
-      Status != MFX_ERR_NULL_PTR) {
+  if (!m_DrainStalled && Status != MFX_ERR_NONE &&
+      Status != MFX_ERR_MORE_DATA && Status != MFX_ERR_NULL_PTR) {
     if (Status == MFX_ERR_DEVICE_FAILED) {
       info("\tDrain: driver ended flush with DEVICE_FAILED (-5) — known "
            "EncTools driver behavior at EOS, trailing frames are recovered "
@@ -6789,6 +6860,12 @@ void QSVEncoder::WarmUpEncoder() {
 }
 
 mfxStatus QSVEncoder::ClearData() {
+  // leak path already ran — the normal teardown here released the D3D11
+  // device under the leaked session and froze OBS on the wedged GPU
+  if (m_SessionLeaked) {
+    return MFX_ERR_DEVICE_FAILED;
+  }
+
   mfxStatus Status = MFX_ERR_NONE;
 
   m_DrainSubmitted = false;
@@ -6808,14 +6885,37 @@ mfxStatus QSVEncoder::ClearData() {
     // works afterwards.  Better to leak the session and the driver-attached
     // buffers than take the whole process down with us.
     if (m_DrainStalled || m_FlushAbandonedOps > 0) {
-      warn("ClearData: %s — skipping Close/MFXClose and freeing (session "
+      warn("ClearData: %s — skipping sync Close/MFXClose and freeing (session "
            "leaked, GPU may need a driver reset)",
            m_DrainStalled ? "drain never completed"
                           : "abandoned flush ops still outstanding");
+      m_SessionLeaked = true;
+      // best-effort async cleanup: Close() may hang on the wedged session
+      // (then the thread just leaks with it) or land and free the stuck ops
+      mfxSession LeakedSession = QSVSession;
+      mfxLoader LeakedLoader = QSVLoader;
+      std::thread([LeakedSession, LeakedLoader]() {
+        if (LeakedSession) {
+          MFXVideoENCODE_Close(LeakedSession);
+          MFXClose(LeakedSession);
+        }
+        if (LeakedLoader) {
+          MFXDispReleaseImplDescription(LeakedLoader, nullptr);
+          MFXUnload(LeakedLoader);
+        }
+      }).detach();
       QSVEncode = nullptr;
       QSVProcessing = nullptr;
       QSVSession = nullptr;
       QSVLoader = nullptr;
+      // forget our device bookkeeping so the next session builds a fresh
+      // one instead of reusing the wedged device
+      if (HWManager::HWEncoderCounter > 0) {
+        HWManager::HWEncoderCounter--;
+      }
+      if (HWManager::HWEncoderCounter == 0 && HWManager) {
+        HWManager->AbandonDevice();
+      }
       return MFX_ERR_DEVICE_FAILED;
     }
     Status = QSVEncode->Close();

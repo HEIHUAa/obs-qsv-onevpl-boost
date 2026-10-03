@@ -29,6 +29,7 @@ enum class Op : uint8_t {
   StrIn,    // string value of opt is one of a/b/c
   StrNotIn, // string value of opt is none of a/b/c
   IntEq,    // int value of opt == num
+  IntNe,    // int value of opt != num
   IntGt,    // int value of opt >  num
   IntLt,    // int value of opt <  num
   FieldGt,  // int value of opt >  int value of rhs (cross-option compare)
@@ -65,6 +66,9 @@ constexpr Cond NoneOf(const char *opt, const char *a, const char *b = nullptr,
 constexpr Cond IntIs(const char *opt, int n) {
   return Cond{.op = Op::IntEq, .opt = opt, .num = n};
 }
+constexpr Cond IntNe(const char *opt, int n) {
+  return Cond{.op = Op::IntNe, .opt = opt, .num = n};
+}
 constexpr Cond IntOver(const char *opt, int n) {
   return Cond{.op = Op::IntGt, .opt = opt, .num = n};
 }
@@ -84,6 +88,15 @@ constexpr Cond FeatNot(const char *feature) {
   return Cond{.op = Op::FeatureNot, .opt = feature};
 }
 constexpr Cond Never() { return Cond{.op = Op::Never}; }
+
+// Whole-session predicate resolved by the caller's FeatureFn (UI side: the
+// plugin's IsFeatureSupported).  Unlike Feat() this is not a per-codec platform
+// capability but "which session kind will this setting produce".  Rows are
+// usable-state rows (conflict=false), so the condition must HOLD in the usable
+// state: TextureEncode() is true exactly when the session is a texture-import
+// one, and the AVC EncTools rows below therefore need FeatNot-shaped logic
+// expressed the other way round (they gray when this does NOT hold).
+constexpr Cond TextureEncode() { return Cond{.op = Op::Feature, .opt = "texture_encode"}; }
 
 enum class Action : uint8_t { Hide, Gray };
 
@@ -149,6 +162,15 @@ consteval Rule WithConflict(Rule R) {
 }
 
 // the table, grouped roughly like the settings UI
+
+// Expands to one Gray row that disables an EncTools option when the current
+// session is a frame-import (non-texture) one on AVC -- see the block comment
+// inside kRules for the evidence.  A macro (not a consteval helper) so the rows
+// keep their own braces inside the kRules initializer list.
+#define ETEXTURE_RULES(Opt)                                                    \
+  WithReason(MakeRule(Opt, kAVC, Action::Gray, nullptr, TextureEncode()),      \
+             "RuleReason_ETFrameImport")
+
 inline constexpr Rule kRules[] = {
     // rate control magnitudes (RC-driven -> Hide)
     MakeRule("bitrate", kCodecsAll, Action::Hide, nullptr,
@@ -208,7 +230,9 @@ inline constexpr Rule kRules[] = {
                         Is("lookahead", "OFF")),
                "RuleReason_LowDelayBRC"),
 
-    // MBBRC: hidden on CQP/VCM (runtime forces it off); on AVC the ICQ/QVBR
+    // MBBRC: hidden on CQP/VCM (no BRC to shape; the runtime merely defaults
+    // UNKNOWN to OFF there, h264_enc_common_hw.cpp:6205-6215 -- no explicit
+    // force-off, so the Hide is plugin tightening); on AVC the ICQ/QVBR
     // paths force it ON regardless of the user value. h264_enc_common_hw.cpp:3946-3953
     MakeRule("mbbrc", kCodecsAll, Action::Hide, "OFF",
              NoneOf("rate_control", "CQP", "VCM")),
@@ -220,15 +244,19 @@ inline constexpr Rule kRules[] = {
     // UserMaxFrameSizeSupport/SW-BRC gating is left to the driver):
     // AVC clears it unconditionally under CBR/CQP (h264_enc_common_hw.cpp:752-760),
     // HEVC keeps it only for VBR/QVBR (hevcehw_base_max_frame_size.cpp:57-85),
-    // AV1 keeps it for every RC except VBR -- TCBRC owns frame-size control
-    // there (av1ehw_base_max_frame_size.cpp:53-54) -- and the VP9 runtime
-    // ignores it entirely.  The GAME_STREAMING wipe is AVC-only (:796-804).
+    // AV1 keeps it ONLY under VBR -- it rides the TCBRC/MaxFrameSize upper
+    // bound (SetDefaults fills it solely when LowDelayBRC is ON, and values
+    // below the avg frame size are clipped UP; the TCBRC target itself is the
+    // avg frame size from bitrate/fps, av1ehw_base_general.cpp:2752-2756;
+    // av1ehw_base_max_frame_size.cpp:53-66,81-85 zeroes every other RC) --
+    // and the VP9 runtime ignores it entirely.
+    // The GAME_STREAMING wipe is AVC-only (:796-804).
     MakeRule("max_frame_size_mode", kAVC, Action::Hide, nullptr,
              NoneOf("rate_control", "CQP", "CBR")),
     MakeRule("max_frame_size_mode", kHEVC, Action::Hide, nullptr,
              OneOf("rate_control", "VBR", "QVBR")),
     MakeRule("max_frame_size_mode", kAV1, Action::Hide, nullptr,
-             IsNot("rate_control", "VBR")),
+             Is("rate_control", "VBR")),
     MakeRule("max_frame_size_mode", kVP9, Action::Hide, nullptr, Never()),
     WithReason(MakeRule("max_frame_size_mode", kAVC, Action::Gray, nullptr,
                         IsNot("scenario_info", "GAME_STREAMING")),
@@ -240,7 +268,7 @@ inline constexpr Rule kRules[] = {
              OneOf("rate_control", "VBR", "QVBR"),
              Is("max_frame_size_mode", "all")),
     MakeRule("max_frame_size_all", kAV1, Action::Hide, nullptr,
-             IsNot("rate_control", "VBR"),
+             Is("rate_control", "VBR"),
              Is("max_frame_size_mode", "all")),
     MakeRule("max_frame_size_all", kVP9, Action::Hide, nullptr, Never()),
     WithReason(MakeRule("max_frame_size_all", kAVC, Action::Gray, nullptr,
@@ -253,7 +281,7 @@ inline constexpr Rule kRules[] = {
              OneOf("rate_control", "VBR", "QVBR"),
              Is("max_frame_size_mode", "per_type")),
     MakeRule("max_frame_size_i", kAV1, Action::Hide, nullptr,
-             IsNot("rate_control", "VBR"),
+             Is("rate_control", "VBR"),
              Is("max_frame_size_mode", "per_type")),
     MakeRule("max_frame_size_i", kVP9, Action::Hide, nullptr, Never()),
     WithReason(MakeRule("max_frame_size_i", kAVC, Action::Gray, nullptr,
@@ -266,7 +294,7 @@ inline constexpr Rule kRules[] = {
              OneOf("rate_control", "VBR", "QVBR"),
              Is("max_frame_size_mode", "per_type")),
     MakeRule("max_frame_size_p", kAV1, Action::Hide, nullptr,
-             IsNot("rate_control", "VBR"),
+             Is("rate_control", "VBR"),
              Is("max_frame_size_mode", "per_type")),
     MakeRule("max_frame_size_p", kVP9, Action::Hide, nullptr, Never()),
     WithReason(MakeRule("max_frame_size_p", kAVC, Action::Gray, nullptr,
@@ -278,9 +306,10 @@ inline constexpr Rule kRules[] = {
     // EXEMPTED case), and HEVC validates the value domain only
     // (hevcehw_base_legacy.cpp CheckSkipFrame).
 
-    // B-frames are meaningless under VCM (IPPP only) -> Hide.  AdaptiveI/B
-    // only work through EncTools and are suppressed by GOP_STRICT -> Gray.
-    // h264_enc_common_hw.cpp:4777-4825, hevcehw_base_enctools_com.h:59
+    // B-frames are meaningless under VCM (IPPP only: GopRefDist forced to 1,
+    // h264_enc_common_hw.cpp:4211-4215) -> Hide.  AdaptiveI/B only work
+    // through EncTools/ExtBRC-SCD and are suppressed by GOP_STRICT -> Gray.
+    // h264_enc_common_hw.cpp:4777-4825, hevcehw_base_enctools.cpp:385-388,454-460
     MakeRule("b_frames", kNoVP9, Action::Hide, nullptr,
              IsNot("rate_control", "VCM")),
     MakeRule("adaptive_b", kNoVP9, Action::Hide, nullptr,
@@ -291,6 +320,27 @@ inline constexpr Rule kRules[] = {
     WithReason(MakeRule("adaptive_i", kNoVP9, Action::Gray, nullptr,
                         Is("enctools", "ON"), IsNot("gop_opt_flag", "STRICT")),
                "RuleReason_AdaptiveIPB"),
+    // The CO2 AdaptiveI/B values feed the same EncTools whitelist (copied
+    // into the config, hevcehw_base_enctools.cpp:35-63, then clipped by
+    // supportedConfig -- mfx_enctools_common.cpp:259-263), so the GRD gate
+    // applies here too -- but only while the master switch is ON; with
+    // enctools OFF the ExtBRC-SCD path stays intact.  Six conds == the cap.
+    WithConflict(WithReason(MakeRule("adaptive_i", kNoVP9, Action::Gray,
+                                     nullptr, Is("enctools", "ON"),
+                                     IntOver("b_frames", 0),
+                                     IntNe("b_frames", 1),
+                                     IntNe("b_frames", 3),
+                                     IntNe("b_frames", 7),
+                                     IntNe("b_frames", 15)),
+                            "RuleReason_ETGOP")),
+    WithConflict(WithReason(MakeRule("adaptive_b", kNoVP9, Action::Gray,
+                                     nullptr, Is("enctools", "ON"),
+                                     IntOver("b_frames", 0),
+                                     IntNe("b_frames", 1),
+                                     IntNe("b_frames", 3),
+                                     IntNe("b_frames", 7),
+                                     IntNe("b_frames", 15)),
+                            "RuleReason_ETGOP")),
 
     // B-Pyramid is force-disabled by the runtime when GopRefDist < 3, i.e.
     // the CONFLICT state is 0 < b_frames < 2.  h264_enc_common_hw.cpp:3227
@@ -299,18 +349,32 @@ inline constexpr Rule kRules[] = {
                                      IntUnder("b_frames", 2)),
                             "RuleReason_BPyramid")),
 
-    // lookahead: AVC on CBR/VBR/ICQ (VBR/ICQ promoted to LA variants, CBR uses
-    // EncTools LAGS).  HEVC/AV1 hardware EncTools lookahead is gated in the
-    // EncTools layer -- GS scenario (LPLA) or, without it, GopRefDist in
-    // {2,4,8,16} + ExtBRC + scenario UNKNOWN (SW LA,
-    // hevcehw_base_enctools.cpp:272-285).  There is deliberately NO low-power
-    // gray row: the runtime silently forces LowPower=ON for HEVC
-    // (hevcehw_base_caps.cpp:51) and AV1 (av1ehw_base_general.cpp:493), so
-    // "low_power must be ON" can never fail.
+    // lookahead: AVC on CBR/VBR/ICQ (internal.cpp SetEncoderParams promotes
+    // VBR/ICQ to the LA variants, CBR uses EncTools LAGS).  HEVC/AV1 hardware
+    // EncTools lookahead is gated in the EncTools layer -- GS scenario (LPLA)
+    // or, without it, GopRefDist in {2,4,8,16} + ExtBRC + scenario UNKNOWN
+    // (SW LA, hevcehw_base_enctools.cpp:272-285).  HEVC/AV1 additionally
+    // requires LowPower=ON in the plugin's own SetEncoderParams gate (it drops
+    // lookahead otherwise, user-log verified) -- hence the conflict gray row
+    // below (fires only when HQ/LP is actually picked, OFF stays clean).
     MakeRule("lookahead", kAVC, Action::Hide, "OFF",
              OneOf("rate_control", "CBR", "VBR", "ICQ")),
+    // AVC lookahead rides the LA rate-control variants, and on a pre-DG2 VME
+    // platform with LowPower=ON the runtime REJECTS them outright
+    // (h264_enc_common_hw.cpp:2292-2315 zeroes RateControlMethod; only DG2+
+    // demotes LA/LA_HRD->VBR, LA_ICQ->ICQ, platform_caps.h:132-135).  Gray
+    // the switch there; the DG2+ demotion stays driver-side (silent WRN).
+    WithConflict(WithReason(MakeRule("lookahead", kAVC, Action::Gray, "OFF",
+                                     Is("low_power", "ON"),
+                                     FeatNot("lp_b_frames"),
+                                     IsNot("lookahead", "OFF")),
+                            "RuleReason_LALowPower")),
     MakeRule("lookahead", static_cast<uint8_t>(kHEVC | kAV1), Action::Hide,
              "OFF", OneOf("rate_control", "CBR", "VBR"), Feat("enc_tools")),
+    WithConflict(WithReason(
+        MakeRule("lookahead", static_cast<uint8_t>(kHEVC | kAV1), Action::Gray,
+                 nullptr, IsNot("low_power", "ON"), IsNot("lookahead", "OFF")),
+        "RuleReason_LALowPower")),
     // LookAheadDS is AVC-only (mfxExtCodingOptionDDI); HEVC/AV1 pick the LA
     // scale internally, VP9 has none.  Sub-option of the lookahead switch -> Hide.
     MakeRule("lookahead_ds", kAVC, Action::Hide, nullptr,
@@ -318,6 +382,11 @@ inline constexpr Rule kRules[] = {
     MakeRule("lookahead_ds", kNoAVC, Action::Hide, nullptr, Never()),
     MakeRule("la_depth", kCodecsAll, Action::Hide, nullptr,
              Is("lookahead", "HQ")),
+    // HEVC/AV1 lookahead dies with LowPower != ON (see above) -- gray the
+    // depth slider along with the switch (AVC's VME-path LA has no such tie).
+    WithReason(MakeRule("la_depth", static_cast<uint8_t>(kHEVC | kAV1),
+                        Action::Gray, nullptr, IsNot("low_power", "ON")),
+               "RuleReason_LALowPower"),
 
     // exists for every codec but must never show on VP9 (codec-driven -> Hide)
     MakeRule("lookahead", kVP9, Action::Hide, "OFF", Never()),
@@ -393,6 +462,145 @@ inline constexpr Rule kRules[] = {
                         IsNot("target_usage", "Fastest (TU6-TU7)"),
                         IsNot("gop_opt_flag", "STRICT")),
                "RuleReason_ETTU7"),
+    // IsAdaptiveRefAllowed also blocks when NumRefActiveP[0]==1 or
+    // (GopRefDist>1 && NumRefActiveBL0[0]==1).  The plugin fills
+    // CO3.NumRefActive* with num_ref_frame (encoder-internal.cpp:3370-3375),
+    // so num_ref_frame=1 triggers the gate; the 0 (auto) default fills 0
+    // and passes.  hevcehw_base_enctools.cpp:186-196
+    WithConflict(WithReason(MakeRule("enc_tools_adaptive_ref_p", kHEVC,
+                                     Action::Gray, nullptr,
+                                     IntIs("num_ref_frame", 1)),
+                            "RuleReason_ETRefActive")),
+    WithConflict(WithReason(MakeRule("enc_tools_adaptive_ref_b", kHEVC,
+                                     Action::Gray, nullptr,
+                                     IntIs("num_ref_frame", 1)),
+                            "RuleReason_ETRefActive")),
+    // AV1 force-offs PyramidQuantB without B frames (bHasB gate,
+    // av1ehw_base_enctools.cpp:383,396); HEVC has no such gate -- its
+    // whitelist passes GRD=1, the toggle just no-ops.
+    WithConflict(WithReason(MakeRule("enc_tools_adaptive_pyramid_quant_b", kAV1,
+                                     Action::Gray, nullptr,
+                                     IntIs("b_frames", 0)),
+                            "RuleReason_ETRefB")),
+    // AdaptiveLTR: HEVC routes it through the same bAdaptiveRef gate
+    // (hevcehw_base_enctools.cpp:466); AV1 has its own
+    // !(GopOptFlag & STRICT) condition (av1ehw_base_enctools.cpp:392,401).
+    WithReason(MakeRule("enc_tools_adaptive_ltr",
+                        static_cast<uint8_t>(kHEVC | kAV1), Action::Gray,
+                        nullptr, IsNot("gop_opt_flag", "STRICT")),
+               "RuleReason_ETSTRICT"),
+    WithConflict(WithReason(MakeRule("enc_tools_adaptive_ltr", kHEVC,
+                                     Action::Gray, nullptr,
+                                     IntIs("num_ref_frame", 1)),
+                            "RuleReason_ETRefActive")),
+    WithReason(MakeRule("enc_tools_adaptive_ltr", kHEVC, Action::Gray, nullptr,
+                        IsNot("target_usage", "TU7 (Veryfast)"),
+                        IsNot("target_usage", "Fastest (TU6-TU7)")),
+               "RuleReason_ETTU7"),
+    // Non-GS EncTools whitelist needs GopRefDist in {1,2,4,8,16}
+    // (mfx_enctools_common.cpp:259-263); GRD = b_frames+1
+    // (encoder-internal.cpp:3113), i.e. b_frames in {0,1,3,7,15}.  Other
+    // values silently kill every whitelisted sub-feature.  Expressed as the
+    // CONFLICT state (gray when b_frames > 0 AND not a whitelist value).
+    // enc_tools_brc is immune (BRC is set outside the GRD gate) and
+    // enc_tools_saliency_map_hint is not whitelisted at all (it rides the
+    // perc-enc prefilter path), so neither gets a row.
+    WithConflict(WithReason(MakeRule("enc_tools_scene_change", kNoVP9,
+                                     Action::Gray, nullptr,
+                                     IntOver("b_frames", 0),
+                                     IntNe("b_frames", 1),
+                                     IntNe("b_frames", 3),
+                                     IntNe("b_frames", 7),
+                                     IntNe("b_frames", 15)),
+                            "RuleReason_ETGOP")),
+    WithConflict(WithReason(MakeRule("enc_tools_adaptive_ref_p", kNoVP9,
+                                     Action::Gray, nullptr,
+                                     IntOver("b_frames", 0),
+                                     IntNe("b_frames", 1),
+                                     IntNe("b_frames", 3),
+                                     IntNe("b_frames", 7),
+                                     IntNe("b_frames", 15)),
+                            "RuleReason_ETGOP")),
+    WithConflict(WithReason(MakeRule("enc_tools_adaptive_ref_b", kNoVP9,
+                                     Action::Gray, nullptr,
+                                     IntOver("b_frames", 0),
+                                     IntNe("b_frames", 1),
+                                     IntNe("b_frames", 3),
+                                     IntNe("b_frames", 7),
+                                     IntNe("b_frames", 15)),
+                            "RuleReason_ETGOP")),
+    WithConflict(WithReason(MakeRule("enc_tools_adaptive_ltr", kNoVP9,
+                                     Action::Gray, nullptr,
+                                     IntOver("b_frames", 0),
+                                     IntNe("b_frames", 1),
+                                     IntNe("b_frames", 3),
+                                     IntNe("b_frames", 7),
+                                     IntNe("b_frames", 15)),
+                            "RuleReason_ETGOP")),
+    WithConflict(WithReason(MakeRule("enc_tools_adaptive_pyramid_quant_p",
+                                     kNoVP9, Action::Gray, nullptr,
+                                     IntOver("b_frames", 0),
+                                     IntNe("b_frames", 1),
+                                     IntNe("b_frames", 3),
+                                     IntNe("b_frames", 7),
+                                     IntNe("b_frames", 15)),
+                            "RuleReason_ETGOP")),
+    WithConflict(WithReason(MakeRule("enc_tools_adaptive_pyramid_quant_b",
+                                     kNoVP9, Action::Gray, nullptr,
+                                     IntOver("b_frames", 0),
+                                     IntNe("b_frames", 1),
+                                     IntNe("b_frames", 3),
+                                     IntNe("b_frames", 7),
+                                     IntNe("b_frames", 15)),
+                            "RuleReason_ETGOP")),
+    WithConflict(WithReason(MakeRule("enc_tools_adaptive_mbqp", kNoVP9,
+                                     Action::Gray, nullptr,
+                                     IntOver("b_frames", 0),
+                                     IntNe("b_frames", 1),
+                                     IntNe("b_frames", 3),
+                                     IntNe("b_frames", 7),
+                                     IntNe("b_frames", 15)),
+                            "RuleReason_ETGOP")),
+    WithConflict(WithReason(MakeRule("enc_tools_brc_buffer_hints", kNoVP9,
+                                     Action::Gray, nullptr,
+                                     IntOver("b_frames", 0),
+                                     IntNe("b_frames", 1),
+                                     IntNe("b_frames", 3),
+                                     IntNe("b_frames", 7),
+                                     IntNe("b_frames", 15)),
+                            "RuleReason_ETGOP")),
+
+    // AVC + EncTools on a FRAME-IMPORT session (OBS is not rendering on the
+    // Intel adapter, or the user pinned a non-automatic "Select GPU") cannot
+    // initialize at all: MFXVideoENCODE_Init returns
+    // MFX_ERR_UNDEFINED_BEHAVIOR (-16) for every sub-option combination,
+    // including a config buffer whose fields are all left UNKNOWN.
+    // Evidence: log/probe/probe_etbrc.cpp (attach EncTools buffer -> -16,
+    // without it -> 5), probe_etm.cpp (HEVC on the very same session
+    // initializes fine), probe_inject.cpp (injecting the runtime's own
+    // ETED/ETEA device+allocator buffers does not help).
+    // Root cause: the runtime fills MFX_EXTBUFF_ENCTOOLS_DEVICE from the
+    // session's D3D11 handle (mfx_h264_encode_hw.cpp:1246-1257) and the
+    // EncTools allocator lookup fails with -16 when that handle is 0 (on
+    // Windows the ETEA allocator is built internally from the device), while
+    // a frame-import session never gets a D3D11 device:
+    // MFXVideoCORE_GetHandle returns MFX_ERR_NOT_FOUND and
+    // MFXVideoCORE_SetHandle rejects the device with -16.  The texture path
+    // creates and binds that device (encoder-internal.cpp Init, texture
+    // branch) -- the frame-import path cannot.
+    // Gray (not Hide): the control stays visible with its value and explains
+    // itself, like the rest of the conflict rows.
+    ETEXTURE_RULES("enctools"),
+    ETEXTURE_RULES("enc_tools_scene_change"),
+    ETEXTURE_RULES("enc_tools_adaptive_ref_p"),
+    ETEXTURE_RULES("enc_tools_adaptive_ref_b"),
+    ETEXTURE_RULES("enc_tools_adaptive_ltr"),
+    ETEXTURE_RULES("enc_tools_adaptive_pyramid_quant_p"),
+    ETEXTURE_RULES("enc_tools_adaptive_pyramid_quant_b"),
+    ETEXTURE_RULES("enc_tools_adaptive_mbqp"),
+    ETEXTURE_RULES("enc_tools_brc_buffer_hints"),
+    ETEXTURE_RULES("enc_tools_brc"),
+    ETEXTURE_RULES("enc_tools_saliency_map_hint"),
 
     // intra refresh x B-frames is a hard mutex (runtime zeroes IntRefType); AVC
     // also needs NumRefFrame <= 1; VDEnc only does HORIZONTAL refresh.
@@ -406,13 +614,12 @@ inline constexpr Rule kRules[] = {
     // type/cycle_size/qp_delta are sub-options of the intra-ref switch -> Hide
     MakeRule("intra_ref_type", kNoVP9, Action::Hide, nullptr,
              Is("intra_ref_encoding", "ON")),
-    // VDEnc AVC only does HORIZONTAL refresh (h264_enc_common_hw.cpp:4283
-    // clips SLICE down to it); HEVC passes VERTICAL through with a full code
-    // path (hevcehw_base_legacy.cpp:3853-3855,2151-2153), so the restriction
-    // is AVC-only.  AV1 has no intra refresh at all (group not created).
-    WithReason(MakeRule("intra_ref_type", kAVC, Action::Gray, nullptr,
-                        IsNot("low_power", "ON")),
-               "RuleReason_IntRefType"),
+    // No LowPower gray row here: the runtime clips only SLICE down to
+    // HORIZONTAL (h264_enc_common_hw.cpp:4283-4288) while the UI only ever
+    // offers VERTICAL/HORIZONTAL, and VERTICAL passes through on VDEnc AVC
+    // just like on HEVC, which has a full vertical code path
+    // (hevcehw_base_legacy.cpp:3853-3855,2151-2153).  AV1 has no intra
+    // refresh at all (group not created).
     MakeRule("intra_ref_cycle_size", kNoVP9, Action::Hide, nullptr,
              Is("intra_ref_encoding", "ON")),
     MakeRule("intra_ref_qp_delta", kNoVP9, Action::Hide, nullptr,
@@ -469,8 +676,10 @@ inline constexpr Rule kRules[] = {
     // it" citation traced to SetLowPowerDefault, h264_enc_common_hw.cpp:1439,
     // and the EnhancedEncInput gate is commented out at :4394-4398) -- keep
     // only the platform floor: Sandy Bridge lacks trellis entirely
-    // (feature resolver).
-    MakeRule("trellis", kAVC, Action::Hide, nullptr, FeatNot("trellis")),
+    // (feature resolver).  The usable-condition must be the POSITIVE Feat:
+    // FeatNot here would invert the gate and hide the control on every
+    // trellis-capable platform while showing it on SNB (2026-09-29 audit fix).
+    MakeRule("trellis", kAVC, Action::Hide, nullptr, Feat("trellis")),
     // AdaptiveCQM is only supported for GAME_STREAMING/REMOTE_GAMING on VDEnc;
     // the runtime force-disables it otherwise.
     // h264_enc_common_hw.cpp:5500-5503,6181-6187
@@ -559,6 +768,8 @@ inline bool CondHolds(const Cond &C, obs_data_t *Settings,
   }
   case Op::IntEq:
     return obs_data_get_int(Settings, C.opt) == C.num;
+  case Op::IntNe:
+    return obs_data_get_int(Settings, C.opt) != C.num;
   case Op::IntGt:
     return obs_data_get_int(Settings, C.opt) > C.num;
   case Op::IntLt:
@@ -600,13 +811,23 @@ inline bool RuleUsable(const Rule &R, obs_data_t *Settings,
 // resolves Op::Feature conds.  Returns a signature of the resulting visual state
 // (per-row verdicts plus active tooltip reasons) so the caller can skip OBS's
 // expensive full properties rebuild when nothing actually changed.
+//
+// VisibleGray (optional) reports whether any currently-visible control ended
+// up disabled.  The OBS settings frontend force-enables every widget on every
+// edit (UpdateMultitrackVideo -> OBSPropertiesView::SetDisabled(false)) BEFORE
+// the modified callback runs, so a caller that skips the rebuild must still
+// force one while visible gray state exists: hidden or already-enabled
+// controls can't be damaged by that wipe, visible disabled ones can.
 inline std::string ApplyToProperties(obs_properties_t *Props,
                                      obs_data_t *Settings,
                                      enum codec_enum Codec,
-                                     bool (*FeatureFn)(const char *)) {
+                                     bool (*FeatureFn)(const char *),
+                                     bool *VisibleGray = nullptr) {
   const uint8_t bit = CodecBit(Codec);
   std::string sig;
   sig.reserve(512);
+  if (VisibleGray)
+    *VisibleGray = false;
 
   // collect active reasons per option first so options with several conflict
   // rows keep every applicable reason, not just the last one
@@ -629,13 +850,31 @@ inline std::string ApplyToProperties(obs_properties_t *Props,
     s += obs_module_text(R.reason);
   }
 
+  // An option can carry several rows of the same action (e.g. a b_frames gate
+  // plus a TU7 gate on enc_tools_adaptive_ref_b) -- the verdicts AND together:
+  // every row must call the option usable for it to end up visible/enabled.
+  // Collect them first so the last row can't silently overwrite earlier ones.
+  std::unordered_map<std::string_view, bool> visible;
+  std::unordered_map<std::string_view, bool> enabled;
+  for (const Rule &R : kRules) {
+    if (R.codecs && !(R.codecs & bit))
+      continue;
+    if (!obs_properties_get(Props, R.option))
+      continue; // option not created for this codec / build
+    const bool usable = RuleUsable(R, Settings, FeatureFn);
+    auto [it, inserted] = (R.action == Action::Hide ? visible : enabled)
+                              .try_emplace(R.option, true);
+    it->second = it->second && usable;
+  }
+
   for (const Rule &R : kRules) {
     if (R.codecs && !(R.codecs & bit))
       continue;
     auto *p = obs_properties_get(Props, R.option);
     if (!p)
       continue; // option not created for this codec / build
-    const bool usable = RuleUsable(R, Settings, FeatureFn);
+    const bool usable =
+        R.action == Action::Hide ? visible[R.option] : enabled[R.option];
     sig += R.option;
     sig += R.action == Action::Hide ? 'v' : 'e';
     sig += usable ? '1' : '0';
@@ -646,6 +885,20 @@ inline std::string ApplyToProperties(obs_properties_t *Props,
         obs_data_set_string(Settings, R.option, R.neutral);
     } else {
       obs_property_set_enabled(p, usable);
+    }
+  }
+
+  // evaluated after the apply loop so Hide verdicts are already reflected in
+  // obs_property_visible -- gray-on-hidden controls can't be wiped
+  if (VisibleGray) {
+    for (const auto &Entry : enabled) {
+      if (Entry.second)
+        continue;
+      auto *p = obs_properties_get(Props, Entry.first.data());
+      if (p && obs_property_visible(p)) {
+        *VisibleGray = true;
+        break;
+      }
     }
   }
 

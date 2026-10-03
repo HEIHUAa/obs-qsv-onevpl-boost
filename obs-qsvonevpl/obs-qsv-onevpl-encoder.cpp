@@ -159,6 +159,10 @@ void DestroyPluginContext(void *Data) {
       delete Context;
     }
 
+    // bisect anchor: if a hang happens after this line, it is NOT in our
+    // cleanup (leak path, async Close thread, device release, etc.)
+    info("QSV: encoder destroyed");
+
     os_end_high_performance(PerformanceToken);
   }
 }
